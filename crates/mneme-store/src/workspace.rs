@@ -657,6 +657,20 @@ impl Workspace {
                 kind: record.kind,
             });
             index.insert(record.record_id, record.kind, record.revision_id);
+            let mut history = self
+                .connection
+                .prepare("SELECT revision_id FROM records WHERE record_id = ?1")?;
+            let revisions = history
+                .query_map(params![record.record_id.as_bytes().as_slice()], |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            for retained in revisions {
+                let retained = revision_id_from_blob(&retained, revision)?;
+                if retained != record.revision_id {
+                    index.record_revision(record.record_id, retained);
+                }
+            }
         }
         if expected_records != manifest.records {
             return Err(StoreError::Integrity {
@@ -775,6 +789,101 @@ impl Workspace {
         Ok(records)
     }
 
+    /// All retained revisions of one record identity, in recorded order.
+    ///
+    /// This is the historical view used by evidence correction and lineage
+    /// checks; each envelope is loaded from its verified blob.
+    pub fn record_revisions(&self, record_id: RecordId) -> Result<Vec<RecordEnvelope>> {
+        let context = self.current_revision()?;
+        let mut statement = self.connection.prepare(
+            "SELECT revision_id, kind, envelope_digest, payload_digest, full_digest
+             FROM records WHERE record_id = ?1
+             ORDER BY recorded_order, recorded_at_ns, revision_id",
+        )?;
+        let rows = statement
+            .query_map(params![record_id.as_bytes().as_slice()], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut records = Vec::with_capacity(rows.len());
+        for (revision_id, kind, envelope_digest, payload_digest, full_digest) in rows {
+            let revision_id = revision_id_from_blob(&revision_id, context)?;
+            let kind = RecordKind::parse(&kind).ok_or_else(|| StoreError::Integrity {
+                revision: context,
+                reason: format!("unknown record kind {kind}"),
+            })?;
+            let digest = digest_with(
+                &envelope_digest,
+                "preserves-canonical-binary-v1",
+                "full-record",
+                context,
+            )?;
+            let bytes = blob::read(&self.root, digest).map_err(|error| StoreError::Integrity {
+                revision: context,
+                reason: format!("record blob {digest} is unavailable: {error}"),
+            })?;
+            let value = binary::decode(&bytes).map_err(|diagnostic| StoreError::Integrity {
+                revision: context,
+                reason: format!("record blob {digest} is not valid Preserves: {diagnostic}"),
+            })?;
+            let record = RecordEnvelope::from_value(&value).map_err(|diagnostics| {
+                StoreError::Integrity {
+                    revision: context,
+                    reason: format!(
+                        "record blob {digest} is not a valid envelope: {}",
+                        join(&diagnostics)
+                    ),
+                }
+            })?;
+            let payload = digest_with(
+                &payload_digest,
+                "preserves-canonical-binary-v1",
+                "payload",
+                context,
+            )?;
+            if record.record_id != record_id
+                || record.revision_id != revision_id
+                || record.kind != kind
+                || record.full_digest() != digest
+                || record.full_digest().as_bytes() != full_digest.as_slice()
+                || record.payload_digest() != payload
+            {
+                return Err(StoreError::Integrity {
+                    revision: context,
+                    reason: format!("record blob {digest} does not match its ledger identity"),
+                });
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    /// Committed workspace revisions and their monotonic sequences.
+    pub fn revision_sequences(&self) -> Result<BTreeMap<WorkspaceRevisionId, u64>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT revision_id, sequence FROM revisions")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut sequences = BTreeMap::new();
+        for (revision, sequence) in rows {
+            sequences.insert(
+                revision_from_blob(&revision)?,
+                u64::try_from(sequence).unwrap_or(0),
+            );
+        }
+        Ok(sequences)
+    }
+
     /// Commit one command through the serialized coordinator.
     pub fn commit(&mut self, command: CommitCommand) -> Result<CommitOutcome> {
         validate_command(&command)?;
@@ -808,7 +917,7 @@ impl Workspace {
             .map(|draft| draft.into_envelope(recorded))
             .collect();
         let values: Vec<Value> = envelopes.iter().map(RecordEnvelope::to_value).collect();
-        let validated = validate_batch(&values, &SchemaRegistry::v1(), Some(&prior.index))
+        let validated = validate_batch(&values, &SchemaRegistry::production(), Some(&prior.index))
             .map_err(StoreError::Validation)?;
         let new_records = validated.records;
         self.ensure_revisions_unused(&new_records)?;

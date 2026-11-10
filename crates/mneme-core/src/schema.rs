@@ -29,12 +29,13 @@ pub enum RecordKind {
     Derivation,
     Checkpoint,
     Proposal,
+    Decision,
     RetentionDirective,
 }
 
 impl RecordKind {
     /// Every declared kind.
-    pub const ALL: [RecordKind; 11] = [
+    pub const ALL: [RecordKind; 12] = [
         RecordKind::Entity,
         RecordKind::Relation,
         RecordKind::Document,
@@ -45,6 +46,7 @@ impl RecordKind {
         RecordKind::Derivation,
         RecordKind::Checkpoint,
         RecordKind::Proposal,
+        RecordKind::Decision,
         RecordKind::RetentionDirective,
     ];
 
@@ -61,6 +63,7 @@ impl RecordKind {
             RecordKind::Derivation => "derivation",
             RecordKind::Checkpoint => "checkpoint",
             RecordKind::Proposal => "proposal",
+            RecordKind::Decision => "decision",
             RecordKind::RetentionDirective => "retention-directive",
         }
     }
@@ -462,12 +465,62 @@ impl RecordSchema {
         )
     }
 
+    /// The production version 2 schema introduced by `evidence-memory`.
+    ///
+    /// It keeps every version 1 kind and field, adds explicit assertion
+    /// decision/extraction fields, source availability, and the decision record
+    /// kind. Version 1 records remain interpretable and are not rewritten.
+    pub fn evidence_v2() -> Self {
+        let mut schema = RecordSchema::v1();
+        schema.version = 2;
+        for kind in &mut schema.kinds {
+            match kind.kind {
+                RecordKind::Assertion => {
+                    kind.fields
+                        .push(optional("decision", reference(Some(RecordKind::Decision))));
+                    kind.fields.push(optional("extraction", FieldType::Any));
+                    kind.fields
+                        .push(optional("completeness", FieldType::Symbol));
+                }
+                RecordKind::SourceRevision => {
+                    kind.fields
+                        .push(optional("availability", FieldType::Symbol));
+                }
+                RecordKind::Episode => {
+                    kind.fields.push(optional("related", reference_set(None)));
+                }
+                RecordKind::Checkpoint => {
+                    kind.fields
+                        .push(optional("revision", FieldType::WorkspaceRevision));
+                }
+                _ => {}
+            }
+        }
+        schema.kinds.push(KindSchema::new(
+            RecordKind::Decision,
+            vec![
+                required("decision-kind", FieldType::Symbol),
+                required("target", reference(None)),
+                required("actor", FieldType::Text),
+                required("policy", FieldType::Text),
+                required("input-revision", FieldType::WorkspaceRevision),
+                required("outcome", FieldType::Symbol),
+                required("rationale", FieldType::Text),
+                required("evidence", reference_set(None)),
+                optional("related", reference_set(None)),
+            ],
+            ExtensionPolicy::Retain,
+        ));
+        schema
+    }
+
     /// A synthetic version 2 schema used only by migration fixtures.
     ///
     /// It adds one required `extraction` field to assertions. It is not a
     /// production schema version: a runtime registry accepts only versions it
-    /// registers explicitly, and Mneme registers version 1.
-    pub fn synthetic_v2() -> Self {
+    /// registers explicitly. It is intentionally distinct from
+    /// [`RecordSchema::evidence_v2`] and is never registered with it.
+    pub fn synthetic_migration_v2() -> Self {
         let mut schema = RecordSchema::v1();
         schema.version = 2;
         for kind in &mut schema.kinds {
@@ -505,6 +558,13 @@ impl SchemaRegistry {
     pub fn v1() -> Self {
         let mut registry = SchemaRegistry::default();
         registry.register(RecordSchema::v1());
+        registry
+    }
+
+    /// The production registry: version 1 plus the evidence version 2 kinds.
+    pub fn production() -> Self {
+        let mut registry = SchemaRegistry::v1();
+        registry.register(RecordSchema::evidence_v2());
         registry
     }
 
@@ -767,17 +827,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn version_one_declares_every_kind() {
+    fn version_one_declares_every_core_kind() {
         let schema = RecordSchema::v1();
         assert_eq!(schema.version(), 1);
-        for kind in RecordKind::ALL {
+        for kind in RecordKind::ALL
+            .into_iter()
+            .filter(|kind| *kind != RecordKind::Decision)
+        {
             assert!(
                 schema.kind(kind).is_some(),
                 "{} must be declared",
                 kind.symbol()
             );
         }
-        assert_eq!(schema.kinds().len(), RecordKind::ALL.len());
+        assert!(schema.kind(RecordKind::Decision).is_none());
+        assert_eq!(schema.kinds().len(), RecordKind::ALL.len() - 1);
     }
 
     #[test]
@@ -788,8 +852,8 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_v2_is_registered_only_explicitly() {
-        let registry = SchemaRegistry::v1().with_version(RecordSchema::synthetic_v2());
+    fn synthetic_migration_v2_is_registered_only_explicitly() {
+        let registry = SchemaRegistry::v1().with_version(RecordSchema::synthetic_migration_v2());
         assert_eq!(registry.supported_versions(), vec![1, 2]);
         let assertion = registry
             .schema(2)
@@ -801,6 +865,29 @@ mod tests {
             .and_then(|schema| schema.kind(RecordKind::Assertion))
             .expect("assertion v1");
         assert!(v1.field("extraction").is_none());
+    }
+
+    #[test]
+    fn production_registry_adds_the_decision_kind_at_version_two() {
+        let registry = SchemaRegistry::production();
+        assert_eq!(registry.supported_versions(), vec![1, 2]);
+        assert!(
+            registry
+                .schema(1)
+                .and_then(|schema| schema.kind(RecordKind::Decision))
+                .is_none()
+        );
+        let decision = registry
+            .schema(2)
+            .and_then(|schema| schema.kind(RecordKind::Decision))
+            .expect("decision v2");
+        assert!(decision.field("policy").is_some());
+        assert!(decision.field("input-revision").is_some());
+        let assertion = registry
+            .schema(2)
+            .and_then(|schema| schema.kind(RecordKind::Assertion))
+            .expect("assertion v2");
+        assert!(assertion.field("decision").is_some());
     }
 
     #[test]

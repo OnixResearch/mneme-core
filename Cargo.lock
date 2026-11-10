@@ -297,6 +297,7 @@ dependencies = [
  "clap",
  "mneme-core",
  "mneme-eval",
+ "mneme-memory",
  "mneme-store",
  "serde",
  "serde_json",
@@ -319,10 +320,21 @@ name = "mneme-eval"
 version = "0.1.0"
 dependencies = [
  "mneme-core",
+ "mneme-memory",
  "mneme-store",
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "mneme-memory"
+version = "0.1.0"
+dependencies = [
+ "mneme-core",
+ "mneme-store",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

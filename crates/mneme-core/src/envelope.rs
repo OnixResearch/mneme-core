@@ -894,7 +894,7 @@ mod tests {
 
     #[test]
     fn synthetic_version_two_requires_the_new_field() {
-        let registry = SchemaRegistry::v1().with_version(RecordSchema::synthetic_v2());
+        let registry = SchemaRegistry::v1().with_version(RecordSchema::synthetic_migration_v2());
         let mut v2 = assertion("proposed");
         v2.schema_version = 2;
         let error = validate_record_value(&v2.to_value(), &registry, None)

@@ -243,9 +243,10 @@ pub fn fixture_batch_value() -> Value {
 }
 
 /// A schema registry that additionally declares the synthetic migration
-/// version 2. Production code registers version 1 only.
+/// version 2. It is distinct from the production evidence version 2 and the two
+/// are never registered together.
 pub fn synthetic_v2_registry() -> SchemaRegistry {
-    SchemaRegistry::v1().with_version(RecordSchema::synthetic_v2())
+    SchemaRegistry::v1().with_version(RecordSchema::synthetic_migration_v2())
 }
 
 /// The synthetic version 1 to version 2 migration fixture.

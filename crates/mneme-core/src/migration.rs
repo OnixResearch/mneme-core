@@ -264,7 +264,7 @@ mod tests {
     }
 
     fn registry() -> SchemaRegistry {
-        SchemaRegistry::v1().with_version(RecordSchema::synthetic_v2())
+        SchemaRegistry::v1().with_version(RecordSchema::synthetic_migration_v2())
     }
 
     fn add_extraction(payload: &Payload) -> Result<Payload, Diagnostic> {
