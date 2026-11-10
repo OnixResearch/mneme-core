@@ -4,3 +4,8 @@ node_modules/
 .runtime/
 .local/
 coverage/
+target/
+.direnv/
+/result
+/result-*
+.mneme-loop/
