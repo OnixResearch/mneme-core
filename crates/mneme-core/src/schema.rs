@@ -1,0 +1,827 @@
+//! Versioned record kinds, payload field schemas, and schema registries.
+//!
+//! Version 1 declares the record kinds and their ordinary authoritative fields.
+//! Validation is pure: it checks structure, types, intervals, and references
+//! without promoting an assertion's epistemic lifecycle or rewriting payloads.
+//! Unknown extension fields are retained under the version 1 compatibility
+//! rule; an editor that cannot preserve one must refuse the edit instead.
+
+use std::collections::BTreeMap;
+
+use crate::digest::ContentDigest;
+use crate::error::{Diagnostic, ErrorCode, Path, Stage};
+use crate::ids::WorkspaceRevisionId;
+use crate::payload::{SourceContent, SourceSpan};
+use crate::reference::{Reference, SnapshotIndex};
+use crate::time::ValidTime;
+use crate::value::{Symbol, Value};
+
+/// The record kinds declared by the version 1 application schema.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RecordKind {
+    Entity,
+    Relation,
+    Document,
+    SourceRevision,
+    Episode,
+    Assertion,
+    Evidence,
+    Derivation,
+    Checkpoint,
+    Proposal,
+    RetentionDirective,
+}
+
+impl RecordKind {
+    /// Every declared kind.
+    pub const ALL: [RecordKind; 11] = [
+        RecordKind::Entity,
+        RecordKind::Relation,
+        RecordKind::Document,
+        RecordKind::SourceRevision,
+        RecordKind::Episode,
+        RecordKind::Assertion,
+        RecordKind::Evidence,
+        RecordKind::Derivation,
+        RecordKind::Checkpoint,
+        RecordKind::Proposal,
+        RecordKind::RetentionDirective,
+    ];
+
+    /// The schema symbol for this kind.
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            RecordKind::Entity => "entity",
+            RecordKind::Relation => "relation",
+            RecordKind::Document => "document",
+            RecordKind::SourceRevision => "source-revision",
+            RecordKind::Episode => "episode",
+            RecordKind::Assertion => "assertion",
+            RecordKind::Evidence => "evidence",
+            RecordKind::Derivation => "derivation",
+            RecordKind::Checkpoint => "checkpoint",
+            RecordKind::Proposal => "proposal",
+            RecordKind::RetentionDirective => "retention-directive",
+        }
+    }
+
+    /// Parse a declared kind symbol.
+    pub fn parse(text: &str) -> Option<Self> {
+        RecordKind::ALL
+            .into_iter()
+            .find(|kind| kind.symbol() == text)
+    }
+
+    /// Encode this kind as its schema symbol.
+    pub fn to_value(self) -> Value {
+        Value::symbol(self.symbol())
+    }
+
+    /// Decode and require a declared kind.
+    pub fn from_value(value: &Value, path: &Path) -> Result<Self, Diagnostic> {
+        let Some(symbol) = value.as_symbol() else {
+            return Err(Diagnostic::new(
+                Stage::Envelope,
+                ErrorCode::UnknownRecordKind,
+                path.clone(),
+                "record kind must be a declared symbol",
+            ));
+        };
+        RecordKind::parse(symbol.as_str()).ok_or_else(|| {
+            Diagnostic::new(
+                Stage::Envelope,
+                ErrorCode::UnknownRecordKind,
+                path.clone(),
+                format!("unknown record kind {symbol}"),
+            )
+        })
+    }
+}
+
+/// The epistemic lifecycle of an assertion.
+///
+/// Structural validation preserves this value exactly. Only an explicit,
+/// attributed acceptance decision may promote an assertion; storing,
+/// retrieving, or summarizing it must not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Lifecycle {
+    Proposed,
+    Accepted,
+    Disputed,
+    Superseded,
+    Retracted,
+}
+
+impl Lifecycle {
+    /// Schema symbol.
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Lifecycle::Proposed => "proposed",
+            Lifecycle::Accepted => "accepted",
+            Lifecycle::Disputed => "disputed",
+            Lifecycle::Superseded => "superseded",
+            Lifecycle::Retracted => "retracted",
+        }
+    }
+
+    /// Parse a declared lifecycle value.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "proposed" => Some(Lifecycle::Proposed),
+            "accepted" => Some(Lifecycle::Accepted),
+            "disputed" => Some(Lifecycle::Disputed),
+            "superseded" => Some(Lifecycle::Superseded),
+            "retracted" => Some(Lifecycle::Retracted),
+            _ => None,
+        }
+    }
+
+    /// Decode and require a declared lifecycle value.
+    pub fn from_value(value: &Value, path: &Path) -> Result<Self, Diagnostic> {
+        let Some(symbol) = value.as_symbol() else {
+            return Err(Diagnostic::new(
+                Stage::Domain,
+                ErrorCode::TypeMismatch,
+                path.clone(),
+                "assertion lifecycle must be a symbol",
+            ));
+        };
+        Lifecycle::parse(symbol.as_str()).ok_or_else(|| {
+            Diagnostic::new(
+                Stage::Domain,
+                ErrorCode::TypeMismatch,
+                path.clone(),
+                format!("unknown assertion lifecycle {symbol}"),
+            )
+        })
+    }
+}
+
+/// The declared origin category of an assertion or episode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Origin {
+    Observation,
+    AuthoredStatement,
+    ModelExtraction,
+    Inference,
+    Import,
+}
+
+impl Origin {
+    /// Schema symbol.
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Origin::Observation => "observation",
+            Origin::AuthoredStatement => "authored-statement",
+            Origin::ModelExtraction => "model-extraction",
+            Origin::Inference => "inference",
+            Origin::Import => "import",
+        }
+    }
+
+    /// Parse a declared origin.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "observation" => Some(Origin::Observation),
+            "authored-statement" => Some(Origin::AuthoredStatement),
+            "model-extraction" => Some(Origin::ModelExtraction),
+            "inference" => Some(Origin::Inference),
+            "import" => Some(Origin::Import),
+            _ => None,
+        }
+    }
+}
+
+/// A schema-declared field type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldType {
+    Symbol,
+    Text,
+    Integer,
+    Boolean,
+    Any,
+    Dictionary,
+    Reference {
+        kind: Option<RecordKind>,
+        allow_external: bool,
+        allow_unresolved: bool,
+    },
+    ReferenceSet {
+        kind: Option<RecordKind>,
+        allow_external: bool,
+        allow_unresolved: bool,
+    },
+    ValidTime,
+    Digest,
+    Span,
+    SourceContent,
+    WorkspaceRevision,
+}
+
+/// One declared payload field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldSpec {
+    pub name: &'static str,
+    pub ty: FieldType,
+    pub required: bool,
+}
+
+const fn required(name: &'static str, ty: FieldType) -> FieldSpec {
+    FieldSpec {
+        name,
+        ty,
+        required: true,
+    }
+}
+
+const fn optional(name: &'static str, ty: FieldType) -> FieldSpec {
+    FieldSpec {
+        name,
+        ty,
+        required: false,
+    }
+}
+
+const fn reference(kind: Option<RecordKind>) -> FieldType {
+    FieldType::Reference {
+        kind,
+        allow_external: false,
+        allow_unresolved: false,
+    }
+}
+
+const fn reference_set(kind: Option<RecordKind>) -> FieldType {
+    FieldType::ReferenceSet {
+        kind,
+        allow_external: false,
+        allow_unresolved: false,
+    }
+}
+
+/// How a schema treats payload fields it does not declare.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExtensionPolicy {
+    /// Retain typed extension values as ordinary payload data.
+    Retain,
+    /// Refuse the record until the extension is declared.
+    Refuse,
+}
+
+/// The declared fields for one record kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KindSchema {
+    kind: RecordKind,
+    fields: Vec<FieldSpec>,
+    extensions: ExtensionPolicy,
+}
+
+impl KindSchema {
+    /// Construct a kind schema.
+    pub fn new(kind: RecordKind, fields: Vec<FieldSpec>, extensions: ExtensionPolicy) -> Self {
+        KindSchema {
+            kind,
+            fields,
+            extensions,
+        }
+    }
+
+    /// The record kind.
+    pub const fn kind(&self) -> RecordKind {
+        self.kind
+    }
+
+    /// Declared fields in canonical order.
+    pub fn fields(&self) -> &[FieldSpec] {
+        &self.fields
+    }
+
+    /// A declared field by name.
+    pub fn field(&self, name: &str) -> Option<&FieldSpec> {
+        self.fields.iter().find(|field| field.name == name)
+    }
+
+    /// The extension policy.
+    pub const fn extensions(&self) -> ExtensionPolicy {
+        self.extensions
+    }
+
+    /// Add a field to this kind schema, used by explicit version migrations.
+    pub fn with_field(mut self, field: FieldSpec) -> Self {
+        self.fields.push(field);
+        self
+    }
+}
+
+/// One versioned application schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordSchema {
+    version: u32,
+    kinds: Vec<KindSchema>,
+}
+
+impl RecordSchema {
+    /// Construct a schema version from declared kinds.
+    pub fn new(version: u32, kinds: Vec<KindSchema>) -> Self {
+        RecordSchema { version, kinds }
+    }
+
+    /// The version 1 application schema.
+    pub fn v1() -> Self {
+        RecordSchema::new(
+            1,
+            vec![
+                KindSchema::new(
+                    RecordKind::Entity,
+                    vec![
+                        required("entity-type", FieldType::Symbol),
+                        required("label", FieldType::Text),
+                        required("properties", FieldType::Dictionary),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::Relation,
+                    vec![
+                        required("relation-type", FieldType::Symbol),
+                        required("from", reference(None)),
+                        required("to", reference(None)),
+                        required("properties", FieldType::Dictionary),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::Document,
+                    vec![
+                        required("title", FieldType::Text),
+                        required("entity", reference(Some(RecordKind::Entity))),
+                        required(
+                            "source-revision",
+                            reference(Some(RecordKind::SourceRevision)),
+                        ),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::SourceRevision,
+                    vec![
+                        required("content", FieldType::SourceContent),
+                        required("acquisition", FieldType::Symbol),
+                        optional("entity", reference(Some(RecordKind::Entity))),
+                        optional("path-hint", FieldType::Text),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::Episode,
+                    vec![
+                        required("actor", FieldType::Text),
+                        required("episode-type", FieldType::Symbol),
+                        required("occurred", FieldType::ValidTime),
+                        required("summary", FieldType::Text),
+                        optional("source", reference(Some(RecordKind::SourceRevision))),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::Assertion,
+                    vec![
+                        required("subject", reference(None)),
+                        required("predicate", FieldType::Symbol),
+                        required("value", FieldType::Any),
+                        required("stance", FieldType::Symbol),
+                        required("lifecycle", FieldType::Symbol),
+                        required("origin", FieldType::Symbol),
+                        required("asserted-by", FieldType::Text),
+                        required("valid-time", FieldType::ValidTime),
+                        required("evidence", reference_set(Some(RecordKind::Evidence))),
+                        optional("confidence", FieldType::Any),
+                        optional("superseded-by", reference(Some(RecordKind::Assertion))),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::Evidence,
+                    vec![
+                        required("assertion", reference(Some(RecordKind::Assertion))),
+                        required("source", reference(Some(RecordKind::SourceRevision))),
+                        optional("span", FieldType::Span),
+                        optional("anchor", FieldType::Text),
+                        required("relation", FieldType::Symbol),
+                        required("origin", FieldType::Symbol),
+                        required("ancestry", reference_set(None)),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::Derivation,
+                    vec![
+                        required("conclusion", reference(None)),
+                        required("premises", reference_set(None)),
+                        required("rule-id", FieldType::Text),
+                        required("rule-version", FieldType::Integer),
+                        required("evaluation-revision", FieldType::WorkspaceRevision),
+                        required("completeness", FieldType::Symbol),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::Checkpoint,
+                    vec![
+                        required("goal", FieldType::Text),
+                        required("state", FieldType::Symbol),
+                        required("episodes", reference_set(Some(RecordKind::Episode))),
+                        required(
+                            "verified-outcomes",
+                            reference_set(Some(RecordKind::Episode)),
+                        ),
+                        optional("note", FieldType::Text),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::Proposal,
+                    vec![
+                        required("proposal-kind", FieldType::Symbol),
+                        required("candidate", FieldType::Any),
+                        required("rationale", FieldType::Text),
+                        required("status", FieldType::Symbol),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+                KindSchema::new(
+                    RecordKind::RetentionDirective,
+                    vec![
+                        required("target", reference(None)),
+                        required("mode", FieldType::Symbol),
+                        required("policy", FieldType::Text),
+                        required("effective", FieldType::ValidTime),
+                    ],
+                    ExtensionPolicy::Retain,
+                ),
+            ],
+        )
+    }
+
+    /// A synthetic version 2 schema used only by migration fixtures.
+    ///
+    /// It adds one required `extraction` field to assertions. It is not a
+    /// production schema version: a runtime registry accepts only versions it
+    /// registers explicitly, and Mneme registers version 1.
+    pub fn synthetic_v2() -> Self {
+        let mut schema = RecordSchema::v1();
+        schema.version = 2;
+        for kind in &mut schema.kinds {
+            if kind.kind == RecordKind::Assertion {
+                kind.fields.push(required("extraction", FieldType::Text));
+            }
+        }
+        schema
+    }
+
+    /// The schema version.
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// Every declared kind in this version.
+    pub fn kinds(&self) -> &[KindSchema] {
+        &self.kinds
+    }
+
+    /// A kind schema by kind.
+    pub fn kind(&self, kind: RecordKind) -> Option<&KindSchema> {
+        self.kinds.iter().find(|schema| schema.kind == kind)
+    }
+}
+
+/// The schemas this build is prepared to interpret.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SchemaRegistry {
+    versions: BTreeMap<u32, RecordSchema>,
+}
+
+impl SchemaRegistry {
+    /// A registry containing the production version 1 schema.
+    pub fn v1() -> Self {
+        let mut registry = SchemaRegistry::default();
+        registry.register(RecordSchema::v1());
+        registry
+    }
+
+    /// Register a schema version explicitly.
+    pub fn register(&mut self, schema: RecordSchema) {
+        self.versions.insert(schema.version(), schema);
+    }
+
+    /// Add a schema version, consuming and returning the registry.
+    #[must_use]
+    pub fn with_version(mut self, schema: RecordSchema) -> Self {
+        self.register(schema);
+        self
+    }
+
+    /// The schema for an exact version, if this build supports it.
+    pub fn schema(&self, version: u32) -> Option<&RecordSchema> {
+        self.versions.get(&version)
+    }
+
+    /// Supported versions in ascending order.
+    pub fn supported_versions(&self) -> Vec<u32> {
+        self.versions.keys().copied().collect()
+    }
+}
+
+/// Validate one declared payload field.
+pub fn validate_field(
+    ty: FieldType,
+    value: &Value,
+    path: &Path,
+    index: Option<&SnapshotIndex>,
+) -> Vec<Diagnostic> {
+    match ty {
+        FieldType::Symbol => expect(value.as_symbol().is_some(), value, path, "symbol"),
+        FieldType::Text => expect(value.as_string().is_some(), value, path, "string"),
+        FieldType::Integer => expect(value.as_integer().is_some(), value, path, "integer"),
+        FieldType::Boolean => expect(value.as_boolean().is_some(), value, path, "boolean"),
+        FieldType::Any => Vec::new(),
+        FieldType::Dictionary => expect(value.as_dictionary().is_some(), value, path, "dictionary"),
+        FieldType::Reference {
+            kind,
+            allow_external,
+            allow_unresolved,
+        } => match Reference::from_value(value, path) {
+            Err(diagnostic) => vec![diagnostic],
+            Ok(reference) => validate_reference(
+                &reference,
+                kind,
+                allow_external,
+                allow_unresolved,
+                path,
+                index,
+            ),
+        },
+        FieldType::ReferenceSet {
+            kind,
+            allow_external,
+            allow_unresolved,
+        } => {
+            let Some(items) = value.as_set() else {
+                return type_mismatch(value, path, "set of references");
+            };
+            let mut diagnostics = Vec::new();
+            for (position, item) in items.iter().enumerate() {
+                match Reference::from_value(item, &path.index(position)) {
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                    Ok(reference) => diagnostics.extend(validate_reference(
+                        &reference,
+                        kind,
+                        allow_external,
+                        allow_unresolved,
+                        &path.index(position),
+                        index,
+                    )),
+                }
+            }
+            diagnostics
+        }
+        FieldType::ValidTime => match ValidTime::from_value(value, path) {
+            Err(diagnostic) => vec![diagnostic],
+            Ok(valid_time) => match valid_time.validate(path) {
+                Ok(()) => Vec::new(),
+                Err(diagnostic) => vec![diagnostic],
+            },
+        },
+        FieldType::Digest => match ContentDigest::from_value(value, path) {
+            Ok(_) => Vec::new(),
+            Err(diagnostic) => vec![diagnostic],
+        },
+        FieldType::Span => match SourceSpan::from_value(value, path) {
+            Ok(_) => Vec::new(),
+            Err(diagnostic) => vec![diagnostic],
+        },
+        FieldType::SourceContent => match SourceContent::from_value(value, path) {
+            Ok(_) => Vec::new(),
+            Err(diagnostic) => vec![diagnostic],
+        },
+        FieldType::WorkspaceRevision => match WorkspaceRevisionId::from_value(value, path) {
+            Ok(_) => Vec::new(),
+            Err(diagnostic) => vec![diagnostic],
+        },
+    }
+}
+
+fn validate_reference(
+    reference: &Reference,
+    expected: Option<RecordKind>,
+    allow_external: bool,
+    allow_unresolved: bool,
+    path: &Path,
+    index: Option<&SnapshotIndex>,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    if let Some(expected) = expected
+        && reference.kind() != expected
+    {
+        diagnostics.push(Diagnostic::new(
+            Stage::Domain,
+            ErrorCode::ReferenceKindMismatch,
+            path.clone(),
+            format!(
+                "reference names kind {} where {} is required",
+                reference.kind().symbol(),
+                expected.symbol()
+            ),
+        ));
+    }
+    if reference.is_external() && !allow_external {
+        diagnostics.push(Diagnostic::new(
+            Stage::Domain,
+            ErrorCode::ExternalReferenceRefused,
+            path.clone(),
+            "this field does not permit an external reference",
+        ));
+        return diagnostics;
+    }
+    if reference.is_unresolved() && !allow_unresolved {
+        diagnostics.push(Diagnostic::new(
+            Stage::Domain,
+            ErrorCode::UnresolvedReference,
+            path.clone(),
+            "this field does not permit a typed unresolved reference",
+        ));
+        return diagnostics;
+    }
+    if let Some(index) = index
+        && let Err(diagnostic) = reference.validate(index, path)
+        // A typed unresolved reference is permitted even when the target is
+        // absent; the field flag already decided that case. External
+        // references are not resolved locally by contract.
+        && !(reference.is_unresolved() && allow_unresolved)
+    {
+        diagnostics.push(diagnostic);
+    }
+    diagnostics
+}
+
+fn expect(present: bool, value: &Value, path: &Path, expected: &'static str) -> Vec<Diagnostic> {
+    if present {
+        Vec::new()
+    } else {
+        type_mismatch(value, path, expected)
+    }
+}
+
+fn type_mismatch(value: &Value, path: &Path, expected: &'static str) -> Vec<Diagnostic> {
+    vec![Diagnostic::new(
+        Stage::Domain,
+        ErrorCode::TypeMismatch,
+        path.clone(),
+        format!("expected {expected}, found {}", value.kind_name()),
+    )]
+}
+
+/// Run kind-specific domain checks after field types pass.
+pub fn validate_domain(
+    kind: RecordKind,
+    payload: &BTreeMap<Symbol, Value>,
+    path: &Path,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    match kind {
+        RecordKind::Assertion => {
+            if let Some(value) = payload.get(&Symbol::from("lifecycle")) {
+                match Lifecycle::from_value(value, &path.field("lifecycle")) {
+                    Err(diagnostic) => diagnostics.push(diagnostic),
+                    Ok(Lifecycle::Superseded)
+                        if !payload.contains_key(&Symbol::from("superseded-by")) =>
+                    {
+                        diagnostics.push(Diagnostic::new(
+                            Stage::Domain,
+                            ErrorCode::MissingField,
+                            path.field("superseded-by"),
+                            "a superseded assertion must name its replacement",
+                        ));
+                    }
+                    Ok(_) => {}
+                }
+            }
+            if let Some(value) = payload.get(&Symbol::from("stance"))
+                && !matches!(
+                    value.as_symbol().map(Symbol::as_str),
+                    Some("affirm" | "deny" | "hypothesis")
+                )
+            {
+                diagnostics.push(Diagnostic::new(
+                    Stage::Domain,
+                    ErrorCode::TypeMismatch,
+                    path.field("stance"),
+                    "stance must be affirm, deny, or hypothesis",
+                ));
+            }
+            if let Some(value) = payload.get(&Symbol::from("origin"))
+                && value
+                    .as_symbol()
+                    .and_then(|symbol| Origin::parse(symbol.as_str()))
+                    .is_none()
+            {
+                diagnostics.push(Diagnostic::new(
+                    Stage::Domain,
+                    ErrorCode::TypeMismatch,
+                    path.field("origin"),
+                    "origin must be observation, authored-statement, model-extraction, inference, or import",
+                ));
+            }
+        }
+        RecordKind::Evidence => {
+            let has_span = payload.contains_key(&Symbol::from("span"));
+            let has_anchor = payload.contains_key(&Symbol::from("anchor"));
+            if !has_span && !has_anchor {
+                diagnostics.push(Diagnostic::new(
+                    Stage::Domain,
+                    ErrorCode::MissingField,
+                    path.clone(),
+                    "evidence requires an exact span or a stable anchor",
+                ));
+            }
+            if let Some(value) = payload.get(&Symbol::from("relation"))
+                && !matches!(
+                    value.as_symbol().map(Symbol::as_str),
+                    Some("supports" | "challenges")
+                )
+            {
+                diagnostics.push(Diagnostic::new(
+                    Stage::Domain,
+                    ErrorCode::TypeMismatch,
+                    path.field("relation"),
+                    "evidence relation must be supports or challenges",
+                ));
+            }
+        }
+        _ => {}
+    }
+    diagnostics
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_one_declares_every_kind() {
+        let schema = RecordSchema::v1();
+        assert_eq!(schema.version(), 1);
+        for kind in RecordKind::ALL {
+            assert!(
+                schema.kind(kind).is_some(),
+                "{} must be declared",
+                kind.symbol()
+            );
+        }
+        assert_eq!(schema.kinds().len(), RecordKind::ALL.len());
+    }
+
+    #[test]
+    fn unsupported_versions_are_not_in_the_v1_registry() {
+        let registry = SchemaRegistry::v1();
+        assert_eq!(registry.supported_versions(), vec![1]);
+        assert!(registry.schema(2).is_none());
+    }
+
+    #[test]
+    fn synthetic_v2_is_registered_only_explicitly() {
+        let registry = SchemaRegistry::v1().with_version(RecordSchema::synthetic_v2());
+        assert_eq!(registry.supported_versions(), vec![1, 2]);
+        let assertion = registry
+            .schema(2)
+            .and_then(|schema| schema.kind(RecordKind::Assertion))
+            .expect("assertion v2");
+        assert!(assertion.field("extraction").is_some());
+        let v1 = registry
+            .schema(1)
+            .and_then(|schema| schema.kind(RecordKind::Assertion))
+            .expect("assertion v1");
+        assert!(v1.field("extraction").is_none());
+    }
+
+    #[test]
+    fn lifecycle_and_origin_parse_declared_values() {
+        for lifecycle in [
+            Lifecycle::Proposed,
+            Lifecycle::Accepted,
+            Lifecycle::Disputed,
+            Lifecycle::Superseded,
+            Lifecycle::Retracted,
+        ] {
+            assert_eq!(Lifecycle::parse(lifecycle.symbol()), Some(lifecycle));
+        }
+        for origin in [
+            Origin::Observation,
+            Origin::AuthoredStatement,
+            Origin::ModelExtraction,
+            Origin::Inference,
+            Origin::Import,
+        ] {
+            assert_eq!(Origin::parse(origin.symbol()), Some(origin));
+        }
+    }
+}

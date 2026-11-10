@@ -32,6 +32,12 @@
           overlays = [ rust-overlay.overlays.default ];
         };
       toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      rustPlatformFor =
+        pkgs:
+        pkgs.makeRustPlatform {
+          cargo = toolchainFor pkgs;
+          rustc = toolchainFor pkgs;
+        };
     in
     {
       devShells = forAllSystems (
@@ -83,12 +89,31 @@
 
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
 
-      # These check the current planning/loop infrastructure, not a Rust app.
-      # The implementation loop must add the real package and application checks.
+      packages = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
+          default = (rustPlatformFor pkgs).buildRustPackage {
+            pname = "mneme";
+            version = "0.1.0";
+            src = self;
+            cargoLock.lockFile = ./Cargo.lock;
+            doCheck = false;
+            meta = {
+              description = "Local knowledge workspace and durable external agent memory";
+              mainProgram = "mneme";
+            };
+          };
+        }
+      );
+
       checks = forAllSystems (
         system:
         let
           pkgs = pkgsFor system;
+          rustToolchain = toolchainFor pkgs;
         in
         {
           documentation =
@@ -117,6 +142,30 @@
                 node --test scripts/test-loop-state.mjs
                 touch "$out"
               '';
+          # Formatting is cheap and needs no dependency closure.
+          rust-format =
+            pkgs.runCommand "mneme-rust-format-check" { nativeBuildInputs = [ rustToolchain ]; }
+              ''
+                cp -R ${self} source
+                chmod -R u+w source
+                cd source
+                cargo fmt --all -- --check
+                touch "$out"
+              '';
+          # Clippy and the locked workspace tests compile the real application
+          # sources, including subprocess CLI and evaluation fixtures.
+          rust-checks = (rustPlatformFor pkgs).buildRustPackage {
+            pname = "mneme-rust-checks";
+            version = "0.1.0";
+            src = self;
+            cargoLock.lockFile = ./Cargo.lock;
+            doCheck = true;
+            checkPhase = ''
+              cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings
+              cargo test --offline --locked --workspace --all-targets --all-features
+            '';
+            installPhase = "touch $out";
+          };
         }
       );
     };

@@ -1,0 +1,16 @@
+[package]
+name = "mneme-core"
+description = "Versioned Preserves records, identity, time, scope, and interchange for Mneme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+num-bigint.workspace = true
+num-traits.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
