@@ -122,6 +122,27 @@ pub struct ContentDigest {
 }
 
 impl ContentDigest {
+    /// Construct a digest from already computed bytes and explicit metadata.
+    ///
+    /// The profile/boundary pair must be compatible; the caller is responsible
+    /// for having hashed the boundary those metadata describe.
+    pub fn from_parts(
+        algorithm: HashAlgorithm,
+        profile: EncodingProfile,
+        boundary: ValueBoundary,
+        bytes: [u8; 32],
+    ) -> Result<Self, &'static str> {
+        if !boundary.is_compatible_with(profile) {
+            return Err("encoding profile cannot cover the declared value boundary");
+        }
+        Ok(ContentDigest {
+            algorithm,
+            profile,
+            boundary,
+            bytes,
+        })
+    }
+
     /// Digest a complete record envelope value.
     pub fn of_full_record(value: &Value) -> Self {
         Self::of_value(value, ValueBoundary::FullRecord)
@@ -267,6 +288,12 @@ impl ContentDigest {
     /// Verify that this digest matches freshly computed source bytes.
     pub fn verify_source_bytes(self, bytes: &[u8]) -> bool {
         self == ContentDigest::of_source_bytes(bytes)
+    }
+}
+
+impl std::fmt::Display for ContentDigest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.to_hex())
     }
 }
 
