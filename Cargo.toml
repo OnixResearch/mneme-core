@@ -7,6 +7,7 @@ members = [
   "crates/mneme-retention",
   "crates/mneme-doc",
   "crates/mneme-datalog",
+  "crates/mneme-recall",
   "crates/mneme-eval",
   "crates/mneme-cli",
 ]
@@ -23,6 +24,7 @@ mneme-memory = { path = "crates/mneme-memory" }
 mneme-retention = { path = "crates/mneme-retention" }
 mneme-doc = { path = "crates/mneme-doc" }
 mneme-datalog = { path = "crates/mneme-datalog" }
+mneme-recall = { path = "crates/mneme-recall" }
 mneme-eval = { path = "crates/mneme-eval" }
 clap = { version = "4.5", features = ["derive"] }
 getrandom = "0.4"

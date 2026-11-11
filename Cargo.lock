@@ -348,6 +348,7 @@ dependencies = [
  "mneme-datalog",
  "mneme-doc",
  "mneme-memory",
+ "mneme-recall",
  "mneme-retention",
  "mneme-store",
  "serde",
@@ -360,6 +361,19 @@ name = "mneme-memory"
 version = "0.1.0"
 dependencies = [
  "mneme-core",
+ "mneme-store",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "mneme-recall"
+version = "0.1.0"
+dependencies = [
+ "mneme-core",
+ "mneme-datalog",
+ "mneme-memory",
+ "mneme-retention",
  "mneme-store",
  "tempfile",
  "thiserror",
