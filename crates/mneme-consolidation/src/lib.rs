@@ -15,6 +15,8 @@ use mneme_core::{
 };
 use mneme_recall::RecallResponse;
 
+pub mod generator;
+
 /// Resource limits for one consolidation job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JobLimits {
@@ -464,7 +466,7 @@ pub struct SupportReview {
 }
 
 impl SupportReview {
-    fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if self.actor.trim().is_empty()
             || self.policy.trim().is_empty()
             || self.detail.trim().is_empty()
