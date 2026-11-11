@@ -197,7 +197,6 @@ impl ApiCommand {
         }
     }
 
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn from_value(value: &mneme_core::Value) -> crate::error::ApiResult<Self> {
         let envelope = Fields::new(value)?;
         if envelope.text("format")? != COMMAND_FORMAT {
@@ -216,124 +215,14 @@ impl ApiCommand {
         let operation = envelope.symbol("operation")?;
         let payload = envelope.field("payload")?;
         match operation {
-            "record" => {
-                let fields = Fields::new(payload)?;
-                let scope = fields.scope("scope")?;
-                let base = fields.revision("base-revision")?;
-                let key = fields.text("idempotency-key")?.to_owned();
-                let records = fields
-                    .field("records")?
-                    .as_sequence()
-                    .ok_or_else(|| crate::error::ApiError::invalid("records must be a sequence"))?
-                    .iter()
-                    .map(parse_record)
-                    .collect::<crate::error::ApiResult<Vec<_>>>()?;
-                let sources = match fields.optional("sources") {
-                    Some(value) => parse_sources(value)?,
-                    None => Vec::new(),
-                };
-                Ok(ApiCommand::Record {
-                    request_id,
-                    scope,
-                    base,
-                    key,
-                    records,
-                    sources,
-                })
-            }
-            "accept" => {
-                let fields = Fields::new(payload)?;
-                Ok(ApiCommand::Accept {
-                    request_id,
-                    scope: fields.scope("scope")?,
-                    base: fields.revision("base-revision")?,
-                    key: fields.text("idempotency-key")?.to_owned(),
-                    assertion: fields.record("assertion")?,
-                    decision: fields.record("decision")?,
-                    decision_revision: fields.revision_id("decision-revision")?,
-                    accepted_revision: fields.revision_id("accepted-revision")?,
-                    policy: fields.text("policy")?.to_owned(),
-                    rationale: fields.text("rationale")?.to_owned(),
-                })
-            }
-            "recall" => {
-                let fields = Fields::new(payload)?;
-                let modes = match fields.optional("modes") {
-                    Some(value) => parse_modes(value)?,
-                    None => std::collections::BTreeSet::from([mneme_recall::RecallMode::Lexical]),
-                };
-                Ok(ApiCommand::Recall {
-                    request_id,
-                    scope: fields.scope("scope")?,
-                    revision: fields.optional_revision("revision")?,
-                    query: fields.text("query")?.to_owned(),
-                    at: fields.timestamp("at")?,
-                    temporal: parse_temporal(fields.text("temporal").unwrap_or("current"))?,
-                    modes,
-                    allow_stale: fields.boolean_or("allow-stale", false),
-                    allow_fallback: fields.boolean_or("allow-fallback", true),
-                    allow_partial: fields.boolean_or("allow-partial", true),
-                    include_disputed: fields.boolean_or("include-disputed", false),
-                    include_hypothetical: fields.boolean_or("include-hypothetical", false),
-                    max_items: fields.usize_or("max-items", 8)?,
-                    max_context_bytes: fields.usize_or("max-context-bytes", 4096)?,
-                    max_quote_bytes: fields.usize_or("max-quote-bytes", 1024)?,
-                    max_time_ms: fields.u128_or("max-time-ms", 500)?,
-                })
-            }
-            "explain" => {
-                let fields = Fields::new(payload)?;
-                Ok(ApiCommand::Explain {
-                    request_id,
-                    scope: fields.scope("scope")?,
-                    assertion: fields.record("assertion")?,
-                    max_nodes: fields.usize_or("max-nodes", 64)?,
-                    max_excerpt_bytes: fields.usize_or("max-excerpt-bytes", 4096)?,
-                })
-            }
-            "revise" => {
-                let fields = Fields::new(payload)?;
-                Ok(ApiCommand::Revise {
-                    request_id,
-                    scope: fields.scope("scope")?,
-                    base: fields.revision("base-revision")?,
-                    key: fields.text("idempotency-key")?.to_owned(),
-                    assertion: fields.record("assertion")?,
-                    action: parse_action(fields.symbol("action")?)?,
-                    rationale: fields.text("rationale")?.to_owned(),
-                    decision: fields.record("decision")?,
-                    decision_revision: fields.revision_id("decision-revision")?,
-                    revised_revision: fields.revision_id("revised-revision")?,
-                    superseded_by: fields.optional_record("superseded-by")?,
-                })
-            }
-            "resume" => {
-                let fields = Fields::new(payload)?;
-                Ok(ApiCommand::Resume {
-                    request_id,
-                    scope: fields.scope("scope")?,
-                    checkpoint: fields.record("checkpoint")?,
-                })
-            }
-            "forget" => {
-                let fields = Fields::new(payload)?;
-                Ok(ApiCommand::Forget {
-                    request_id,
-                    scope: fields.scope("scope")?,
-                    base: fields.revision("base-revision")?,
-                    key: fields.text("idempotency-key")?.to_owned(),
-                    selector: parse_selector(fields.field("selector")?)?,
-                    effective: fields.optional_timestamp("effective")?,
-                })
-            }
-            "proposal.inspect" => {
-                let fields = Fields::new(payload)?;
-                Ok(ApiCommand::ProposalInspect {
-                    request_id,
-                    scope: fields.scope("scope")?,
-                    assertion: fields.record("assertion")?,
-                })
-            }
+            "record" => record(request_id, payload),
+            "accept" => accept(request_id, payload),
+            "recall" => recall(request_id, payload),
+            "explain" => explain(request_id, payload),
+            "revise" => revise(request_id, payload),
+            "resume" => resume(request_id, payload),
+            "forget" => forget(request_id, payload),
+            "proposal.inspect" => proposal_inspect(request_id, payload),
             "capabilities" => Ok(ApiCommand::Capabilities { request_id }),
             _ => Err(crate::error::ApiError::new(
                 crate::error::ApiErrorCode::UnsupportedVersion,
@@ -341,6 +230,135 @@ impl ApiCommand {
             )),
         }
     }
+}
+
+fn record(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::new(payload)?;
+    let scope = fields.scope("scope")?;
+    let base = fields.revision("base-revision")?;
+    let key = fields.text("idempotency-key")?.to_owned();
+    let records = fields
+        .field("records")?
+        .as_sequence()
+        .ok_or_else(|| crate::error::ApiError::invalid("records must be a sequence"))?
+        .iter()
+        .map(parse_record)
+        .collect::<crate::error::ApiResult<Vec<_>>>()?;
+    let sources = match fields.optional("sources") {
+        Some(value) => parse_sources(value)?,
+        None => Vec::new(),
+    };
+    Ok(ApiCommand::Record {
+        request_id,
+        scope,
+        base,
+        key,
+        records,
+        sources,
+    })
+}
+
+fn accept(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::new(payload)?;
+    Ok(ApiCommand::Accept {
+        request_id,
+        scope: fields.scope("scope")?,
+        base: fields.revision("base-revision")?,
+        key: fields.text("idempotency-key")?.to_owned(),
+        assertion: fields.record("assertion")?,
+        decision: fields.record("decision")?,
+        decision_revision: fields.revision_id("decision-revision")?,
+        accepted_revision: fields.revision_id("accepted-revision")?,
+        policy: fields.text("policy")?.to_owned(),
+        rationale: fields.text("rationale")?.to_owned(),
+    })
+}
+
+fn recall(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::new(payload)?;
+    let modes = match fields.optional("modes") {
+        Some(value) => parse_modes(value)?,
+        None => std::collections::BTreeSet::from([mneme_recall::RecallMode::Lexical]),
+    };
+    Ok(ApiCommand::Recall {
+        request_id,
+        scope: fields.scope("scope")?,
+        revision: fields.optional_revision("revision")?,
+        query: fields.text("query")?.to_owned(),
+        at: fields.timestamp("at")?,
+        temporal: parse_temporal(fields.text("temporal").unwrap_or("current"))?,
+        modes,
+        allow_stale: fields.boolean_or("allow-stale", false),
+        allow_fallback: fields.boolean_or("allow-fallback", true),
+        allow_partial: fields.boolean_or("allow-partial", true),
+        include_disputed: fields.boolean_or("include-disputed", false),
+        include_hypothetical: fields.boolean_or("include-hypothetical", false),
+        max_items: fields.usize_or("max-items", 8)?,
+        max_context_bytes: fields.usize_or("max-context-bytes", 4096)?,
+        max_quote_bytes: fields.usize_or("max-quote-bytes", 1024)?,
+        max_time_ms: fields.u128_or("max-time-ms", 500)?,
+    })
+}
+
+fn explain(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::new(payload)?;
+    Ok(ApiCommand::Explain {
+        request_id,
+        scope: fields.scope("scope")?,
+        assertion: fields.record("assertion")?,
+        max_nodes: fields.usize_or("max-nodes", 64)?,
+        max_excerpt_bytes: fields.usize_or("max-excerpt-bytes", 4096)?,
+    })
+}
+
+fn revise(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::new(payload)?;
+    Ok(ApiCommand::Revise {
+        request_id,
+        scope: fields.scope("scope")?,
+        base: fields.revision("base-revision")?,
+        key: fields.text("idempotency-key")?.to_owned(),
+        assertion: fields.record("assertion")?,
+        action: parse_action(fields.symbol("action")?)?,
+        rationale: fields.text("rationale")?.to_owned(),
+        decision: fields.record("decision")?,
+        decision_revision: fields.revision_id("decision-revision")?,
+        revised_revision: fields.revision_id("revised-revision")?,
+        superseded_by: fields.optional_record("superseded-by")?,
+    })
+}
+
+fn resume(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::new(payload)?;
+    Ok(ApiCommand::Resume {
+        request_id,
+        scope: fields.scope("scope")?,
+        checkpoint: fields.record("checkpoint")?,
+    })
+}
+
+fn forget(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::new(payload)?;
+    Ok(ApiCommand::Forget {
+        request_id,
+        scope: fields.scope("scope")?,
+        base: fields.revision("base-revision")?,
+        key: fields.text("idempotency-key")?.to_owned(),
+        selector: parse_selector(fields.field("selector")?)?,
+        effective: fields.optional_timestamp("effective")?,
+    })
+}
+
+fn proposal_inspect(
+    request_id: String,
+    payload: &mneme_core::Value,
+) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::new(payload)?;
+    Ok(ApiCommand::ProposalInspect {
+        request_id,
+        scope: fields.scope("scope")?,
+        assertion: fields.record("assertion")?,
+    })
 }
 
 fn parse_record(value: &mneme_core::Value) -> crate::error::ApiResult<mneme_core::RecordEnvelope> {

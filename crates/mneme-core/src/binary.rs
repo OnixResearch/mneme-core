@@ -40,7 +40,7 @@ pub fn encode(value: &crate::value::Value) -> Vec<u8> {
     output
 }
 
-#[allow(unknown_lints, function_length, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints, no_recursion)] // recursive tree codec; explicit stack tracked separately
 fn encode_into(value: &crate::value::Value, output: &mut Vec<u8>) {
     match value {
         crate::value::Value::Boolean(false) => output.push(TAG_FALSE),
@@ -96,22 +96,29 @@ fn encode_into(value: &crate::value::Value, output: &mut Vec<u8>) {
             output.push(TAG_END);
         }
         crate::value::Value::Dictionary(entries) => {
-            output.push(TAG_DICTIONARY);
-            let mut encoded: Vec<(Vec<u8>, Vec<u8>)> = entries
-                .iter()
-                .map(|(key, value)| (encode(key), encode(value)))
-                .collect();
-            encoded.sort_by(|left, right| left.0.cmp(&right.0));
-            for (key, value) in encoded {
-                output.extend_from_slice(&key);
-                output.extend_from_slice(&value);
-            }
+            encode_dictionary(output, entries);
             output.push(TAG_END);
         }
         crate::value::Value::Embedded(inner) => {
             output.push(TAG_EMBEDDED);
             encode_into(inner, output);
         }
+    }
+}
+
+fn encode_dictionary(
+    output: &mut Vec<u8>,
+    entries: &std::collections::BTreeMap<crate::Value, crate::Value>,
+) {
+    output.push(TAG_DICTIONARY);
+    let mut encoded: Vec<(Vec<u8>, Vec<u8>)> = entries
+        .iter()
+        .map(|(key, value)| (encode(key), encode(value)))
+        .collect();
+    encoded.sort_by(|left, right| left.0.cmp(&right.0));
+    for (key, value) in encoded {
+        output.extend_from_slice(&key);
+        output.extend_from_slice(&value);
     }
 }
 

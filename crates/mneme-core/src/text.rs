@@ -12,7 +12,7 @@ pub fn render(value: &crate::value::Value) -> String {
     output
 }
 
-#[allow(unknown_lints, function_length, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints, no_recursion)] // recursive tree renderer; explicit stack tracked separately
 fn write_value(output: &mut String, value: &crate::value::Value) {
     match value {
         crate::value::Value::Boolean(true) => output.push_str("#t"),
@@ -71,21 +71,28 @@ fn write_value(output: &mut String, value: &crate::value::Value) {
             output.push('}');
         }
         crate::value::Value::Dictionary(entries) => {
-            output.push('{');
-            for (index, (key, item)) in entries.iter().enumerate() {
-                if index > 0 {
-                    output.push(' ');
-                }
-                write_value(output, key);
-                output.push_str(": ");
-                write_value(output, item);
-            }
+            write_dictionary(output, entries);
             output.push('}');
         }
         crate::value::Value::Embedded(inner) => {
             output.push_str("#:");
             write_value(output, inner);
         }
+    }
+}
+
+fn write_dictionary(
+    output: &mut String,
+    entries: &std::collections::BTreeMap<crate::Value, crate::Value>,
+) {
+    output.push('{');
+    for (index, (key, item)) in entries.iter().enumerate() {
+        if index > 0 {
+            output.push(' ');
+        }
+        write_value(output, key);
+        output.push_str(": ");
+        write_value(output, item);
     }
 }
 
