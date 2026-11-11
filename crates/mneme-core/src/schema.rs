@@ -686,8 +686,10 @@ pub fn validate_field(
             Ok(reference) => validate_reference(
                 &reference,
                 kind,
-                allow_external,
-                allow_unresolved,
+                ReferenceValidation {
+                    allow_external,
+                    allow_unresolved,
+                },
                 path,
                 index,
             ),
@@ -707,8 +709,10 @@ pub fn validate_field(
                     Ok(reference) => diagnostics.extend(validate_reference(
                         &reference,
                         kind,
-                        allow_external,
-                        allow_unresolved,
+                        ReferenceValidation {
+                            allow_external,
+                            allow_unresolved,
+                        },
                         &path.index(position),
                         index,
                     )),
@@ -742,11 +746,16 @@ pub fn validate_field(
     }
 }
 
+#[derive(Clone, Copy)]
+struct ReferenceValidation {
+    allow_external: bool,
+    allow_unresolved: bool,
+}
+
 fn validate_reference(
     reference: &Reference,
     expected: Option<RecordKind>,
-    allow_external: bool,
-    allow_unresolved: bool,
+    validation: ReferenceValidation,
     path: &Path,
     index: Option<&SnapshotIndex>,
 ) -> Vec<Diagnostic> {
@@ -765,7 +774,7 @@ fn validate_reference(
             ),
         ));
     }
-    if reference.is_external() && !allow_external {
+    if reference.is_external() && !validation.allow_external {
         diagnostics.push(Diagnostic::new(
             Stage::Domain,
             ErrorCode::ExternalReferenceRefused,
@@ -774,7 +783,7 @@ fn validate_reference(
         ));
         return diagnostics;
     }
-    if reference.is_unresolved() && !allow_unresolved {
+    if reference.is_unresolved() && !validation.allow_unresolved {
         diagnostics.push(Diagnostic::new(
             Stage::Domain,
             ErrorCode::UnresolvedReference,
@@ -788,7 +797,7 @@ fn validate_reference(
         // A typed unresolved reference is permitted even when the target is
         // absent; the field flag already decided that case. External
         // references are not resolved locally by contract.
-        && !(reference.is_unresolved() && allow_unresolved)
+        && !(reference.is_unresolved() && validation.allow_unresolved)
     {
         diagnostics.push(diagnostic);
     }

@@ -53,3 +53,9 @@ unsafe_code = "forbid"
 panic = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
+
+# Octet runner policy. Lint tuning lives in dylint.toml (consumer-owned).
+# First adoption scope is the pure core crate; extending it is a reviewed change.
+[workspace.metadata.octet]
+default_scope = ["-p", "mneme-core"]
+cargo_check_args = ["--lib", "--ignore-rust-version"]

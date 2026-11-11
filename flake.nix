@@ -2,6 +2,9 @@
   description = "Mneme Rust development environment and planning checks";
 
   inputs = {
+    # Pinned Octet checked path: lint runner, Dylint library, and its toolchain.
+    # Octet remains a development/CI tool; it is not linked into Mneme.
+    octet.url = "git+ssh://git@github.com/OnixResearch/octet?rev=2bdd581980eef7f6ec8363ffa20ab9f3c798c9ee";
     # Update these revisions deliberately with the lockfile and verification.
     nixpkgs.url = "github:NixOS/nixpkgs/ac588ef1c914865dad517b337ea0eb9694a4021c";
     rust-overlay = {
@@ -15,6 +18,7 @@
       self,
       nixpkgs,
       rust-overlay,
+      octet,
       ...
     }:
     let
@@ -88,6 +92,7 @@
                 fd
                 just
                 nixfmt
+                octet.packages.${system}.cargo-octet
               ])
               ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
                 pkgs.xorg-server
@@ -175,6 +180,11 @@
             program = "${package}/bin/mneme";
             meta.description = "Mneme command line, MCP, and evaluation harness";
           };
+          octet = {
+            type = "app";
+            program = "${octet.packages.${system}.cargo-octet}/bin/cargo-octet";
+            meta.description = "Pinned Octet lint runner";
+          };
         }
       );
 
@@ -191,8 +201,27 @@
             pkgs.libxrandr
             pkgs.wayland
           ];
+          # Octet resolves the whole Cargo workspace, so the ignored Rats
+          # vendor tree must exist even though the first scope is mneme-core.
+          octetSrc = pkgs.runCommand "mneme-octet-source" { } ''
+            mkdir -p "$out"
+            cp -R ${self}/. "$out/"
+            chmod -R u+w "$out"
+            rm -rf "$out/vendor/rats"
+            mkdir -p "$out/vendor"
+            cp -R ${ratsSrc} "$out/vendor/rats"
+          '';
+          octetCore = octet.lib.mkConsumerCheck {
+            inherit system;
+            src = octetSrc;
+            packages = [ "mneme-core" ];
+            cargoExtraArgs = "--lib --ignore-rust-version";
+            cargoLock = ./Cargo.lock;
+            buildInputs = [ pkgs.openssl pkgs.sqlite ];
+          };
         in
         {
+          octet-core = octetCore;
           documentation =
             pkgs.runCommand "mneme-documentation-check" { nativeBuildInputs = [ pkgs.nodejs_22 ]; }
               ''

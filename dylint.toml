@@ -1,0 +1,98 @@
+# Consumer-owned Octet configuration.
+#
+# Runner scope lives in Cargo.toml:
+#   [workspace.metadata.octet]
+#   default_scope = ["-p", "mneme-core"]
+#   cargo_check_args = ["--lib"]
+#
+# First adoption profile: the low-noise starter set stays enabled; the
+# high-noise, purity-effect, inventory-only, and rollout families are disabled
+# explicitly below. This is temporary rollout debt, not permanent policy. Each
+# entry is re-evaluated when the gate expands beyond `mneme-core`. There is no
+# baseline file hiding findings.
+
+[octet]
+disabled_lints = [
+  "function_length",
+  "acronym_style",
+  "numeric_units",
+  "unbounded_loop",
+  "compound_condition",
+  "verified_purity",
+  "ambient_env",
+  "ambient_random",
+  "global_state_in_core",
+  "impure_call_in_core",
+  "interior_mutability_in_core",
+  "logging_in_core",
+  "missing_const_fn",
+  "mutating_input_in_pure",
+  "nondeterministic_output",
+  "pure_attr_contract",
+  "resource_return_from_core",
+  "spawn_in_core",
+  "zero_alloc_attr_contract",
+  "unjustified_allow",
+  "nested_conditionals",
+  "assertion_density",
+  "multi_lock_ordering",
+  "ignored_join_handle",
+  "unbounded_collection_growth",
+  "sentinel_fallback",
+  "too_many_parameters",
+  "fat_trait",
+  "concrete_construction_in_core",
+  "type_accumulation",
+  "bool_naming",
+  "ignored_result",
+  "unchecked_narrowing",
+  "unchecked_division",
+  "catch_all_on_enum",
+  "foreign_enum_catch_all",
+  "fragile_exhaustive_enum_match",
+  "platform_dependent_cast",
+  "borrowed_argument_types",
+  "deref_polymorphism",
+  "clone_then_borrow",
+  "allocation_in_loop",
+  "float_for_currency",
+  "ambiguous_params",
+  "primitive_domain_alias",
+  "raw_domain_value",
+  "newtype_invariant_bypass",
+  "raw_arithmetic_overflow",
+  "no_unwrap",
+  "no_panic",
+  "public_unsafe_api",
+  "defaulting_trait_method",
+  "no_todo",
+  "unjustified_no_todo_allow",
+  "no_recursion",
+  # Structural style families deferred until the core is decomposed; these are
+  # the same high-noise families other consumers defer during rollout.
+  "explicit_defaults",
+  "non_trait_imports",
+  "path_segment_repetition",
+  "excessive_file_length",
+  "module_file_count",
+  # Two distinct Value types coexist in the transport module; aliases are the
+  # clearest readable form. Re-evaluate if the import surface is split.
+  "renamed_imports",
+  # The transport module path is part of the public API; renaming the file
+  # would break it for a style rule.
+  "underscore_in_module_filename",
+  # The collection/index APIs mirror std (`len`, `index`) and are used by every
+  # record crate. Converting them to fixed-width integers is a public API
+  # change; re-evaluate with a workspace-wide migration.
+  "usize_in_public_api",
+]
+
+# Gate semantics: every remaining enabled lint is deny-level. A finding fails
+# the check; there is no baseline hiding findings in the first adoption.
+[octet.lint_levels]
+ambient_clock = "deny"
+compound_assertion = "deny"
+contradictory_time = "deny"
+unbounded_channel = "deny"
+negated_predicate = "deny"
+raw_bool_parameter = "deny"
