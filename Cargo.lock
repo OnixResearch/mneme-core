@@ -1448,6 +1448,8 @@ name = "mneme-prolog"
 version = "0.1.0"
 dependencies = [
  "mneme-core",
+ "mneme-datalog",
+ "mneme-memory",
  "mneme-store",
  "tempfile",
  "thiserror 2.0.21",

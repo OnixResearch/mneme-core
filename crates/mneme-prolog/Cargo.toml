@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 mneme-core.workspace = true
+mneme-memory.workspace = true
+mneme-datalog.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
