@@ -8,6 +8,7 @@
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod image;
+pub mod worker;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

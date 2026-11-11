@@ -10,10 +10,10 @@ mneme-core.workspace = true
 mneme-memory.workspace = true
 mneme-datalog.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 mneme-store.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true
