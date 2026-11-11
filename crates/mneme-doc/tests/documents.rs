@@ -961,3 +961,44 @@ fn anchors_are_scoped_to_the_current_document_source_revision() {
     assert_eq!(anchors.len(), 1);
     assert_eq!(anchors[0].anchor, "second");
 }
+
+#[test]
+fn document_listing_is_deterministic_and_carries_scope() {
+    let mut harness = Harness::new();
+    for (key, path, title) in [
+        ("zeta", "notes/zeta.adoc", "zeta"),
+        ("alpha", "notes/alpha.adoc", "Alpha"),
+        ("beta", "notes/alpha-beta.adoc", "alpha beta"),
+    ] {
+        harness.write_file(path, format!("= {title}\n\nbody\n").as_bytes());
+        harness.import(harness.request(key, None, path, Some(title)));
+    }
+    let mut request = harness.request("birch", None, "notes/birch.adoc", Some("Birch"));
+    request.scope = ScopeId::new(ScopeClass::Project, "birch").expect("scope");
+    harness.write_file("notes/birch.adoc", b"= Birch\n\nother scope\n");
+    harness.import(request);
+
+    let first = Documents::new(&mut harness.workspace)
+        .list_documents()
+        .expect("list");
+    let second = Documents::new(&mut harness.workspace)
+        .list_documents()
+        .expect("list");
+    assert_eq!(first, second);
+    assert_eq!(
+        first
+            .iter()
+            .map(|summary| summary.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Alpha", "alpha beta", "Birch", "zeta"]
+    );
+    assert_eq!(
+        first
+            .iter()
+            .filter(|summary| summary.scope == scope())
+            .count(),
+        3
+    );
+    assert!(first.iter().all(|summary| summary.path.is_some()));
+    assert!(first.iter().all(|summary| summary.revision != rev(0)));
+}

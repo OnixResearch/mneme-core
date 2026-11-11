@@ -99,6 +99,34 @@ pub struct DocumentView {
     pub render_config: String,
 }
 
+/// A bounded inventory entry for one current document.
+///
+/// The summary is a read-only query value. It carries the canonical document
+/// identity and revision so a client can open the document without resolving a
+/// title or path again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentSummary {
+    pub document_id: RecordId,
+    pub revision: RevisionId,
+    pub scope: ScopeId,
+    pub title: String,
+    pub path: Option<String>,
+    pub entity: Option<RecordId>,
+}
+
+/// The retained current source of one document.
+///
+/// `source` is `None` when retention currently suppresses the source. A caller
+/// that scans notes must treat that as a skipped note, not as empty content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentSource {
+    pub document_id: RecordId,
+    pub scope: ScopeId,
+    pub title: String,
+    pub path: Option<String>,
+    pub source: Option<Vec<u8>>,
+}
+
 /// One include occurrence observed while scanning a document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IncludeOccurrence {
@@ -513,6 +541,13 @@ fn optional_reference_target(record: &RecordEnvelope, name: &str) -> Option<Reco
         .get(name)
         .and_then(|value| Reference::from_value(value, &mneme_core::Path::root()).ok())
         .and_then(|reference| reference.target())
+}
+
+fn normalized_listing_key(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 fn reference_is_pinned_to(record: &RecordEnvelope, name: &str, pin: SourcePin) -> bool {
@@ -1576,6 +1611,69 @@ impl Documents<'_> {
             .get(&document_id)
             .cloned()
             .ok_or(DocumentError::Missing(document_id))
+    }
+
+    /// List current documents in deterministic title, path, and identity order.
+    ///
+    /// The result is a bounded inventory of one committed snapshot, not a
+    /// search index. Callers that need authorization filter on `scope`.
+    pub fn list_documents(&self) -> Result<Vec<DocumentSummary>> {
+        let context = DocumentContext::load(self.workspace, None)?;
+        let mut summaries: Vec<DocumentSummary> = context
+            .documents
+            .values()
+            .map(|view| DocumentSummary {
+                document_id: view.record.record_id,
+                revision: view.record.revision_id,
+                scope: view.record.scope.clone(),
+                title: view.title.clone(),
+                path: view.path.clone(),
+                entity: view.entity,
+            })
+            .collect();
+        summaries.sort_by(|left, right| {
+            normalized_listing_key(&left.title)
+                .cmp(&normalized_listing_key(&right.title))
+                .then_with(|| {
+                    left.path
+                        .as_deref()
+                        .unwrap_or_default()
+                        .cmp(right.path.as_deref().unwrap_or_default())
+                })
+                .then_with(|| left.document_id.to_hex().cmp(&right.document_id.to_hex()))
+        });
+        Ok(summaries)
+    }
+
+    /// List current documents with their retained sources in one snapshot.
+    ///
+    /// Suppressed or unavailable sources are returned as `None` rather than as
+    /// empty bytes or an error for the whole listing.
+    pub fn list_sources(&self) -> Result<Vec<DocumentSource>> {
+        let context = DocumentContext::load(self.workspace, None)?;
+        let mut sources: Vec<DocumentSource> = context
+            .documents
+            .values()
+            .map(|view| DocumentSource {
+                document_id: view.record.record_id,
+                scope: view.record.scope.clone(),
+                title: view.title.clone(),
+                path: view.path.clone(),
+                source: context.source_bytes(view.source).ok().flatten(),
+            })
+            .collect();
+        sources.sort_by(|left, right| {
+            normalized_listing_key(&left.title)
+                .cmp(&normalized_listing_key(&right.title))
+                .then_with(|| {
+                    left.path
+                        .as_deref()
+                        .unwrap_or_default()
+                        .cmp(right.path.as_deref().unwrap_or_default())
+                })
+                .then_with(|| left.document_id.to_hex().cmp(&right.document_id.to_hex()))
+        });
+        Ok(sources)
     }
 
     /// List explicit anchors for the current document revision.
