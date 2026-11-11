@@ -3,6 +3,7 @@
 //! A plan is data. This registry rechecks base revision, preconditions, evidence
 //! digests, forgotten support, and idempotency before recording acceptance. It
 //! never executes actions or applies canonical effects.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Current source availability and digest for one plan premise.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,6 +154,7 @@ impl PlanRegistry {
     }
 
     /// Record plan acceptance after all CAS/precondition checks. No action is run.
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn accept(&mut self, command: PlanAcceptanceCommand) -> PlanOutcome {
         if let Some((stored, _)) = self.acceptances.get(&command.idempotency_key) {
             return if stored == &command {

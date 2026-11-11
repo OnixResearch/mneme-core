@@ -1,10 +1,6 @@
 //! Shared API behavior over a real workspace and tagged command documents.
-
-#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
+#![allow(unknown_lints, non_trait_imports, no_unwrap)] // Octet custom lint names and test allowances
 #![allow(clippy::expect_used)]
-
-use std::collections::BTreeSet;
-
 use mneme_api::{ApiCommand, ApiService, LocalSession, ReviseAction, decode_command};
 use mneme_core::{
     RecordId, RevisionId, ScopeClass, ScopeId, Timestamp, Value, WorkspaceRevisionId, fixtures,
@@ -12,30 +8,25 @@ use mneme_core::{
 use mneme_recall::{RecallMode, TemporalMode};
 use mneme_store::{FixedClock, NoFaults, Workspace, WorkspaceConfig};
 use serde_json::json;
+use std::collections::BTreeSet;
 use tempfile::TempDir;
-
 fn scope() -> ScopeId {
     ScopeId::new(ScopeClass::Project, "cedar").expect("scope")
 }
-
 fn other_scope() -> ScopeId {
     ScopeId::new(ScopeClass::Project, "birch").expect("scope")
 }
-
 fn rid(byte: u8) -> RecordId {
     RecordId::from_bytes([byte; 16])
 }
-
 fn rev(byte: u8) -> RevisionId {
     RevisionId::from_bytes([byte; 16])
 }
-
 struct Harness {
     _temp: TempDir,
     root: std::path::PathBuf,
     session_path: std::path::PathBuf,
 }
-
 impl Harness {
     fn new() -> Self {
         let temp = tempfile::tempdir().expect("temp");
@@ -65,11 +56,9 @@ impl Harness {
             session_path,
         }
     }
-
     fn service(&self) -> ApiService {
         ApiService::new(LocalSession::load(&self.session_path).expect("session"))
     }
-
     fn revision(&self) -> WorkspaceRevisionId {
         Workspace::open(
             &self.root,
@@ -82,7 +71,6 @@ impl Harness {
         .current_revision()
         .expect("revision")
     }
-
     fn record(&self, base: WorkspaceRevisionId, key: &str) -> ApiCommand {
         ApiCommand::Record {
             request_id: format!("record-{key}"),
@@ -96,7 +84,6 @@ impl Harness {
             }],
         }
     }
-
     fn accept(&self, base: WorkspaceRevisionId) -> ApiCommand {
         ApiCommand::Accept {
             request_id: "accept".to_owned(),
@@ -112,25 +99,21 @@ impl Harness {
         }
     }
 }
-
 fn field<'a>(value: &'a Value, name: &str) -> &'a Value {
     value
         .as_dictionary()
         .and_then(|entries| entries.get(&Value::symbol(name)))
         .expect("response field")
 }
-
 fn symbol_text(value: &Value) -> &str {
     value
         .as_symbol()
         .map(|symbol| symbol.as_str())
         .expect("symbol")
 }
-
 fn revision_from(value: &Value) -> WorkspaceRevisionId {
     WorkspaceRevisionId::from_value(value, &mneme_core::Path::root()).expect("revision")
 }
-
 #[test]
 fn record_retries_are_idempotent_and_conflicts_are_structural() {
     let harness = Harness::new();
@@ -145,7 +128,6 @@ fn record_retries_are_idempotent_and_conflicts_are_structural() {
         revision_from(field(field(&retry.value, "data"), "revision")),
         first_revision
     );
-
     let mut changed = harness.record(base, "record-1");
     if let ApiCommand::Record { records, .. } = &mut changed {
         records.pop();
@@ -156,7 +138,6 @@ fn record_retries_are_idempotent_and_conflicts_are_structural() {
         symbol_text(field(field(&conflict.value, "error"), "code")),
         "conflict"
     );
-
     let stale = service.execute(&harness.record(base, "record-2"));
     assert!(!stale.ok);
     assert_eq!(
@@ -164,7 +145,6 @@ fn record_retries_are_idempotent_and_conflicts_are_structural() {
         "conflict"
     );
 }
-
 #[test]
 fn acceptance_recall_and_explain_share_one_revision() {
     let harness = Harness::new();
@@ -176,7 +156,6 @@ fn acceptance_recall_and_explain_share_one_revision() {
     let accept = service.execute(&harness.accept(after_record));
     assert!(accept.ok, "{:?}", accept.value);
     let after_accept = revision_from(field(field(&accept.value, "data"), "revision"));
-
     let recall = ApiCommand::Recall {
         request_id: "recall".to_owned(),
         scope: scope(),
@@ -206,7 +185,6 @@ fn acceptance_recall_and_explain_share_one_revision() {
         field(field(&recalled.value, "data"), "absence-established"),
         &Value::Boolean(false)
     );
-
     let explain = ApiCommand::Explain {
         request_id: "explain".to_owned(),
         scope: scope(),
@@ -221,7 +199,6 @@ fn acceptance_recall_and_explain_share_one_revision() {
         &after_accept.to_value()
     );
 }
-
 #[test]
 fn scope_is_checked_before_content_or_receipt_lookup() {
     let harness = Harness::new();
@@ -244,7 +221,6 @@ fn scope_is_checked_before_content_or_receipt_lookup() {
             .is_none()
     );
 }
-
 #[test]
 fn unsupported_versions_fail_before_mutation() {
     let value = Value::symbol_dictionary([
@@ -264,7 +240,6 @@ fn unsupported_versions_fail_before_mutation() {
         .expect_err("unsupported version");
     assert_eq!(error.code.as_str(), "unsupported-version");
 }
-
 #[test]
 fn revise_dispute_and_retract_preserve_history() {
     let harness = Harness::new();
@@ -326,7 +301,6 @@ fn revise_dispute_and_retract_preserve_history() {
         3
     );
 }
-
 #[test]
 fn resume_is_read_only_and_forget_reports_lifecycle_progress() {
     let harness = Harness::new();
@@ -377,7 +351,6 @@ fn resume_is_read_only_and_forget_reports_lifecycle_progress() {
         &Value::symbol("waiting")
     );
     assert_eq!(harness.revision(), base);
-
     let forget = ApiCommand::Forget {
         request_id: "forget".to_owned(),
         scope: scope(),
@@ -398,7 +371,6 @@ fn resume_is_read_only_and_forget_reports_lifecycle_progress() {
             .is_some()
     );
 }
-
 #[test]
 fn proposal_inspection_keeps_proposed_status_before_acceptance() {
     let harness = Harness::new();
@@ -418,7 +390,6 @@ fn proposal_inspection_keeps_proposed_status_before_acceptance() {
         &Value::symbol("proposed")
     );
 }
-
 #[test]
 #[allow(unknown_lints, compound_assertion)] // either a completed or timed-out recall is accepted
 fn vertical_slice_lost_response_timeout_resume_and_forget() {
@@ -435,11 +406,9 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         revision_from(field(field(&retry.value, "data"), "revision")),
         committed
     );
-
     let accepted = service.execute(&harness.accept(committed));
     assert!(accepted.ok);
     let accepted_revision = revision_from(field(field(&accepted.value, "data"), "revision"));
-
     let recall = |max_time_ms| ApiCommand::Recall {
         request_id: "vertical-recall".to_owned(),
         scope: scope(),
@@ -478,7 +447,6 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         .expect("candidates");
     assert!(!candidates.is_empty());
     assert!(candidates.len() <= 2);
-
     let explain = ApiCommand::Explain {
         request_id: "vertical-explain".to_owned(),
         scope: scope(),
@@ -487,7 +455,6 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         max_excerpt_bytes: 4096,
     };
     assert!(service.execute(&explain).ok);
-
     let checkpoint = mneme_memory::build_checkpoint(
         rid(0xd1),
         rev(0xd2),
@@ -526,7 +493,6 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         field(field(&resumed.value, "data"), "current-revision"),
         &checkpoint_revision.to_value()
     );
-
     let revise = ApiCommand::Revise {
         request_id: "vertical-revise".to_owned(),
         scope: scope(),
@@ -541,7 +507,6 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         superseded_by: None,
     };
     assert!(service.execute(&revise).ok);
-
     let forget_base = harness.revision();
     let forget = ApiCommand::Forget {
         request_id: "vertical-forget".to_owned(),

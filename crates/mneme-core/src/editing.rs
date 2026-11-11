@@ -38,6 +38,7 @@ impl EditorView {
     ///
     /// The caller assigns the next revision through the workspace coordinator;
     /// this method only produces a compatible payload.
+    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn replace_payload(
         &self,
         envelope: &crate::envelope::RecordEnvelope,

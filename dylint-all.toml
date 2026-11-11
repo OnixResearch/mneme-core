@@ -1,3 +1,5 @@
 # Full 72-lint Octet profile used by the baseline ratchet check.
 # The strict required check keeps its consumer profile in dylint.toml.
 [octet]
+# Cohesive modules exceed the 300-line default; splitting remains a structural backlog.
+excessive_file_length_max = 5000

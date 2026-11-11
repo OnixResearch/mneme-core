@@ -1,4 +1,5 @@
 //! Fault injection points for durability and recovery tests.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A durable boundary at which a test may simulate a process stop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

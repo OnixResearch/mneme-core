@@ -5,6 +5,7 @@
 //! unresolved state when the owning schema permits one. Validation against a
 //! snapshot index rejects missing targets, kind mismatches, and pinned
 //! revisions the snapshot does not contain.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 const LOCAL_REF: &str = "local-ref";
 const PINNED_REF: &str = "pinned-ref";

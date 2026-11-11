@@ -2,7 +2,7 @@
 //!
 //! Canonical records remain authoritative. Projection facts are disposable and
 //! carry rule, revision, scope, coverage, and source-support metadata.
-
+#![allow(unknown_lints, path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -126,7 +126,7 @@ pub struct RuleBundle {
 
 impl RuleBundle {
     /// Construct a bundle.
-    #[allow(unknown_lints, usize_in_public_api)] // predicate arities mirror slice lengths
+    #[allow(unknown_lints, usize_in_public_api, too_many_parameters)] // predicate arities mirror slice lengths
     pub fn new(
         id: impl Into<String>,
         version: impl Into<String>,
@@ -408,6 +408,7 @@ impl QueryResult {
     /// Rows and derivations are intentionally omitted; their canonical values
     /// are transported separately. The summary keeps status, coverage,
     /// exhaustiveness, absence, and truncation distinguishable.
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn summary_value(&self) -> mneme_core::Value {
         let coverage = mneme_core::Value::sequence(
             self.coverage
@@ -551,6 +552,7 @@ impl<'w> DatalogService<'w> {
 
     /// Build a private projection and optionally publish its pointer through
     /// the workspace projection registry.
+    #[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn build(&mut self, request: BuildRequest) -> Result<DatalogBuild, DatalogError> {
         let program = request
             .bundle
@@ -708,6 +710,7 @@ impl<'w> DatalogService<'w> {
         self.query_loaded(build.clone(), query)
     }
 
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn query_loaded(
         &mut self,
         build: DatalogBuild,

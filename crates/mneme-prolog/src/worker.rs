@@ -4,6 +4,7 @@
 //! enforces wall-clock/output limits and cancellation; the child is killed and
 //! reaped before an outcome is returned. No workspace lock is held by the
 //! worker, and reset means discarding the child and temporary directory.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use std::io::{Read, Write};
 
@@ -58,7 +59,7 @@ pub struct WorkerOutcome {
 ///
 /// The caller supplies an already authorized request and enabled capability.
 /// `engine` must be the pinned Scryer-compatible executable.
-#[allow(unknown_lints, ambient_clock)] // worker wall-clock budget is the process shell
+#[allow(unknown_lints, ambient_clock, function_length)] // worker wall-clock budget is the process shell
 pub fn run_worker(
     engine: &std::path::Path,
     metadata: &crate::CapabilityMetadata,

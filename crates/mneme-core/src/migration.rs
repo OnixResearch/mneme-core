@@ -5,6 +5,7 @@
 //! builds a new immutable revision whose predecessor is the source, validates
 //! the target under its own schema version, and returns the lineage. Any failure
 //! leaves the committed source readable and reports the failed transformation.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A payload transformation for one migration step.
 pub type PayloadTransform = Box<

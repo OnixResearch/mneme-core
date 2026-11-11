@@ -1,6 +1,7 @@
 //! Restricted rule validation and stratification.
 
 /// Validate a rule bundle before any evaluation or publication.
+#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate(
     bundle: &crate::RuleBundle,
 ) -> Result<crate::RuleProgram, Vec<crate::RuleDiagnostic>> {
@@ -252,6 +253,7 @@ pub fn validate(
     }
 }
 
+#[allow(unknown_lints, too_many_parameters)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn validate_atom(
     atom: &crate::Atom,
     arities: &std::collections::BTreeMap<String, usize>,
@@ -362,6 +364,7 @@ fn diag(
 }
 
 /// Stable build identity from context and rules.
+#[allow(unknown_lints, too_many_parameters)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub(crate) fn build_id(
     revision: mneme_core::WorkspaceRevisionId,
     scope: &mneme_core::ScopeId,

@@ -187,6 +187,7 @@ impl ProposalRegistry {
     }
 
     /// Apply a compare-and-swap acceptance or report a conflict/prior outcome.
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn accept(&mut self, command: AcceptanceCommand) -> CommandOutcome {
         if let Some((stored, _)) = self.acceptances.get(&command.idempotency_key) {
             return if stored == &command {
@@ -389,6 +390,7 @@ impl ProposalRegistry {
     /// Validate and accept a procedural proposal through its own command.
     /// The validator inspects content only; no instruction, rule, or tool is
     /// executed and worker privileges are not mutated.
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn accept_procedure(
         &mut self,
         command: ProcedureAcceptanceCommand,

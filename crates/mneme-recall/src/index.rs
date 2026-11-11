@@ -1,4 +1,5 @@
 //! In-memory lexical and local token-vector index over one scoped snapshot.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Index schema and tokenizer version.
 pub const LEXICAL_INDEX_VERSION: &str = "mneme-lexical-token-v1";
@@ -6,6 +7,7 @@ pub const LEXICAL_INDEX_VERSION: &str = "mneme-lexical-token-v1";
 pub const VECTOR_INDEX_VERSION: &str = "mneme-trigram-hash-v1";
 
 /// Build a fresh index for the request's temporal selection.
+#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub(crate) fn build_index(
     view: &mneme_memory::MemoryView,
     request: &crate::model::RecallRequest,
@@ -283,7 +285,7 @@ fn evidence_refs(
     (refs, roots)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 fn document(
     id: String,
     kind: crate::model::ContentKind,

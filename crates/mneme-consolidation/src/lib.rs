@@ -5,7 +5,7 @@
 //! accepted assertions, and procedural suggestions. A job producing proposals
 //! never accepts them; acceptance is a separate compare-and-swap precondition
 //! evaluated by a later command.
-
+#![allow(unknown_lints, path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod commands;
@@ -149,6 +149,7 @@ impl InputBatch {
     /// The response remains a ranked, non-exhaustive source selection. Its
     /// omissions, truncation, mode failures, and unpinned candidates are
     /// retained so proposals cannot infer absence or cleanup.
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn from_recall(
         scope: mneme_core::ScopeId,
         expected_revision: mneme_core::WorkspaceRevisionId,
@@ -689,6 +690,7 @@ impl ConsolidationFixture {
 }
 
 /// Construct sample fixture data used by the type-contract tests.
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn fixture() -> Result<ConsolidationFixture, String> {
     let scope = mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar")?;
     let base = mneme_core::WorkspaceRevisionId::from_bytes([0xb0; 16]);

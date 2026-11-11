@@ -6,12 +6,13 @@
 //! time, and lifecycle behave as specified. The proposed and accepted variants
 //! differ only in explicit lifecycle fields; no validation path promotes one to
 //! the other.
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 // The fixture constructors build from compile-time constants whose validity is
 // asserted by the fixture tests below. Keeping the construction infallible makes
 // fixture use readable in dependent capabilities; the same inputs are rejected
 // if any of those invariants changes.
-#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
+#![allow(no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
 /// The exact synthetic source bytes used by the shared fixtures.

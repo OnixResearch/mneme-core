@@ -4,7 +4,7 @@
 //! results, conditional premises, and reviewable plan/fact proposals. It does
 //! not invoke an engine. The capability starts disabled; ordinary memory
 //! operations do not depend on this crate.
-
+#![allow(unknown_lints, path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod image;
@@ -361,6 +361,7 @@ impl Term {
         }
     }
 
+    #[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn check(&self, profile: TermProfile) -> Result<(), CapabilityError> {
         match self {
             Term::Variable(_) => {

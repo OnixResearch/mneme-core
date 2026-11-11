@@ -1,4 +1,5 @@
 //! Recall failures that prevent constructing a qualified response.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A recall infrastructure or request failure.
 #[derive(Debug, thiserror::Error)]

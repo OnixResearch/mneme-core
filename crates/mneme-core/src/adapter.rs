@@ -5,6 +5,7 @@
 //! integer range. Conversion is all-or-nothing: an unsupported kind or an
 //! out-of-range integer fails explicitly and is never replaced with a string,
 //! float, atom, or null.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A Preserves value kind as seen by an adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -99,6 +100,7 @@ impl AdapterCapabilities {
 }
 
 /// Project a value into an adapter, refusing every unrepresentable part.
+#[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn project_value(
     value: &crate::value::Value,
     capabilities: &AdapterCapabilities,

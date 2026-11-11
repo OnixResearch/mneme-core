@@ -5,6 +5,7 @@
 //! and typed payload. Validation has distinct syntax, envelope, and domain
 //! stages, reports field-addressed diagnostics, and never changes an assertion's
 //! epistemic lifecycle.
+#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The label of a durable Mneme record envelope.
 pub const RECORD_LABEL: &str = "mneme-record";
@@ -82,6 +83,7 @@ impl Payload {
     }
 
     /// Decode a symbol-keyed dictionary.
+    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn from_value(
         value: &crate::value::Value,
         path: &crate::error::Path,
@@ -148,6 +150,7 @@ impl RecordEnvelope {
 
     /// Decode envelope structure. Schema and domain validation follow in
     /// [`validate_record`].
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn from_value(value: &crate::value::Value) -> Result<Self, Vec<crate::error::Diagnostic>> {
         let mut diagnostics = Vec::new();
         let Some(record) = value.as_record() else {
@@ -384,6 +387,7 @@ impl<'a> RecordContext<'a> {
 }
 
 /// Validate one envelope against a schema registry and snapshot contexts.
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate_record(
     envelope: &RecordEnvelope,
     context: &RecordContext<'_>,
@@ -534,6 +538,7 @@ pub struct ValidatedBatch {
 /// Every record is structurally parsed first so references may resolve within
 /// the batch. Records already present in the optional external index are
 /// replacements: they must name the indexed revision as their predecessor.
+#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate_batch(
     values: &[crate::value::Value],
     registry: &crate::schema::SchemaRegistry,

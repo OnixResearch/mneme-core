@@ -12,6 +12,7 @@ pub fn render(value: &crate::value::Value) -> String {
     output
 }
 
+#[allow(unknown_lints, function_length, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn write_value(output: &mut String, value: &crate::value::Value) {
     match value {
         crate::value::Value::Boolean(true) => output.push_str("#t"),

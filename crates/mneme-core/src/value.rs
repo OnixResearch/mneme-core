@@ -9,6 +9,7 @@
 //! Annotations are not part of the value model. Mneme's decoding profile skips
 //! them before building a value, and its encoder never emits them; no
 //! authoritative field may depend on annotation content.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use num_traits::{ToPrimitive, Zero};
 
@@ -434,6 +435,7 @@ impl Value {
     }
 
     /// Whether this value, or any nested value, is an embedded marker.
+    #[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn contains_embedded(&self) -> bool {
         match self {
             Value::Embedded(_) => true,

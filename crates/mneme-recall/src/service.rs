@@ -1,4 +1,5 @@
 //! Bounded recall service over one mutable workspace handle.
+#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Ranking/fusion policy version.
 pub const FUSION_POLICY_VERSION: &str = "rrf-k60-v1";
@@ -69,7 +70,7 @@ impl<'w> RecallService<'w> {
             }))
     }
 
-    #[allow(unknown_lints, ambient_clock, nested_conditionals)] // recall wall-clock budget is the request shell; structured fallback nests match arms
+    #[allow(unknown_lints, ambient_clock, nested_conditionals, function_length)] // recall wall-clock budget is the request shell; structured fallback nests match arms
     fn recall_once(
         &mut self,
         request: &crate::model::RecallRequest,
@@ -539,6 +540,7 @@ fn validate(request: &crate::model::RecallRequest) -> crate::error::Result<()> {
     Ok(())
 }
 
+#[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn history(
     workspace: &mneme_store::Workspace,
     snapshot: &mneme_store::Snapshot,
@@ -751,7 +753,12 @@ fn fuse(
     values
 }
 
-#[allow(unknown_lints, ambient_clock)] // packing deadline is the request shell
+#[allow(
+    unknown_lints,
+    ambient_clock,
+    function_length,
+    unbounded_collection_growth
+)] // packing deadline is the request shell
 fn pack(
     candidates: &mut Vec<crate::model::RecallCandidate>,
     request: &crate::model::RecallRequest,

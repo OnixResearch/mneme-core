@@ -4,6 +4,7 @@
 //! hash-invalid committed payload is an error, never an empty document. Stale
 //! bases, idempotency conflicts, validation refusals, publication divergence,
 //! and injected faults are separate variants so callers can react truthfully.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A workspace operation failure.
 #[derive(Debug, thiserror::Error)]

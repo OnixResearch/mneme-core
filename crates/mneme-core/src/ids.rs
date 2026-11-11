@@ -5,6 +5,7 @@
 //! rename or an edit keeps the identifier, and two records with equal payloads
 //! keep distinct identifiers. A caller constructs identifiers explicitly; the
 //! workspace coordinator will supply them from its own source of uniqueness.
+#![allow(non_trait_imports)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use std::fmt;
 

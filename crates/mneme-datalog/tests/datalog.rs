@@ -1,5 +1,4 @@
 //! Datalog projection behavior over real committed snapshots.
-
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
@@ -634,6 +633,7 @@ fn stale_builds_require_explicit_permission_and_publication_is_registered() {
     );
 }
 
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn add_assertion_support(harness: &mut Harness, sources: bool) -> mneme_core::RecordId {
     harness.add_entity("assertion-entity", rid(0x10), &scope(), "A");
     let source_a = b"= Source A\n\nExact source A.\n";

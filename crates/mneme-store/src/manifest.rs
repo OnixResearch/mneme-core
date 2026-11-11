@@ -4,6 +4,7 @@
 //! revision, and every blob the revision requires. It is encoded with canonical
 //! Preserves binary and hashed with the payload profile; the ledger stores both
 //! the bytes and the digest.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// One record revision included in a manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

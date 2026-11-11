@@ -6,6 +6,7 @@
 //! and dictionary keys may be any encoded value. A versioned document envelope
 //! wraps the tagged value so a decoder never guesses the format. Unsupported or
 //! malformed payloads fail before any domain mutation.
+#![allow(path_segment_repetition, no_recursion)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The tagged JSON document format name.
 pub const TRANSPORT_FORMAT: &str = "mneme.preserves-tagged-json";
@@ -107,6 +108,7 @@ pub fn decode_document_value(
 }
 
 /// Encode one crate::value::Value value with explicit type tags.
+#[allow(unknown_lints, function_length, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn encode_value(value: &crate::value::Value) -> serde_json::Value {
     match value {
         crate::value::Value::Boolean(boolean) => {
@@ -197,6 +199,7 @@ fn tagged<const N: usize>(tag: &str, members: [(&str, serde_json::Value); N]) ->
 }
 
 /// Decode one tagged value. No coercion or fallback is applied.
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn decode_value(
     json: &serde_json::Value,
     path: &crate::error::Path,

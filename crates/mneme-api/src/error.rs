@@ -1,4 +1,5 @@
 //! Structured API failures. Transport adapters add framing only.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Stable API error classes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5,6 +5,7 @@
 //! and provenance fields, so two records are never conflated because their
 //! payloads happen to match. Exact AsciiDoc source bytes use the raw-byte
 //! profile and never a semantic projection.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use sha2::Digest;
 

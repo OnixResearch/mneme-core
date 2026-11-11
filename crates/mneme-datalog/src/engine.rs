@@ -1,4 +1,5 @@
 //! Snapshot fact loading, bounded fixpoint evaluation, and coverage.
+#![allow(unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 type FactKey = Vec<mneme_core::Value>;
 
@@ -173,6 +174,7 @@ pub(crate) fn build(
     })
 }
 
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn load_base_facts(
     view: &mneme_memory::MemoryView,
     scope: &mneme_core::ScopeId,
@@ -461,6 +463,7 @@ enum RuleOutcome {
     Skipped,
 }
 
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn evaluate_rule(
     evaluation: &mut Evaluation<'_>,
     rule: &crate::Rule,
@@ -689,7 +692,7 @@ struct AggregateRow {
     binding_indices: Vec<usize>,
 }
 
-#[allow(unknown_lints, fallible_int_fallback)] // row count is bounded by the result-row limit
+#[allow(unknown_lints, fallible_int_fallback, function_length)] // row count is bounded by the result-row limit
 fn aggregate_rows(
     head: &crate::Atom,
     output: &str,

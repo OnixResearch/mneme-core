@@ -58,6 +58,7 @@ fn fixture_command(base: mneme_core::WorkspaceRevisionId, key: &str) -> mneme_st
     }
 }
 
+#[allow(unknown_lints, too_many_parameters)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn source_draft(
     bytes: &[u8],
     record_id: mneme_core::RecordId,

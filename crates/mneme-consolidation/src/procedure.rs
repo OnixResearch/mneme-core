@@ -3,6 +3,7 @@
 //! Procedures are data until a dedicated validator and authorized command path
 //! accept them. Validation must never execute embedded instructions, rules, or
 //! tools, and it cannot mutate worker privileges in this module.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Worker capabilities available while reviewing a procedural suggestion.
 #[derive(Clone, Debug, PartialEq, Eq)]

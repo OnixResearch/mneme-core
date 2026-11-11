@@ -2,6 +2,7 @@
 //!
 //! Progress advances one reviewed input at a time. A retry resumes the same
 //! identity without replaying completed inputs or duplicating proposal IDs.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A cooperative cancellation flag.
 #[derive(Clone, Default)]

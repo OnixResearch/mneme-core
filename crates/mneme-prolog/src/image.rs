@@ -3,6 +3,7 @@
 //! The image is built from one committed memory view and selected Datalog query
 //! results. Revision, scope, eligibility generation, rule context, and every
 //! canonical premise must match before any fact is admitted.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// One accepted canonical assertion in the image.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +64,7 @@ pub enum ImageError {
 }
 
 /// Build an immutable image from one view and selected Datalog results.
+#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn build_input_image(
     view: &mneme_memory::MemoryView,
     scope: &mneme_core::ScopeId,

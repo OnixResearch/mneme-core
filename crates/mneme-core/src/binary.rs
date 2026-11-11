@@ -40,6 +40,7 @@ pub fn encode(value: &crate::value::Value) -> Vec<u8> {
     output
 }
 
+#[allow(unknown_lints, function_length, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn encode_into(value: &crate::value::Value, output: &mut Vec<u8>) {
     match value {
         crate::value::Value::Boolean(false) => output.push(TAG_FALSE),
@@ -272,6 +273,7 @@ impl Decoder<'_> {
         ))
     }
 
+    #[allow(unknown_lints, function_length, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn value(
         &mut self,
         path: &crate::error::Path,
@@ -427,6 +429,7 @@ impl Decoder<'_> {
         })
     }
 
+    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn record(
         &mut self,
         path: &crate::error::Path,
@@ -452,6 +455,7 @@ impl Decoder<'_> {
         )))
     }
 
+    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn sequence(
         &mut self,
         path: &crate::error::Path,

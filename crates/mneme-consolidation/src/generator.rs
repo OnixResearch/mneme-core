@@ -4,6 +4,7 @@
 //! span bounds, and quoted bytes. They do not establish semantic entailment:
 //! generated proposals begin with an unsupported-hypothesis support review and
 //! require a separate attributed review before acceptance.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Exact text associated with one reviewed input unit.
 #[derive(Clone, Debug, PartialEq, Eq)]

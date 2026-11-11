@@ -1,5 +1,4 @@
 //! Source-first document behavior over real workspace blobs and commits.
-
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 

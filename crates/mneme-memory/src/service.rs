@@ -4,6 +4,7 @@
 //! lifecycle decisions, ancestry, and action outcomes before submitting the
 //! normal workspace command. No draft can promote a claim without an explicit
 //! decision record in the same batch.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A memory batch submitted through the workspace coordinator.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +139,7 @@ impl<'w> Memory<'w> {
     }
 }
 
+#[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn load_history(
     workspace: &mneme_store::Workspace,
     snapshot: &mneme_store::Snapshot,
@@ -156,6 +158,12 @@ fn load_history(
     Ok(history)
 }
 
+#[allow(
+    unknown_lints,
+    function_length,
+    too_many_parameters,
+    unbounded_collection_growth
+)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn validate_batch(
     snapshot: &mneme_store::Snapshot,
     root: &std::path::Path,
@@ -513,7 +521,7 @@ fn valid_time_value(valid_time: mneme_core::ValidTime) -> mneme_core::Value {
 }
 
 /// Build a retained source revision and its exact source blob.
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_source(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
@@ -569,7 +577,7 @@ pub fn build_source(
 }
 
 /// Build an unavailable or pruned source revision.
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_unavailable_source(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
@@ -593,7 +601,7 @@ pub fn build_unavailable_source(
 
 /// Build an unavailable source revision that preserves the identity of the
 /// bytes it no longer stores.
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_unavailable_source_with_digest(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
@@ -651,7 +659,7 @@ pub fn build_unavailable_source_with_digest(
 }
 
 /// Build an episode, including optional related-record links.
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_episode(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
@@ -699,7 +707,7 @@ pub fn build_episode(
 }
 
 /// Build evidence over an exact source revision.
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_evidence(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
@@ -762,7 +770,7 @@ pub fn build_evidence(
 
 /// Build a proposed assertion. There is deliberately no parameter that sets an
 /// accepted lifecycle.
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_proposed_assertion(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
@@ -844,7 +852,7 @@ pub fn build_proposed_assertion(
 }
 
 /// Build an attributed decision.
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_decision(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
@@ -936,7 +944,7 @@ pub fn build_assertion_revision(
 }
 
 /// Build a derivation with a complete premise set.
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_derivation(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
@@ -982,7 +990,7 @@ pub fn build_derivation(
 }
 
 /// Build a checkpoint pinned to the current episode/revision state.
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_checkpoint(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,

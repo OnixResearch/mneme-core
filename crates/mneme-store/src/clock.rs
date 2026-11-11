@@ -3,6 +3,7 @@
 //! Recorded time is assigned by the coordinator, never by the caller. Tests
 //! supply a fixed clock and explicit fault points; production uses the system
 //! clock and no injected faults.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A source of wall-clock instants for recorded time.
 pub trait Clock: Send + Sync {

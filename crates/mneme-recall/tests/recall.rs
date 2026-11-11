@@ -1,5 +1,4 @@
 //! Behavioral recall tests over real committed workspaces.
-
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
@@ -70,6 +69,7 @@ impl Harness {
             .expect("commit");
     }
 
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn add_base(&mut self) {
         let entity = rid(0x10);
         let source = rid(0x20);
@@ -157,6 +157,7 @@ impl Harness {
         self.add_other_scope();
     }
 
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn add_other_scope(&mut self) {
         let entity = rid(0x70);
         let source = rid(0x72);

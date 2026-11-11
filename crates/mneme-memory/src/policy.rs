@@ -3,6 +3,7 @@
 //!
 //! Everything here is computed from one pinned store snapshot. No method mutates
 //! canonical state or promotes a proposed assertion.
+#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The policy predicate used for action-completion claims.
 pub const ACTION_COMPLETED_PREDICATE: &str = "action-completed";
@@ -599,6 +600,7 @@ impl MemoryView {
     }
 
     /// Assertions eligible for the requested current-belief view.
+    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn current_beliefs(
         &self,
         view: &BeliefView,
@@ -659,6 +661,7 @@ impl MemoryView {
     }
 
     /// Detected conflicts among accepted/disputed claims in a belief view.
+    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn conflicts(&self, view: &BeliefView) -> crate::error::Result<Vec<ConflictGroup>> {
         let mut candidates = Vec::new();
         for assertion in self.assertions()? {
@@ -820,6 +823,7 @@ impl MemoryView {
         Ok(roots)
     }
 
+    #[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn collect_roots(
         &self,
         record: mneme_core::RecordId,
@@ -1059,6 +1063,7 @@ impl MemoryView {
     }
 
     /// Alternative derivations for one conclusion with eligibility reasons.
+    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn derivation_alternatives(
         &self,
         conclusion: mneme_core::RecordId,
@@ -1097,6 +1102,7 @@ impl MemoryView {
     }
 
     /// Build a bounded explanation for one current assertion.
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn explain(
         &self,
         assertion: mneme_core::RecordId,

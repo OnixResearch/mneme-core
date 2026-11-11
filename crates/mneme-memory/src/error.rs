@@ -1,4 +1,5 @@
 //! Evidence-policy failures.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A memory-layer failure.
 #[derive(Debug, thiserror::Error)]

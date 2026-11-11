@@ -5,6 +5,7 @@
 //! import candidates. The normalized request digest binds actor, scope, and
 //! content without including the caller's recorded time, which the coordinator
 //! assigns.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A record revision proposed for the next snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]

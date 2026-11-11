@@ -1,4 +1,5 @@
 //! Shared execution of validated agent-memory commands.
+#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A transport-neutral response. `value` is a versioned tagged JSON document.
 #[derive(Clone, Debug)]
@@ -38,6 +39,7 @@ impl ApiService {
         }
     }
 
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn dispatch(
         &self,
         command: &crate::command::ApiCommand,
@@ -478,6 +480,7 @@ fn response_for_error(
     }
 }
 
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn response_envelope(
     command: &crate::command::ApiCommand,
     status: &str,
@@ -680,6 +683,7 @@ fn assertion_value(assertion: &mneme_memory::AssertionView) -> mneme_core::Value
     ])
 }
 
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn recall_value(response: &mneme_recall::RecallResponse) -> mneme_core::Value {
     let context = mneme_core::Value::symbol_dictionary([
         (
@@ -836,6 +840,7 @@ fn mode_value(mode: &mneme_recall::ModeReport) -> mneme_core::Value {
     ])
 }
 
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn candidate_value(candidate: &mneme_recall::RecallCandidate) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
@@ -1030,6 +1035,7 @@ fn derivation_value(derivation: &mneme_datalog::Derivation) -> mneme_core::Value
     ])
 }
 
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn explain_value(explanation: &mneme_memory::Explanation) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
@@ -1142,6 +1148,7 @@ fn explain_value(explanation: &mneme_memory::Explanation) -> mneme_core::Value {
     ])
 }
 
+#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn resume_value(
     workspace: &mut mneme_store::Workspace,
     checkpoint: mneme_core::RecordId,

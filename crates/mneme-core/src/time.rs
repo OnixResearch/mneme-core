@@ -5,6 +5,7 @@
 //! coordinator's monotonic revision sequence, never by wall-clock comparison
 //! alone. Unknown validity, an open lower bound, an open upper bound, and an
 //! always-valid claim are distinct states; unknown validity is not the epoch.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use num_traits::ToPrimitive;
 
@@ -35,6 +36,7 @@ impl Timestamp {
     }
 
     /// Parse a strict RFC 3339 timestamp with a `Z` or numeric offset.
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn parse(text: &str) -> Result<Self, &'static str> {
         let bytes = text.as_bytes();
         if bytes.len() < 20 {

@@ -103,7 +103,7 @@ fn latest(
         .expect("revision")
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 fn propose(
     workspace: &mut mneme_store::Workspace,
     key: &str,
@@ -164,7 +164,7 @@ fn propose(
     assertion_id
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 fn decide(
     workspace: &mut mneme_store::Workspace,
     key: &str,
@@ -454,7 +454,7 @@ fn source_change_after_extraction_keeps_the_pinned_citation() {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 fn propose_bare(
     workspace: &mut mneme_store::Workspace,
     key: &str,

@@ -1,5 +1,4 @@
 //! Retention behavior over real workspaces, evidence records, and blobs.
-
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
@@ -958,6 +957,7 @@ fn forgotten_content_cannot_be_replayed_under_a_new_identity() {
     ));
 }
 
+#[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn copy_tree(source: &std::path::Path, destination: &std::path::Path) {
     std::fs::create_dir_all(destination).expect("destination");
     for entry in std::fs::read_dir(source).expect("source entries") {

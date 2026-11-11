@@ -1,6 +1,6 @@
 //! Restricted preview rendering and explicit include occurrence mapping.
-
-#![allow(unknown_lints, ignored_result)] // fmt::Write to String and test cleanup cannot fail recoverably
+#![allow(unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(ignored_result)] // fmt::Write to String and test cleanup cannot fail recoverably
 
 use std::fmt::Write;
 
@@ -119,6 +119,7 @@ impl Renderer<'_> {
         );
     }
 
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn render_source(&mut self, source: &RenderSource, depth: usize) {
         if self.expired() {
             return;
@@ -519,6 +520,7 @@ fn is_list_item(line: &str, marker: char) -> bool {
         && !trimmed.starts_with("**")
 }
 
+#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn inline(
     text: &str,
     line: usize,

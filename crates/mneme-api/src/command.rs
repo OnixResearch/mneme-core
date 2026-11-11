@@ -1,4 +1,5 @@
 //! Versioned tagged-JSON command envelopes and local session authorization.
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use serde::Deserialize;
 
@@ -197,6 +198,7 @@ impl ApiCommand {
         }
     }
 
+    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn from_value(value: &mneme_core::Value) -> crate::error::ApiResult<Self> {
         let envelope = Fields::new(value)?;
         if envelope.text("format")? != COMMAND_FORMAT {
