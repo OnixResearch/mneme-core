@@ -9,9 +9,11 @@ members = [
   "crates/mneme-datalog",
   "crates/mneme-recall",
   "crates/mneme-api",
+  "crates/mneme-desktop",
   "crates/mneme-eval",
   "crates/mneme-cli",
 ]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"

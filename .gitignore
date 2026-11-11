@@ -9,3 +9,4 @@ target/
 /result
 /result-*
 .mneme-loop/
+/vendor/

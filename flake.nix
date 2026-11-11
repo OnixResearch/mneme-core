@@ -38,6 +38,27 @@
           cargo = toolchainFor pkgs;
           rustc = toolchainFor pkgs;
         };
+      cargoOutputHashes = {
+        "dpi-0.1.1" = "sha256-pQn1lCFSJMkjUfHoggEzMHnm5k+Chnzi5JEDjahnjUA=";
+        "iced-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_core-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_debug-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_futures-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_graphics-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_program-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_renderer-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_runtime-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_tiny_skia-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_widget-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "iced_winit-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
+        "winit-0.30.8" = "sha256-pQn1lCFSJMkjUfHoggEzMHnm5k+Chnzi5JEDjahnjUA=";
+      };
+      ratsSrc = builtins.fetchTree {
+        type = "git";
+        url = "ssh://git@github.com/brittonr/rats.git";
+        rev = "6be26efd727611b10232fb6657653ea2b15ff651";
+        narHash = "sha256-DgXeyiEdHYlTf1KV77OKfDLlloEOw8qYhheXq7MIdu4=";
+      };
     in
     {
       devShells = forAllSystems (
@@ -93,14 +114,36 @@
         system:
         let
           pkgs = pkgsFor system;
+          nativeUiLibraries = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.libx11
+            pkgs.libxcursor
+            pkgs.libxi
+            pkgs.libxkbcommon
+            pkgs.libxrandr
+            pkgs.wayland
+          ];
         in
         {
           default = (rustPlatformFor pkgs).buildRustPackage {
             pname = "mneme";
             version = "0.1.0";
             src = self;
-            cargoLock.lockFile = ./Cargo.lock;
+            prePatch = ''
+              rm -rf vendor/rats
+              mkdir -p vendor
+              cp -R ${ratsSrc} vendor/rats
+            '';
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = cargoOutputHashes;
+            };
+            buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
             doCheck = false;
+            postInstall = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              wrapProgram $out/bin/mneme-desktop \
+                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath nativeUiLibraries}"
+            '';
             meta = {
               description = "Local knowledge workspace and durable external agent memory";
               mainProgram = "mneme";
@@ -114,6 +157,14 @@
         let
           pkgs = pkgsFor system;
           rustToolchain = toolchainFor pkgs;
+          nativeUiLibraries = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.libx11
+            pkgs.libxcursor
+            pkgs.libxi
+            pkgs.libxkbcommon
+            pkgs.libxrandr
+            pkgs.wayland
+          ];
         in
         {
           documentation =
@@ -158,7 +209,16 @@
             pname = "mneme-rust-checks";
             version = "0.1.0";
             src = self;
-            cargoLock.lockFile = ./Cargo.lock;
+            prePatch = ''
+              rm -rf vendor/rats
+              mkdir -p vendor
+              cp -R ${ratsSrc} vendor/rats
+            '';
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = cargoOutputHashes;
+            };
+            buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
             doCheck = true;
             checkPhase = ''
               cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings
