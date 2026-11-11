@@ -143,7 +143,7 @@ pub fn build_input_image(
                 .all(|coverage| coverage.status == mneme_datalog::CoverageStatus::Complete)
             && result.status == mneme_datalog::ExecutionStatus::Complete;
         is_all_complete &= is_coverage_complete;
-        let mut rows = Vec::new();
+        let mut rows = Vec::with_capacity(result.rows.len());
         for row in &result.rows {
             for support in &row.supports {
                 if support.revision != expected_revision || &support.scope != scope {

@@ -17,6 +17,15 @@ struct IndexKey {
 }
 
 /// A recall service with a generation-fenced in-memory index cache.
+fn failure_execution(allow_partial: bool) -> crate::model::RecallExecution {
+    if allow_partial {
+        crate::model::RecallExecution::Partial
+    } else {
+        crate::model::RecallExecution::Failed
+    }
+}
+
+/// Recall service over a committed workspace revision.
 pub struct RecallService<'w> {
     workspace: &'w mut mneme_store::Workspace,
     indexes: std::collections::BTreeMap<IndexKey, crate::model::CachedIndex>,
@@ -60,7 +69,7 @@ impl<'w> RecallService<'w> {
             }))
     }
 
-    #[allow(unknown_lints, ambient_clock)] // recall wall-clock budget is the request shell
+    #[allow(unknown_lints, ambient_clock, nested_conditionals)] // recall wall-clock budget is the request shell; structured fallback nests match arms
     fn recall_once(
         &mut self,
         request: &crate::model::RecallRequest,
@@ -274,11 +283,7 @@ impl<'w> RecallService<'w> {
                                 relation_exhaustive: None,
                                 reason: Some(error.to_string()),
                             });
-                            execution = if request.allow_partial {
-                                crate::model::RecallExecution::Partial
-                            } else {
-                                crate::model::RecallExecution::Failed
-                            };
+                            execution = failure_execution(request.allow_partial);
                             reasons.push(format!("structured mode failed: {error}"));
                         }
                         Ok(build) => {
@@ -300,11 +305,7 @@ impl<'w> RecallService<'w> {
                                         relation_exhaustive: None,
                                         reason: Some(error.to_string()),
                                     });
-                                    execution = if request.allow_partial {
-                                        crate::model::RecallExecution::Partial
-                                    } else {
-                                        crate::model::RecallExecution::Failed
-                                    };
+                                    execution = failure_execution(request.allow_partial);
                                     reasons.push(format!("structured query failed: {error}"));
                                 }
                                 Ok(rows) => {
@@ -385,11 +386,7 @@ impl<'w> RecallService<'w> {
                                         }
                                     };
                                     if !matches!(status, crate::model::ModeStatus::Used) {
-                                        execution = if request.allow_partial {
-                                            crate::model::RecallExecution::Partial
-                                        } else {
-                                            crate::model::RecallExecution::Failed
-                                        };
+                                        execution = failure_execution(request.allow_partial);
                                         reasons.push(format!(
                                             "structured mode finished with {:?}",
                                             rows.status
@@ -603,7 +600,7 @@ fn lexical_rank(
         return Vec::new();
     }
     let query_lower = request.query.to_lowercase();
-    let mut entries = Vec::new();
+    let mut entries = Vec::with_capacity(index.documents.len());
     for document in &index.documents {
         let matched = query_terms
             .iter()
@@ -636,7 +633,7 @@ fn vector_rank(
     if query_norm == 0.0 {
         return Vec::new();
     }
-    let mut entries = Vec::new();
+    let mut entries = Vec::with_capacity(index.documents.len());
     for document in &index.documents {
         if document.trigram_norm == 0.0 {
             continue;
@@ -768,7 +765,7 @@ fn pack(
 ) {
     let values = std::mem::take(candidates);
     let mut ordered = Vec::new();
-    let mut duplicates = Vec::new();
+    let mut duplicates = Vec::with_capacity(values.len());
     let mut seen_roots = std::collections::BTreeSet::new();
     for candidate in values {
         if candidate.ancestry_roots.is_empty() {
@@ -788,7 +785,7 @@ fn pack(
     }
     ordered.extend(duplicates);
     let mut returned = Vec::new();
-    let mut omissions = Vec::new();
+    let mut omissions = Vec::with_capacity(ordered.len());
     let mut is_truncated = false;
     let mut remaining = request.max_context_bytes;
     let max_time_ms = match u64::try_from(request.max_time_ms) {

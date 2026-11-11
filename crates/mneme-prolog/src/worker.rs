@@ -193,7 +193,7 @@ fn write_program(
     for rule in &request.rules {
         let head =
             crate::encode_atom(&rule.head, metadata.terms, metadata.limits.max_output_bytes)?;
-        let mut body = Vec::new();
+        let mut body = Vec::with_capacity(rule.body.len());
         for literal in &rule.body {
             let text = match literal {
                 crate::Literal::Positive(atom) => {

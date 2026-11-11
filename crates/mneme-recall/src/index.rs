@@ -251,7 +251,7 @@ fn evidence_refs(
     std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
 ) {
     let mut roots = std::collections::BTreeSet::new();
-    let mut refs = Vec::new();
+    let mut refs = Vec::with_capacity(assertion.evidence.len());
     for evidence_id in &assertion.evidence {
         let Ok(evidence) = view.evidence(*evidence_id) else {
             continue;

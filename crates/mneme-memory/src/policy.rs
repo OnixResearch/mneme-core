@@ -1067,7 +1067,7 @@ impl MemoryView {
         for derivation in self.derivations_for(conclusion)? {
             let mut visiting = std::collections::BTreeSet::new();
             let is_eligible = self.derivation_eligible_inner(&derivation, &mut visiting);
-            let mut reasons = Vec::new();
+            let mut reasons = Vec::with_capacity(derivation.premises.len());
             if !self.derivation_revision_matches(&derivation) {
                 reasons.push(
                     "derivation evaluation revision is not the pinned revision or its parent"

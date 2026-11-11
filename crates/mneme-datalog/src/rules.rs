@@ -4,7 +4,7 @@
 pub fn validate(
     bundle: &crate::RuleBundle,
 ) -> Result<crate::RuleProgram, Vec<crate::RuleDiagnostic>> {
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = Vec::with_capacity(bundle.base_predicates.len());
     if bundle.id.trim().is_empty() {
         diagnostics.push(diag("bundle-id", None, "rule bundle id is empty"));
     }

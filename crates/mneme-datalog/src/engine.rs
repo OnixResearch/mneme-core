@@ -580,7 +580,7 @@ fn join(
     let Some(store) = evaluation.relation(&atom.predicate) else {
         return Vec::new();
     };
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity(store.rows.len());
     for binding in bindings {
         for (terms, data) in &store.rows {
             if terms.len() != atom.terms.len() {
@@ -820,7 +820,7 @@ fn aggregate_support(
     crate::Derivation,
     std::collections::BTreeSet<crate::SourceKey>,
 ) {
-    let mut premises = Vec::new();
+    let mut premises = Vec::with_capacity(indices.len());
     let mut sources = std::collections::BTreeSet::new();
     for index in indices {
         if let Some(binding) = bindings.get(*index) {
@@ -857,7 +857,7 @@ fn premises_for_binding(
     Vec<crate::Premise>,
     std::collections::BTreeSet<crate::SourceKey>,
 ) {
-    let mut premises = Vec::new();
+    let mut premises = Vec::with_capacity(rule.body.len());
     let mut sources = std::collections::BTreeSet::new();
     for literal in &rule.body {
         match literal {

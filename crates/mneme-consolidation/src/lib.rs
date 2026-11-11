@@ -170,7 +170,7 @@ impl InputBatch {
         {
             return Err("recall boundary is not data-only".to_owned());
         }
-        let mut units = Vec::new();
+        let mut units = Vec::with_capacity(response.candidates.len());
         let mut seen = std::collections::BTreeSet::new();
         let mut unpinned_candidates = 0;
         for candidate in &response.candidates {

@@ -1471,7 +1471,7 @@ impl Workspace {
                 ],
             )?;
         }
-        let mut intent_ids = Vec::new();
+        let mut intent_ids = Vec::with_capacity(command.publications.len());
         for publication in &command.publications {
             let intent_id = crate::blob::random_hex(16)?;
             transaction.execute(
@@ -1604,7 +1604,7 @@ impl Workspace {
 
         crate::faults::check(self.faults.as_ref(), crate::faults::FaultPoint::AfterCommit)?;
 
-        let mut publications = Vec::new();
+        let mut publications = Vec::with_capacity(intent_ids.len());
         for intent_id in intent_ids {
             match self.publish_intent(&intent_id) {
                 Ok(outcome) => publications.push(outcome),
@@ -1765,7 +1765,7 @@ impl Workspace {
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(statement);
-        let mut outcomes = Vec::new();
+        let mut outcomes = Vec::with_capacity(ids.len());
         for intent_id in ids {
             match self.publish_intent(&intent_id) {
                 Ok(outcome) => outcomes.push(outcome),

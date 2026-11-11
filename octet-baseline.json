@@ -10,7 +10,7 @@
     "profile_hash": "b3:bf5fdc096af09050518b2397e53da921915feb7ec293786854ae607ae63c8349",
     "config_hash": "b3:de6332468ee054bbdbd95a73161929fba328d6e13695cedb61c877c46301fd5d"
   },
-  "baseline_hash": "b3:3a441e1d332879cf1b33fb405a15f1466d8b3e4f2a70b5c5da455bff4a2f21d2",
+  "baseline_hash": "b3:e3312b97674e5f43df6df3b7630534bb6fbe7de4a081b87ff18dbda8393c918b",
   "findings": [
     {
       "stable_id": "b3:001ad21bbb28064d",
@@ -104,19 +104,6 @@
       "crate_name": "mneme_recall"
     },
     {
-      "stable_id": "b3:0213c6c779180d56",
-      "semantic_id": "b3:0213c6c779180d56",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 128,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:0231047d70961b15",
       "semantic_id": "b3:0231047d70961b15",
       "identity_status": "computed",
@@ -189,7 +176,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 583,
+      "line": 584,
       "column": 5,
       "message": "non-trait import `Status` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -215,10 +202,23 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1508,
+      "line": 1527,
       "column": 51,
       "message": "function `sidebar` is 124 lines (limit: 70)",
       "crate_name": "mneme-desktop"
+    },
+    {
+      "stable_id": "b3:041e964ac2001e65",
+      "semantic_id": "b3:041e964ac2001e65",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/recall.rs",
+      "line": 482,
+      "column": 91,
+      "message": "function `run_fusion` is 134 lines (limit: 70)",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:04b3924738218309",
@@ -232,32 +232,6 @@
       "column": 49,
       "message": "non-trait import `Stage` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_core"
-    },
-    {
-      "stable_id": "b3:04bdd2ea66418731",
-      "semantic_id": "b3:04bdd2ea66418731",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 460 lines (limit: 300)",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:050b111699c8c6b6",
-      "semantic_id": "b3:050b111699c8c6b6",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/recall.rs",
-      "line": 482,
-      "column": 91,
-      "message": "function `run_fusion` is 128 lines (limit: 70)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:055f5bd1f62d6b82",
@@ -280,10 +254,23 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 115,
+      "line": 101,
       "column": 1,
       "message": "item name `ReadingEvaluation` repeats `evaluation` from ancestor path segment `evaluation`",
       "crate_name": "mneme_eval"
+    },
+    {
+      "stable_id": "b3:05fc333bb4922738",
+      "semantic_id": "b3:05fc333bb4922738",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 1826,
+      "column": 34,
+      "message": "function `preview` is 102 lines (limit: 70)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:06308ba803cffc63",
@@ -319,7 +306,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3157,
+      "line": 3176,
       "column": 67,
       "message": "non-trait import `ViewMetadata` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -332,7 +319,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/evidence.rs",
-      "line": 589,
+      "line": 613,
       "column": 88,
       "message": "function `run_time` is 106 lines (limit: 70)",
       "crate_name": "mneme_eval"
@@ -566,7 +553,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3155,
+      "line": 3174,
       "column": 9,
       "message": "non-trait import `CheckpointEpisode` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -585,17 +572,17 @@
       "crate_name": "evidence"
     },
     {
-      "stable_id": "b3:0c22c587b6c6de51",
-      "semantic_id": "b3:0c22c587b6c6de51",
+      "stable_id": "b3:0bf2a14678055ede",
+      "semantic_id": "b3:0bf2a14678055ede",
       "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/workspace.rs",
-      "line": 24,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
+      "file": "crates/mneme-desktop/tests/model.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 1530 lines (limit: 300)",
+      "crate_name": "model"
     },
     {
       "stable_id": "b3:0c4f91187a7e03fb",
@@ -624,19 +611,6 @@
       "crate_name": "mneme-desktop"
     },
     {
-      "stable_id": "b3:0ceb548685213e46",
-      "semantic_id": "b3:0ceb548685213e46",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 61,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme"
-    },
-    {
       "stable_id": "b3:0cf9eab681466910",
       "semantic_id": "b3:0cf9eab681466910",
       "identity_status": "computed",
@@ -644,23 +618,10 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/service.rs",
-      "line": 557,
+      "line": 554,
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_recall"
-    },
-    {
-      "stable_id": "b3:0d90a0b50a4f9e0e",
-      "semantic_id": "b3:0d90a0b50a4f9e0e",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 122,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:0e0d4efa02b6110e",
@@ -735,7 +696,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/datalog.rs",
-      "line": 919,
+      "line": 997,
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_eval"
@@ -748,7 +709,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 193,
+      "line": 151,
       "column": 1,
       "message": "item name `ResolvedFixture` repeats `fixture` from ancestor path segment `fixture`",
       "crate_name": "mneme_eval"
@@ -774,36 +735,23 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 11,
+      "line": 12,
       "column": 57,
       "message": "non-trait import `text_editor` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
     },
     {
-      "stable_id": "b3:1001d263e423c137",
-      "semantic_id": "b3:1001d263e423c137",
+      "stable_id": "b3:10e0bf27241a4dfb",
+      "semantic_id": "b3:10e0bf27241a4dfb",
       "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/mod.rs",
-      "line": 326,
-      "column": 17,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:10ce3d982064f549",
-      "semantic_id": "b3:10ce3d982064f549",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 89,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 1060 lines (limit: 300)",
+      "crate_name": "mneme_datalog"
     },
     {
       "stable_id": "b3:1129b5df93581966",
@@ -817,19 +765,6 @@
       "column": 17,
       "message": "non-trait import `ApiCommand` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:113bbc2b8a7af4c4",
-      "semantic_id": "b3:113bbc2b8a7af4c4",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-memory/tests/evidence.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 2109 lines (limit: 300)",
-      "crate_name": "evidence"
     },
     {
       "stable_id": "b3:117aa87a5766c966",
@@ -871,19 +806,6 @@
       "crate_name": "mneme_consolidation"
     },
     {
-      "stable_id": "b3:11f163377672560f",
-      "semantic_id": "b3:11f163377672560f",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/workspace.rs",
-      "line": 22,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:11fa5be10df30605",
       "semantic_id": "b3:11fa5be10df30605",
       "identity_status": "computed",
@@ -904,7 +826,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3161,
+      "line": 3180,
       "column": 71,
       "message": "non-trait import `TemporalMode` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -956,7 +878,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3153,
+      "line": 3172,
       "column": 22,
       "message": "non-trait import `Symbol` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -982,23 +904,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3156,
+      "line": 3175,
       "column": 9,
       "message": "non-trait import `GraphEdgeProvenance` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
-    },
-    {
-      "stable_id": "b3:148eaed23a834a62",
-      "semantic_id": "b3:148eaed23a834a62",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/task.rs",
-      "line": 36,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:159134dd6a75b960",
@@ -1027,19 +936,6 @@
       "crate_name": "mneme_core"
     },
     {
-      "stable_id": "b3:15bfe39bf62988b4",
-      "semantic_id": "b3:15bfe39bf62988b4",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 43,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_datalog"
-    },
-    {
       "stable_id": "b3:15e30c8c68a96aca",
       "semantic_id": "b3:15e30c8c68a96aca",
       "identity_status": "computed",
@@ -1051,19 +947,6 @@
       "column": 55,
       "message": "non-trait import `decode_command` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:15ffefcc8568b08c",
-      "semantic_id": "b3:15ffefcc8568b08c",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 170,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:16346e1cd92c7697",
@@ -1151,7 +1034,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/recall.rs",
-      "line": 695,
+      "line": 701,
       "column": 90,
       "message": "function `run_scope` is 360 lines (limit: 70)",
       "crate_name": "mneme_eval"
@@ -1222,19 +1105,6 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:198ebaa07d18df47",
-      "semantic_id": "b3:198ebaa07d18df47",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 2109 lines (limit: 300)",
-      "crate_name": "mneme_doc"
-    },
-    {
       "stable_id": "b3:1a27708c81c0f601",
       "semantic_id": "b3:1a27708c81c0f601",
       "identity_status": "computed",
@@ -1259,19 +1129,6 @@
       "column": 5,
       "message": "item name `all_reference_forms_roundtrip` repeats `reference` from ancestor path segment `reference`",
       "crate_name": "mneme_core"
-    },
-    {
-      "stable_id": "b3:1aab2ccf6a5ed110",
-      "semantic_id": "b3:1aab2ccf6a5ed110",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 144,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:1b50fd8343d75ef6",
@@ -1307,7 +1164,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 10,
+      "line": 8,
       "column": 68,
       "message": "non-trait import `ScopeClass` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -1372,7 +1229,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 8,
+      "line": 10,
       "column": 34,
       "message": "non-trait import `BTreeSet` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
@@ -1430,19 +1287,6 @@
       "crate_name": "agent"
     },
     {
-      "stable_id": "b3:1da3e03bd32ddfa9",
-      "semantic_id": "b3:1da3e03bd32ddfa9",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 100,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:1dab005c9612fd86",
       "semantic_id": "b3:1dab005c9612fd86",
       "identity_status": "computed",
@@ -1469,19 +1313,6 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:1e38c96667d91144",
-      "semantic_id": "b3:1e38c96667d91144",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 102,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:1e3cebc940f509b0",
       "semantic_id": "b3:1e3cebc940f509b0",
       "identity_status": "computed",
@@ -1489,7 +1320,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1852,
+      "line": 1862,
       "column": 59,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
@@ -1515,7 +1346,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 585,
+      "line": 586,
       "column": 5,
       "message": "non-trait import `text_input` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -1545,19 +1376,6 @@
       "column": 1,
       "message": "item name `SchemaRegistry` repeats `schema` from ancestor path segment `schema`",
       "crate_name": "mneme_core"
-    },
-    {
-      "stable_id": "b3:1f83d96014ef5134",
-      "semantic_id": "b3:1f83d96014ef5134",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 104,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:1ff649310b7b6a93",
@@ -1597,6 +1415,19 @@
       "column": 76,
       "message": "function `accept` is 134 lines (limit: 70)",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:205132de0af4c5cc",
+      "semantic_id": "b3:205132de0af4c5cc",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-cli/src/workspacecmd.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 321 lines (limit: 300)",
+      "crate_name": "mneme"
     },
     {
       "stable_id": "b3:2056d5da0211a4ef",
@@ -1658,7 +1489,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/service.rs",
-      "line": 366,
+      "line": 367,
       "column": 41,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_recall"
@@ -1697,7 +1528,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3149,
+      "line": 3168,
       "column": 31,
       "message": "non-trait import `Modifiers` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -1723,7 +1554,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1421,
+      "line": 1431,
       "column": 99,
       "message": "function `claim_inspector` is 126 lines (limit: 70)",
       "crate_name": "mneme_desktop"
@@ -1755,17 +1586,17 @@
       "crate_name": "mneme"
     },
     {
-      "stable_id": "b3:249a2c1dc78353a6",
-      "semantic_id": "b3:249a2c1dc78353a6",
+      "stable_id": "b3:2498e9eb26b99019",
+      "semantic_id": "b3:2498e9eb26b99019",
       "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 98,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
+      "file": "crates/mneme-retention/tests/retention.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 1521 lines (limit: 300)",
+      "crate_name": "retention"
     },
     {
       "stable_id": "b3:253876156174f3fb",
@@ -1775,7 +1606,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3159,
+      "line": 3178,
       "column": 24,
       "message": "non-trait import `AssertionView` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -1827,10 +1658,23 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 440,
+      "line": 417,
       "column": 1,
       "message": "function has 7 parameters (limit: 5) — consider an options struct",
       "crate_name": "mneme_eval"
+    },
+    {
+      "stable_id": "b3:26b37f24dc49ceba",
+      "semantic_id": "b3:26b37f24dc49ceba",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/src/image.rs",
+      "line": 72,
+      "column": 37,
+      "message": "function `build_input_image` is 136 lines (limit: 70)",
+      "crate_name": "mneme_prolog"
     },
     {
       "stable_id": "b3:27b062901c5d3a35",
@@ -1879,7 +1723,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3159,
+      "line": 3178,
       "column": 39,
       "message": "non-trait import `Corroboration` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -1976,6 +1820,19 @@
       "crate_name": "mneme_eval"
     },
     {
+      "stable_id": "b3:2adb29fb56fb4dc4",
+      "semantic_id": "b3:2adb29fb56fb4dc4",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/evidence.rs",
+      "line": 256,
+      "column": 91,
+      "message": "function `run_sources` is 132 lines (limit: 70)",
+      "crate_name": "mneme_eval"
+    },
+    {
       "stable_id": "b3:2b13246c3a1d7192",
       "semantic_id": "b3:2b13246c3a1d7192",
       "identity_status": "computed",
@@ -2000,19 +1857,6 @@
       "column": 1,
       "message": "non-trait import `Value` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_core"
-    },
-    {
-      "stable_id": "b3:2bbe651f50d67697",
-      "semantic_id": "b3:2bbe651f50d67697",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/design.rs",
-      "line": 227,
-      "column": 11,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_desktop"
     },
     {
       "stable_id": "b3:2c0639bac0ee6a37",
@@ -2041,19 +1885,6 @@
       "crate_name": "mneme-desktop"
     },
     {
-      "stable_id": "b3:2cac638a5e73f70b",
-      "semantic_id": "b3:2cac638a5e73f70b",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 1060 lines (limit: 300)",
-      "crate_name": "mneme_datalog"
-    },
-    {
       "stable_id": "b3:2cb54b031865ea90",
       "semantic_id": "b3:2cb54b031865ea90",
       "identity_status": "computed",
@@ -2080,19 +1911,6 @@
       "crate_name": "mneme_recall"
     },
     {
-      "stable_id": "b3:2d73fb602a7057b5",
-      "semantic_id": "b3:2d73fb602a7057b5",
-      "identity_status": "computed",
-      "lint": "path_segment_repetition",
-      "group": "tigerstyle::naming",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/task.rs",
-      "line": 12,
-      "column": 1,
-      "message": "item name `TaskAttempt` repeats `task` from ancestor path segment `task`",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:2d9205e34fb4dcd5",
       "semantic_id": "b3:2d9205e34fb4dcd5",
       "identity_status": "computed",
@@ -2106,19 +1924,6 @@
       "crate_name": "mneme_core"
     },
     {
-      "stable_id": "b3:2d93e3340ff89155",
-      "semantic_id": "b3:2d93e3340ff89155",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/design.rs",
-      "line": 327,
-      "column": 17,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_desktop"
-    },
-    {
       "stable_id": "b3:2dd273745bebb5ac",
       "semantic_id": "b3:2dd273745bebb5ac",
       "identity_status": "computed",
@@ -2126,7 +1931,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/recall.rs",
-      "line": 613,
+      "line": 619,
       "column": 91,
       "message": "function `run_budget` is 79 lines (limit: 70)",
       "crate_name": "mneme_eval"
@@ -2152,7 +1957,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 14,
+      "line": 12,
       "column": 42,
       "message": "non-trait import `PublicationDraft` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -2171,19 +1976,6 @@
       "crate_name": "mneme_core"
     },
     {
-      "stable_id": "b3:2e34d78bf2a92bf2",
-      "semantic_id": "b3:2e34d78bf2a92bf2",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 590,
-      "column": 17,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_datalog"
-    },
-    {
       "stable_id": "b3:2e6f9a9fe1710925",
       "semantic_id": "b3:2e6f9a9fe1710925",
       "identity_status": "computed",
@@ -2191,7 +1983,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1768,
+      "line": 1778,
       "column": 48,
       "message": "function `checkpoint_inspector` is 107 lines (limit: 70)",
       "crate_name": "mneme_desktop"
@@ -2204,7 +1996,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3156,
+      "line": 3175,
       "column": 59,
       "message": "non-trait import `ProjectionId` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -2301,6 +2093,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:3213e1b89f72409f",
+      "semantic_id": "b3:3213e1b89f72409f",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/main.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 3921 lines (limit: 300)",
+      "crate_name": "mneme-desktop"
+    },
+    {
       "stable_id": "b3:3215aae6c056da24",
       "semantic_id": "b3:3215aae6c056da24",
       "identity_status": "computed",
@@ -2314,19 +2119,6 @@
       "crate_name": "mneme_desktop"
     },
     {
-      "stable_id": "b3:3242321ea94ccbcd",
-      "semantic_id": "b3:3242321ea94ccbcd",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 126,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:329e717f8568541b",
       "semantic_id": "b3:329e717f8568541b",
       "identity_status": "computed",
@@ -2334,7 +2126,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 26,
+      "line": 22,
       "column": 1,
       "message": "item name `FixtureManifest` repeats `fixture` from ancestor path segment `fixture`",
       "crate_name": "mneme_eval"
@@ -2347,35 +2139,9 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/task.rs",
-      "line": 74,
+      "line": 65,
       "column": 1,
       "message": "item name `TaskEvaluation` repeats `task` from ancestor path segment `task`",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:332621f8a084df1f",
-      "semantic_id": "b3:332621f8a084df1f",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/lib.rs",
-      "line": 166,
-      "column": 9,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:3342a4aa302ae896",
-      "semantic_id": "b3:3342a4aa302ae896",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/mod.rs",
-      "line": 288,
-      "column": 17,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_eval"
     },
     {
@@ -2405,6 +2171,19 @@
       "crate_name": "mneme_prolog"
     },
     {
+      "stable_id": "b3:33c20aa7844e298d",
+      "semantic_id": "b3:33c20aa7844e298d",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/service.rs",
+      "line": 765,
+      "column": 3,
+      "message": "function `pack` is 103 lines (limit: 70)",
+      "crate_name": "mneme_recall"
+    },
+    {
       "stable_id": "b3:33fa5f1474eccad1",
       "semantic_id": "b3:33fa5f1474eccad1",
       "identity_status": "computed",
@@ -2429,19 +2208,6 @@
       "column": 1,
       "message": "source file is 401 lines (limit: 300)",
       "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:3444b3c143a9c6d2",
-      "semantic_id": "b3:3444b3c143a9c6d2",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 85,
-      "column": 21,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_datalog"
     },
     {
       "stable_id": "b3:34626a8bdf2f6232",
@@ -2503,36 +2269,10 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 2628,
+      "line": 2638,
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:356fe90b88aa816c",
-      "semantic_id": "b3:356fe90b88aa816c",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/tests/datalog.rs",
-      "line": 131,
-      "column": 25,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "datalog"
-    },
-    {
-      "stable_id": "b3:35dc578fe73103f8",
-      "semantic_id": "b3:35dc578fe73103f8",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-consolidation/src/lib.rs",
-      "line": 156,
-      "column": 31,
-      "message": "function `from_recall` is 91 lines (limit: 70)",
-      "crate_name": "mneme_consolidation"
     },
     {
       "stable_id": "b3:35f3263b066413ad",
@@ -2542,7 +2282,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1483,
+      "line": 1493,
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
@@ -2555,7 +2295,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 584,
+      "line": 585,
       "column": 5,
       "message": "non-trait import `text_editor` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -2646,7 +2386,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/service.rs",
-      "line": 869,
+      "line": 866,
       "column": 9,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_recall"
@@ -2672,7 +2412,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1848,
+      "line": 1858,
       "column": 25,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
@@ -2691,19 +2431,6 @@
       "crate_name": "mneme-desktop"
     },
     {
-      "stable_id": "b3:39c7d24d8fd859e1",
-      "semantic_id": "b3:39c7d24d8fd859e1",
-      "identity_status": "computed",
-      "lint": "nested_conditionals",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/service.rs",
-      "line": 277,
-      "column": 41,
-      "message": "conditional nesting is 4 levels deep (limit: 3)",
-      "crate_name": "mneme_recall"
-    },
-    {
       "stable_id": "b3:3a7c41724f0bddbd",
       "semantic_id": "b3:3a7c41724f0bddbd",
       "identity_status": "computed",
@@ -2717,32 +2444,6 @@
       "crate_name": "mneme-desktop"
     },
     {
-      "stable_id": "b3:3a8a650b3c44a700",
-      "semantic_id": "b3:3a8a650b3c44a700",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/mod.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 337 lines (limit: 300)",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:3b27aca8b4bda3f4",
-      "semantic_id": "b3:3b27aca8b4bda3f4",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 114,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:3bf0e9ccf16480dd",
       "semantic_id": "b3:3bf0e9ccf16480dd",
       "identity_status": "computed",
@@ -2754,6 +2455,19 @@
       "column": 74,
       "message": "non-trait import `MoveRequest` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
+    },
+    {
+      "stable_id": "b3:3c083aef75d9bd4a",
+      "semantic_id": "b3:3c083aef75d9bd4a",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-memory/tests/evidence.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 2152 lines (limit: 300)",
+      "crate_name": "evidence"
     },
     {
       "stable_id": "b3:3ce014b786214d59",
@@ -2893,7 +2607,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3149,
+      "line": 3168,
       "column": 9,
       "message": "non-trait import `Event` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -3016,32 +2730,6 @@
       "crate_name": "mneme_memory"
     },
     {
-      "stable_id": "b3:41e3d7245c6dc06c",
-      "semantic_id": "b3:41e3d7245c6dc06c",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-store/src/workspace.rs",
-      "line": 1494,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_store"
-    },
-    {
-      "stable_id": "b3:42281bfb4ef80448",
-      "semantic_id": "b3:42281bfb4ef80448",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/notes.rs",
-      "line": 638,
-      "column": 51,
-      "message": "function `links_for` is 98 lines (limit: 70)",
-      "crate_name": "mneme_desktop"
-    },
-    {
       "stable_id": "b3:4250bb8012c42488",
       "semantic_id": "b3:4250bb8012c42488",
       "identity_status": "computed",
@@ -3062,7 +2750,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 10,
+      "line": 11,
       "column": 1,
       "message": "non-trait import `Palette` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -3075,7 +2763,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/service.rs",
-      "line": 446,
+      "line": 443,
       "column": 17,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_recall"
@@ -3101,10 +2789,23 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3149,
+      "line": 3168,
       "column": 16,
       "message": "non-trait import `Key` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
+    },
+    {
+      "stable_id": "b3:4309891e0b05ff1d",
+      "semantic_id": "b3:4309891e0b05ff1d",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/evidence.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 1272 lines (limit: 300)",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:4334aca26dd4f0c5",
@@ -3140,7 +2841,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 2103,
+      "line": 2113,
       "column": 33,
       "message": "function `build_table_page` is 190 lines (limit: 70)",
       "crate_name": "mneme_desktop"
@@ -3166,7 +2867,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/workspace.rs",
-      "line": 243,
+      "line": 221,
       "column": 90,
       "message": "function `run_commit` is 172 lines (limit: 70)",
       "crate_name": "mneme_eval"
@@ -3179,7 +2880,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 915,
+      "line": 942,
       "column": 24,
       "message": "function calls itself recursively",
       "crate_name": "mneme-desktop"
@@ -3211,6 +2912,19 @@
       "crate_name": "mneme_recall"
     },
     {
+      "stable_id": "b3:45edce8515d2e804",
+      "semantic_id": "b3:45edce8515d2e804",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-memory/src/policy.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 1202 lines (limit: 300)",
+      "crate_name": "mneme_memory"
+    },
+    {
       "stable_id": "b3:4635bf0937d293b2",
       "semantic_id": "b3:4635bf0937d293b2",
       "identity_status": "computed",
@@ -3237,17 +2951,17 @@
       "crate_name": "api"
     },
     {
-      "stable_id": "b3:46c1d2cfade94f59",
-      "semantic_id": "b3:46c1d2cfade94f59",
+      "stable_id": "b3:46d9b74144a9802a",
+      "semantic_id": "b3:46d9b74144a9802a",
       "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
       "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 96,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
+      "file": "crates/mneme-prolog/src/image.rs",
+      "line": 66,
+      "column": 1,
+      "message": "item name `build_input_image` repeats `image` from ancestor path segment `image`",
+      "crate_name": "mneme_prolog"
     },
     {
       "stable_id": "b3:46ee2002009b6ea7",
@@ -3274,6 +2988,32 @@
       "column": 43,
       "message": "function `extract_proposals` is 92 lines (limit: 70)",
       "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:477e8a4123787848",
+      "semantic_id": "b3:477e8a4123787848",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/datalog.rs",
+      "line": 571,
+      "column": 97,
+      "message": "function `run_completeness` is 245 lines (limit: 70)",
+      "crate_name": "mneme_eval"
+    },
+    {
+      "stable_id": "b3:47932397b7b3cc6c",
+      "semantic_id": "b3:47932397b7b3cc6c",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/tests/datalog.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 1481 lines (limit: 300)",
+      "crate_name": "datalog"
     },
     {
       "stable_id": "b3:479e7a7d5a91c1f4",
@@ -3406,6 +3146,19 @@
       "crate_name": "mneme-desktop"
     },
     {
+      "stable_id": "b3:4a52db4b55f1b7f2",
+      "semantic_id": "b3:4a52db4b55f1b7f2",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/datalog.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 1039 lines (limit: 300)",
+      "crate_name": "mneme_eval"
+    },
+    {
       "stable_id": "b3:4a603febda9cdca5",
       "semantic_id": "b3:4a603febda9cdca5",
       "identity_status": "computed",
@@ -3417,19 +3170,6 @@
       "column": 1,
       "message": "item name `RecallCandidate` repeats `recall` from ancestor path segment `mneme_recall`",
       "crate_name": "mneme_recall"
-    },
-    {
-      "stable_id": "b3:4af5dfd75071d84a",
-      "semantic_id": "b3:4af5dfd75071d84a",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 873,
-      "column": 25,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_datalog"
     },
     {
       "stable_id": "b3:4b024797ee167a98",
@@ -3458,19 +3198,6 @@
       "crate_name": "mneme_prolog"
     },
     {
-      "stable_id": "b3:4b42832cf9d32835",
-      "semantic_id": "b3:4b42832cf9d32835",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1656,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_doc"
-    },
-    {
       "stable_id": "b3:4b703a42c205202d",
       "semantic_id": "b3:4b703a42c205202d",
       "identity_status": "computed",
@@ -3482,19 +3209,6 @@
       "column": 64,
       "message": "function `run_case` is 95 lines (limit: 70)",
       "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:4b98562e1010c646",
-      "semantic_id": "b3:4b98562e1010c646",
-      "identity_status": "computed",
-      "lint": "path_segment_repetition",
-      "group": "tigerstyle::naming",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/image.rs",
-      "line": 66,
-      "column": 1,
-      "message": "item name `build_input_image` repeats `image` from ancestor path segment `image`",
-      "crate_name": "mneme_prolog"
     },
     {
       "stable_id": "b3:4c595a168a36a587",
@@ -3510,17 +3224,17 @@
       "crate_name": "mneme_core"
     },
     {
-      "stable_id": "b3:4cae31db65eecce5",
-      "semantic_id": "b3:4cae31db65eecce5",
+      "stable_id": "b3:4d1547284527fe05",
+      "semantic_id": "b3:4d1547284527fe05",
       "identity_status": "computed",
       "lint": "excessive_file_length",
       "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
+      "file": "crates/mneme-eval/src/suites/recall.rs",
       "line": 1,
       "column": 1,
-      "message": "source file is 506 lines (limit: 300)",
-      "crate_name": "mneme_datalog"
+      "message": "source file is 1216 lines (limit: 300)",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:4d22b938c927d82e",
@@ -3534,19 +3248,6 @@
       "column": 1,
       "message": "item name `ScopeClass` repeats `scope` from ancestor path segment `scope`",
       "crate_name": "mneme_core"
-    },
-    {
-      "stable_id": "b3:4db33c3fedb96066",
-      "semantic_id": "b3:4db33c3fedb96066",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/datalog.rs",
-      "line": 363,
-      "column": 90,
-      "message": "function `run_rules` is 187 lines (limit: 70)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:4dbf864901cb5db0",
@@ -3569,7 +3270,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3150,
+      "line": 3169,
       "column": 15,
       "message": "non-trait import `Code` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -3595,7 +3296,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/datalog.rs",
-      "line": 897,
+      "line": 975,
       "column": 1,
       "message": "item name `datalog_text` repeats `datalog` from ancestor path segment `datalog`",
       "crate_name": "mneme_eval"
@@ -3612,19 +3313,6 @@
       "column": 1,
       "message": "source file is 558 lines (limit: 300)",
       "crate_name": "api"
-    },
-    {
-      "stable_id": "b3:4ed069abd1af1e9c",
-      "semantic_id": "b3:4ed069abd1af1e9c",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-memory/src/policy.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 1202 lines (limit: 300)",
-      "crate_name": "mneme_memory"
     },
     {
       "stable_id": "b3:4efa61a781d23951",
@@ -3673,7 +3361,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3161,
+      "line": 3180,
       "column": 9,
       "message": "non-trait import `DataBoundary` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -3703,19 +3391,6 @@
       "column": 1,
       "message": "source file is 533 lines (limit: 300)",
       "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:50975761e846ef5e",
-      "semantic_id": "b3:50975761e846ef5e",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/image.rs",
-      "line": 72,
-      "column": 37,
-      "message": "function `build_input_image` is 136 lines (limit: 70)",
-      "crate_name": "mneme_prolog"
     },
     {
       "stable_id": "b3:50e990c3f3bf055d",
@@ -3770,6 +3445,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:51def1b4c77c54f9",
+      "semantic_id": "b3:51def1b4c77c54f9",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/preview.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 749 lines (limit: 300)",
+      "crate_name": "mneme_desktop"
+    },
+    {
       "stable_id": "b3:522715ce84c23a16",
       "semantic_id": "b3:522715ce84c23a16",
       "identity_status": "computed",
@@ -3807,6 +3495,19 @@
       "column": 21,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:52bb8397261d9daa",
+      "semantic_id": "b3:52bb8397261d9daa",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/baselines.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 336 lines (limit: 300)",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:530537137030cc4a",
@@ -3855,7 +3556,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 14,
+      "line": 12,
       "column": 80,
       "message": "non-trait import `RecordDraft` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -3939,17 +3640,17 @@
       "crate_name": "mneme_core"
     },
     {
-      "stable_id": "b3:571d93d4ec43b002",
-      "semantic_id": "b3:571d93d4ec43b002",
+      "stable_id": "b3:573d0e8f1288c5ff",
+      "semantic_id": "b3:573d0e8f1288c5ff",
       "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-store/src/workspace.rs",
-      "line": 1610,
-      "column": 32,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_store"
+      "file": "crates/mneme-datalog/src/rules.rs",
+      "line": 6,
+      "column": 61,
+      "message": "function `validate` is 241 lines (limit: 70)",
+      "crate_name": "mneme_datalog"
     },
     {
       "stable_id": "b3:578c7b383fc0c533",
@@ -4154,10 +3855,36 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2066,
+      "line": 2085,
       "column": 62,
       "message": "function `properties_section` is 139 lines (limit: 70)",
       "crate_name": "mneme-desktop"
+    },
+    {
+      "stable_id": "b3:5ccdfde5bb76099a",
+      "semantic_id": "b3:5ccdfde5bb76099a",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/src/image.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 401 lines (limit: 300)",
+      "crate_name": "mneme_prolog"
+    },
+    {
+      "stable_id": "b3:5d3031e5364f60fb",
+      "semantic_id": "b3:5d3031e5364f60fb",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 744 lines (limit: 300)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:5d341ec3820cd449",
@@ -4193,7 +3920,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3161,
+      "line": 3180,
       "column": 38,
       "message": "non-trait import `RecallExecution` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -4232,7 +3959,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 208,
+      "line": 188,
       "column": 1,
       "message": "item name `compare_baselines` repeats `baselines` from ancestor path segment `baselines`",
       "crate_name": "mneme_eval"
@@ -4264,32 +3991,6 @@
       "crate_name": "agent"
     },
     {
-      "stable_id": "b3:60157ba844974884",
-      "semantic_id": "b3:60157ba844974884",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-recall/tests/recall.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 920 lines (limit: 300)",
-      "crate_name": "recall"
-    },
-    {
-      "stable_id": "b3:6019dbaf3dc7582e",
-      "semantic_id": "b3:6019dbaf3dc7582e",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/retention.rs",
-      "line": 322,
-      "column": 37,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:601bd44febe8dfef",
       "semantic_id": "b3:601bd44febe8dfef",
       "identity_status": "computed",
@@ -4310,7 +4011,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 14,
+      "line": 12,
       "column": 20,
       "message": "non-trait import `ImportCandidateDraft` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -4327,19 +4028,6 @@
       "column": 1,
       "message": "item name `RetentionLocationState` repeats `retention` from ancestor path segment `retention`",
       "crate_name": "mneme_store"
-    },
-    {
-      "stable_id": "b3:618e365ae4549491",
-      "semantic_id": "b3:618e365ae4549491",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 832,
-      "column": 21,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_datalog"
     },
     {
       "stable_id": "b3:626f15456769a878",
@@ -4388,7 +4076,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 14,
+      "line": 12,
       "column": 5,
       "message": "non-trait import `CommitCommand` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -4433,19 +4121,6 @@
       "crate_name": "mneme_desktop"
     },
     {
-      "stable_id": "b3:64d4f279562f0bfd",
-      "semantic_id": "b3:64d4f279562f0bfd",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/task.rs",
-      "line": 27,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:64d622fbbfeae9dc",
       "semantic_id": "b3:64d622fbbfeae9dc",
       "identity_status": "computed",
@@ -4453,7 +4128,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 108,
+      "line": 95,
       "column": 1,
       "message": "item name `RetrievalEvaluation` repeats `evaluation` from ancestor path segment `evaluation`",
       "crate_name": "mneme_eval"
@@ -4485,19 +4160,6 @@
       "crate_name": "mneme-desktop"
     },
     {
-      "stable_id": "b3:66d8c4e4c42b9538",
-      "semantic_id": "b3:66d8c4e4c42b9538",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/service.rs",
-      "line": 768,
-      "column": 3,
-      "message": "function `pack` is 103 lines (limit: 70)",
-      "crate_name": "mneme_recall"
-    },
-    {
       "stable_id": "b3:66fab678eb59dca5",
       "semantic_id": "b3:66fab678eb59dca5",
       "identity_status": "computed",
@@ -4518,23 +4180,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3161,
+      "line": 3180,
       "column": 23,
       "message": "non-trait import `RecallContext` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
-    },
-    {
-      "stable_id": "b3:67c1861dca4b36e4",
-      "semantic_id": "b3:67c1861dca4b36e4",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/evidence.rs",
-      "line": 291,
-      "column": 37,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:67f4e625971a3b7c",
@@ -4583,7 +4232,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3152,
+      "line": 3171,
       "column": 5,
       "message": "non-trait import `HeadlessSurface` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -4628,19 +4277,6 @@
       "crate_name": "api"
     },
     {
-      "stable_id": "b3:69165d6694e6ca2a",
-      "semantic_id": "b3:69165d6694e6ca2a",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 98,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:694eacb8caa12c84",
       "semantic_id": "b3:694eacb8caa12c84",
       "identity_status": "computed",
@@ -4648,23 +4284,10 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-memory/tests/evidence.rs",
-      "line": 440,
+      "line": 458,
       "column": 1,
       "message": "function has 7 parameters (limit: 5) — consider an options struct",
       "crate_name": "evidence"
-    },
-    {
-      "stable_id": "b3:69ecae6b66913bf4",
-      "semantic_id": "b3:69ecae6b66913bf4",
-      "identity_status": "computed",
-      "lint": "nested_conditionals",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/preview.rs",
-      "line": 584,
-      "column": 25,
-      "message": "conditional nesting is 4 levels deep (limit: 3)",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:6a3a9510d89658c7",
@@ -4687,7 +4310,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 12,
+      "line": 7,
       "column": 1,
       "message": "non-trait import `Status` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
@@ -4706,19 +4329,6 @@
       "crate_name": "mneme_eval"
     },
     {
-      "stable_id": "b3:6b903456d457110a",
-      "semantic_id": "b3:6b903456d457110a",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/index.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 415 lines (limit: 300)",
-      "crate_name": "mneme_recall"
-    },
-    {
       "stable_id": "b3:6d4c61713ef70329",
       "semantic_id": "b3:6d4c61713ef70329",
       "identity_status": "computed",
@@ -4726,7 +4336,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 11,
+      "line": 9,
       "column": 20,
       "message": "non-trait import `WorkspaceRevisionId` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -4745,19 +4355,6 @@
       "crate_name": "mneme_eval"
     },
     {
-      "stable_id": "b3:6da43849406f0bd9",
-      "semantic_id": "b3:6da43849406f0bd9",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/main.rs",
-      "line": 285,
-      "column": 21,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme-desktop"
-    },
-    {
       "stable_id": "b3:6dddf464ee4ed38a",
       "semantic_id": "b3:6dddf464ee4ed38a",
       "identity_status": "computed",
@@ -4765,36 +4362,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 12,
+      "line": 13,
       "column": 36,
       "message": "non-trait import `Shadow` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:6e644ae5a818f083",
-      "semantic_id": "b3:6e644ae5a818f083",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/datalog.rs",
-      "line": 775,
-      "column": 23,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:6e9e0784391d6ca8",
-      "semantic_id": "b3:6e9e0784391d6ca8",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/task.rs",
-      "line": 25,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:6eeae420008f1dd4",
@@ -4817,7 +4388,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 11,
+      "line": 9,
       "column": 41,
       "message": "non-trait import `base64` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -4830,7 +4401,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 8,
+      "line": 10,
       "column": 24,
       "message": "non-trait import `BTreeMap` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
@@ -4856,23 +4427,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 10,
+      "line": 8,
       "column": 20,
       "message": "non-trait import `EncodingProfile` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:71917250ee0b0007",
-      "semantic_id": "b3:71917250ee0b0007",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 24,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_datalog"
     },
     {
       "stable_id": "b3:719e5326d3248bc0",
@@ -4921,7 +4479,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3157,
+      "line": 3176,
       "column": 57,
       "message": "non-trait import `TableRow` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -4938,19 +4496,6 @@
       "column": 1,
       "message": "item name `ConsolidationJob` repeats `consolidation` from ancestor path segment `mneme_consolidation`",
       "crate_name": "mneme_consolidation"
-    },
-    {
-      "stable_id": "b3:722d7e03031aed08",
-      "semantic_id": "b3:722d7e03031aed08",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/retention.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 690 lines (limit: 300)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:724a1ec6d3e9c223",
@@ -4973,22 +4518,9 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 20,
+      "line": 6,
       "column": 55,
       "message": "non-trait import `read_input` hides the owner path; prefer the qualified path at the use site",
-      "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:726e23703cfb4f4a",
-      "semantic_id": "b3:726e23703cfb4f4a",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 36,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
       "crate_name": "mneme"
     },
     {
@@ -5018,19 +4550,6 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:734f6691926418b2",
-      "semantic_id": "b3:734f6691926418b2",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/index.rs",
-      "line": 274,
-      "column": 9,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_recall"
-    },
-    {
       "stable_id": "b3:73903046c9cc3ecc",
       "semantic_id": "b3:73903046c9cc3ecc",
       "identity_status": "computed",
@@ -5038,7 +4557,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3155,
+      "line": 3174,
       "column": 69,
       "message": "non-trait import `GraphCoverage` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -5055,19 +4574,6 @@
       "column": 1,
       "message": "function has 6 parameters (limit: 5) — consider an options struct",
       "crate_name": "workspace"
-    },
-    {
-      "stable_id": "b3:73d9817e34e0cccc",
-      "semantic_id": "b3:73d9817e34e0cccc",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/design.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 645 lines (limit: 300)",
-      "crate_name": "mneme_desktop"
     },
     {
       "stable_id": "b3:74855b27130a8f28",
@@ -5116,7 +4622,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 211,
+      "line": 191,
       "column": 41,
       "message": "function `compare_baselines` is 76 lines (limit: 70)",
       "crate_name": "mneme_eval"
@@ -5158,19 +4664,6 @@
       "line": 19,
       "column": 1,
       "message": "non-trait import `TempDir` hides the owner path; prefer the qualified path at the use site",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:7846fac7fdf34314",
-      "semantic_id": "b3:7846fac7fdf34314",
-      "identity_status": "computed",
-      "lint": "path_segment_repetition",
-      "group": "tigerstyle::naming",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 16,
-      "column": 1,
-      "message": "item name `FixtureEntry` repeats `fixture` from ancestor path segment `fixture`",
       "crate_name": "mneme_eval"
     },
     {
@@ -5220,7 +4713,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 20,
+      "line": 6,
       "column": 23,
       "message": "non-trait import `WorkspaceCmd` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -5330,32 +4823,6 @@
       "crate_name": "mneme_doc"
     },
     {
-      "stable_id": "b3:7c0faedb201cf5e4",
-      "semantic_id": "b3:7c0faedb201cf5e4",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/design.rs",
-      "line": 510,
-      "column": 20,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:7c4552f2b9c4c962",
-      "semantic_id": "b3:7c4552f2b9c4c962",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/preview.rs",
-      "line": 283,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_desktop"
-    },
-    {
       "stable_id": "b3:7c5d3847fbdcc588",
       "semantic_id": "b3:7c5d3847fbdcc588",
       "identity_status": "computed",
@@ -5421,19 +4888,6 @@
       "crate_name": "mneme"
     },
     {
-      "stable_id": "b3:7d4ee1d4b1de46bd",
-      "semantic_id": "b3:7d4ee1d4b1de46bd",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 40,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme"
-    },
-    {
       "stable_id": "b3:7da888f283c9c1e5",
       "semantic_id": "b3:7da888f283c9c1e5",
       "identity_status": "computed",
@@ -5467,7 +4921,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 15,
+      "line": 13,
       "column": 34,
       "message": "non-trait import `Workspace` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -5497,32 +4951,6 @@
       "column": 1,
       "message": "non-trait import `TempDir` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "api"
-    },
-    {
-      "stable_id": "b3:801f14be07e6fdc8",
-      "semantic_id": "b3:801f14be07e6fdc8",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/image.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 401 lines (limit: 300)",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:8054d8ddb1866ab5",
-      "semantic_id": "b3:8054d8ddb1866ab5",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/evidence.rs",
-      "line": 1017,
-      "column": 95,
-      "message": "function `run_explanation` is 136 lines (limit: 70)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:806bac803e2ad501",
@@ -5571,7 +4999,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1854,
+      "line": 1864,
       "column": 22,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
@@ -5588,19 +5016,6 @@
       "column": 35,
       "message": "function `add_other_scope` is 73 lines (limit: 70)",
       "crate_name": "recall"
-    },
-    {
-      "stable_id": "b3:80dfaf233cc96825",
-      "semantic_id": "b3:80dfaf233cc96825",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 116,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:81196ae3df91ebbb",
@@ -5629,19 +5044,6 @@
       "crate_name": "mneme_eval"
     },
     {
-      "stable_id": "b3:81bb86ebd968343e",
-      "semantic_id": "b3:81bb86ebd968343e",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2735,
-      "column": 25,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme-desktop"
-    },
-    {
       "stable_id": "b3:81e2c4c1fbf21078",
       "semantic_id": "b3:81e2c4c1fbf21078",
       "identity_status": "computed",
@@ -5668,32 +5070,6 @@
       "crate_name": "mneme-desktop"
     },
     {
-      "stable_id": "b3:827b10b1134a963f",
-      "semantic_id": "b3:827b10b1134a963f",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-store/src/workspace.rs",
-      "line": 1124,
-      "column": 46,
-      "message": "function `commit` is 495 lines (limit: 70)",
-      "crate_name": "mneme_store"
-    },
-    {
-      "stable_id": "b3:8290b95042425d26",
-      "semantic_id": "b3:8290b95042425d26",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-consolidation/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 1057 lines (limit: 300)",
-      "crate_name": "mneme_consolidation"
-    },
-    {
       "stable_id": "b3:82c6a2fc157295a3",
       "semantic_id": "b3:82c6a2fc157295a3",
       "identity_status": "computed",
@@ -5705,32 +5081,6 @@
       "column": 1,
       "message": "item name `PlanState` repeats `plan` from ancestor path segment `plan`",
       "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:82e765014bec30d1",
-      "semantic_id": "b3:82e765014bec30d1",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/service.rs",
-      "line": 807,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_recall"
-    },
-    {
-      "stable_id": "b3:831fe86e183f28cf",
-      "semantic_id": "b3:831fe86e183f28cf",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/retention.rs",
-      "line": 300,
-      "column": 95,
-      "message": "function `run_retraction` is 71 lines (limit: 70)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:837ca26ab693ad64",
@@ -5757,19 +5107,6 @@
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:8400c47eed2de14a",
-      "semantic_id": "b3:8400c47eed2de14a",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/service.rs",
-      "line": 783,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:84264427935f23c5",
@@ -5896,7 +5233,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 73,
+      "line": 62,
       "column": 72,
       "message": "function `run` is 101 lines (limit: 70)",
       "crate_name": "mneme"
@@ -5961,7 +5298,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 10,
+      "line": 8,
       "column": 37,
       "message": "non-trait import `HashAlgorithm` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -5974,7 +5311,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3155,
+      "line": 3174,
       "column": 50,
       "message": "non-trait import `CheckpointSummary` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -6013,23 +5350,23 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/task.rs",
-      "line": 53,
+      "line": 46,
       "column": 1,
       "message": "item name `TaskCase` repeats `task` from ancestor path segment `task`",
       "crate_name": "mneme_eval"
     },
     {
-      "stable_id": "b3:87cbc46618c65c3c",
-      "semantic_id": "b3:87cbc46618c65c3c",
+      "stable_id": "b3:876cb7aa976fb220",
+      "semantic_id": "b3:876cb7aa976fb220",
       "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-desktop/tests/model.rs",
-      "line": 484,
-      "column": 19,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "model"
+      "file": "crates/mneme-store/src/workspace.rs",
+      "line": 1124,
+      "column": 46,
+      "message": "function `commit` is 495 lines (limit: 70)",
+      "crate_name": "mneme_store"
     },
     {
       "stable_id": "b3:87fbe553ef29efc0",
@@ -6039,7 +5376,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2250,
+      "line": 2269,
       "column": 57,
       "message": "function `preview_block` is 89 lines (limit: 70)",
       "crate_name": "mneme-desktop"
@@ -6065,7 +5402,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 2519,
+      "line": 2529,
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
@@ -6082,19 +5419,6 @@
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_memory"
-    },
-    {
-      "stable_id": "b3:887c28b5888cbbfc",
-      "semantic_id": "b3:887c28b5888cbbfc",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 118,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:88e91c1fdde24de6",
@@ -6117,23 +5441,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 11,
+      "line": 9,
       "column": 49,
       "message": "non-trait import `decode_value` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:8976c08919c9256d",
-      "semantic_id": "b3:8976c08919c9256d",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-retention/tests/retention.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 1503 lines (limit: 300)",
-      "crate_name": "retention"
     },
     {
       "stable_id": "b3:89d9b1cf5ad2f13c",
@@ -6143,23 +5454,10 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 2073,
+      "line": 2083,
       "column": 9,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:8a758a03d7202abf",
-      "semantic_id": "b3:8a758a03d7202abf",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/workspace.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 793 lines (limit: 300)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:8aa1b5f21ef4fff7",
@@ -6234,7 +5532,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 13,
+      "line": 8,
       "column": 47,
       "message": "non-trait import `RUN_SCHEMA_VERSION` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
@@ -6247,7 +5545,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/retention.rs",
-      "line": 374,
+      "line": 380,
       "column": 91,
       "message": "function `run_forget` is 79 lines (limit: 70)",
       "crate_name": "mneme_eval"
@@ -6312,7 +5610,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3157,
+      "line": 3176,
       "column": 40,
       "message": "non-trait import `TableColumnKind` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -6351,7 +5649,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 11,
+      "line": 12,
       "column": 20,
       "message": "non-trait import `button` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -6368,6 +5666,19 @@
       "column": 1,
       "message": "non-trait import `BTreeSet` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "api"
+    },
+    {
+      "stable_id": "b3:8febc2241e39efd3",
+      "semantic_id": "b3:8febc2241e39efd3",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/src/worker.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 496 lines (limit: 300)",
+      "crate_name": "mneme_prolog"
     },
     {
       "stable_id": "b3:902d378c5a688678",
@@ -6390,23 +5701,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 12,
+      "line": 13,
       "column": 44,
       "message": "non-trait import `Theme` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:90ae977d336b8049",
-      "semantic_id": "b3:90ae977d336b8049",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/service.rs",
-      "line": 617,
-      "column": 9,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:91153e2d91161de9",
@@ -6420,19 +5718,6 @@
       "column": 29,
       "message": "non-trait import `ExitStatus` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:91309c37fdf2c4e3",
-      "semantic_id": "b3:91309c37fdf2c4e3",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 228,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_datalog"
     },
     {
       "stable_id": "b3:91f4036ebd2cfa52",
@@ -6487,29 +5772,16 @@
       "crate_name": "agent"
     },
     {
-      "stable_id": "b3:9362555ad67f0052",
-      "semantic_id": "b3:9362555ad67f0052",
+      "stable_id": "b3:93c699c299b5cd14",
+      "semantic_id": "b3:93c699c299b5cd14",
       "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-store/src/workspace.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 3763 lines (limit: 300)",
-      "crate_name": "mneme_store"
-    },
-    {
-      "stable_id": "b3:93926040112ab2df",
-      "semantic_id": "b3:93926040112ab2df",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 148,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
+      "line": 13,
+      "column": 1,
+      "message": "item name `FixtureEntry` repeats `fixture` from ancestor path segment `fixture`",
       "crate_name": "mneme_eval"
     },
     {
@@ -6526,17 +5798,17 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:947303538e02371a",
-      "semantic_id": "b3:947303538e02371a",
+      "stable_id": "b3:9520a308e01e51e5",
+      "semantic_id": "b3:9520a308e01e51e5",
       "identity_status": "computed",
-      "lint": "function_length",
+      "lint": "excessive_file_length",
       "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-doc/src/preview.rs",
-      "line": 526,
-      "column": 49,
-      "message": "function `inline` is 157 lines (limit: 70)",
-      "crate_name": "mneme_doc"
+      "file": "crates/mneme-desktop/src/model.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 2715 lines (limit: 300)",
+      "crate_name": "mneme_desktop"
     },
     {
       "stable_id": "b3:95a2084b16b0ea25",
@@ -6546,22 +5818,9 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 124,
+      "line": 109,
       "column": 1,
       "message": "item name `CaseEvaluation` repeats `evaluation` from ancestor path segment `evaluation`",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:960269a17117d341",
-      "semantic_id": "b3:960269a17117d341",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/lib.rs",
-      "line": 184,
-      "column": 17,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_eval"
     },
     {
@@ -6669,17 +5928,17 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:977c0dcfce54d5a5",
-      "semantic_id": "b3:977c0dcfce54d5a5",
+      "stable_id": "b3:97b24692c8805e13",
+      "semantic_id": "b3:97b24692c8805e13",
       "identity_status": "computed",
-      "lint": "excessive_file_length",
+      "lint": "function_length",
       "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-desktop/src/preview.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 749 lines (limit: 300)",
-      "crate_name": "mneme_desktop"
+      "file": "crates/mneme-eval/src/suites/retention.rs",
+      "line": 300,
+      "column": 95,
+      "message": "function `run_retraction` is 77 lines (limit: 70)",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:98663e2825065089",
@@ -6689,7 +5948,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 15,
+      "line": 13,
       "column": 5,
       "message": "non-trait import `SourceBlobDraft` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -6702,7 +5961,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 2368,
+      "line": 2378,
       "column": 33,
       "message": "function `build_graph_page` is 223 lines (limit: 70)",
       "crate_name": "mneme_desktop"
@@ -6760,19 +6019,6 @@
       "crate_name": "mneme_api"
     },
     {
-      "stable_id": "b3:9b53b48e7baec8b5",
-      "semantic_id": "b3:9b53b48e7baec8b5",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/datalog.rs",
-      "line": 553,
-      "column": 97,
-      "message": "function `run_completeness` is 209 lines (limit: 70)",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:9b581b89fe3f2285",
       "semantic_id": "b3:9b581b89fe3f2285",
       "identity_status": "computed",
@@ -6799,16 +6045,29 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:9c4ad44658a134c1",
-      "semantic_id": "b3:9c4ad44658a134c1",
+      "stable_id": "b3:9c18f40dd384992e",
+      "semantic_id": "b3:9c18f40dd384992e",
       "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 106,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 526,
+      "column": 49,
+      "message": "function `inline` is 113 lines (limit: 70)",
+      "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:9c330d3d45510362",
+      "semantic_id": "b3:9c330d3d45510362",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/evidence.rs",
+      "line": 391,
+      "column": 93,
+      "message": "function `run_lifecycle` is 219 lines (limit: 70)",
       "crate_name": "mneme_eval"
     },
     {
@@ -6825,19 +6084,6 @@
       "crate_name": "mneme_core"
     },
     {
-      "stable_id": "b3:9d02ac1e0367f32e",
-      "semantic_id": "b3:9d02ac1e0367f32e",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/notes.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 1193 lines (limit: 300)",
-      "crate_name": "mneme_desktop"
-    },
-    {
       "stable_id": "b3:9d06e6921912de0e",
       "semantic_id": "b3:9d06e6921912de0e",
       "identity_status": "computed",
@@ -6845,7 +6091,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 11,
+      "line": 12,
       "column": 28,
       "message": "non-trait import `container` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -6858,7 +6104,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3155,
+      "line": 3174,
       "column": 84,
       "message": "non-trait import `GraphEdge` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -6877,6 +6123,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:9da2ae14191a5e11",
+      "semantic_id": "b3:9da2ae14191a5e11",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/mod.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 337 lines (limit: 300)",
+      "crate_name": "mneme_eval"
+    },
+    {
       "stable_id": "b3:9ded24b7b46e18a0",
       "semantic_id": "b3:9ded24b7b46e18a0",
       "identity_status": "computed",
@@ -6890,6 +6149,19 @@
       "crate_name": "cli"
     },
     {
+      "stable_id": "b3:9e12d98f763d006f",
+      "semantic_id": "b3:9e12d98f763d006f",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/evaluation.rs",
+      "line": 245,
+      "column": 40,
+      "message": "function `evaluate_reading` is 94 lines (limit: 70)",
+      "crate_name": "mneme_eval"
+    },
+    {
       "stable_id": "b3:9e4606cf36ff4fcc",
       "semantic_id": "b3:9e4606cf36ff4fcc",
       "identity_status": "computed",
@@ -6897,7 +6169,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 10,
+      "line": 8,
       "column": 89,
       "message": "non-trait import `Symbol` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -6910,7 +6182,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 15,
+      "line": 13,
       "column": 22,
       "message": "non-trait import `StoreError` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -6936,7 +6208,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 165,
+      "line": 125,
       "column": 1,
       "message": "item name `FixtureFile` repeats `fixture` from ancestor path segment `fixture`",
       "crate_name": "mneme_eval"
@@ -7001,23 +6273,10 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2369,
+      "line": 2388,
       "column": 57,
       "message": "function `table_section` is 107 lines (limit: 70)",
       "crate_name": "mneme-desktop"
-    },
-    {
-      "stable_id": "b3:a1ecb1e2e1211ceb",
-      "semantic_id": "b3:a1ecb1e2e1211ceb",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/tests/datalog.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 1397 lines (limit: 300)",
-      "crate_name": "datalog"
     },
     {
       "stable_id": "b3:a2af5dc756937ec2",
@@ -7031,19 +6290,6 @@
       "column": 27,
       "message": "function calls itself recursively",
       "crate_name": "mneme_core"
-    },
-    {
-      "stable_id": "b3:a2b4dcb552fabee9",
-      "semantic_id": "b3:a2b4dcb552fabee9",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 3902 lines (limit: 300)",
-      "crate_name": "mneme-desktop"
     },
     {
       "stable_id": "b3:a2fed240b066f1e7",
@@ -7072,32 +6318,6 @@
       "crate_name": "mneme_eval"
     },
     {
-      "stable_id": "b3:a36149f117a81fd3",
-      "semantic_id": "b3:a36149f117a81fd3",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 134,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:a38f1eb84782beb8",
-      "semantic_id": "b3:a38f1eb84782beb8",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/recall.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 1210 lines (limit: 300)",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:a3a94318e62261a3",
       "semantic_id": "b3:a3a94318e62261a3",
       "identity_status": "computed",
@@ -7105,23 +6325,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3159,
+      "line": 3178,
       "column": 54,
       "message": "non-trait import `Explanation` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
-    },
-    {
-      "stable_id": "b3:a3ac793850478c91",
-      "semantic_id": "b3:a3ac793850478c91",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 20,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:a3b07f042eeb42e0",
@@ -7131,23 +6338,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 10,
+      "line": 8,
       "column": 52,
       "message": "non-trait import `RecordEnvelope` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:a3c14638efd50756",
-      "semantic_id": "b3:a3c14638efd50756",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 120,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:a3c5df01a637374b",
@@ -7174,6 +6368,19 @@
       "column": 9,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:a490f15442a866ca",
+      "semantic_id": "b3:a490f15442a866ca",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-consolidation/src/lib.rs",
+      "line": 156,
+      "column": 31,
+      "message": "function `from_recall` is 91 lines (limit: 70)",
+      "crate_name": "mneme_consolidation"
     },
     {
       "stable_id": "b3:a499b4969ae3f759",
@@ -7222,7 +6429,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/tests/retention.rs",
-      "line": 949,
+      "line": 967,
       "column": 13,
       "message": "function calls itself recursively",
       "crate_name": "retention"
@@ -7267,19 +6474,6 @@
       "crate_name": "mneme_eval"
     },
     {
-      "stable_id": "b3:a6aeac1fe3c5bc1b",
-      "semantic_id": "b3:a6aeac1fe3c5bc1b",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/workspace.rs",
-      "line": 20,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:a6c2ed9a66dfe889",
       "semantic_id": "b3:a6c2ed9a66dfe889",
       "identity_status": "computed",
@@ -7287,7 +6481,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3156,
+      "line": 3175,
       "column": 41,
       "message": "non-trait import `OrderingCoverage` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -7313,7 +6507,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3150,
+      "line": 3169,
       "column": 28,
       "message": "non-trait import `Physical` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -7358,19 +6552,6 @@
       "crate_name": "agent"
     },
     {
-      "stable_id": "b3:a86e2387bbce6df0",
-      "semantic_id": "b3:a86e2387bbce6df0",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 80,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:a8e9caa295159d61",
       "semantic_id": "b3:a8e9caa295159d61",
       "identity_status": "computed",
@@ -7378,7 +6559,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/workspace.rs",
-      "line": 575,
+      "line": 549,
       "column": 95,
       "message": "function `run_publication` is 71 lines (limit: 70)",
       "crate_name": "mneme_eval"
@@ -7423,19 +6604,6 @@
       "crate_name": "mneme_desktop"
     },
     {
-      "stable_id": "b3:ab03693aa4b410fd",
-      "semantic_id": "b3:ab03693aa4b410fd",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 142,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:ab2f7f9c8cab4ae6",
       "semantic_id": "b3:ab2f7f9c8cab4ae6",
       "identity_status": "computed",
@@ -7443,7 +6611,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/service.rs",
-      "line": 775,
+      "line": 772,
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_recall"
@@ -7469,7 +6637,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 12,
+      "line": 13,
       "column": 27,
       "message": "non-trait import `Element` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -7482,7 +6650,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3147,
+      "line": 3166,
       "column": 5,
       "message": "non-trait import `Color` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -7499,19 +6667,6 @@
       "column": 70,
       "message": "function `render_source` is 270 lines (limit: 70)",
       "crate_name": "mneme_doc"
-    },
-    {
-      "stable_id": "b3:acfd797b3306c612",
-      "semantic_id": "b3:acfd797b3306c612",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/evidence.rs",
-      "line": 379,
-      "column": 93,
-      "message": "function `run_lifecycle` is 207 lines (limit: 70)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:ad4076caf1087f80",
@@ -7538,19 +6693,6 @@
       "column": 5,
       "message": "item name `deterministic_generator_marks_support_pending` repeats `generator` from ancestor path segment `generator`",
       "crate_name": "mneme_consolidation"
-    },
-    {
-      "stable_id": "b3:ae9187a0535a8fdb",
-      "semantic_id": "b3:ae9187a0535a8fdb",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/datalog.rs",
-      "line": 478,
-      "column": 29,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:aed630c7fadb4cd1",
@@ -7599,7 +6741,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3157,
+      "line": 3176,
       "column": 9,
       "message": "non-trait import `TableCellMapping` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -7651,7 +6793,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 13,
+      "line": 8,
       "column": 85,
       "message": "non-trait import `RunManifest` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
@@ -7681,19 +6823,6 @@
       "column": 20,
       "message": "non-trait import `Command` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "agent"
-    },
-    {
-      "stable_id": "b3:b287be97f2c78d47",
-      "semantic_id": "b3:b287be97f2c78d47",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 136,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:b32d62939b2166a3",
@@ -7742,7 +6871,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3155,
+      "line": 3174,
       "column": 28,
       "message": "non-trait import `CheckpointInspection` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -7820,7 +6949,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3007,
+      "line": 3026,
       "column": 58,
       "message": "function `recall_section` is 100 lines (limit: 70)",
       "crate_name": "mneme-desktop"
@@ -7872,10 +7001,23 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3157,
+      "line": 3176,
       "column": 27,
       "message": "non-trait import `TableColumn` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
+    },
+    {
+      "stable_id": "b3:b706f3bb6b3b0b4a",
+      "semantic_id": "b3:b706f3bb6b3b0b4a",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/notes.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 1193 lines (limit: 300)",
+      "crate_name": "mneme_desktop"
     },
     {
       "stable_id": "b3:b755400eb371f6df",
@@ -7917,19 +7059,6 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:b863b79c627a2dc7",
-      "semantic_id": "b3:b863b79c627a2dc7",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 130,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:b8cd57f9ddf8030b",
       "semantic_id": "b3:b8cd57f9ddf8030b",
       "identity_status": "computed",
@@ -7950,7 +7079,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 13,
+      "line": 8,
       "column": 67,
       "message": "non-trait import `ReaderDescriptor` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
@@ -7967,6 +7096,19 @@
       "column": 1,
       "message": "item name `DatalogError` repeats `datalog` from ancestor path segment `mneme_datalog`",
       "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:b956725855cc50d9",
+      "semantic_id": "b3:b956725855cc50d9",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/evidence.rs",
+      "line": 1041,
+      "column": 95,
+      "message": "function `run_explanation` is 148 lines (limit: 70)",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:b990dec4c6823532",
@@ -8008,19 +7150,6 @@
       "crate_name": "mneme_consolidation"
     },
     {
-      "stable_id": "b3:babedda4e2ae175e",
-      "semantic_id": "b3:babedda4e2ae175e",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 94,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:bae464c26878e871",
       "semantic_id": "b3:bae464c26878e871",
       "identity_status": "computed",
@@ -8028,22 +7157,22 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 10,
+      "line": 8,
       "column": 80,
       "message": "non-trait import `ScopeId` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
     },
     {
-      "stable_id": "b3:bb546a9251caa21b",
-      "semantic_id": "b3:bb546a9251caa21b",
+      "stable_id": "b3:bb0933b7f65fcdf2",
+      "semantic_id": "b3:bb0933b7f65fcdf2",
       "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/workspace.rs",
-      "line": 26,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
+      "file": "crates/mneme-eval/src/lib.rs",
+      "line": 118,
+      "column": 35,
+      "message": "function `run` is 118 lines (limit: 70)",
       "crate_name": "mneme_eval"
     },
     {
@@ -8054,22 +7183,9 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/evidence.rs",
-      "line": 927,
+      "line": 951,
       "column": 17,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:bb8c6108577045af",
-      "semantic_id": "b3:bb8c6108577045af",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/datalog.rs",
-      "line": 373,
-      "column": 17,
-      "message": "implicit default on external type — construct with explicit values",
       "crate_name": "mneme_eval"
     },
     {
@@ -8132,7 +7248,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 20,
+      "line": 6,
       "column": 37,
       "message": "non-trait import `diagnostic_error` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -8151,19 +7267,6 @@
       "crate_name": "mneme_memory"
     },
     {
-      "stable_id": "b3:bd5e176289177244",
-      "semantic_id": "b3:bd5e176289177244",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/service.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 926 lines (limit: 300)",
-      "crate_name": "mneme_recall"
-    },
-    {
       "stable_id": "b3:bd6930fc4fa4e7db",
       "semantic_id": "b3:bd6930fc4fa4e7db",
       "identity_status": "computed",
@@ -8171,7 +7274,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1853,
+      "line": 1863,
       "column": 55,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
@@ -8197,7 +7300,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3150,
+      "line": 3169,
       "column": 21,
       "message": "non-trait import `Named` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -8210,7 +7313,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 241,
+      "line": 221,
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_eval"
@@ -8266,19 +7369,6 @@
       "column": 29,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_core"
-    },
-    {
-      "stable_id": "b3:bf0f0229955cd074",
-      "semantic_id": "b3:bf0f0229955cd074",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/task.rs",
-      "line": 14,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:bf21ae1b85e1868f",
@@ -8398,6 +7488,19 @@
       "crate_name": "mneme_desktop"
     },
     {
+      "stable_id": "b3:c15f926b2d0f4c45",
+      "semantic_id": "b3:c15f926b2d0f4c45",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/service.rs",
+      "line": 76,
+      "column": 61,
+      "message": "function `recall_once` is 391 lines (limit: 70)",
+      "crate_name": "mneme_recall"
+    },
+    {
       "stable_id": "b3:c1992e829b39907b",
       "semantic_id": "b3:c1992e829b39907b",
       "identity_status": "computed",
@@ -8418,23 +7521,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 11,
+      "line": 12,
       "column": 70,
       "message": "non-trait import `text_input` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:c2550f03de7f238f",
-      "semantic_id": "b3:c2550f03de7f238f",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2645,
-      "column": 61,
-      "message": "function `inspector_section` is 223 lines (limit: 70)",
-      "crate_name": "mneme-desktop"
     },
     {
       "stable_id": "b3:c2821dee2fe2a127",
@@ -8474,32 +7564,6 @@
       "column": 1,
       "message": "item name `StoreError` repeats `store` from ancestor path segment `mneme_store`",
       "crate_name": "mneme_store"
-    },
-    {
-      "stable_id": "b3:c33fb186a635cd16",
-      "semantic_id": "b3:c33fb186a635cd16",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/datalog.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 961 lines (limit: 300)",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:c3478871f9cab390",
-      "semantic_id": "b3:c3478871f9cab390",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/main.rs",
-      "line": 911,
-      "column": 65,
-      "message": "function `update` is 523 lines (limit: 70)",
-      "crate_name": "mneme-desktop"
     },
     {
       "stable_id": "b3:c3d97d26aa763766",
@@ -8567,6 +7631,19 @@
       "crate_name": "mneme_eval"
     },
     {
+      "stable_id": "b3:c6f10c0c30ee19e3",
+      "semantic_id": "b3:c6f10c0c30ee19e3",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/workspace.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 760 lines (limit: 300)",
+      "crate_name": "mneme_eval"
+    },
+    {
       "stable_id": "b3:c787b176b435f949",
       "semantic_id": "b3:c787b176b435f949",
       "identity_status": "computed",
@@ -8578,19 +7655,6 @@
       "column": 1,
       "message": "item name `validate_procedure` repeats `procedure` from ancestor path segment `procedure`",
       "crate_name": "mneme_consolidation"
-    },
-    {
-      "stable_id": "b3:c7b5078bfbda8946",
-      "semantic_id": "b3:c7b5078bfbda8946",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 728 lines (limit: 300)",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:c82611ad447fa7be",
@@ -8626,10 +7690,23 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1845,
+      "line": 1855,
       "column": 54,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
+    },
+    {
+      "stable_id": "b3:c99a4a7eeced817c",
+      "semantic_id": "b3:c99a4a7eeced817c",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/task.rs",
+      "line": 10,
+      "column": 1,
+      "message": "item name `TaskAttempt` repeats `task` from ancestor path segment `task`",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:c9b993b98dadf27c",
@@ -8643,32 +7720,6 @@
       "column": 88,
       "message": "non-trait import `TableSort` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
-    },
-    {
-      "stable_id": "b3:c9c5f1ac0ef3bc35",
-      "semantic_id": "b3:c9c5f1ac0ef3bc35",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 92,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:ca4484c8589f740c",
-      "semantic_id": "b3:ca4484c8589f740c",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1826,
-      "column": 34,
-      "message": "function `preview` is 102 lines (limit: 70)",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:ca78c5d1efe58344",
@@ -8730,7 +7781,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1115,
+      "line": 1125,
       "column": 64,
       "message": "function `save_draft` is 121 lines (limit: 70)",
       "crate_name": "mneme_desktop"
@@ -8769,7 +7820,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 13,
+      "line": 8,
       "column": 26,
       "message": "non-trait import `BackendAvailability` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
@@ -8795,7 +7846,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 2468,
+      "line": 2478,
       "column": 9,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
@@ -8838,32 +7889,6 @@
       "column": 17,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_recall"
-    },
-    {
-      "stable_id": "b3:cd28bc86406eb523",
-      "semantic_id": "b3:cd28bc86406eb523",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/design.rs",
-      "line": 499,
-      "column": 17,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:cd59a6766f1a7b6c",
-      "semantic_id": "b3:cd59a6766f1a7b6c",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 124,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:cd70e59ed8620369",
@@ -8912,7 +7937,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-datalog/tests/datalog.rs",
-      "line": 613,
+      "line": 637,
       "column": 88,
       "message": "function `add_assertion_support` is 118 lines (limit: 70)",
       "crate_name": "datalog"
@@ -8957,6 +7982,19 @@
       "crate_name": "mneme"
     },
     {
+      "stable_id": "b3:ce960740ec4c3d92",
+      "semantic_id": "b3:ce960740ec4c3d92",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/notes.rs",
+      "line": 638,
+      "column": 51,
+      "message": "function `links_for` is 98 lines (limit: 70)",
+      "crate_name": "mneme_desktop"
+    },
+    {
       "stable_id": "b3:cfaa3beeda219b7e",
       "semantic_id": "b3:cfaa3beeda219b7e",
       "identity_status": "computed",
@@ -8977,23 +8015,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/recall.rs",
-      "line": 1066,
+      "line": 1072,
       "column": 1,
       "message": "item name `recall_text` repeats `recall` from ancestor path segment `recall`",
       "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:d059f4467c592b5e",
-      "semantic_id": "b3:d059f4467c592b5e",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 34,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme"
     },
     {
       "stable_id": "b3:d0833ccadf9144df",
@@ -9046,6 +8071,19 @@
       "column": 13,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:d1db89e47c34bc72",
+      "semantic_id": "b3:d1db89e47c34bc72",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/main.rs",
+      "line": 938,
+      "column": 65,
+      "message": "function `update` is 515 lines (limit: 70)",
+      "crate_name": "mneme-desktop"
     },
     {
       "stable_id": "b3:d1e095a66627cdaa",
@@ -9107,22 +8145,9 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 100,
+      "line": 88,
       "column": 1,
       "message": "item name `ExtractionEvaluation` repeats `evaluation` from ancestor path segment `evaluation`",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:d2c24a8af4f1b782",
-      "semantic_id": "b3:d2c24a8af4f1b782",
-      "identity_status": "computed",
-      "lint": "path_segment_repetition",
-      "group": "tigerstyle::naming",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/task.rs",
-      "line": 23,
-      "column": 1,
-      "message": "item name `TaskCheckpoint` repeats `task` from ancestor path segment `task`",
       "crate_name": "mneme_eval"
     },
     {
@@ -9133,7 +8158,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3153,
+      "line": 3172,
       "column": 30,
       "message": "non-trait import `Timestamp` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -9172,7 +8197,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 14,
+      "line": 12,
       "column": 60,
       "message": "non-trait import `PublicationOutcome` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -9204,30 +8229,17 @@
       "crate_name": "mneme_prolog"
     },
     {
-      "stable_id": "b3:d48b6f9db9178813",
-      "semantic_id": "b3:d48b6f9db9178813",
+      "stable_id": "b3:d4823c584d72a429",
+      "semantic_id": "b3:d4823c584d72a429",
       "identity_status": "computed",
-      "lint": "function_length",
+      "lint": "excessive_file_length",
       "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 264,
-      "column": 40,
-      "message": "function `evaluate_reading` is 94 lines (limit: 70)",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:d490f8661642d46f",
-      "semantic_id": "b3:d490f8661642d46f",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 112,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 2109 lines (limit: 300)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:d5711cf4b612025a",
@@ -9256,6 +8268,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:d5fe5739ee867c46",
+      "semantic_id": "b3:d5fe5739ee867c46",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/suites/datalog.rs",
+      "line": 363,
+      "column": 90,
+      "message": "function `run_rules` is 205 lines (limit: 70)",
+      "crate_name": "mneme_eval"
+    },
+    {
       "stable_id": "b3:d61bbdc4294ee673",
       "semantic_id": "b3:d61bbdc4294ee673",
       "identity_status": "computed",
@@ -9263,23 +8288,10 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1607,
+      "line": 1617,
       "column": 37,
       "message": "function `decide_proposal` is 117 lines (limit: 70)",
       "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:d67e995113955fee",
-      "semantic_id": "b3:d67e995113955fee",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/evidence.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 1236 lines (limit: 300)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:d6ffe267a9be09d0",
@@ -9315,23 +8327,10 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/workspace.rs",
-      "line": 472,
+      "line": 447,
       "column": 92,
       "message": "function `run_recovery` is 100 lines (limit: 70)",
       "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:d870a301706398b3",
-      "semantic_id": "b3:d870a301706398b3",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-consolidation/src/lib.rs",
-      "line": 203,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_consolidation"
     },
     {
       "stable_id": "b3:d8bf366bcb59dfc5",
@@ -9371,19 +8370,6 @@
       "column": 9,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:d97be2ead95eb3d7",
-      "semantic_id": "b3:d97be2ead95eb3d7",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 386,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:da44cc226472da48",
@@ -9490,6 +8476,19 @@
       "crate_name": "mneme_prolog"
     },
     {
+      "stable_id": "b3:dc255eb7d54cc26c",
+      "semantic_id": "b3:dc255eb7d54cc26c",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/design.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 646 lines (limit: 300)",
+      "crate_name": "mneme_desktop"
+    },
+    {
       "stable_id": "b3:dcb66bc9f5a71a23",
       "semantic_id": "b3:dcb66bc9f5a71a23",
       "identity_status": "computed",
@@ -9542,17 +8541,17 @@
       "crate_name": "mneme-desktop"
     },
     {
-      "stable_id": "b3:de48af9855a913a7",
-      "semantic_id": "b3:de48af9855a913a7",
+      "stable_id": "b3:de0ab2ddb36f3ba3",
+      "semantic_id": "b3:de0ab2ddb36f3ba3",
       "identity_status": "computed",
       "lint": "excessive_file_length",
       "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-prolog/src/worker.rs",
+      "file": "crates/mneme-eval/src/suites/retention.rs",
       "line": 1,
       "column": 1,
-      "message": "source file is 496 lines (limit: 300)",
-      "crate_name": "mneme_prolog"
+      "message": "source file is 696 lines (limit: 300)",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:de7831c3510da14b",
@@ -9614,23 +8613,10 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 10,
+      "line": 8,
       "column": 5,
       "message": "non-trait import `ContentDigest` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:e018067a30bb3476",
-      "semantic_id": "b3:e018067a30bb3476",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/evidence.rs",
-      "line": 256,
-      "column": 91,
-      "message": "function `run_sources` is 120 lines (limit: 70)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:e024677af53ca7d0",
@@ -9672,6 +8658,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:e0dceead17919b02",
+      "semantic_id": "b3:e0dceead17919b02",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 926 lines (limit: 300)",
+      "crate_name": "recall"
+    },
+    {
       "stable_id": "b3:e168e51e6c62b16d",
       "semantic_id": "b3:e168e51e6c62b16d",
       "identity_status": "computed",
@@ -9679,7 +8678,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2889,
+      "line": 2908,
       "column": 62,
       "message": "function `checkpoint_section` is 115 lines (limit: 70)",
       "crate_name": "mneme-desktop"
@@ -9696,6 +8695,19 @@
       "column": 57,
       "message": "non-trait import `text_input` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
+    },
+    {
+      "stable_id": "b3:e242d52c5e9a23c1",
+      "semantic_id": "b3:e242d52c5e9a23c1",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/service.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 923 lines (limit: 300)",
+      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:e2678f4436b8dc67",
@@ -9724,58 +8736,6 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:e2e7b6ae834576f9",
-      "semantic_id": "b3:e2e7b6ae834576f9",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 38,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:e2e84755c1b26167",
-      "semantic_id": "b3:e2e84755c1b26167",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 302,
-      "column": 21,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:e2eb51dae4314000",
-      "semantic_id": "b3:e2eb51dae4314000",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 146,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:e344463106f5c881",
-      "semantic_id": "b3:e344463106f5c881",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/worker.rs",
-      "line": 207,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_prolog"
-    },
-    {
       "stable_id": "b3:e3a133780a6df1a0",
       "semantic_id": "b3:e3a133780a6df1a0",
       "identity_status": "computed",
@@ -9789,32 +8749,6 @@
       "crate_name": "mneme"
     },
     {
-      "stable_id": "b3:e3abce912a5ea9d7",
-      "semantic_id": "b3:e3abce912a5ea9d7",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 138,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:e3ce88ec063997bb",
-      "semantic_id": "b3:e3ce88ec063997bb",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 91,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:e3d444fc2e34b390",
       "semantic_id": "b3:e3d444fc2e34b390",
       "identity_status": "computed",
@@ -9822,7 +8756,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1850,
+      "line": 1860,
       "column": 21,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
@@ -9861,7 +8795,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3149,
+      "line": 3168,
       "column": 21,
       "message": "non-trait import `Location` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -9880,19 +8814,6 @@
       "crate_name": "mneme_api"
     },
     {
-      "stable_id": "b3:e68b9b04288bd2dd",
-      "semantic_id": "b3:e68b9b04288bd2dd",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/baselines.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 360 lines (limit: 300)",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:e6a730b12f93b19c",
       "semantic_id": "b3:e6a730b12f93b19c",
       "identity_status": "computed",
@@ -9906,19 +8827,6 @@
       "crate_name": "mneme"
     },
     {
-      "stable_id": "b3:e706e48027e5cb91",
-      "semantic_id": "b3:e706e48027e5cb91",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-memory/src/policy.rs",
-      "line": 1079,
-      "column": 21,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_memory"
-    },
-    {
       "stable_id": "b3:e7676b24ee215e80",
       "semantic_id": "b3:e7676b24ee215e80",
       "identity_status": "computed",
@@ -9926,7 +8834,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/retention.rs",
-      "line": 580,
+      "line": 586,
       "column": 94,
       "message": "function `run_contracts` is 95 lines (limit: 70)",
       "crate_name": "mneme_eval"
@@ -9939,7 +8847,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2479,
+      "line": 2498,
       "column": 57,
       "message": "function `graph_section` is 163 lines (limit: 70)",
       "crate_name": "mneme-desktop"
@@ -9982,19 +8890,6 @@
       "column": 1,
       "message": "item name `ValidTime` repeats `time` from ancestor path segment `time`",
       "crate_name": "mneme_core"
-    },
-    {
-      "stable_id": "b3:e866d665b09cadd1",
-      "semantic_id": "b3:e866d665b09cadd1",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/lib.rs",
-      "line": 118,
-      "column": 35,
-      "message": "function `run` is 118 lines (limit: 70)",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:e8993295f7710c43",
@@ -10101,6 +8996,19 @@
       "crate_name": "mneme_doc"
     },
     {
+      "stable_id": "b3:ebe8a86774d085fb",
+      "semantic_id": "b3:ebe8a86774d085fb",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-consolidation/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 1057 lines (limit: 300)",
+      "crate_name": "mneme_consolidation"
+    },
+    {
       "stable_id": "b3:ebf6758ad2b7933b",
       "semantic_id": "b3:ebf6758ad2b7933b",
       "identity_status": "computed",
@@ -10134,7 +9042,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-eval/src/suites/evidence.rs",
-      "line": 698,
+      "line": 722,
       "column": 91,
       "message": "function `run_support` is 316 lines (limit: 70)",
       "crate_name": "mneme_eval"
@@ -10173,7 +9081,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 11,
+      "line": 9,
       "column": 5,
       "message": "non-trait import `ValueBoundary` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -10231,17 +9139,30 @@
       "crate_name": "mneme_core"
     },
     {
-      "stable_id": "b3:ee0ca2e825bce80f",
-      "semantic_id": "b3:ee0ca2e825bce80f",
+      "stable_id": "b3:ee42b45a5a8d057e",
+      "semantic_id": "b3:ee42b45a5a8d057e",
       "identity_status": "computed",
       "lint": "excessive_file_length",
       "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-cli/src/workspacecmd.rs",
+      "file": "crates/mneme-datalog/src/rules.rs",
       "line": 1,
       "column": 1,
-      "message": "source file is 342 lines (limit: 300)",
-      "crate_name": "mneme"
+      "message": "source file is 506 lines (limit: 300)",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:ee62110f12e71d6f",
+      "semantic_id": "b3:ee62110f12e71d6f",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/task.rs",
+      "line": 19,
+      "column": 1,
+      "message": "item name `TaskCheckpoint` repeats `task` from ancestor path segment `task`",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:eea623cbbceabbe4",
@@ -10342,7 +9263,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3156,
+      "line": 3175,
       "column": 30,
       "message": "non-trait import `GraphNode` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -10359,32 +9280,6 @@
       "column": 19,
       "message": "non-trait import `FixedClock` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:f0cce0638261489f",
-      "semantic_id": "b3:f0cce0638261489f",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/model.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 2705 lines (limit: 300)",
-      "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:f0dfa2997072e722",
-      "semantic_id": "b3:f0dfa2997072e722",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/image.rs",
-      "line": 166,
-      "column": 13,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_prolog"
     },
     {
       "stable_id": "b3:f11db7ca074d0854",
@@ -10407,7 +9302,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 11,
+      "line": 12,
       "column": 51,
       "message": "non-trait import `text` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -10452,19 +9347,6 @@
       "crate_name": "mneme-desktop"
     },
     {
-      "stable_id": "b3:f1e8a0b759d03278",
-      "semantic_id": "b3:f1e8a0b759d03278",
-      "identity_status": "computed",
-      "lint": "nested_conditionals",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1085,
-      "column": 25,
-      "message": "conditional nesting is 4 levels deep (limit: 3)",
-      "crate_name": "mneme-desktop"
-    },
-    {
       "stable_id": "b3:f1f3b49707406f17",
       "semantic_id": "b3:f1f3b49707406f17",
       "identity_status": "computed",
@@ -10491,17 +9373,17 @@
       "crate_name": "mneme_eval"
     },
     {
-      "stable_id": "b3:f34101bc771acbf1",
-      "semantic_id": "b3:f34101bc771acbf1",
+      "stable_id": "b3:f3de7da492cbae73",
+      "semantic_id": "b3:f3de7da492cbae73",
       "identity_status": "computed",
       "lint": "function_length",
       "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 6,
-      "column": 61,
-      "message": "function `validate` is 241 lines (limit: 70)",
-      "crate_name": "mneme_datalog"
+      "file": "crates/mneme-eval/src/suites/datalog.rs",
+      "line": 819,
+      "column": 91,
+      "message": "function `run_limits` is 149 lines (limit: 70)",
+      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:f46a60736c255a24",
@@ -10528,6 +9410,19 @@
       "column": 55,
       "message": "non-trait import `decode_command` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_eval"
+    },
+    {
+      "stable_id": "b3:f5c75c6d4a371dd1",
+      "semantic_id": "b3:f5c75c6d4a371dd1",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/main.rs",
+      "line": 2664,
+      "column": 61,
+      "message": "function `inspector_section` is 223 lines (limit: 70)",
+      "crate_name": "mneme-desktop"
     },
     {
       "stable_id": "b3:f6524c43d613381f",
@@ -10576,7 +9471,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 11,
+      "line": 12,
       "column": 39,
       "message": "non-trait import `scrollable` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -10589,7 +9484,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 12,
+      "line": 13,
       "column": 20,
       "message": "non-trait import `Color` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -10606,19 +9501,6 @@
       "column": 77,
       "message": "function `accept` is 95 lines (limit: 70)",
       "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:f87053a4cdf77140",
-      "semantic_id": "b3:f87053a4cdf77140",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 132,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:f8853de264fef704",
@@ -10641,7 +9523,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1696,
+      "line": 1715,
       "column": 53,
       "message": "function `main_pane` is 204 lines (limit: 70)",
       "crate_name": "mneme-desktop"
@@ -10658,32 +9540,6 @@
       "column": 1,
       "message": "non-trait import `json` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "agent"
-    },
-    {
-      "stable_id": "b3:f89e55b18ebbbbc3",
-      "semantic_id": "b3:f89e55b18ebbbbc3",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/suites/datalog.rs",
-      "line": 765,
-      "column": 91,
-      "message": "function `run_limits` is 125 lines (limit: 70)",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:f8ce11cc09fc5792",
-      "semantic_id": "b3:f8ce11cc09fc5792",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/evaluation.rs",
-      "line": 94,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
     },
     {
       "stable_id": "b3:f8d38b9dc07154fb",
@@ -10706,7 +9562,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3161,
+      "line": 3180,
       "column": 55,
       "message": "non-trait import `RecallResponse` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -10725,6 +9581,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:f98f5bafed841558",
+      "semantic_id": "b3:f98f5bafed841558",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/index.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 415 lines (limit: 300)",
+      "crate_name": "mneme_recall"
+    },
+    {
       "stable_id": "b3:f9abf8e6b39f3aaf",
       "semantic_id": "b3:f9abf8e6b39f3aaf",
       "identity_status": "computed",
@@ -10732,7 +9601,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-cli/src/workspacecmd.rs",
-      "line": 20,
+      "line": 6,
       "column": 13,
       "message": "non-trait import `CliError` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
@@ -10797,7 +9666,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 3156,
+      "line": 3175,
       "column": 73,
       "message": "non-trait import `TableCell` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
@@ -10816,19 +9685,6 @@
       "crate_name": "mneme"
     },
     {
-      "stable_id": "b3:fbb1b2347c5b2ca0",
-      "semantic_id": "b3:fbb1b2347c5b2ca0",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 110,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
       "stable_id": "b3:fc0787f514093d35",
       "semantic_id": "b3:fc0787f514093d35",
       "identity_status": "computed",
@@ -10836,35 +9692,9 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-recall/src/service.rs",
-      "line": 20,
+      "line": 29,
       "column": 1,
       "message": "item name `RecallService` repeats `recall` from ancestor path segment `mneme_recall`",
-      "crate_name": "mneme_recall"
-    },
-    {
-      "stable_id": "b3:fc1148cbe64dd21c",
-      "semantic_id": "b3:fc1148cbe64dd21c",
-      "identity_status": "computed",
-      "lint": "explicit_defaults",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-eval/src/fixture.rs",
-      "line": 108,
-      "column": 5,
-      "message": "implicit default on external type — construct with explicit values",
-      "crate_name": "mneme_eval"
-    },
-    {
-      "stable_id": "b3:fc2921b37f793fd4",
-      "semantic_id": "b3:fc2921b37f793fd4",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/service.rs",
-      "line": 67,
-      "column": 61,
-      "message": "function `recall_once` is 403 lines (limit: 70)",
       "crate_name": "mneme_recall"
     },
     {
@@ -10920,6 +9750,19 @@
       "crate_name": "api"
     },
     {
+      "stable_id": "b3:fdc5a202d5316a79",
+      "semantic_id": "b3:fdc5a202d5316a79",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-eval/src/evaluation.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 437 lines (limit: 300)",
+      "crate_name": "mneme_eval"
+    },
+    {
       "stable_id": "b3:fdd495aad81e9788",
       "semantic_id": "b3:fdd495aad81e9788",
       "identity_status": "computed",
@@ -10940,7 +9783,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-eval/src/task.rs",
-      "line": 84,
+      "line": 74,
       "column": 1,
       "message": "item name `evaluate_task` repeats `task` from ancestor path segment `task`",
       "crate_name": "mneme_eval"
@@ -10957,6 +9800,19 @@
       "column": 67,
       "message": "function `run_summary` is 114 lines (limit: 70)",
       "crate_name": "mneme_eval"
+    },
+    {
+      "stable_id": "b3:fe042955f46e89f2",
+      "semantic_id": "b3:fe042955f46e89f2",
+      "identity_status": "computed",
+      "lint": "excessive_file_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-store/src/workspace.rs",
+      "line": 1,
+      "column": 1,
+      "message": "source file is 3763 lines (limit: 300)",
+      "crate_name": "mneme_store"
     },
     {
       "stable_id": "b3:fe106b3e1fcd42f9",
@@ -11005,7 +9861,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 12,
+      "line": 13,
       "column": 12,
       "message": "non-trait import `Border` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme_desktop"
@@ -11022,19 +9878,6 @@
       "column": 29,
       "message": "non-trait import `ApiService` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme"
-    },
-    {
-      "stable_id": "b3:ff5a0a3000063e66",
-      "semantic_id": "b3:ff5a0a3000063e66",
-      "identity_status": "computed",
-      "lint": "unbounded_collection_growth",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-store/src/workspace.rs",
-      "line": 1771,
-      "column": 32,
-      "message": "collection grows in loop without a prior reservation or explicit local bound",
-      "crate_name": "mneme_store"
     },
     {
       "stable_id": "b3:ff5b83b50da047ff",
@@ -11070,7 +9913,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/model.rs",
-      "line": 2240,
+      "line": 2250,
       "column": 9,
       "message": "collection grows in loop without a prior reservation or explicit local bound",
       "crate_name": "mneme_desktop"
@@ -11087,19 +9930,6 @@
       "column": 60,
       "message": "non-trait import `Value` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "mneme-desktop"
-    },
-    {
-      "stable_id": "b3:ff91b9bf91e45c45",
-      "semantic_id": "b3:ff91b9bf91e45c45",
-      "identity_status": "computed",
-      "lint": "excessive_file_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/tests/model.rs",
-      "line": 1,
-      "column": 1,
-      "message": "source file is 1524 lines (limit: 300)",
-      "crate_name": "model"
     }
   ]
 }

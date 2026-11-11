@@ -579,52 +579,8 @@ fn inline(
                             escape_html(&text)
                         );
                     }
-                    "link" => {
-                        let label = label.unwrap_or_else(|| target.to_owned());
-                        if let Some(anchor) = target.strip_prefix('#')
-                            && crate::asciidoc::valid_anchor(anchor)
-                        {
-                            let _ = write!(
-                                output,
-                                "<a href=\"#{}\">{}</a>",
-                                escape_html(anchor),
-                                escape_html(&label)
-                            );
-                        } else {
-                            diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                                "external-navigation-not-automatic",
-                                "external link target was not made navigable by the preview",
-                                line,
-                                1,
-                                None,
-                            ));
-                            let _ = write!(
-                                output,
-                                "<span class=\"external-link\">{}</span>",
-                                escape_html(&label)
-                            );
-                        }
-                    }
-                    _ => {
-                        if crate::asciidoc::valid_anchor(target) {
-                            let label_text = label.as_deref().unwrap_or(target);
-                            let _ = write!(
-                                output,
-                                "<a href=\"#{}\">{}</a>",
-                                escape_html(target),
-                                escape_html(label_text)
-                            );
-                        } else {
-                            diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                                "xref-unavailable",
-                                "cross-reference target is not a safe local anchor",
-                                line,
-                                1,
-                                None,
-                            ));
-                            output.push_str(&escape_html(target));
-                        }
-                    }
+                    "link" => render_link(&mut output, &mut diagnostics, target, label, line),
+                    _ => render_xref(&mut output, &mut diagnostics, target, label, line),
                 }
                 index += end;
                 continue;
@@ -681,6 +637,66 @@ fn inline(
         index += character.len_utf8();
     }
     (output, diagnostics)
+}
+
+fn render_xref(
+    output: &mut String,
+    diagnostics: &mut Vec<crate::asciidoc::Diagnostic>,
+    target: &str,
+    label: Option<String>,
+    line: usize,
+) {
+    if crate::asciidoc::valid_anchor(target) {
+        let label_text = label.as_deref().unwrap_or(target);
+        let _ = write!(
+            output,
+            "<a href=\"#{}\">{}</a>",
+            escape_html(target),
+            escape_html(label_text)
+        );
+        return;
+    }
+    diagnostics.push(crate::asciidoc::Diagnostic::warning(
+        "xref-unavailable",
+        "cross-reference target is not a safe local anchor",
+        line,
+        1,
+        None,
+    ));
+    output.push_str(&escape_html(target));
+}
+
+fn render_link(
+    output: &mut String,
+    diagnostics: &mut Vec<crate::asciidoc::Diagnostic>,
+    target: &str,
+    label: Option<String>,
+    line: usize,
+) {
+    let label = label.unwrap_or_else(|| target.to_owned());
+    if let Some(anchor) = target.strip_prefix('#')
+        && crate::asciidoc::valid_anchor(anchor)
+    {
+        let _ = write!(
+            output,
+            "<a href=\"#{}\">{}</a>",
+            escape_html(anchor),
+            escape_html(&label)
+        );
+        return;
+    }
+    diagnostics.push(crate::asciidoc::Diagnostic::warning(
+        "external-navigation-not-automatic",
+        "external link target was not made navigable by the preview",
+        line,
+        1,
+        None,
+    ));
+    let _ = write!(
+        output,
+        "<span class=\"external-link\">{}</span>",
+        escape_html(&label)
+    );
 }
 
 fn parse_macro(text: &str) -> Option<(usize, &str, Option<String>)> {

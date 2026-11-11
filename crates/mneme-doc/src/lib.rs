@@ -1647,7 +1647,7 @@ impl Documents<'_> {
                 .ok_or(DocumentError::Conflict(
                     "document source digest is unavailable",
                 ))?;
-        let mut included = Vec::new();
+        let mut included = Vec::with_capacity(document.includes.len());
         for (path, pin) in &document.includes {
             let digest = context
                 .source(*pin)
@@ -1858,7 +1858,7 @@ impl Documents<'_> {
             }
         }
         let mut sources = std::collections::BTreeMap::new();
-        let mut included = Vec::new();
+        let mut included = Vec::with_capacity(document.includes.len());
         for (path, pin) in &document.includes {
             let source = context.source(*pin).ok();
             let digest = source
