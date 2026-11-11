@@ -4,12 +4,6 @@
 //! digests, forgotten support, and idempotency before recording acceptance. It
 //! never executes actions or applies canonical effects.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use mneme_core::{RecordId, RevisionId, ScopeId, WorkspaceRevisionId};
-
-use crate::{PlanProposal, PremiseAvailability};
-
 /// Current source availability and digest for one plan premise.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlanSourceState {
@@ -31,30 +25,31 @@ impl PlanSourceState {
 /// Current conditions against which a plan is accepted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanState {
-    pub scope: ScopeId,
-    pub base_revision: WorkspaceRevisionId,
-    pub preconditions: BTreeSet<String>,
-    pub sources: BTreeMap<(RecordId, RevisionId), PlanSourceState>,
-    pub forgotten: BTreeSet<RecordId>,
+    pub scope: mneme_core::ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
+    pub preconditions: std::collections::BTreeSet<String>,
+    pub sources:
+        std::collections::BTreeMap<(mneme_core::RecordId, mneme_core::RevisionId), PlanSourceState>,
+    pub forgotten: std::collections::BTreeSet<mneme_core::RecordId>,
 }
 
 /// Read-only plan registration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegisteredPlan {
-    pub plan: PlanProposal,
+    pub plan: crate::PlanProposal,
     pub revision: u64,
     pub expected: PlanState,
-    pub accepted: Option<RecordId>,
+    pub accepted: Option<mneme_core::RecordId>,
 }
 
 /// Read-only inspection of a plan and its current state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanInspection {
-    pub plan: PlanProposal,
+    pub plan: crate::PlanProposal,
     pub revision: u64,
     pub expected: PlanState,
     pub current: PlanState,
-    pub accepted: Option<RecordId>,
+    pub accepted: Option<mneme_core::RecordId>,
 }
 
 /// A separate plan acceptance command.
@@ -64,7 +59,7 @@ pub struct PlanAcceptanceCommand {
     pub plan_id: String,
     pub plan_revision: u64,
     pub expected: PlanState,
-    pub decision: RecordId,
+    pub decision: mneme_core::RecordId,
 }
 
 /// Why a plan command did not apply.
@@ -86,7 +81,7 @@ pub enum PlanConflictKind {
 pub enum PlanOutcome {
     Accepted {
         plan_id: String,
-        decision: RecordId,
+        decision: mneme_core::RecordId,
         revision: u64,
     },
     PriorOutcome {
@@ -103,22 +98,22 @@ pub enum PlanOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanRegistry {
     pub current: PlanState,
-    plans: BTreeMap<String, RegisteredPlan>,
-    acceptances: BTreeMap<String, (PlanAcceptanceCommand, PlanOutcome)>,
+    plans: std::collections::BTreeMap<String, RegisteredPlan>,
+    acceptances: std::collections::BTreeMap<String, (PlanAcceptanceCommand, PlanOutcome)>,
 }
 
 impl PlanRegistry {
     pub fn new(current: PlanState) -> Self {
         PlanRegistry {
             current,
-            plans: BTreeMap::new(),
-            acceptances: BTreeMap::new(),
+            plans: std::collections::BTreeMap::new(),
+            acceptances: std::collections::BTreeMap::new(),
         }
     }
 
     pub fn register(
         &mut self,
-        plan: PlanProposal,
+        plan: crate::PlanProposal,
         revision: u64,
         expected: PlanState,
     ) -> Result<(), String> {
@@ -233,7 +228,7 @@ impl PlanRegistry {
             }
             if matches!(current_source, PlanSourceState::Pruned { .. })
                 && premise.span.is_some()
-                && matches!(premise.availability, PremiseAvailability::Retained)
+                && matches!(premise.availability, crate::PremiseAvailability::Retained)
             {
                 return conflict(
                     PlanConflictKind::PrunedSource,
@@ -267,43 +262,41 @@ fn conflict(kind: PlanConflictKind, detail: &str) -> PlanOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PlanAction, PlanProposal, Premise};
-    use mneme_core::ScopeClass;
 
-    fn scope() -> ScopeId {
-        ScopeId::new(ScopeClass::Project, "cedar").expect("scope")
+    fn scope() -> mneme_core::ScopeId {
+        mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar").expect("scope")
     }
 
-    fn revision() -> WorkspaceRevisionId {
-        WorkspaceRevisionId::from_bytes([0xb0; 16])
+    fn revision() -> mneme_core::WorkspaceRevisionId {
+        mneme_core::WorkspaceRevisionId::from_bytes([0xb0; 16])
     }
 
-    fn source() -> (RecordId, RevisionId) {
+    fn source() -> (mneme_core::RecordId, mneme_core::RevisionId) {
         (
-            RecordId::from_bytes([0x20; 16]),
-            RevisionId::from_bytes([0x21; 16]),
+            mneme_core::RecordId::from_bytes([0x20; 16]),
+            mneme_core::RevisionId::from_bytes([0x21; 16]),
         )
     }
 
-    fn plan() -> PlanProposal {
+    fn plan() -> crate::PlanProposal {
         let (record, source_revision) = source();
-        PlanProposal {
+        crate::PlanProposal {
             id: "plan-1".to_owned(),
             base_revision: revision(),
             scope: scope(),
-            actions: vec![PlanAction {
+            actions: vec![crate::PlanAction {
                 action: "write-file".to_owned(),
-                parameters: BTreeMap::new(),
+                parameters: std::collections::BTreeMap::new(),
             }],
             preconditions: Vec::new(),
-            assumptions: BTreeSet::new(),
-            evidence: vec![Premise {
+            assumptions: std::collections::BTreeSet::new(),
+            evidence: vec![crate::Premise {
                 record_id: record,
                 revision_id: source_revision,
                 span: None,
                 derivation: None,
-                ancestry_roots: BTreeSet::from([(record, source_revision)]),
-                availability: PremiseAvailability::Retained,
+                ancestry_roots: std::collections::BTreeSet::from([(record, source_revision)]),
+                availability: crate::PremiseAvailability::Retained,
             }],
             expected_effects: vec!["file-created".to_owned()],
         }
@@ -314,14 +307,14 @@ mod tests {
         PlanState {
             scope: scope(),
             base_revision: revision(),
-            preconditions: BTreeSet::from(["workspace-clean".to_owned()]),
-            sources: BTreeMap::from([(
+            preconditions: std::collections::BTreeSet::from(["workspace-clean".to_owned()]),
+            sources: std::collections::BTreeMap::from([(
                 (record, source_revision),
                 PlanSourceState::Retained {
                     digest: "sha256:source".to_owned(),
                 },
             )]),
-            forgotten: BTreeSet::new(),
+            forgotten: std::collections::BTreeSet::new(),
         }
     }
 
@@ -331,7 +324,7 @@ mod tests {
             plan_id: "plan-1".to_owned(),
             plan_revision: 1,
             expected: state(),
-            decision: RecordId::from_bytes([0x60; 16]),
+            decision: mneme_core::RecordId::from_bytes([0x60; 16]),
         }
     }
 
@@ -356,14 +349,14 @@ mod tests {
         assert!(!fake_path.exists());
         assert_eq!(
             registry.inspect("plan-1").expect("inspect").accepted,
-            Some(RecordId::from_bytes([0x60; 16]))
+            Some(mneme_core::RecordId::from_bytes([0x60; 16]))
         );
     }
 
     #[test]
     fn stale_base_and_changed_preconditions_conflict() {
         let mut stale = registry();
-        stale.current.base_revision = WorkspaceRevisionId::from_bytes([0x99; 16]);
+        stale.current.base_revision = mneme_core::WorkspaceRevisionId::from_bytes([0x99; 16]);
         assert!(matches!(
             stale.accept(command()),
             PlanOutcome::Conflict {

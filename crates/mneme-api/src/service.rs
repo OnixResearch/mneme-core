@@ -1173,9 +1173,9 @@ fn resume_value(
         .payload
         .get("note")
         .and_then(mneme_core::Value::as_string);
-    let mut episodes = Vec::new();
-    let mut attempts = Vec::new();
-    let mut observations = Vec::new();
+    let mut episodes = Vec::with_capacity(episode_ids.len());
+    let mut attempts = Vec::with_capacity(episode_ids.len());
+    let mut observations = Vec::with_capacity(episode_ids.len());
     for episode_id in &episode_ids {
         let episode = view
             .episode(*episode_id)

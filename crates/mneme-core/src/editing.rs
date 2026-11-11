@@ -4,26 +4,19 @@
 //! a declared subset must either preserve every field it does not understand or
 //! refuse the edit. Silently dropping a retained extension is never permitted.
 
-use std::collections::BTreeSet;
-
-use crate::envelope::{Payload, RecordEnvelope};
-use crate::error::{Diagnostic, ErrorCode, Path, Stage};
-use crate::schema::RecordKind;
-use crate::value::Symbol;
-
 /// A narrowed editor view over one record kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditorView {
-    kind: RecordKind,
-    supported: BTreeSet<Symbol>,
+    kind: crate::schema::RecordKind,
+    supported: std::collections::BTreeSet<crate::value::Symbol>,
 }
 
 impl EditorView {
     /// Declare the field names this editor understands.
-    pub fn new<I, S>(kind: RecordKind, supported: I) -> Self
+    pub fn new<I, S>(kind: crate::schema::RecordKind, supported: I) -> Self
     where
         I: IntoIterator<Item = S>,
-        S: Into<Symbol>,
+        S: Into<crate::value::Symbol>,
     {
         EditorView {
             kind,
@@ -32,13 +25,13 @@ impl EditorView {
     }
 
     /// The record kind this editor edits.
-    pub const fn kind(&self) -> RecordKind {
+    pub const fn kind(&self) -> crate::schema::RecordKind {
         self.kind
     }
 
     /// Whether the editor declares support for a field.
     pub fn supports(&self, name: &str) -> bool {
-        self.supported.contains(&Symbol::from(name))
+        self.supported.contains(&crate::value::Symbol::from(name))
     }
 
     /// Replace a record's payload, preserving every retained extension field.
@@ -47,15 +40,15 @@ impl EditorView {
     /// this method only produces a compatible payload.
     pub fn replace_payload(
         &self,
-        envelope: &RecordEnvelope,
-        replacement: Payload,
-    ) -> Result<Payload, Vec<Diagnostic>> {
+        envelope: &crate::envelope::RecordEnvelope,
+        replacement: crate::envelope::Payload,
+    ) -> Result<crate::envelope::Payload, Vec<crate::error::Diagnostic>> {
         let mut diagnostics = Vec::new();
         if envelope.kind != self.kind {
-            return Err(vec![Diagnostic::new(
-                Stage::Editor,
-                ErrorCode::TypeMismatch,
-                Path::root(),
+            return Err(vec![crate::error::Diagnostic::new(
+                crate::error::Stage::Editor,
+                crate::error::ErrorCode::TypeMismatch,
+                crate::error::Path::root(),
                 format!(
                     "editor edits {} records but was given {}",
                     self.kind.symbol(),
@@ -65,10 +58,12 @@ impl EditorView {
         }
         for name in envelope.payload.names() {
             if !self.supported.contains(name) && !replacement.contains(name.as_str()) {
-                diagnostics.push(Diagnostic::new(
-                    Stage::Editor,
-                    ErrorCode::UnsupportedExtension,
-                    Path::root().field("payload").named(name.as_str()),
+                diagnostics.push(crate::error::Diagnostic::new(
+                    crate::error::Stage::Editor,
+                    crate::error::ErrorCode::UnsupportedExtension,
+                    crate::error::Path::root()
+                        .field("payload")
+                        .named(name.as_str()),
                     format!(
                         "editor cannot preserve retained extension {name}; refusing to drop it"
                     ),
@@ -84,10 +79,12 @@ impl EditorView {
             if envelope.payload.get(name.as_str()) == replacement.get(name.as_str()) {
                 continue;
             }
-            diagnostics.push(Diagnostic::new(
-                Stage::Editor,
-                ErrorCode::UnsupportedExtension,
-                Path::root().field("payload").named(name.as_str()),
+            diagnostics.push(crate::error::Diagnostic::new(
+                crate::error::Stage::Editor,
+                crate::error::ErrorCode::UnsupportedExtension,
+                crate::error::Path::root()
+                    .field("payload")
+                    .named(name.as_str()),
                 format!("editor cannot validate field {name}"),
             ));
         }
@@ -102,31 +99,35 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::envelope::RecordEnvelope;
-    use crate::ids::{RecordId, RevisionId};
-    use crate::schema::RecordKind;
-    use crate::scope::{ScopeClass, ScopeId};
-    use crate::time::{RecordedTime, Timestamp};
-    use crate::value::Value;
 
-    fn entity_with_extension() -> RecordEnvelope {
-        let mut payload = Payload::new([
-            (Symbol::from("entity-type"), Value::symbol("project")),
-            (Symbol::from("label"), Value::string("Cedar")),
-            (Symbol::from("properties"), Value::dictionary([])),
+    fn entity_with_extension() -> crate::envelope::RecordEnvelope {
+        let mut payload = crate::envelope::Payload::new([
+            (
+                crate::value::Symbol::from("entity-type"),
+                crate::value::Value::symbol("project"),
+            ),
+            (
+                crate::value::Symbol::from("label"),
+                crate::value::Value::string("Cedar"),
+            ),
+            (
+                crate::value::Symbol::from("properties"),
+                crate::value::Value::dictionary([]),
+            ),
         ]);
         payload.insert(
-            Symbol::from("future-extension"),
-            Value::set([Value::integer(7_i64)]),
+            crate::value::Symbol::from("future-extension"),
+            crate::value::Value::set([crate::value::Value::integer(7_i64)]),
         );
-        RecordEnvelope {
+        crate::envelope::RecordEnvelope {
             schema_version: 1,
-            kind: RecordKind::Entity,
-            record_id: RecordId::from_bytes([1; 16]),
-            revision_id: RevisionId::from_bytes([1; 16]),
+            kind: crate::schema::RecordKind::Entity,
+            record_id: crate::ids::RecordId::from_bytes([1; 16]),
+            revision_id: crate::ids::RevisionId::from_bytes([1; 16]),
             predecessor: None,
-            scope: ScopeId::new(ScopeClass::Project, "cedar").expect("scope"),
-            recorded: RecordedTime::new(Timestamp::from_nanos(1), 1),
+            scope: crate::scope::ScopeId::new(crate::scope::ScopeClass::Project, "cedar")
+                .expect("scope"),
+            recorded: crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(1), 1),
             payload,
         }
     }
@@ -134,16 +135,28 @@ mod tests {
     #[test]
     fn older_editor_refuses_to_drop_an_extension() {
         let record = entity_with_extension();
-        let editor = EditorView::new(RecordKind::Entity, ["entity-type", "label", "properties"]);
-        let replacement = Payload::new([
-            (Symbol::from("entity-type"), Value::symbol("project")),
-            (Symbol::from("label"), Value::string("Cedar renamed")),
-            (Symbol::from("properties"), Value::dictionary([])),
+        let editor = EditorView::new(
+            crate::schema::RecordKind::Entity,
+            ["entity-type", "label", "properties"],
+        );
+        let replacement = crate::envelope::Payload::new([
+            (
+                crate::value::Symbol::from("entity-type"),
+                crate::value::Value::symbol("project"),
+            ),
+            (
+                crate::value::Symbol::from("label"),
+                crate::value::Value::string("Cedar renamed"),
+            ),
+            (
+                crate::value::Symbol::from("properties"),
+                crate::value::Value::dictionary([]),
+            ),
         ]);
         let error = editor
             .replace_payload(&record, replacement)
             .expect_err("extension would be dropped");
-        assert_eq!(error[0].code, ErrorCode::UnsupportedExtension);
+        assert_eq!(error[0].code, crate::error::ErrorCode::UnsupportedExtension);
         assert_eq!(error[0].path.to_string(), "$.payload[\"future-extension\"]");
         // The existing record is untouched: replacement produced only an error.
         assert!(record.payload.contains("future-extension"));
@@ -152,14 +165,26 @@ mod tests {
     #[test]
     fn editor_that_preserves_the_extension_roundtrips_it() {
         let record = entity_with_extension();
-        let editor = EditorView::new(RecordKind::Entity, ["entity-type", "label", "properties"]);
-        let mut replacement = Payload::new([
-            (Symbol::from("entity-type"), Value::symbol("project")),
-            (Symbol::from("label"), Value::string("Cedar renamed")),
-            (Symbol::from("properties"), Value::dictionary([])),
+        let editor = EditorView::new(
+            crate::schema::RecordKind::Entity,
+            ["entity-type", "label", "properties"],
+        );
+        let mut replacement = crate::envelope::Payload::new([
+            (
+                crate::value::Symbol::from("entity-type"),
+                crate::value::Value::symbol("project"),
+            ),
+            (
+                crate::value::Symbol::from("label"),
+                crate::value::Value::string("Cedar renamed"),
+            ),
+            (
+                crate::value::Symbol::from("properties"),
+                crate::value::Value::dictionary([]),
+            ),
         ]);
         replacement.insert(
-            Symbol::from("future-extension"),
+            crate::value::Symbol::from("future-extension"),
             record
                 .payload
                 .get("future-extension")
@@ -178,10 +203,10 @@ mod tests {
     #[test]
     fn editor_refuses_a_different_kind() {
         let record = entity_with_extension();
-        let editor = EditorView::new(RecordKind::Assertion, ["value"]);
+        let editor = EditorView::new(crate::schema::RecordKind::Assertion, ["value"]);
         let error = editor
-            .replace_payload(&record, Payload::default())
+            .replace_payload(&record, crate::envelope::Payload::default())
             .expect_err("kind mismatch");
-        assert_eq!(error[0].code, ErrorCode::TypeMismatch);
+        assert_eq!(error[0].code, crate::error::ErrorCode::TypeMismatch);
     }
 }

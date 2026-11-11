@@ -4,24 +4,16 @@
 //! results. Revision, scope, eligibility generation, rule context, and every
 //! canonical premise must match before any fact is admitted.
 
-use std::collections::BTreeMap;
-
-use mneme_core::{Lifecycle, RecordId, RevisionId, ScopeId, ValidTime, Value, WorkspaceRevisionId};
-use mneme_datalog::{Derivation, ExecutionStatus, QueryResult};
-use mneme_memory::MemoryView;
-
-use crate::{InputCoverage, SearchContext};
-
 /// One accepted canonical assertion in the image.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CanonicalFact {
-    pub record_id: RecordId,
-    pub revision_id: RevisionId,
-    pub scope: ScopeId,
-    pub subject: RecordId,
+    pub record_id: mneme_core::RecordId,
+    pub revision_id: mneme_core::RevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub subject: mneme_core::RecordId,
     pub predicate: String,
-    pub value: Value,
-    pub valid_time: ValidTime,
+    pub value: mneme_core::Value,
+    pub valid_time: mneme_core::ValidTime,
 }
 
 /// One selected Datalog relation and its retained rows/derivations.
@@ -29,23 +21,23 @@ pub struct CanonicalFact {
 pub struct SelectedRelation {
     pub predicate: String,
     pub rows: Vec<SelectedRow>,
-    pub coverage: InputCoverage,
+    pub coverage: crate::InputCoverage,
 }
 
 /// One selected Datalog row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedRow {
-    pub values: Vec<Value>,
-    pub supports: Vec<Derivation>,
+    pub values: Vec<mneme_core::Value>,
+    pub supports: Vec<mneme_datalog::Derivation>,
 }
 
 /// One immutable input image.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputImage {
-    pub context: SearchContext,
+    pub context: crate::SearchContext,
     pub canonical: Vec<CanonicalFact>,
     pub relations: Vec<SelectedRelation>,
-    pub coverage: InputCoverage,
+    pub coverage: crate::InputCoverage,
 }
 
 /// Input-image construction failures.
@@ -53,8 +45,8 @@ pub struct InputImage {
 pub enum ImageError {
     #[error("memory view revision {actual} does not match expected {expected}")]
     RevisionMismatch {
-        expected: WorkspaceRevisionId,
-        actual: WorkspaceRevisionId,
+        expected: mneme_core::WorkspaceRevisionId,
+        actual: mneme_core::WorkspaceRevisionId,
     },
     #[error("Datalog result context does not match the image context: {0}")]
     ContextMismatch(String),
@@ -72,11 +64,11 @@ pub enum ImageError {
 
 /// Build an immutable image from one view and selected Datalog results.
 pub fn build_input_image(
-    view: &MemoryView,
-    scope: &ScopeId,
-    expected_revision: WorkspaceRevisionId,
+    view: &mneme_memory::MemoryView,
+    scope: &mneme_core::ScopeId,
+    expected_revision: mneme_core::WorkspaceRevisionId,
     expected_generation: u64,
-    results: Vec<QueryResult>,
+    results: Vec<mneme_datalog::QueryResult>,
 ) -> Result<InputImage, ImageError> {
     if view.revision() != expected_revision {
         return Err(ImageError::RevisionMismatch {
@@ -89,7 +81,7 @@ pub fn build_input_image(
         .assertions()
         .map_err(|error| ImageError::Invalid(error.to_string()))?
     {
-        if assertion.lifecycle != Lifecycle::Accepted {
+        if assertion.lifecycle != mneme_core::Lifecycle::Accepted {
             continue;
         }
         if &assertion.record.scope != scope {
@@ -106,7 +98,7 @@ pub fn build_input_image(
         });
     }
     let mut relations = Vec::new();
-    let mut rule_versions = BTreeMap::new();
+    let mut rule_versions = std::collections::BTreeMap::new();
     let mut rule_context: Option<(String, String)> = None;
     let mut is_all_complete = true;
     for result in results {
@@ -149,7 +141,7 @@ pub fn build_input_image(
                 .coverage
                 .iter()
                 .all(|coverage| coverage.status == mneme_datalog::CoverageStatus::Complete)
-            && result.status == ExecutionStatus::Complete;
+            && result.status == mneme_datalog::ExecutionStatus::Complete;
         is_all_complete &= is_coverage_complete;
         let mut rows = Vec::new();
         for row in &result.rows {
@@ -183,7 +175,7 @@ pub fn build_input_image(
         relations.push(SelectedRelation {
             predicate,
             rows,
-            coverage: InputCoverage {
+            coverage: crate::InputCoverage {
                 complete: is_coverage_complete,
                 reason: result.reason.clone(),
             },
@@ -195,7 +187,7 @@ pub fn build_input_image(
         expected_generation
     );
     Ok(InputImage {
-        context: SearchContext {
+        context: crate::SearchContext {
             revision: expected_revision,
             scope: scope.clone(),
             eligibility_generation: expected_generation,
@@ -205,7 +197,7 @@ pub fn build_input_image(
         },
         canonical,
         relations,
-        coverage: InputCoverage {
+        coverage: crate::InputCoverage {
             complete: is_all_complete,
             reason: if is_all_complete {
                 None
@@ -219,27 +211,18 @@ pub fn build_input_image(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
-    use mneme_core::{RecordId, RevisionId, ScopeClass, WorkspaceRevisionId};
-    use mneme_datalog::{
-        BuildContext, Coverage, CoverageStatus, ExecutionStatus, Premise, QueryResult, QueryRow,
-    };
-    use mneme_memory::MemoryView;
-    use mneme_store::{CommitCommand, RecordDraft, Workspace};
-    use tempfile::TempDir;
-
-    fn scope() -> ScopeId {
-        ScopeId::new(ScopeClass::Project, "cedar").expect("scope")
+    fn scope() -> mneme_core::ScopeId {
+        mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar").expect("scope")
     }
 
-    fn other_scope() -> ScopeId {
-        ScopeId::new(ScopeClass::Project, "birch").expect("scope")
+    fn other_scope() -> mneme_core::ScopeId {
+        mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "birch").expect("scope")
     }
 
     fn commit_entity(
-        workspace: &mut Workspace,
-        scope: &ScopeId,
+        workspace: &mut mneme_store::Workspace,
+        scope: &mneme_core::ScopeId,
         id: u8,
         key: &str,
     ) -> Result<(), String> {
@@ -247,16 +230,16 @@ mod tests {
             .current_revision()
             .map_err(|error| error.to_string())?;
         workspace
-            .commit(CommitCommand {
+            .commit(mneme_store::CommitCommand {
                 base,
                 actor: "prolog-test".to_owned(),
                 scope: scope.clone(),
                 idempotency_key: key.to_owned(),
-                records: vec![RecordDraft {
+                records: vec![mneme_store::RecordDraft {
                     schema_version: 1,
                     kind: mneme_core::RecordKind::Entity,
-                    record_id: RecordId::from_bytes([id; 16]),
-                    revision_id: RevisionId::from_bytes([id.wrapping_add(1); 16]),
+                    record_id: mneme_core::RecordId::from_bytes([id; 16]),
+                    revision_id: mneme_core::RevisionId::from_bytes([id.wrapping_add(1); 16]),
                     predecessor: None,
                     scope: scope.clone(),
                     payload: mneme_core::fixtures::entity().payload,
@@ -270,9 +253,17 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
-    fn setup() -> Result<(TempDir, MemoryView, WorkspaceRevisionId, u64), String> {
+    fn setup() -> Result<
+        (
+            tempfile::TempDir,
+            mneme_memory::MemoryView,
+            mneme_core::WorkspaceRevisionId,
+            u64,
+        ),
+        String,
+    > {
         let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let mut workspace = Workspace::create(
+        let mut workspace = mneme_store::Workspace::create(
             temp.path(),
             mneme_store::WorkspaceConfig::new(
                 Box::new(mneme_store::SystemClock),
@@ -286,16 +277,20 @@ mod tests {
         let generation = workspace
             .eligibility_generation()
             .map_err(|e| e.to_string())?;
-        let view = MemoryView::new(
+        let view = mneme_memory::MemoryView::new(
             workspace.snapshot().map_err(|e| e.to_string())?,
             workspace.root(),
         );
         Ok((temp, view, revision, generation))
     }
 
-    fn result(revision: WorkspaceRevisionId, generation: u64, canonical: RecordId) -> QueryResult {
-        QueryResult {
-            context: BuildContext {
+    fn result(
+        revision: mneme_core::WorkspaceRevisionId,
+        generation: u64,
+        canonical: mneme_core::RecordId,
+    ) -> mneme_datalog::QueryResult {
+        mneme_datalog::QueryResult {
+            context: mneme_datalog::BuildContext {
                 requested_revision: revision,
                 served_revision: revision,
                 scope: scope(),
@@ -305,25 +300,25 @@ mod tests {
                 projection_build_id: "build-1".to_owned(),
                 eligibility_generation: generation,
             },
-            status: ExecutionStatus::Complete,
-            coverage: vec![Coverage {
+            status: mneme_datalog::ExecutionStatus::Complete,
+            coverage: vec![mneme_datalog::Coverage {
                 predicate: "path".to_owned(),
-                status: CoverageStatus::Complete,
+                status: mneme_datalog::CoverageStatus::Complete,
                 reason: None,
             }],
-            rows: vec![QueryRow {
+            rows: vec![mneme_datalog::QueryRow {
                 values: Vec::new(),
-                supports: vec![Derivation {
+                supports: vec![mneme_datalog::Derivation {
                     rule_id: "path".to_owned(),
                     rule_version: "1".to_owned(),
-                    premises: vec![Premise {
+                    premises: vec![mneme_datalog::Premise {
                         predicate: "entity".to_owned(),
                         terms: Vec::new(),
                         canonical: Some(canonical),
-                        sources: BTreeSet::new(),
+                        sources: std::collections::BTreeSet::new(),
                         source_availability: None,
                     }],
-                    sources: BTreeSet::new(),
+                    sources: std::collections::BTreeSet::new(),
                     temporal_parameters: Vec::new(),
                     revision,
                     scope: scope(),
@@ -352,7 +347,7 @@ mod tests {
             vec![result(
                 revision,
                 generation,
-                RecordId::from_bytes([0x10; 16]),
+                mneme_core::RecordId::from_bytes([0x10; 16]),
             )],
         )
         .expect("image");
@@ -367,8 +362,12 @@ mod tests {
     #[test]
     fn mixed_revision_and_stale_generation_are_rejected() {
         let (_temp, view, revision, generation) = setup().expect("setup");
-        let mut mixed = result(revision, generation, RecordId::from_bytes([0x10; 16]));
-        mixed.served_revision = WorkspaceRevisionId::from_bytes([0x99; 16]);
+        let mut mixed = result(
+            revision,
+            generation,
+            mneme_core::RecordId::from_bytes([0x10; 16]),
+        );
+        mixed.served_revision = mneme_core::WorkspaceRevisionId::from_bytes([0x99; 16]);
         assert!(matches!(
             build_input_image(&view, &scope(), revision, generation, vec![mixed]),
             Err(ImageError::ContextMismatch(_))
@@ -376,7 +375,7 @@ mod tests {
         let stale = result(
             revision,
             generation.saturating_add(1),
-            RecordId::from_bytes([0x10; 16]),
+            mneme_core::RecordId::from_bytes([0x10; 16]),
         );
         assert!(matches!(
             build_input_image(&view, &scope(), revision, generation, vec![stale]),
@@ -387,11 +386,15 @@ mod tests {
     #[test]
     fn hidden_scope_premise_is_rejected() {
         let (_temp, view, revision, generation) = setup().expect("setup");
-        let hidden = result(revision, generation, RecordId::from_bytes([0x70; 16]));
+        let hidden = result(
+            revision,
+            generation,
+            mneme_core::RecordId::from_bytes([0x70; 16]),
+        );
         assert_eq!(
             build_input_image(&view, &scope(), revision, generation, vec![hidden]),
             Err(ImageError::HiddenScope(
-                RecordId::from_bytes([0x70; 16]).to_hex()
+                mneme_core::RecordId::from_bytes([0x70; 16]).to_hex()
             ))
         );
     }

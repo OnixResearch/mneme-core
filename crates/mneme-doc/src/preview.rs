@@ -1,46 +1,40 @@
 //! Restricted preview rendering and explicit include occurrence mapping.
 
 #![allow(unknown_lints, ignored_result)] // fmt::Write to String and test cleanup cannot fail recoverably
-use std::collections::{BTreeMap, BTreeSet};
+
 use std::fmt::Write;
-use std::time::Instant;
-
-use mneme_core::{RecordEnvelope, SourceSpan, Value};
-
-use crate::asciidoc::{self, Diagnostic, IncludeDirective};
-use crate::{RENDER_CONFIG_VERSION, RenderConfig, SourcePin};
 
 #[derive(Clone, Debug)]
 pub(crate) struct RenderSource {
     pub path: String,
-    pub pin: SourcePin,
+    pub pin: crate::SourcePin,
     pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct RenderOutput {
     pub html: String,
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<crate::asciidoc::Diagnostic>,
     pub occurrences: Vec<crate::IncludeOccurrence>,
 }
 
 struct Renderer<'a> {
-    sources: &'a BTreeMap<String, RenderSource>,
-    config: &'a RenderConfig,
-    deadline: Option<Instant>,
+    sources: &'a std::collections::BTreeMap<String, RenderSource>,
+    config: &'a crate::RenderConfig,
+    deadline: Option<std::time::Instant>,
     html: String,
-    diagnostics: Vec<Diagnostic>,
+    diagnostics: Vec<crate::asciidoc::Diagnostic>,
     occurrences: Vec<crate::IncludeOccurrence>,
     expanded_bytes: usize,
-    stack: BTreeSet<String>,
+    stack: std::collections::BTreeSet<String>,
 }
 
 pub(crate) fn render(
     root: &RenderSource,
-    sources: &BTreeMap<String, RenderSource>,
-    metadata: Option<&RecordEnvelope>,
-    config: &RenderConfig,
-    deadline: Option<Instant>,
+    sources: &std::collections::BTreeMap<String, RenderSource>,
+    metadata: Option<&mneme_core::RecordEnvelope>,
+    config: &crate::RenderConfig,
+    deadline: Option<std::time::Instant>,
 ) -> RenderOutput {
     let mut renderer = Renderer {
         sources,
@@ -50,19 +44,22 @@ pub(crate) fn render(
         diagnostics: Vec::new(),
         occurrences: Vec::new(),
         expanded_bytes: 0,
-        stack: BTreeSet::new(),
+        stack: std::collections::BTreeSet::new(),
     };
-    if config.version != RENDER_CONFIG_VERSION {
-        renderer.diagnostics.push(Diagnostic::warning(
-            "unsupported-render-config",
-            format!(
-                "render configuration {} is not supported; using {}",
-                config.version, RENDER_CONFIG_VERSION
-            ),
-            1,
-            1,
-            None,
-        ));
+    if config.version != crate::RENDER_CONFIG_VERSION {
+        renderer
+            .diagnostics
+            .push(crate::asciidoc::Diagnostic::warning(
+                "unsupported-render-config",
+                format!(
+                    "render configuration {} is not supported; using {}",
+                    config.version,
+                    crate::RENDER_CONFIG_VERSION
+                ),
+                1,
+                1,
+                None,
+            ));
     }
     if config.include_entity_metadata
         && let Some(entity) = metadata
@@ -78,22 +75,22 @@ pub(crate) fn render(
 }
 
 impl Renderer<'_> {
-    fn render_metadata(&mut self, entity: &RecordEnvelope) {
+    fn render_metadata(&mut self, entity: &mneme_core::RecordEnvelope) {
         let entity_type = entity
             .payload
             .get("entity-type")
-            .and_then(Value::as_symbol)
+            .and_then(mneme_core::Value::as_symbol)
             .map_or("entity", |symbol| symbol.as_str());
         let label = entity
             .payload
             .get("label")
-            .and_then(Value::as_string)
+            .and_then(mneme_core::Value::as_string)
             .unwrap_or("(unlabelled)");
         let mut properties = String::new();
         if let Some(dictionary) = entity
             .payload
             .get("properties")
-            .and_then(Value::as_dictionary)
+            .and_then(mneme_core::Value::as_dictionary)
         {
             for (key, value) in dictionary {
                 let key = key
@@ -127,7 +124,7 @@ impl Renderer<'_> {
             return;
         }
         if !self.stack.insert(source.path.clone()) {
-            self.diagnostics.push(Diagnostic::new(
+            self.diagnostics.push(crate::asciidoc::Diagnostic::new(
                 "include-cycle",
                 format!("include cycle at {}", source.path),
                 1,
@@ -139,7 +136,7 @@ impl Renderer<'_> {
         let text = match std::str::from_utf8(&source.bytes) {
             Ok(text) => text,
             Err(error) => {
-                self.diagnostics.push(Diagnostic::new(
+                self.diagnostics.push(crate::asciidoc::Diagnostic::new(
                     "invalid-utf8",
                     "included source is not valid UTF-8",
                     1,
@@ -150,14 +147,14 @@ impl Renderer<'_> {
                 return;
             }
         };
-        let includes = asciidoc::scan_includes(text)
+        let includes = crate::asciidoc::scan_includes(text)
             .into_iter()
             .map(|directive| (line_start(text, directive.line), directive))
-            .collect::<BTreeMap<_, _>>();
-        let anchors = asciidoc::scan_anchors(text)
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let anchors = crate::asciidoc::scan_anchors(text)
             .into_iter()
             .map(|anchor| (line_start(text, anchor.line), anchor))
-            .collect::<BTreeMap<_, _>>();
+            .collect::<std::collections::BTreeMap<_, _>>();
         let mut pending_anchor: Option<String> = None;
         let mut paragraph: Vec<&str> = Vec::new();
         let mut skip_until = 0_usize;
@@ -174,7 +171,7 @@ impl Renderer<'_> {
                 break;
             }
             if self.html.len() > self.config.max_output_bytes {
-                self.diagnostics.push(Diagnostic::warning(
+                self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
                     "output-size-limit",
                     "preview stopped at the configured output limit",
                     line_number,
@@ -209,7 +206,7 @@ impl Renderer<'_> {
                                 );
                             }
                             Block::Passthrough => {
-                                self.diagnostics.push(Diagnostic::warning(
+                                self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
                                     "raw-passthrough-escaped",
                                     "raw passthrough content was escaped, not executed",
                                     mode_start,
@@ -223,7 +220,7 @@ impl Renderer<'_> {
                                 );
                             }
                             Block::Table => {
-                                self.diagnostics.push(Diagnostic::warning(
+                                self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
                                     "unsupported-table",
                                     "table content is escaped in the supported preview subset",
                                     mode_start,
@@ -294,12 +291,16 @@ impl Renderer<'_> {
                 || trimmed.starts_with("ifeval::")
             {
                 self.flush_paragraph(&mut paragraph, &mut pending_anchor);
-                self.diagnostics.push(Diagnostic::warning(
+                self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
                     "unsupported-conditional",
                     "conditional directive was not evaluated",
                     line_number,
                     1,
-                    SourceSpan::new(start as u64, (start + content.len().max(1) - 1) as u64).ok(),
+                    mneme_core::SourceSpan::new(
+                        start as u64,
+                        (start + content.len().max(1) - 1) as u64,
+                    )
+                    .ok(),
                 ));
                 let _ = write!(
                     self.html,
@@ -313,7 +314,7 @@ impl Renderer<'_> {
                 let id = pending_anchor.take();
                 let id_attribute = id
                     .as_deref()
-                    .filter(|anchor| asciidoc::valid_anchor(anchor))
+                    .filter(|anchor| crate::asciidoc::valid_anchor(anchor))
                     .map(|anchor| format!(" id=\"{}\"", escape_html(anchor)))
                     .unwrap_or_default();
                 let level = level.min(6);
@@ -380,7 +381,7 @@ impl Renderer<'_> {
         self.stack.remove(&source.path);
         self.expanded_bytes += source.bytes.len();
         if self.expanded_bytes > self.config.max_output_bytes {
-            self.diagnostics.push(Diagnostic::warning(
+            self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
                 "expanded-size-limit",
                 "preview expansion exceeded the configured output limit",
                 line_number,
@@ -394,10 +395,10 @@ impl Renderer<'_> {
     fn render_include(
         &mut self,
         source: &RenderSource,
-        directive: &IncludeDirective,
+        directive: &crate::asciidoc::IncludeDirective,
         depth: usize,
     ) {
-        let path = match asciidoc::normalize_include_path(&source.path, &directive.target) {
+        let path = match crate::asciidoc::normalize_include_path(&source.path, &directive.target) {
             Ok(path) => path,
             Err(diagnostic) => {
                 self.diagnostics.push(diagnostic);
@@ -405,7 +406,7 @@ impl Renderer<'_> {
             }
         };
         let Some(target) = self.sources.get(&path) else {
-            self.diagnostics.push(Diagnostic::warning(
+            self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
                 if directive.optional {
                     "include-optional-missing"
                 } else {
@@ -457,8 +458,8 @@ impl Renderer<'_> {
         let Some(deadline) = self.deadline else {
             return false;
         };
-        if Instant::now() > deadline {
-            self.diagnostics.push(Diagnostic::warning(
+        if std::time::Instant::now() > deadline {
+            self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
                 "render-time-limit",
                 "preview stopped at the configured time limit",
                 1,
@@ -518,10 +519,14 @@ fn is_list_item(line: &str, marker: char) -> bool {
         && !trimmed.starts_with("**")
 }
 
-fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnostic>) {
+fn inline(
+    text: &str,
+    line: usize,
+    config_version: &str,
+) -> (String, Vec<crate::asciidoc::Diagnostic>) {
     let mut diagnostics = Vec::new();
-    if config_version != RENDER_CONFIG_VERSION {
-        diagnostics.push(Diagnostic::warning(
+    if config_version != crate::RENDER_CONFIG_VERSION {
+        diagnostics.push(crate::asciidoc::Diagnostic::warning(
             "unsupported-inline-config",
             "inline rendering used the supported configuration",
             line,
@@ -536,7 +541,7 @@ fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnos
         if rest.starts_with("pass:[") {
             let end = rest.find(']').map(|end| index + end + 1);
             let literal = end.map(|end| &text[index..end]).unwrap_or(rest);
-            diagnostics.push(Diagnostic::warning(
+            diagnostics.push(crate::asciidoc::Diagnostic::warning(
                 "passthrough-inline-escaped",
                 "inline passthrough content was escaped",
                 line,
@@ -558,7 +563,7 @@ fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnos
             if let Some((end, target, label)) = parse_macro(rest) {
                 match kind {
                     "image" => {
-                        diagnostics.push(Diagnostic::warning(
+                        diagnostics.push(crate::asciidoc::Diagnostic::warning(
                             "external-asset-not-fetched",
                             "image target was not fetched or embedded",
                             line,
@@ -577,7 +582,7 @@ fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnos
                     "link" => {
                         let label = label.unwrap_or_else(|| target.to_owned());
                         if let Some(anchor) = target.strip_prefix('#')
-                            && asciidoc::valid_anchor(anchor)
+                            && crate::asciidoc::valid_anchor(anchor)
                         {
                             let _ = write!(
                                 output,
@@ -586,7 +591,7 @@ fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnos
                                 escape_html(&label)
                             );
                         } else {
-                            diagnostics.push(Diagnostic::warning(
+                            diagnostics.push(crate::asciidoc::Diagnostic::warning(
                                 "external-navigation-not-automatic",
                                 "external link target was not made navigable by the preview",
                                 line,
@@ -601,7 +606,7 @@ fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnos
                         }
                     }
                     _ => {
-                        if asciidoc::valid_anchor(target) {
+                        if crate::asciidoc::valid_anchor(target) {
                             let label_text = label.as_deref().unwrap_or(target);
                             let _ = write!(
                                 output,
@@ -610,7 +615,7 @@ fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnos
                                 escape_html(label_text)
                             );
                         } else {
-                            diagnostics.push(Diagnostic::warning(
+                            diagnostics.push(crate::asciidoc::Diagnostic::warning(
                                 "xref-unavailable",
                                 "cross-reference target is not a safe local anchor",
                                 line,
@@ -630,7 +635,7 @@ fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnos
         };
         match character {
             '<' | '>' => {
-                diagnostics.push(Diagnostic::warning(
+                diagnostics.push(crate::asciidoc::Diagnostic::warning(
                     "raw-html-escaped",
                     "raw HTML was escaped",
                     line,
@@ -643,7 +648,7 @@ fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnos
             '"' => output.push_str("&quot;"),
             '\'' => output.push_str("&#39;"),
             '{' => {
-                diagnostics.push(Diagnostic::warning(
+                diagnostics.push(crate::asciidoc::Diagnostic::warning(
                     "attribute-substitution-not-evaluated",
                     "attribute substitution was not evaluated",
                     line,
@@ -661,7 +666,7 @@ fn inline(text: &str, line: usize, config_version: &str) -> (String, Vec<Diagnos
                     && rest[1..].contains('[')
                     && !rest.starts_with("::")
                 {
-                    diagnostics.push(Diagnostic::warning(
+                    diagnostics.push(crate::asciidoc::Diagnostic::warning(
                         "unsupported-macro",
                         "custom macro was not executed",
                         line,
@@ -706,7 +711,7 @@ fn escape_html(text: &str) -> String {
     output
 }
 
-fn display_value(value: &Value) -> String {
+fn display_value(value: &mneme_core::Value) -> String {
     if let Some(text) = value.as_string() {
         return text.to_owned();
     }

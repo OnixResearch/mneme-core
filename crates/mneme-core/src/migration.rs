@@ -6,16 +6,12 @@
 //! the target under its own schema version, and returns the lineage. Any failure
 //! leaves the committed source readable and reports the failed transformation.
 
-use std::fmt;
-
-use crate::envelope::{Payload, RecordContext, RecordEnvelope, validate_record};
-use crate::error::{Diagnostic, ErrorCode, Path, Stage, render_diagnostics};
-use crate::ids::{RecordId, RevisionId};
-use crate::schema::SchemaRegistry;
-use crate::time::RecordedTime;
-
 /// A payload transformation for one migration step.
-pub type PayloadTransform = Box<dyn Fn(&Payload) -> Result<Payload, Diagnostic> + Send + Sync>;
+pub type PayloadTransform = Box<
+    dyn Fn(&crate::envelope::Payload) -> Result<crate::envelope::Payload, crate::error::Diagnostic>
+        + Send
+        + Sync,
+>;
 
 /// One named, versioned payload transformation.
 pub struct Migration {
@@ -25,8 +21,8 @@ pub struct Migration {
     transform: PayloadTransform,
 }
 
-impl fmt::Debug for Migration {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Debug for Migration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Migration")
             .field("name", &self.name)
@@ -42,7 +38,12 @@ impl Migration {
         name: impl Into<String>,
         from_version: u32,
         to_version: u32,
-        transform: impl Fn(&Payload) -> Result<Payload, Diagnostic> + Send + Sync + 'static,
+        transform: impl Fn(
+            &crate::envelope::Payload,
+        ) -> Result<crate::envelope::Payload, crate::error::Diagnostic>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Migration {
             name: name.into(),
@@ -68,16 +69,19 @@ impl Migration {
     }
 
     /// Plan this migration for one record without transforming it.
-    pub fn plan(&self, source: &RecordEnvelope) -> Result<MigrationPlan, MigrationFailure> {
+    pub fn plan(
+        &self,
+        source: &crate::envelope::RecordEnvelope,
+    ) -> Result<MigrationPlan, MigrationFailure> {
         if source.schema_version != self.from_version {
             return Err(MigrationFailure {
                 migration: self.name.clone(),
                 source_record: source.record_id,
                 source_revision: source.revision_id,
-                diagnostics: vec![Diagnostic::new(
-                    Stage::Migration,
-                    ErrorCode::MigrationFailed,
-                    Path::root().field("schema-version"),
+                diagnostics: vec![crate::error::Diagnostic::new(
+                    crate::error::Stage::Migration,
+                    crate::error::ErrorCode::MigrationFailed,
+                    crate::error::Path::root().field("schema-version"),
                     format!(
                         "migration {} expects schema version {}, found {}",
                         self.name, self.from_version, source.schema_version
@@ -90,10 +94,10 @@ impl Migration {
                 migration: self.name.clone(),
                 source_record: source.record_id,
                 source_revision: source.revision_id,
-                diagnostics: vec![Diagnostic::new(
-                    Stage::Migration,
-                    ErrorCode::MigrationFailed,
-                    Path::root(),
+                diagnostics: vec![crate::error::Diagnostic::new(
+                    crate::error::Stage::Migration,
+                    crate::error::ErrorCode::MigrationFailed,
+                    crate::error::Path::root(),
                     "migration target version must be newer than its source version",
                 )],
             });
@@ -110,10 +114,10 @@ impl Migration {
     /// Execute this migration into a new validated record revision.
     pub fn execute(
         &self,
-        registry: &SchemaRegistry,
-        source: &RecordEnvelope,
-        target_revision: RevisionId,
-        recorded: RecordedTime,
+        registry: &crate::schema::SchemaRegistry,
+        source: &crate::envelope::RecordEnvelope,
+        target_revision: crate::ids::RevisionId,
+        recorded: crate::time::RecordedTime,
     ) -> Result<MigrationOutcome, MigrationFailure> {
         self.plan(source)?;
         if registry.schema(self.to_version).is_none() {
@@ -121,10 +125,10 @@ impl Migration {
                 migration: self.name.clone(),
                 source_record: source.record_id,
                 source_revision: source.revision_id,
-                diagnostics: vec![Diagnostic::new(
-                    Stage::Migration,
-                    ErrorCode::UnsupportedSchemaVersion,
-                    Path::root().field("schema-version"),
+                diagnostics: vec![crate::error::Diagnostic::new(
+                    crate::error::Stage::Migration,
+                    crate::error::ErrorCode::UnsupportedSchemaVersion,
+                    crate::error::Path::root().field("schema-version"),
                     format!(
                         "migration target version {} is not registered",
                         self.to_version
@@ -138,7 +142,7 @@ impl Migration {
             source_revision: source.revision_id,
             diagnostics: vec![diagnostic],
         })?;
-        let target = RecordEnvelope {
+        let target = crate::envelope::RecordEnvelope {
             schema_version: self.to_version,
             kind: source.kind,
             record_id: source.record_id,
@@ -148,8 +152,9 @@ impl Migration {
             recorded,
             payload,
         };
-        let context = RecordContext::isolated(registry);
-        let diagnostics = validate_record(&target, &context, &Path::root());
+        let context = crate::envelope::RecordContext::isolated(registry);
+        let diagnostics =
+            crate::envelope::validate_record(&target, &context, &crate::error::Path::root());
         if !diagnostics.is_empty() {
             return Err(MigrationFailure {
                 migration: self.name.clone(),
@@ -177,8 +182,8 @@ impl Migration {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationPlan {
     pub migration: String,
-    pub source_record: RecordId,
-    pub source_revision: RevisionId,
+    pub source_record: crate::ids::RecordId,
+    pub source_revision: crate::ids::RevisionId,
     pub from_version: u32,
     pub to_version: u32,
 }
@@ -189,17 +194,17 @@ pub struct MigrationLineage {
     pub migration: String,
     pub from_version: u32,
     pub to_version: u32,
-    pub source_revision: RevisionId,
-    pub target_revision: RevisionId,
+    pub source_revision: crate::ids::RevisionId,
+    pub target_revision: crate::ids::RevisionId,
 }
 
 /// A successful migration: the source stays untouched and the target carries
 /// its predecessor lineage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationOutcome {
-    pub source_record: RecordId,
-    pub source_revision: RevisionId,
-    pub target: RecordEnvelope,
+    pub source_record: crate::ids::RecordId,
+    pub source_revision: crate::ids::RevisionId,
+    pub target: crate::envelope::RecordEnvelope,
     pub lineage: MigrationLineage,
 }
 
@@ -207,20 +212,20 @@ pub struct MigrationOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationFailure {
     pub migration: String,
-    pub source_record: RecordId,
-    pub source_revision: RevisionId,
-    pub diagnostics: Vec<Diagnostic>,
+    pub source_record: crate::ids::RecordId,
+    pub source_revision: crate::ids::RevisionId,
+    pub diagnostics: Vec<crate::error::Diagnostic>,
 }
 
-impl fmt::Display for MigrationFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for MigrationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
             "migration {} failed for record {} revision {}: {}",
             self.migration,
             self.source_record,
             self.source_revision,
-            render_diagnostics(&self.diagnostics)
+            crate::error::render_diagnostics(&self.diagnostics)
         )
     }
 }
@@ -230,46 +235,75 @@ impl std::error::Error for MigrationFailure {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::envelope::Payload;
-    use crate::reference::Reference;
-    use crate::schema::{RecordKind, RecordSchema, SchemaRegistry};
-    use crate::scope::{ScopeClass, ScopeId};
-    use crate::time::{Timestamp, ValidTime};
-    use crate::value::{Symbol, Value};
 
-    fn assertion() -> RecordEnvelope {
-        RecordEnvelope {
+    fn assertion() -> crate::envelope::RecordEnvelope {
+        crate::envelope::RecordEnvelope {
             schema_version: 1,
-            kind: RecordKind::Assertion,
-            record_id: RecordId::from_bytes([1; 16]),
-            revision_id: RevisionId::from_bytes([1; 16]),
+            kind: crate::schema::RecordKind::Assertion,
+            record_id: crate::ids::RecordId::from_bytes([1; 16]),
+            revision_id: crate::ids::RevisionId::from_bytes([1; 16]),
             predecessor: None,
-            scope: ScopeId::new(ScopeClass::Project, "cedar").expect("scope"),
-            recorded: RecordedTime::new(Timestamp::from_nanos(1), 1),
-            payload: Payload::new([
+            scope: crate::scope::ScopeId::new(crate::scope::ScopeClass::Project, "cedar")
+                .expect("scope"),
+            recorded: crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(1), 1),
+            payload: crate::envelope::Payload::new([
                 (
-                    Symbol::from("subject"),
-                    Reference::local(RecordId::from_bytes([2; 16]), RecordKind::Entity).to_value(),
+                    crate::value::Symbol::from("subject"),
+                    crate::reference::Reference::local(
+                        crate::ids::RecordId::from_bytes([2; 16]),
+                        crate::schema::RecordKind::Entity,
+                    )
+                    .to_value(),
                 ),
-                (Symbol::from("predicate"), Value::symbol("storage-engine")),
-                (Symbol::from("value"), Value::string("SQLite")),
-                (Symbol::from("stance"), Value::symbol("affirm")),
-                (Symbol::from("lifecycle"), Value::symbol("proposed")),
-                (Symbol::from("origin"), Value::symbol("authored-statement")),
-                (Symbol::from("asserted-by"), Value::string("author")),
-                (Symbol::from("valid-time"), ValidTime::Unknown.to_value()),
-                (Symbol::from("evidence"), Value::set([])),
+                (
+                    crate::value::Symbol::from("predicate"),
+                    crate::value::Value::symbol("storage-engine"),
+                ),
+                (
+                    crate::value::Symbol::from("value"),
+                    crate::value::Value::string("SQLite"),
+                ),
+                (
+                    crate::value::Symbol::from("stance"),
+                    crate::value::Value::symbol("affirm"),
+                ),
+                (
+                    crate::value::Symbol::from("lifecycle"),
+                    crate::value::Value::symbol("proposed"),
+                ),
+                (
+                    crate::value::Symbol::from("origin"),
+                    crate::value::Value::symbol("authored-statement"),
+                ),
+                (
+                    crate::value::Symbol::from("asserted-by"),
+                    crate::value::Value::string("author"),
+                ),
+                (
+                    crate::value::Symbol::from("valid-time"),
+                    crate::time::ValidTime::Unknown.to_value(),
+                ),
+                (
+                    crate::value::Symbol::from("evidence"),
+                    crate::value::Value::set([]),
+                ),
             ]),
         }
     }
 
-    fn registry() -> SchemaRegistry {
-        SchemaRegistry::v1().with_version(RecordSchema::synthetic_migration_v2())
+    fn registry() -> crate::schema::SchemaRegistry {
+        crate::schema::SchemaRegistry::v1()
+            .with_version(crate::schema::RecordSchema::synthetic_migration_v2())
     }
 
-    fn add_extraction(payload: &Payload) -> Result<Payload, Diagnostic> {
+    fn add_extraction(
+        payload: &crate::envelope::Payload,
+    ) -> Result<crate::envelope::Payload, crate::error::Diagnostic> {
         let mut output = payload.clone();
-        output.insert(Symbol::from("extraction"), Value::string("synthetic-v2"));
+        output.insert(
+            crate::value::Symbol::from("extraction"),
+            crate::value::Value::string("synthetic-v2"),
+        );
         Ok(output)
     }
 
@@ -282,8 +316,8 @@ mod tests {
             .execute(
                 &registry(),
                 &source,
-                RevisionId::from_bytes([9; 16]),
-                RecordedTime::new(Timestamp::from_nanos(2), 2),
+                crate::ids::RevisionId::from_bytes([9; 16]),
+                crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(2), 2),
             )
             .expect("migration");
         assert_eq!(source, original, "source revision is immutable");
@@ -305,10 +339,10 @@ mod tests {
         let source = assertion();
         let original = source.clone();
         let migration = Migration::new("synthetic-failure", 1, 2, |_payload| {
-            Err(Diagnostic::new(
-                Stage::Migration,
-                ErrorCode::MigrationFailed,
-                Path::root().field("payload"),
+            Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Migration,
+                crate::error::ErrorCode::MigrationFailed,
+                crate::error::Path::root().field("payload"),
                 "synthetic transformation refused",
             ))
         });
@@ -316,8 +350,8 @@ mod tests {
             .execute(
                 &registry(),
                 &source,
-                RevisionId::from_bytes([9; 16]),
-                RecordedTime::new(Timestamp::from_nanos(2), 2),
+                crate::ids::RevisionId::from_bytes([9; 16]),
+                crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(2), 2),
             )
             .expect_err("must fail");
         assert_eq!(source, original);
@@ -338,17 +372,13 @@ mod tests {
             .execute(
                 &registry(),
                 &source,
-                RevisionId::from_bytes([9; 16]),
-                RecordedTime::new(Timestamp::from_nanos(2), 2),
+                crate::ids::RevisionId::from_bytes([9; 16]),
+                crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(2), 2),
             )
             .expect_err("target misses the v2 field");
-        assert!(
-            failure
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == ErrorCode::MissingField
-                    && diagnostic.path.to_string() == "$.payload.extraction")
-        );
+        assert!(failure.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == crate::error::ErrorCode::MissingField
+            && diagnostic.path.to_string() == "$.payload.extraction"));
         // The source record is never rewritten.
         assert_eq!(
             source.assertion_lifecycle(),
@@ -362,15 +392,15 @@ mod tests {
         let migration = Migration::new("synthetic-v1-to-v3", 1, 3, add_extraction);
         let failure = migration
             .execute(
-                &SchemaRegistry::v1(),
+                &crate::schema::SchemaRegistry::v1(),
                 &source,
-                RevisionId::from_bytes([9; 16]),
-                RecordedTime::new(Timestamp::from_nanos(2), 2),
+                crate::ids::RevisionId::from_bytes([9; 16]),
+                crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(2), 2),
             )
             .expect_err("no v3");
         assert_eq!(
             failure.diagnostics[0].code,
-            ErrorCode::UnsupportedSchemaVersion
+            crate::error::ErrorCode::UnsupportedSchemaVersion
         );
     }
 }

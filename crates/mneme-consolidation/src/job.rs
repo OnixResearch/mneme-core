@@ -3,20 +3,10 @@
 //! Progress advances one reviewed input at a time. A retry resumes the same
 //! identity without replaying completed inputs or duplicating proposal IDs.
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use crate::generator::{DeterministicGenerator, GeneratorInput};
-use crate::{
-    BatchCoverage, ConsolidationJob, ConsolidationProposal, InputKey, JobStatus,
-    ProposalDisposition,
-};
-
 /// A cooperative cancellation flag.
 #[derive(Clone, Default)]
 pub struct JobControl {
-    cancelled: Arc<AtomicBool>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl JobControl {
@@ -25,11 +15,12 @@ impl JobControl {
     }
 
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Relaxed);
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Relaxed)
+        self.cancelled.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -37,15 +28,15 @@ impl JobControl {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobProgress {
     pub job_id: String,
-    pub completed: BTreeSet<InputKey>,
-    pub proposal_ids: BTreeSet<String>,
+    pub completed: std::collections::BTreeSet<crate::InputKey>,
+    pub proposal_ids: std::collections::BTreeSet<String>,
     pub elapsed_ms: u64,
-    pub status: JobStatus,
+    pub status: crate::JobStatus,
 }
 
 impl JobProgress {
     /// Validate that progress belongs to the job and has no out-of-batch work.
-    pub fn validate(&self, job: &ConsolidationJob) -> Result<(), String> {
+    pub fn validate(&self, job: &crate::ConsolidationJob) -> Result<(), String> {
         if self.job_id != job.job_id {
             return Err("progress belongs to another job".to_owned());
         }
@@ -58,7 +49,7 @@ impl JobProgress {
         if job.batch.reviewed.len() > job.limits.max_inputs {
             return Err("batch exceeds the input limit".to_owned());
         }
-        if self.status == JobStatus::Complete && self.completed != job.batch.reviewed {
+        if self.status == crate::JobStatus::Complete && self.completed != job.batch.reviewed {
             return Err("complete progress has unreviewed units".to_owned());
         }
         Ok(())
@@ -68,32 +59,35 @@ impl JobProgress {
 /// A job runner that can be reconstructed from durable progress.
 #[derive(Clone, Debug)]
 pub struct JobRunner {
-    job: ConsolidationJob,
+    job: crate::ConsolidationJob,
     progress: JobProgress,
 }
 
 impl JobRunner {
     /// Start a fresh run.
-    pub fn start(job: ConsolidationJob) -> Result<Self, String> {
+    pub fn start(job: crate::ConsolidationJob) -> Result<Self, String> {
         if job.batch.reviewed.len() > job.limits.max_inputs {
             return Err("batch exceeds the input limit".to_owned());
         }
         let progress = JobProgress {
             job_id: job.job_id.clone(),
-            completed: BTreeSet::new(),
-            proposal_ids: BTreeSet::new(),
+            completed: std::collections::BTreeSet::new(),
+            proposal_ids: std::collections::BTreeSet::new(),
             elapsed_ms: 0,
-            status: JobStatus::Running,
+            status: crate::JobStatus::Running,
         };
         Ok(JobRunner { job, progress })
     }
 
     /// Resume from durable progress, refusing a different job identity.
-    pub fn resume(job: ConsolidationJob, progress: JobProgress) -> Result<Self, String> {
+    pub fn resume(job: crate::ConsolidationJob, progress: JobProgress) -> Result<Self, String> {
         progress.validate(&job)?;
         if matches!(
             progress.status,
-            JobStatus::Complete | JobStatus::Failed | JobStatus::Cancelled | JobStatus::Timeout
+            crate::JobStatus::Complete
+                | crate::JobStatus::Failed
+                | crate::JobStatus::Cancelled
+                | crate::JobStatus::Timeout
         ) && progress.completed != job.batch.reviewed
         {
             return Err("terminal progress is inconsistent with the batch".to_owned());
@@ -105,7 +99,7 @@ impl JobRunner {
         &self.progress
     }
 
-    pub fn job(&self) -> &ConsolidationJob {
+    pub fn job(&self) -> &crate::ConsolidationJob {
         &self.job
     }
 
@@ -116,17 +110,17 @@ impl JobRunner {
     /// being marked complete.
     pub fn process_summary(
         &mut self,
-        input: &GeneratorInput,
+        input: &crate::generator::GeneratorInput,
         control: &JobControl,
         elapsed_ms: u64,
-    ) -> Result<Vec<ConsolidationProposal>, String> {
+    ) -> Result<Vec<crate::ConsolidationProposal>, String> {
         if control.is_cancelled() {
-            self.progress.status = JobStatus::Cancelled;
+            self.progress.status = crate::JobStatus::Cancelled;
             return Err("job cancelled".to_owned());
         }
         if !matches!(
             self.progress.status,
-            JobStatus::Running | JobStatus::Partial
+            crate::JobStatus::Running | crate::JobStatus::Partial
         ) {
             return Err("job is not running".to_owned());
         }
@@ -137,24 +131,24 @@ impl JobRunner {
             return Ok(Vec::new());
         }
         if self.progress.elapsed_ms.saturating_add(elapsed_ms) > self.job.limits.max_time_ms {
-            self.progress.status = JobStatus::Timeout;
+            self.progress.status = crate::JobStatus::Timeout;
             return Err("job time limit exceeded".to_owned());
         }
-        let proposals = DeterministicGenerator.generate(
+        let proposals = crate::generator::DeterministicGenerator.generate(
             &self.job,
             &self.job.batch,
             std::slice::from_ref(input),
         )?;
-        let mut new_proposals = Vec::new();
+        let mut new_proposals = Vec::with_capacity(self.job.batch.units.len());
         for proposal in proposals {
             if self.progress.proposal_ids.contains(&proposal.proposal_id) {
                 continue;
             }
             if self.progress.proposal_ids.len() >= self.job.limits.max_proposals {
-                self.progress.status = JobStatus::Failed;
+                self.progress.status = crate::JobStatus::Failed;
                 return Err("job proposal limit exceeded".to_owned());
             }
-            if proposal.disposition != ProposalDisposition::Pending {
+            if proposal.disposition != crate::ProposalDisposition::Pending {
                 return Err("generated proposal must be pending".to_owned());
             }
             self.progress
@@ -165,13 +159,13 @@ impl JobRunner {
         self.progress.completed.insert(input.key);
         self.progress.elapsed_ms = self.progress.elapsed_ms.saturating_add(elapsed_ms);
         self.progress.status = if self.progress.completed == self.job.batch.reviewed {
-            if matches!(self.job.batch.coverage, BatchCoverage::Complete) {
-                JobStatus::Complete
+            if matches!(self.job.batch.coverage, crate::BatchCoverage::Complete) {
+                crate::JobStatus::Complete
             } else {
-                JobStatus::Partial
+                crate::JobStatus::Partial
             }
         } else {
-            JobStatus::Partial
+            crate::JobStatus::Partial
         };
         Ok(new_proposals)
     }
@@ -185,7 +179,7 @@ pub struct JobIdentity {
     pub extractor_revision: Option<String>,
 }
 
-impl ConsolidationJob {
+impl crate::ConsolidationJob {
     /// Identity used to classify retries.
     pub fn identity(&self) -> JobIdentity {
         JobIdentity {
@@ -239,26 +233,26 @@ struct ProgressKey {
     revision_id: String,
 }
 
-impl JobStatus {
+impl crate::JobStatus {
     fn name(self) -> &'static str {
         match self {
-            JobStatus::Running => "running",
-            JobStatus::Complete => "complete",
-            JobStatus::Partial => "partial",
-            JobStatus::Timeout => "timeout",
-            JobStatus::Cancelled => "cancelled",
-            JobStatus::Failed => "failed",
+            crate::JobStatus::Running => "running",
+            crate::JobStatus::Complete => "complete",
+            crate::JobStatus::Partial => "partial",
+            crate::JobStatus::Timeout => "timeout",
+            crate::JobStatus::Cancelled => "cancelled",
+            crate::JobStatus::Failed => "failed",
         }
     }
 
-    fn parse(text: &str) -> Result<Self, String> {
+    fn parse(text: &str) -> Result<crate::JobStatus, String> {
         match text {
-            "running" => Ok(JobStatus::Running),
-            "complete" => Ok(JobStatus::Complete),
-            "partial" => Ok(JobStatus::Partial),
-            "timeout" => Ok(JobStatus::Timeout),
-            "cancelled" => Ok(JobStatus::Cancelled),
-            "failed" => Ok(JobStatus::Failed),
+            "running" => Ok(crate::JobStatus::Running),
+            "complete" => Ok(crate::JobStatus::Complete),
+            "partial" => Ok(crate::JobStatus::Partial),
+            "timeout" => Ok(crate::JobStatus::Timeout),
+            "cancelled" => Ok(crate::JobStatus::Cancelled),
+            "failed" => Ok(crate::JobStatus::Failed),
             _ => Err(format!("unknown job status {text:?}")),
         }
     }
@@ -292,20 +286,20 @@ impl JobProgress {
             .completed
             .into_iter()
             .map(|key| {
-                Ok(InputKey {
+                Ok(crate::InputKey {
                     record_id: mneme_core::RecordId::from_hex(&key.record_id)
                         .map_err(|error| error.to_owned())?,
                     revision_id: mneme_core::RevisionId::from_hex(&key.revision_id)
                         .map_err(|error| error.to_owned())?,
                 })
             })
-            .collect::<Result<BTreeSet<_>, String>>()?;
+            .collect::<Result<std::collections::BTreeSet<_>, String>>()?;
         Ok(JobProgress {
             job_id: snapshot.job_id,
             completed,
             proposal_ids: snapshot.proposal_ids.into_iter().collect(),
             elapsed_ms: snapshot.elapsed_ms,
-            status: JobStatus::parse(&snapshot.status)?,
+            status: crate::JobStatus::parse(&snapshot.status)?,
         })
     }
 }
@@ -339,25 +333,22 @@ impl ProgressStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixture;
-    use crate::generator::GeneratorInput;
-    use mneme_core::SourceSpan;
 
-    fn inputs() -> Vec<GeneratorInput> {
-        let fixture = fixture().expect("fixture");
-        let mut result = Vec::new();
+    fn inputs() -> Vec<crate::generator::GeneratorInput> {
+        let fixture = crate::fixture().expect("fixture");
+        let mut result = Vec::with_capacity(fixture.job.batch.units.len());
         for unit in fixture.job.batch.units.clone() {
-            result.push(GeneratorInput {
+            result.push(crate::generator::GeneratorInput {
                 key: unit.key,
                 text: format!("source {}", unit.key.record_id.to_hex()),
-                span: SourceSpan::new(0, 7).ok(),
+                span: mneme_core::SourceSpan::new(0, 7).ok(),
             });
         }
         result
     }
 
     fn runner() -> JobRunner {
-        JobRunner::start(fixture().expect("fixture").job).expect("start")
+        JobRunner::start(crate::fixture().expect("fixture").job).expect("start")
     }
 
     #[test]
@@ -381,7 +372,7 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert_eq!(resumed.progress().completed.len(), 2);
         assert_eq!(resumed.progress().proposal_ids.len(), 2);
-        assert_eq!(resumed.progress().status, JobStatus::Complete);
+        assert_eq!(resumed.progress().status, crate::JobStatus::Complete);
     }
 
     #[test]
@@ -397,7 +388,7 @@ mod tests {
             .process_summary(&inputs[1], &control, 10)
             .expect_err("cancelled");
         assert_eq!(error, "job cancelled");
-        assert_eq!(runner.progress().status, JobStatus::Cancelled);
+        assert_eq!(runner.progress().status, crate::JobStatus::Cancelled);
         assert_eq!(runner.progress().completed.len(), 1);
     }
 
@@ -413,13 +404,13 @@ mod tests {
             .process_summary(&inputs[0], &control, 6)
             .expect_err("timeout");
         assert_eq!(error, "job time limit exceeded");
-        assert_eq!(limited.progress().status, JobStatus::Timeout);
+        assert_eq!(limited.progress().status, crate::JobStatus::Timeout);
         assert!(limited.progress().completed.is_empty());
     }
 
     #[test]
     fn policy_change_is_a_new_run_identity() {
-        let job = fixture().expect("fixture").job;
+        let job = crate::fixture().expect("fixture").job;
         let mut changed = job.identity();
         changed.policy_version = "next-policy".to_owned();
         assert_eq!(
@@ -449,10 +440,10 @@ mod tests {
         resumed
             .process_summary(&inputs[1], &control, 10)
             .expect("second");
-        assert_eq!(resumed.progress().status, JobStatus::Complete);
+        assert_eq!(resumed.progress().status, crate::JobStatus::Complete);
         store.save(resumed.progress()).expect("save complete");
         let complete = store.load().expect("load").expect("complete progress");
-        assert_eq!(complete.status, JobStatus::Complete);
+        assert_eq!(complete.status, crate::JobStatus::Complete);
         assert_eq!(complete.completed.len(), 2);
     }
 }

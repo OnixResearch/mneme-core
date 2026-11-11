@@ -45,7 +45,7 @@ impl DeterministicGenerator {
             return Err("generator batch does not belong to the job".to_owned());
         }
         validate_inputs(batch, inputs)?;
-        let mut proposals = Vec::new();
+        let mut proposals = Vec::with_capacity(inputs.len());
         for input in inputs {
             if input.text.trim().is_empty() {
                 return Err(format!("input {} has no text", input.key.record_id));
@@ -88,7 +88,7 @@ pub fn generate_extracted(
         return Err("generator batch does not belong to the job".to_owned());
     }
     validate_inputs(batch, inputs)?;
-    let mut proposals = Vec::new();
+    let mut proposals = Vec::with_capacity(inputs.len());
     for input in inputs {
         for claim in extractor.extract(input)? {
             if claim.claim_id.trim().is_empty() || claim.predicate.trim().is_empty() {
@@ -112,7 +112,7 @@ pub fn generate_extracted(
                     predicate: claim.predicate,
                     value: claim.value,
                     stance: crate::ProposalStance::Affirm,
-                    valid_time: crate::ValidTime::Unknown,
+                    valid_time: mneme_core::ValidTime::Unknown,
                 }),
                 premises: vec![crate::ProposalPremise {
                     record_id: input.key.record_id,

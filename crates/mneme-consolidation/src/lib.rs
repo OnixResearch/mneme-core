@@ -8,14 +8,6 @@
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use mneme_core::{
-    Lifecycle, RecordId, RevisionId, ScopeId, SourceSpan, Timestamp, ValidTime, Value,
-    WorkspaceRevisionId,
-};
-use mneme_recall::RecallResponse;
-
 pub mod commands;
 pub mod generator;
 pub mod job;
@@ -63,8 +55,8 @@ impl ExtractorDescriptor {
 /// An exact input record revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InputKey {
-    pub record_id: RecordId,
-    pub revision_id: RevisionId,
+    pub record_id: mneme_core::RecordId,
+    pub revision_id: mneme_core::RevisionId,
 }
 
 /// The record family of one input.
@@ -140,13 +132,13 @@ pub enum BatchCoverage {
 /// A bounded input batch. A complete claim must enumerate its reviewed extent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputBatch {
-    pub scope: ScopeId,
-    pub requested_revision: WorkspaceRevisionId,
-    pub served_revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub requested_revision: mneme_core::WorkspaceRevisionId,
+    pub served_revision: mneme_core::WorkspaceRevisionId,
     pub eligibility_generation: u64,
     pub units: Vec<InputUnit>,
-    pub reviewed: BTreeSet<InputKey>,
-    pub declared_extent: Option<BTreeSet<InputKey>>,
+    pub reviewed: std::collections::BTreeSet<InputKey>,
+    pub declared_extent: Option<std::collections::BTreeSet<InputKey>>,
     pub coverage: BatchCoverage,
     pub limitations: RecallLimitations,
 }
@@ -158,9 +150,9 @@ impl InputBatch {
     /// omissions, truncation, mode failures, and unpinned candidates are
     /// retained so proposals cannot infer absence or cleanup.
     pub fn from_recall(
-        scope: ScopeId,
-        expected_revision: WorkspaceRevisionId,
-        response: &RecallResponse,
+        scope: mneme_core::ScopeId,
+        expected_revision: mneme_core::WorkspaceRevisionId,
+        response: &mneme_recall::RecallResponse,
     ) -> Result<Self, String> {
         if response.context.scope != scope {
             return Err("recall scope does not match the consolidation scope".to_owned());
@@ -179,7 +171,7 @@ impl InputBatch {
             return Err("recall boundary is not data-only".to_owned());
         }
         let mut units = Vec::new();
-        let mut seen = BTreeSet::new();
+        let mut seen = std::collections::BTreeSet::new();
         let mut unpinned_candidates = 0;
         for candidate in &response.candidates {
             let (Some(source), Some(revision)) = (candidate.source, candidate.source_revision)
@@ -214,7 +206,10 @@ impl InputBatch {
                 availability,
             });
         }
-        let reviewed = units.iter().map(|unit| unit.key).collect::<BTreeSet<_>>();
+        let reviewed = units
+            .iter()
+            .map(|unit| unit.key)
+            .collect::<std::collections::BTreeSet<_>>();
         let limitations = RecallLimitations {
             status: response.status.name().to_owned(),
             exhaustive: response.exhaustive,
@@ -264,7 +259,7 @@ impl InputBatch {
 
     /// Validate identity, reviewed extent, and coverage claims.
     pub fn validate(&self) -> Result<(), String> {
-        let mut keys = BTreeSet::new();
+        let mut keys = std::collections::BTreeSet::new();
         for unit in &self.units {
             if !keys.insert(unit.key) {
                 return Err("input batch contains a duplicate unit".to_owned());
@@ -313,10 +308,10 @@ pub enum JobStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConsolidationJob {
     pub job_id: String,
-    pub recorded_at: Timestamp,
+    pub recorded_at: mneme_core::Timestamp,
     pub idempotency_key: String,
-    pub scope: ScopeId,
-    pub base_revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
     pub policy_version: String,
     pub extractor: Option<ExtractorDescriptor>,
     pub batch: InputBatch,
@@ -358,11 +353,11 @@ impl ConsolidationJob {
 /// One exact source or derivation premise for a proposal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalPremise {
-    pub record_id: RecordId,
-    pub revision_id: RevisionId,
-    pub span: Option<SourceSpan>,
-    pub derivation: Option<RecordId>,
-    pub ancestry_roots: BTreeSet<InputKey>,
+    pub record_id: mneme_core::RecordId,
+    pub revision_id: mneme_core::RevisionId,
+    pub span: Option<mneme_core::SourceSpan>,
+    pub derivation: Option<mneme_core::RecordId>,
+    pub ancestry_roots: std::collections::BTreeSet<InputKey>,
     pub authority: ProposalAuthority,
 }
 
@@ -384,11 +379,11 @@ pub struct SummaryProposal {
 /// A proposed assertion. It is not accepted until a separate command succeeds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssertionProposal {
-    pub subject: RecordId,
+    pub subject: mneme_core::RecordId,
     pub predicate: String,
-    pub value: Value,
+    pub value: mneme_core::Value,
     pub stance: ProposalStance,
-    pub valid_time: ValidTime,
+    pub valid_time: mneme_core::ValidTime,
 }
 
 /// Assertion stance inside a consolidation proposal.
@@ -402,16 +397,16 @@ pub enum ProposalStance {
 /// A visible conflict proposal against an existing assertion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisputeProposal {
-    pub assertion: RecordId,
+    pub assertion: mneme_core::RecordId,
     pub reason: String,
 }
 
 /// A proposed supersession of an existing assertion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupersessionProposal {
-    pub prior: RecordId,
+    pub prior: mneme_core::RecordId,
     pub prior_authority: ProposalAuthority,
-    pub replacement: Value,
+    pub replacement: mneme_core::Value,
     pub reason: String,
     pub basis: SupersessionBasis,
 }
@@ -427,7 +422,7 @@ pub enum SupersessionBasis {
 /// A proposed absence conclusion. It requires a complete declared extent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AbsenceProposal {
-    pub subject: RecordId,
+    pub subject: mneme_core::RecordId,
     pub predicate: String,
     pub reason: String,
 }
@@ -435,7 +430,7 @@ pub struct AbsenceProposal {
 /// A proposed cleanup/retraction of records. It requires a complete extent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CleanupProposal {
-    pub records: BTreeSet<RecordId>,
+    pub records: std::collections::BTreeSet<mneme_core::RecordId>,
     pub reason: String,
 }
 
@@ -510,7 +505,7 @@ impl SupportReview {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProposalDisposition {
     Pending,
-    Accepted { decision: RecordId },
+    Accepted { decision: mneme_core::RecordId },
     Rejected { reason: String },
     Blocked { reason: String },
 }
@@ -520,9 +515,9 @@ pub enum ProposalDisposition {
 pub struct ConsolidationProposal {
     pub proposal_id: String,
     pub job_id: String,
-    pub recorded_at: Timestamp,
-    pub base_revision: WorkspaceRevisionId,
-    pub scope: ScopeId,
+    pub recorded_at: mneme_core::Timestamp,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
     pub operation: ProposalOperation,
     pub premises: Vec<ProposalPremise>,
     pub rationale: String,
@@ -537,7 +532,7 @@ impl ConsolidationProposal {
         self.premises
             .iter()
             .flat_map(|premise| premise.ancestry_roots.iter().copied())
-            .collect::<BTreeSet<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
             .len()
     }
 
@@ -622,15 +617,15 @@ pub fn validate_proposal_against_batch(
 /// An existing accepted assertion, kept distinct from proposals and observations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AcceptedAssertionRef {
-    pub record_id: RecordId,
-    pub revision_id: RevisionId,
-    pub lifecycle: Lifecycle,
+    pub record_id: mneme_core::RecordId,
+    pub revision_id: mneme_core::RevisionId,
+    pub lifecycle: mneme_core::Lifecycle,
 }
 
 impl AcceptedAssertionRef {
     /// Validate that this reference names an accepted assertion.
     pub fn validate(&self) -> Result<(), String> {
-        if self.lifecycle != Lifecycle::Accepted {
+        if self.lifecycle != mneme_core::Lifecycle::Accepted {
             return Err("accepted assertion reference is not accepted".to_owned());
         }
         Ok(())
@@ -642,11 +637,11 @@ impl AcceptedAssertionRef {
 pub struct AcceptancePrecondition {
     pub proposal_id: String,
     pub proposal_revision: u64,
-    pub expected_base_revision: WorkspaceRevisionId,
-    pub expected_targets: BTreeMap<RecordId, RevisionId>,
-    pub required_sources: BTreeSet<InputKey>,
+    pub expected_base_revision: mneme_core::WorkspaceRevisionId,
+    pub expected_targets: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RevisionId>,
+    pub required_sources: std::collections::BTreeSet<InputKey>,
     pub policy_version: String,
-    pub scope: ScopeId,
+    pub scope: mneme_core::ScopeId,
 }
 
 impl AcceptancePrecondition {
@@ -695,38 +690,38 @@ impl ConsolidationFixture {
 
 /// Construct sample fixture data used by the type-contract tests.
 pub fn fixture() -> Result<ConsolidationFixture, String> {
-    let scope = ScopeId::new(mneme_core::ScopeClass::Project, "cedar")?;
-    let base = WorkspaceRevisionId::from_bytes([0xb0; 16]);
+    let scope = mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar")?;
+    let base = mneme_core::WorkspaceRevisionId::from_bytes([0xb0; 16]);
     let source = InputKey {
-        record_id: RecordId::from_bytes([0x20; 16]),
-        revision_id: RevisionId::from_bytes([0x21; 16]),
+        record_id: mneme_core::RecordId::from_bytes([0x20; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([0x21; 16]),
     };
     let observation = InputUnit {
         key: InputKey {
-            record_id: RecordId::from_bytes([0x10; 16]),
-            revision_id: RevisionId::from_bytes([0x11; 16]),
+            record_id: mneme_core::RecordId::from_bytes([0x10; 16]),
+            revision_id: mneme_core::RevisionId::from_bytes([0x11; 16]),
         },
         kind: InputKind::Episode,
         availability: InputAvailability::Retained,
     };
     let accepted = AcceptedAssertionRef {
-        record_id: RecordId::from_bytes([0x40; 16]),
-        revision_id: RevisionId::from_bytes([0x41; 16]),
-        lifecycle: Lifecycle::Accepted,
+        record_id: mneme_core::RecordId::from_bytes([0x40; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([0x41; 16]),
+        lifecycle: mneme_core::Lifecycle::Accepted,
     };
     let premise = ProposalPremise {
         record_id: source.record_id,
         revision_id: source.revision_id,
-        span: SourceSpan::new(0, 4).ok(),
+        span: mneme_core::SourceSpan::new(0, 4).ok(),
         derivation: None,
-        ancestry_roots: BTreeSet::from([source]),
+        ancestry_roots: std::collections::BTreeSet::from([source]),
         authority: ProposalAuthority::Observed,
     };
     let proposals = vec![
         ConsolidationProposal {
             proposal_id: "proposal-summary".to_owned(),
             job_id: "job-1".to_owned(),
-            recorded_at: Timestamp::from_nanos(1_000),
+            recorded_at: mneme_core::Timestamp::from_nanos(1_000),
             base_revision: base,
             scope: scope.clone(),
             operation: ProposalOperation::Summary(SummaryProposal {
@@ -745,15 +740,15 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         ConsolidationProposal {
             proposal_id: "proposal-assertion".to_owned(),
             job_id: "job-1".to_owned(),
-            recorded_at: Timestamp::from_nanos(1_000),
+            recorded_at: mneme_core::Timestamp::from_nanos(1_000),
             base_revision: base,
             scope: scope.clone(),
             operation: ProposalOperation::Assertion(AssertionProposal {
-                subject: RecordId::from_bytes([0x10; 16]),
+                subject: mneme_core::RecordId::from_bytes([0x10; 16]),
                 predicate: "storage-engine".to_owned(),
-                value: Value::string("SQLite"),
+                value: mneme_core::Value::string("SQLite"),
                 stance: ProposalStance::Affirm,
-                valid_time: ValidTime::Unknown,
+                valid_time: mneme_core::ValidTime::Unknown,
             }),
             premises: vec![premise.clone()],
             rationale: "extract an explicitly proposed claim".to_owned(),
@@ -768,7 +763,7 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         ConsolidationProposal {
             proposal_id: "proposal-procedure".to_owned(),
             job_id: "job-1".to_owned(),
-            recorded_at: Timestamp::from_nanos(1_000),
+            recorded_at: mneme_core::Timestamp::from_nanos(1_000),
             base_revision: base,
             scope: scope.clone(),
             operation: ProposalOperation::Procedure(ProcedureProposal {
@@ -802,8 +797,8 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
                 availability: InputAvailability::Retained,
             },
         ],
-        reviewed: BTreeSet::from([observation.key, source]),
-        declared_extent: Some(BTreeSet::from([observation.key, source])),
+        reviewed: std::collections::BTreeSet::from([observation.key, source]),
+        declared_extent: Some(std::collections::BTreeSet::from([observation.key, source])),
         coverage: BatchCoverage::Complete,
         limitations: RecallLimitations::complete(),
     };
@@ -811,7 +806,7 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         observations: vec![observation],
         job: ConsolidationJob {
             job_id: "job-1".to_owned(),
-            recorded_at: Timestamp::from_nanos(1_000),
+            recorded_at: mneme_core::Timestamp::from_nanos(1_000),
             idempotency_key: "consolidate-1".to_owned(),
             scope: scope.clone(),
             base_revision: base,
@@ -832,8 +827,8 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
             proposal_id: "proposal-summary".to_owned(),
             proposal_revision: 1,
             expected_base_revision: base,
-            expected_targets: BTreeMap::new(),
-            required_sources: BTreeSet::from([source]),
+            expected_targets: std::collections::BTreeMap::new(),
+            required_sources: std::collections::BTreeSet::from([source]),
             policy_version: "consolidation-policy/v1".to_owned(),
             scope,
         },
@@ -843,10 +838,6 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mneme_recall::{
-        DataBoundary, IndexCoverage, ModeReport, ModeStatus, Omission, RecallContext,
-        RecallExecution, RecallMode, RecallResponse, TemporalMode,
-    };
 
     #[test]
     fn fixture_keeps_observations_proposals_and_acceptances_distinct() {
@@ -855,7 +846,7 @@ mod tests {
         assert_eq!(fixture.observations[0].kind, InputKind::Episode);
         assert_eq!(
             fixture.accepted_assertions[0].lifecycle,
-            Lifecycle::Accepted
+            mneme_core::Lifecycle::Accepted
         );
         assert!(matches!(
             fixture.proposals[0].disposition,
@@ -884,7 +875,7 @@ mod tests {
         let mut fixture = fixture().expect("fixture");
         fixture.proposals[0].support.outcome = SupportOutcome::UnsupportedHypothesis;
         fixture.proposals[0].disposition = ProposalDisposition::Accepted {
-            decision: RecordId::from_bytes([0x50; 16]),
+            decision: mneme_core::RecordId::from_bytes([0x50; 16]),
         };
         assert!(fixture.validate().is_err());
     }
@@ -899,7 +890,7 @@ mod tests {
     #[test]
     fn accepted_assertion_must_have_accepted_lifecycle() {
         let mut fixture = fixture().expect("fixture");
-        fixture.accepted_assertions[0].lifecycle = Lifecycle::Proposed;
+        fixture.accepted_assertions[0].lifecycle = mneme_core::Lifecycle::Proposed;
         assert!(fixture.validate().is_err());
     }
 
@@ -910,11 +901,11 @@ mod tests {
         fixture.job.batch.coverage = BatchCoverage::Partial {
             reason: "timed out after one unit".to_owned(),
         };
-        fixture.job.batch.declared_extent = Some(BTreeSet::from([
+        fixture.job.batch.declared_extent = Some(std::collections::BTreeSet::from([
             fixture.observations[0].key,
             InputKey {
-                record_id: RecordId::from_bytes([0x20; 16]),
-                revision_id: RevisionId::from_bytes([0x21; 16]),
+                record_id: mneme_core::RecordId::from_bytes([0x20; 16]),
+                revision_id: mneme_core::RevisionId::from_bytes([0x21; 16]),
             },
         ]));
         assert!(fixture.validate().is_ok());
@@ -925,24 +916,24 @@ mod tests {
         let fixture = fixture().expect("fixture");
         let scope = fixture.job.scope.clone();
         let revision = fixture.job.base_revision;
-        let response = RecallResponse {
-            context: RecallContext {
+        let response = mneme_recall::RecallResponse {
+            context: mneme_recall::RecallContext {
                 schema_version: 1,
                 scope: scope.clone(),
                 requested_revision: revision,
                 served_revision: revision,
                 eligibility_generation: 3,
-                temporal: TemporalMode::Current,
-                index_versions: BTreeMap::new(),
+                temporal: mneme_recall::TemporalMode::Current,
+                index_versions: std::collections::BTreeMap::new(),
                 fusion_policy: "test/v1".to_owned(),
             },
-            status: RecallExecution::Partial,
-            modes: vec![ModeReport {
-                mode: RecallMode::Lexical,
-                status: ModeStatus::Used,
+            status: mneme_recall::RecallExecution::Partial,
+            modes: vec![mneme_recall::ModeReport {
+                mode: mneme_recall::RecallMode::Lexical,
+                status: mneme_recall::ModeStatus::Used,
                 index_version: Some("test".to_owned()),
                 revision: Some(revision),
-                coverage: IndexCoverage {
+                coverage: mneme_recall::IndexCoverage {
                     complete: false,
                     documents_indexed: 1,
                     documents_skipped: 3,
@@ -956,12 +947,12 @@ mod tests {
             exhaustive: false,
             absence_established: false,
             truncated: true,
-            omissions: vec![Omission {
+            omissions: vec![mneme_recall::Omission {
                 candidate: "older-support".to_owned(),
                 reason: "outside top-k".to_owned(),
             }],
             reason: Some("ranked recall".to_owned()),
-            boundary: DataBoundary::default(),
+            boundary: mneme_recall::DataBoundary::default(),
         };
         let batch = InputBatch::from_recall(scope.clone(), revision, &response)
             .expect("pinned recall batch");
@@ -974,7 +965,9 @@ mod tests {
         let mut fixture = fixture;
         let mut proposal = fixture.proposals[0].clone();
         proposal.operation = ProposalOperation::Cleanup(CleanupProposal {
-            records: BTreeSet::from([RecordId::from_bytes([0x40; 16])]),
+            records: std::collections::BTreeSet::from([mneme_core::RecordId::from_bytes(
+                [0x40; 16],
+            )]),
             reason: "remove stale memory".to_owned(),
         });
         fixture.proposals = vec![proposal];
@@ -987,7 +980,9 @@ mod tests {
         let mut fixture = fixture().expect("fixture");
         let mut proposal = fixture.proposals[0].clone();
         proposal.operation = ProposalOperation::Cleanup(CleanupProposal {
-            records: BTreeSet::from([RecordId::from_bytes([0x40; 16])]),
+            records: std::collections::BTreeSet::from([mneme_core::RecordId::from_bytes(
+                [0x40; 16],
+            )]),
             reason: "remove stale memory".to_owned(),
         });
         fixture.proposals = vec![proposal];
@@ -1013,9 +1008,9 @@ mod tests {
     fn later_ingestion_cannot_supersede_authored_fact() {
         let mut fixture = fixture().expect("fixture");
         fixture.proposals[0].operation = ProposalOperation::Supersession(SupersessionProposal {
-            prior: RecordId::from_bytes([0x40; 16]),
+            prior: mneme_core::RecordId::from_bytes([0x40; 16]),
             prior_authority: ProposalAuthority::Authored,
-            replacement: Value::string("PostgreSQL"),
+            replacement: mneme_core::Value::string("PostgreSQL"),
             reason: "newer import".to_owned(),
             basis: SupersessionBasis::LaterIngestion,
         });
@@ -1032,7 +1027,7 @@ mod tests {
     fn dispute_remains_pending_and_does_not_rewrite_accepted_assertion() {
         let mut fixture = fixture().expect("fixture");
         fixture.proposals[0].operation = ProposalOperation::Dispute(DisputeProposal {
-            assertion: RecordId::from_bytes([0x40; 16]),
+            assertion: mneme_core::RecordId::from_bytes([0x40; 16]),
             reason: "source contradicts the authored claim".to_owned(),
         });
         fixture.validate().expect("visible dispute");
@@ -1042,7 +1037,7 @@ mod tests {
         ));
         assert_eq!(
             fixture.accepted_assertions[0].lifecycle,
-            Lifecycle::Accepted
+            mneme_core::Lifecycle::Accepted
         );
     }
 
@@ -1051,12 +1046,12 @@ mod tests {
         let fixture = fixture().expect("fixture");
         assert_eq!(
             fixture.proposals[1].recorded_at,
-            Timestamp::from_nanos(1_000)
+            mneme_core::Timestamp::from_nanos(1_000)
         );
         let assertion = match &fixture.proposals[1].operation {
             ProposalOperation::Assertion(assertion) => assertion,
             _ => return,
         };
-        assert_eq!(assertion.valid_time, ValidTime::Unknown);
+        assert_eq!(assertion.valid_time, mneme_core::ValidTime::Unknown);
     }
 }
