@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use mneme_core::{
     Lifecycle, RecordId, RevisionId, ScopeId, SourceSpan, ValidTime, Value, WorkspaceRevisionId,
 };
+use mneme_recall::RecallResponse;
 
 /// Resource limits for one consolidation job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +85,43 @@ pub struct InputUnit {
     pub availability: InputAvailability,
 }
 
+/// Retained limitations from the recall result that selected a batch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecallModeLimitation {
+    pub mode: String,
+    pub status: String,
+    pub complete: bool,
+    pub reason: Option<String>,
+}
+
+/// Recall status and coverage retained with a pinned batch. Absence/cleanup
+/// conclusions are never permitted from a ranked or incomplete result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecallLimitations {
+    pub status: String,
+    pub exhaustive: bool,
+    pub absence_established: bool,
+    pub truncated: bool,
+    pub omissions: Vec<String>,
+    pub modes: Vec<RecallModeLimitation>,
+    pub unpinned_candidates: usize,
+}
+
+impl RecallLimitations {
+    /// Limitations for an explicitly complete, non-recall fixture extent.
+    pub fn complete() -> Self {
+        RecallLimitations {
+            status: "complete".to_owned(),
+            exhaustive: true,
+            absence_established: false,
+            truncated: false,
+            omissions: Vec::new(),
+            modes: Vec::new(),
+            unpinned_candidates: 0,
+        }
+    }
+}
+
 /// Coverage claimed by one bounded batch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BatchCoverage {
@@ -95,13 +133,128 @@ pub enum BatchCoverage {
 /// A bounded input batch. A complete claim must enumerate its reviewed extent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputBatch {
+    pub scope: ScopeId,
+    pub requested_revision: WorkspaceRevisionId,
+    pub served_revision: WorkspaceRevisionId,
+    pub eligibility_generation: u64,
     pub units: Vec<InputUnit>,
     pub reviewed: BTreeSet<InputKey>,
     pub declared_extent: Option<BTreeSet<InputKey>>,
     pub coverage: BatchCoverage,
+    pub limitations: RecallLimitations,
 }
 
 impl InputBatch {
+    /// Build a pinned batch from an authorized recall response.
+    ///
+    /// The response remains a ranked, non-exhaustive source selection. Its
+    /// omissions, truncation, mode failures, and unpinned candidates are
+    /// retained so proposals cannot infer absence or cleanup.
+    pub fn from_recall(
+        scope: ScopeId,
+        expected_revision: WorkspaceRevisionId,
+        response: &RecallResponse,
+    ) -> Result<Self, String> {
+        if response.context.scope != scope {
+            return Err("recall scope does not match the consolidation scope".to_owned());
+        }
+        if response.context.requested_revision != expected_revision {
+            return Err("recall request is not pinned to the expected revision".to_owned());
+        }
+        if response.absence_established {
+            return Err("ranked recall must not establish absence".to_owned());
+        }
+        if !response.boundary.instructions_are_data
+            || response.boundary.may_change_scope
+            || response.boundary.may_execute_code
+            || response.boundary.may_register_rules
+        {
+            return Err("recall boundary is not data-only".to_owned());
+        }
+        let mut units = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut unpinned_candidates = 0;
+        for candidate in &response.candidates {
+            let (Some(source), Some(revision)) = (candidate.source, candidate.source_revision)
+            else {
+                unpinned_candidates += 1;
+                continue;
+            };
+            let key = InputKey {
+                record_id: source,
+                revision_id: revision,
+            };
+            if !seen.insert(key) {
+                continue;
+            }
+            let availability = candidate
+                .evidence
+                .iter()
+                .find(|evidence| evidence.source == source)
+                .map(|evidence| {
+                    if evidence.availability.name() == "pruned" {
+                        InputAvailability::Pruned {
+                            reason: "source bytes were pruned".to_owned(),
+                        }
+                    } else {
+                        InputAvailability::Retained
+                    }
+                })
+                .unwrap_or(InputAvailability::Retained);
+            units.push(InputUnit {
+                key,
+                kind: InputKind::SourceRevision,
+                availability,
+            });
+        }
+        let reviewed = units.iter().map(|unit| unit.key).collect::<BTreeSet<_>>();
+        let limitations = RecallLimitations {
+            status: response.status.name().to_owned(),
+            exhaustive: response.exhaustive,
+            absence_established: response.absence_established,
+            truncated: response.truncated,
+            omissions: response
+                .omissions
+                .iter()
+                .map(|omission| format!("{}: {}", omission.candidate, omission.reason))
+                .collect(),
+            modes: response
+                .modes
+                .iter()
+                .map(|mode| RecallModeLimitation {
+                    mode: mode.mode.name().to_owned(),
+                    status: mode.status.name().to_owned(),
+                    complete: mode.coverage.complete && mode.relation_exhaustive != Some(false),
+                    reason: mode.reason.clone(),
+                })
+                .collect(),
+            unpinned_candidates,
+        };
+        Ok(InputBatch {
+            scope,
+            requested_revision: response.context.requested_revision,
+            served_revision: response.context.served_revision,
+            eligibility_generation: response.context.eligibility_generation,
+            units,
+            reviewed,
+            declared_extent: None,
+            coverage: BatchCoverage::Partial {
+                reason: "ranked recall is not a complete source extent".to_owned(),
+            },
+            limitations,
+        })
+    }
+
+    /// Whether a batch may support an absence or cleanup conclusion.
+    pub fn allows_absence_or_cleanup(&self) -> bool {
+        matches!(self.coverage, BatchCoverage::Complete)
+            && self.limitations.exhaustive
+            && !self.limitations.truncated
+            && self.limitations.omissions.is_empty()
+            && self.limitations.unpinned_candidates == 0
+            && self.limitations.modes.iter().all(|mode| mode.complete)
+    }
+
     /// Validate identity, reviewed extent, and coverage claims.
     pub fn validate(&self) -> Result<(), String> {
         let mut keys = BTreeSet::new();
@@ -174,6 +327,12 @@ impl ConsolidationJob {
         }
         self.limits.validate()?;
         self.batch.validate()?;
+        if self.batch.scope != self.scope {
+            return Err("batch scope does not match the job scope".to_owned());
+        }
+        if self.batch.requested_revision != self.base_revision {
+            return Err("batch requested revision does not match the job base".to_owned());
+        }
         if let Some(extractor) = &self.extractor {
             extractor.validate()?;
         }
@@ -234,6 +393,21 @@ pub struct SupersessionProposal {
     pub reason: String,
 }
 
+/// A proposed absence conclusion. It requires a complete declared extent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AbsenceProposal {
+    pub subject: RecordId,
+    pub predicate: String,
+    pub reason: String,
+}
+
+/// A proposed cleanup/retraction of records. It requires a complete extent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CleanupProposal {
+    pub records: BTreeSet<RecordId>,
+    pub reason: String,
+}
+
 /// A procedural lesson kind. No variant is executable by consolidation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcedureKind {
@@ -267,6 +441,8 @@ pub enum ProposalOperation {
     Assertion(AssertionProposal),
     Dispute(DisputeProposal),
     Supersession(SupersessionProposal),
+    Absence(AbsenceProposal),
+    Cleanup(CleanupProposal),
     Procedure(ProcedureProposal),
 }
 
@@ -335,8 +511,19 @@ impl ConsolidationProposal {
             return Err("proposal needs at least one source or derivation premise".to_owned());
         }
         self.support.validate()?;
-        if let ProposalOperation::Procedure(procedure) = &self.operation {
-            procedure.validate()?;
+        match &self.operation {
+            ProposalOperation::Procedure(procedure) => procedure.validate()?,
+            ProposalOperation::Absence(absence)
+                if absence.predicate.trim().is_empty() || absence.reason.trim().is_empty() =>
+            {
+                return Err("absence proposal needs a predicate and reason".to_owned());
+            }
+            ProposalOperation::Cleanup(cleanup)
+                if cleanup.records.is_empty() || cleanup.reason.trim().is_empty() =>
+            {
+                return Err("cleanup proposal needs records and a reason".to_owned());
+            }
+            _ => {}
         }
         match (&self.support.outcome, &self.disposition) {
             (SupportOutcome::Supported, ProposalDisposition::Accepted { .. }) => {}
@@ -356,6 +543,25 @@ impl ConsolidationProposal {
         }
         Ok(())
     }
+}
+
+/// Reject absence/cleanup conclusions from ranked, truncated, or incomplete input
+/// coverage. Other proposal kinds may still use individually validated units.
+pub fn validate_proposal_against_batch(
+    proposal: &ConsolidationProposal,
+    batch: &InputBatch,
+) -> Result<(), String> {
+    if matches!(
+        proposal.operation,
+        ProposalOperation::Absence(_) | ProposalOperation::Cleanup(_)
+    ) && !batch.allows_absence_or_cleanup()
+    {
+        return Err(format!(
+            "proposal {} cannot conclude absence or cleanup from incomplete recall coverage",
+            proposal.proposal_id
+        ));
+    }
+    Ok(())
 }
 
 /// An existing accepted assertion, kept distinct from proposals and observations.
@@ -422,6 +628,7 @@ impl ConsolidationFixture {
         self.job.validate()?;
         for proposal in &self.proposals {
             proposal.validate()?;
+            validate_proposal_against_batch(proposal, &self.job.batch)?;
         }
         for assertion in &self.accepted_assertions {
             assertion.validate()?;
@@ -523,6 +730,10 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         },
     ];
     let batch = InputBatch {
+        scope: scope.clone(),
+        requested_revision: base,
+        served_revision: base,
+        eligibility_generation: 0,
         units: vec![
             observation.clone(),
             InputUnit {
@@ -534,6 +745,7 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         reviewed: BTreeSet::from([observation.key, source]),
         declared_extent: Some(BTreeSet::from([observation.key, source])),
         coverage: BatchCoverage::Complete,
+        limitations: RecallLimitations::complete(),
     };
     Ok(ConsolidationFixture {
         observations: vec![observation],
@@ -570,6 +782,10 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mneme_recall::{
+        DataBoundary, IndexCoverage, ModeReport, ModeStatus, Omission, RecallContext,
+        RecallExecution, RecallMode, RecallResponse, TemporalMode,
+    };
 
     #[test]
     fn fixture_keeps_observations_proposals_and_acceptances_distinct() {
@@ -641,5 +857,84 @@ mod tests {
             },
         ]));
         assert!(fixture.validate().is_ok());
+    }
+
+    #[test]
+    fn ranked_recall_batch_retains_limitations_and_blocks_cleanup() {
+        let fixture = fixture().expect("fixture");
+        let scope = fixture.job.scope.clone();
+        let revision = fixture.job.base_revision;
+        let response = RecallResponse {
+            context: RecallContext {
+                schema_version: 1,
+                scope: scope.clone(),
+                requested_revision: revision,
+                served_revision: revision,
+                eligibility_generation: 3,
+                temporal: TemporalMode::Current,
+                index_versions: BTreeMap::new(),
+                fusion_policy: "test/v1".to_owned(),
+            },
+            status: RecallExecution::Partial,
+            modes: vec![ModeReport {
+                mode: RecallMode::Lexical,
+                status: ModeStatus::Used,
+                index_version: Some("test".to_owned()),
+                revision: Some(revision),
+                coverage: IndexCoverage {
+                    complete: false,
+                    documents_indexed: 1,
+                    documents_skipped: 3,
+                    reason: Some("top-k limited".to_owned()),
+                },
+                candidates: 0,
+                relation_exhaustive: None,
+                reason: None,
+            }],
+            candidates: Vec::new(),
+            exhaustive: false,
+            absence_established: false,
+            truncated: true,
+            omissions: vec![Omission {
+                candidate: "older-support".to_owned(),
+                reason: "outside top-k".to_owned(),
+            }],
+            reason: Some("ranked recall".to_owned()),
+            boundary: DataBoundary::default(),
+        };
+        let batch = InputBatch::from_recall(scope.clone(), revision, &response)
+            .expect("pinned recall batch");
+        assert!(matches!(batch.coverage, BatchCoverage::Partial { .. }));
+        assert_eq!(batch.eligibility_generation, 3);
+        assert_eq!(batch.limitations.omissions.len(), 1);
+        assert!(batch.limitations.truncated);
+        assert!(!batch.allows_absence_or_cleanup());
+
+        let mut fixture = fixture;
+        let mut proposal = fixture.proposals[0].clone();
+        proposal.operation = ProposalOperation::Cleanup(CleanupProposal {
+            records: BTreeSet::from([RecordId::from_bytes([0x40; 16])]),
+            reason: "remove stale memory".to_owned(),
+        });
+        fixture.proposals = vec![proposal];
+        fixture.job.batch = batch;
+        assert!(fixture.validate().is_err());
+    }
+
+    #[test]
+    fn cleanup_requires_complete_coverage() {
+        let mut fixture = fixture().expect("fixture");
+        let mut proposal = fixture.proposals[0].clone();
+        proposal.operation = ProposalOperation::Cleanup(CleanupProposal {
+            records: BTreeSet::from([RecordId::from_bytes([0x40; 16])]),
+            reason: "remove stale memory".to_owned(),
+        });
+        fixture.proposals = vec![proposal];
+        fixture.validate().expect("complete extent permits cleanup");
+        fixture.job.batch.coverage = BatchCoverage::Partial {
+            reason: "one input missing".to_owned(),
+        };
+        fixture.job.status = JobStatus::Partial;
+        assert!(fixture.validate().is_err());
     }
 }
