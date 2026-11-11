@@ -510,6 +510,7 @@ pub struct Premise {
     pub revision_id: RevisionId,
     pub span: Option<SourceSpan>,
     pub derivation: Option<RecordId>,
+    pub ancestry_roots: BTreeSet<(RecordId, RevisionId)>,
     pub availability: PremiseAvailability,
 }
 
@@ -739,6 +740,100 @@ fn escape_string(value: &str) -> String {
         .replace('\t', "\\t")
 }
 
+impl Solution {
+    /// Distinct ancestry roots, not the number of duplicated summaries.
+    pub fn independent_support_count(&self) -> usize {
+        self.premises
+            .iter()
+            .flat_map(|premise| premise.ancestry_roots.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    /// Premises whose bytes are unavailable but whose retained claim envelope
+    /// remains inspectable. Never fabricate a quotation for these.
+    pub fn unavailable_premises(&self) -> Vec<&Premise> {
+        self.premises
+            .iter()
+            .filter(|premise| matches!(premise.availability, PremiseAvailability::Pruned { .. }))
+            .collect()
+    }
+
+    /// Validate support and hypothetical-assumption provenance.
+    pub fn validate(&self, declared_assumptions: &BTreeSet<String>) -> Result<(), CapabilityError> {
+        for premise in &self.premises {
+            if matches!(premise.availability, PremiseAvailability::Pruned { .. })
+                && premise.span.is_some()
+            {
+                return Err(CapabilityError::InvalidRequest(format!(
+                    "premise {} quotes pruned source bytes",
+                    premise.record_id
+                )));
+            }
+        }
+        for assumption in &self.assumptions {
+            if !declared_assumptions.contains(assumption) {
+                return Err(CapabilityError::InvalidRequest(format!(
+                    "solution uses undeclared assumption {assumption}"
+                )));
+            }
+        }
+        match &self.certification {
+            Certification::Certified => {
+                if self.premises.is_empty()
+                    || self
+                        .premises
+                        .iter()
+                        .any(|premise| premise.ancestry_roots.is_empty())
+                {
+                    return Err(CapabilityError::InvalidRequest(
+                        "certified solution needs a complete premise chain".to_owned(),
+                    ));
+                }
+                if !self.assumptions.is_empty() {
+                    return Err(CapabilityError::InvalidRequest(
+                        "hypothetical assumptions cannot be certified".to_owned(),
+                    ));
+                }
+            }
+            Certification::Uncertified { reason } => {
+                if reason.trim().is_empty() {
+                    return Err(CapabilityError::InvalidRequest(
+                        "uncertified solution needs a reason".to_owned(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PrologResult {
+    /// Validate this result against the request that produced it, including
+    /// context, premise chains, pruning disclosure, and assumptions.
+    pub fn validate_for_request(&self, request: &PrologRequest) -> Result<(), CapabilityError> {
+        self.validate()?;
+        if self.context.revision != request.revision
+            || self.context.scope != request.scope
+            || self.context.eligibility_generation != request.eligibility_generation
+            || self.context.image_digest != request.image_digest
+        {
+            return Err(CapabilityError::InvalidRequest(
+                "result context differs from its request".to_owned(),
+            ));
+        }
+        let declared = request
+            .assumptions
+            .iter()
+            .map(|assumption| assumption.id.clone())
+            .collect::<BTreeSet<_>>();
+        for solution in &self.solutions {
+            solution.validate(&declared)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -941,5 +1036,128 @@ mod tests {
             serialize_solution(&solution, profile, 2),
             Err(CapabilityError::LimitExceeded(_))
         ));
+    }
+
+    fn premise(roots: BTreeSet<(RecordId, RevisionId)>, quoted: bool) -> Premise {
+        Premise {
+            record_id: RecordId::from_bytes([0x40; 16]),
+            revision_id: RevisionId::from_bytes([0x41; 16]),
+            span: quoted.then(|| SourceSpan::new(0, 0).expect("span")),
+            derivation: None,
+            ancestry_roots: roots,
+            availability: PremiseAvailability::Retained,
+        }
+    }
+
+    #[test]
+    fn copied_premises_share_one_independent_root() {
+        let root = (
+            RecordId::from_bytes([0x20; 16]),
+            RevisionId::from_bytes([0x21; 16]),
+        );
+        let solution = Solution {
+            bindings: BTreeMap::new(),
+            premises: vec![
+                premise(BTreeSet::from([root]), true),
+                premise(BTreeSet::from([root]), false),
+            ],
+            assumptions: BTreeSet::new(),
+            certification: Certification::Certified,
+        };
+        assert_eq!(solution.independent_support_count(), 1);
+        solution
+            .validate(&BTreeSet::new())
+            .expect("shared ancestry");
+    }
+
+    #[test]
+    fn certified_solution_needs_a_complete_premise_chain() {
+        let empty = Solution {
+            bindings: BTreeMap::new(),
+            premises: Vec::new(),
+            assumptions: BTreeSet::new(),
+            certification: Certification::Certified,
+        };
+        assert!(empty.validate(&BTreeSet::new()).is_err());
+        let root = (
+            RecordId::from_bytes([0x20; 16]),
+            RevisionId::from_bytes([0x21; 16]),
+        );
+        let complete = Solution {
+            bindings: BTreeMap::new(),
+            premises: vec![premise(BTreeSet::from([root]), false)],
+            assumptions: BTreeSet::new(),
+            certification: Certification::Certified,
+        };
+        assert!(complete.validate(&BTreeSet::new()).is_ok());
+    }
+
+    #[test]
+    fn hypothetical_assumptions_remain_uncertified_and_must_be_declared() {
+        let root = (
+            RecordId::from_bytes([0x20; 16]),
+            RevisionId::from_bytes([0x21; 16]),
+        );
+        let mut solution = Solution {
+            bindings: BTreeMap::new(),
+            premises: vec![premise(BTreeSet::from([root]), false)],
+            assumptions: BTreeSet::from(["assumption-1".to_owned()]),
+            certification: Certification::Certified,
+        };
+        assert!(
+            solution
+                .validate(&BTreeSet::from(["assumption-1".to_owned()]))
+                .is_err()
+        );
+        solution.certification = Certification::Uncertified {
+            reason: "hypothetical dependency".to_owned(),
+        };
+        assert!(
+            solution
+                .validate(&BTreeSet::from(["assumption-1".to_owned()]))
+                .is_ok()
+        );
+        assert!(solution.validate(&BTreeSet::new()).is_err());
+    }
+
+    #[test]
+    fn pruned_premises_disclose_unavailable_bytes_without_quotes() {
+        let root = (
+            RecordId::from_bytes([0x20; 16]),
+            RevisionId::from_bytes([0x21; 16]),
+        );
+        let mut pruned = premise(BTreeSet::from([root]), false);
+        pruned.availability = PremiseAvailability::Pruned {
+            reason: "source bytes pruned".to_owned(),
+        };
+        let solution = Solution {
+            bindings: BTreeMap::new(),
+            premises: vec![pruned],
+            assumptions: BTreeSet::new(),
+            certification: Certification::Certified,
+        };
+        assert_eq!(solution.unavailable_premises().len(), 1);
+        assert!(solution.validate(&BTreeSet::new()).is_ok());
+        let mut quoted = solution;
+        quoted.premises[0].span = Some(SourceSpan::new(0, 0).expect("span"));
+        assert!(quoted.validate(&BTreeSet::new()).is_err());
+    }
+
+    #[test]
+    fn uncertified_fallback_requires_a_reason() {
+        let solution = Solution {
+            bindings: BTreeMap::new(),
+            premises: Vec::new(),
+            assumptions: BTreeSet::new(),
+            certification: Certification::Uncertified {
+                reason: "engine did not provide proof".to_owned(),
+            },
+        };
+        assert!(solution.validate(&BTreeSet::new()).is_ok());
+        let mut missing = solution;
+        missing.certification = Certification::Uncertified {
+            reason: String::new(),
+        };
+        assert!(missing.validate(&BTreeSet::new()).is_err());
     }
 }
