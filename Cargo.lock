@@ -1382,6 +1382,7 @@ dependencies = [
  "mneme-core",
  "mneme-doc",
  "mneme-memory",
+ "mneme-recall",
  "mneme-retention",
  "mneme-store",
  "num-bigint",
