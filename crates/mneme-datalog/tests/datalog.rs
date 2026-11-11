@@ -128,7 +128,13 @@ impl Harness {
                 scope: scope(),
                 revision,
                 bundle,
-                limits: mneme_datalog::Limits::default(),
+                limits: mneme_datalog::Limits {
+                    max_work: 100_000,
+                    max_time_ms: 2_000,
+                    max_result_rows: 1_000,
+                    max_supports_per_fact: 8,
+                    max_recursion_depth: 32,
+                },
                 publish,
                 incomplete_extents: std::collections::BTreeSet::new(),
                 cancellation: None,
@@ -422,7 +428,13 @@ fn completeness_gates_negation_and_absent_results() {
             scope: scope(),
             revision,
             bundle,
-            limits: mneme_datalog::Limits::default(),
+            limits: mneme_datalog::Limits {
+                max_work: 100_000,
+                max_time_ms: 2_000,
+                max_result_rows: 1_000,
+                max_supports_per_fact: 8,
+                max_recursion_depth: 32,
+            },
             publish: false,
             incomplete_extents: std::collections::BTreeSet::from(["relation".to_owned()]),
             cancellation: None,
@@ -495,7 +507,13 @@ fn cancellation_timeout_and_row_caps_never_establish_absence() {
             scope: scope(),
             revision,
             bundle: path_bundle(),
-            limits: mneme_datalog::Limits::default(),
+            limits: mneme_datalog::Limits {
+                max_work: 100_000,
+                max_time_ms: 2_000,
+                max_result_rows: 1_000,
+                max_supports_per_fact: 8,
+                max_recursion_depth: 32,
+            },
             publish: false,
             incomplete_extents: std::collections::BTreeSet::new(),
             cancellation: Some(cancelled),
@@ -521,7 +539,13 @@ fn cancellation_timeout_and_row_caps_never_establish_absence() {
             bundle: path_bundle(),
             limits: mneme_datalog::Limits {
                 max_work: 2,
-                ..mneme_datalog::Limits::default()
+                ..mneme_datalog::Limits {
+                    max_work: 100_000,
+                    max_time_ms: 2_000,
+                    max_result_rows: 1_000,
+                    max_supports_per_fact: 8,
+                    max_recursion_depth: 32,
+                }
             },
             publish: false,
             incomplete_extents: std::collections::BTreeSet::new(),
@@ -1036,7 +1060,13 @@ fn support_budget_truncation_is_explicit() {
             ),
             limits: mneme_datalog::Limits {
                 max_supports_per_fact: 1,
-                ..mneme_datalog::Limits::default()
+                ..mneme_datalog::Limits {
+                    max_work: 100_000,
+                    max_time_ms: 2_000,
+                    max_result_rows: 1_000,
+                    max_supports_per_fact: 8,
+                    max_recursion_depth: 32,
+                }
             },
             publish: false,
             incomplete_extents: std::collections::BTreeSet::new(),
@@ -1078,7 +1108,13 @@ fn query_build_returns_explicit_context_and_no_absence_on_unrelated_partial_buil
             scope: scope(),
             revision,
             bundle,
-            limits: mneme_datalog::Limits::default(),
+            limits: mneme_datalog::Limits {
+                max_work: 100_000,
+                max_time_ms: 2_000,
+                max_result_rows: 1_000,
+                max_supports_per_fact: 8,
+                max_recursion_depth: 32,
+            },
             publish: false,
             incomplete_extents: std::collections::BTreeSet::from(["source".to_owned()]),
             cancellation: None,
@@ -1138,7 +1174,13 @@ fn query_summary_serialization_distinguishes_complete_incomplete_and_truncated()
             scope: scope(),
             revision,
             bundle: rules,
-            limits: mneme_datalog::Limits::default(),
+            limits: mneme_datalog::Limits {
+                max_work: 100_000,
+                max_time_ms: 2_000,
+                max_result_rows: 1_000,
+                max_supports_per_fact: 8,
+                max_recursion_depth: 32,
+            },
             publish: false,
             incomplete_extents: std::collections::BTreeSet::from(["relation".to_owned()]),
             cancellation: None,
@@ -1200,7 +1242,13 @@ fn invalid_or_stale_publication_never_replaces_the_registered_projection() {
             scope: scope(),
             revision,
             bundle: unsafe_bundle,
-            limits: mneme_datalog::Limits::default(),
+            limits: mneme_datalog::Limits {
+                max_work: 100_000,
+                max_time_ms: 2_000,
+                max_result_rows: 1_000,
+                max_supports_per_fact: 8,
+                max_recursion_depth: 32,
+            },
             publish: true,
             incomplete_extents: std::collections::BTreeSet::new(),
             cancellation: None,
@@ -1225,7 +1273,13 @@ fn invalid_or_stale_publication_never_replaces_the_registered_projection() {
                 scope: scope(),
                 revision,
                 bundle: path_bundle(),
-                limits: mneme_datalog::Limits::default(),
+                limits: mneme_datalog::Limits {
+                    max_work: 100_000,
+                    max_time_ms: 2_000,
+                    max_result_rows: 1_000,
+                    max_supports_per_fact: 8,
+                    max_recursion_depth: 32,
+                },
                 publish: false,
                 incomplete_extents: std::collections::BTreeSet::new(),
                 cancellation: None,
@@ -1282,7 +1336,13 @@ fn recursion_depth_exhaustion_is_partial_and_non_exhaustive() {
             bundle: path_bundle(),
             limits: mneme_datalog::Limits {
                 max_recursion_depth: 0,
-                ..mneme_datalog::Limits::default()
+                ..mneme_datalog::Limits {
+                    max_work: 100_000,
+                    max_time_ms: 2_000,
+                    max_result_rows: 1_000,
+                    max_supports_per_fact: 8,
+                    max_recursion_depth: 32,
+                }
             },
             publish: false,
             incomplete_extents: std::collections::BTreeSet::new(),
@@ -1321,7 +1381,13 @@ fn build_identity_binds_limits_and_incomplete_extents() {
     };
     let default = service
         .build(request(
-            mneme_datalog::Limits::default(),
+            mneme_datalog::Limits {
+                max_work: 100_000,
+                max_time_ms: 2_000,
+                max_result_rows: 1_000,
+                max_supports_per_fact: 8,
+                max_recursion_depth: 32,
+            },
             std::collections::BTreeSet::new(),
         ))
         .expect("default build");
@@ -1329,14 +1395,26 @@ fn build_identity_binds_limits_and_incomplete_extents() {
         .build(request(
             mneme_datalog::Limits {
                 max_work: 0,
-                ..mneme_datalog::Limits::default()
+                ..mneme_datalog::Limits {
+                    max_work: 100_000,
+                    max_time_ms: 2_000,
+                    max_result_rows: 1_000,
+                    max_supports_per_fact: 8,
+                    max_recursion_depth: 32,
+                }
             },
             std::collections::BTreeSet::new(),
         ))
         .expect("different-limit build");
     let incomplete = service
         .build(request(
-            mneme_datalog::Limits::default(),
+            mneme_datalog::Limits {
+                max_work: 100_000,
+                max_time_ms: 2_000,
+                max_result_rows: 1_000,
+                max_supports_per_fact: 8,
+                max_recursion_depth: 32,
+            },
             std::collections::BTreeSet::from(["relation".to_owned()]),
         ))
         .expect("incomplete build");
@@ -1368,7 +1446,13 @@ fn terminal_failures_are_recomputed_and_never_published() {
                 scope: scope(),
                 revision,
                 bundle: path_bundle(),
-                limits: mneme_datalog::Limits::default(),
+                limits: mneme_datalog::Limits {
+                    max_work: 100_000,
+                    max_time_ms: 2_000,
+                    max_result_rows: 1_000,
+                    max_supports_per_fact: 8,
+                    max_recursion_depth: 32,
+                },
                 publish,
                 incomplete_extents: std::collections::BTreeSet::new(),
                 cancellation,

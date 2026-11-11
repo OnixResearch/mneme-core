@@ -236,14 +236,26 @@ fn proposed_assertion_is_not_promoted_by_retrieval_or_explanation() {
         let memory = mneme_memory::Memory::new(&mut workspace);
         assert!(memory.beliefs(&view).expect("beliefs").is_empty());
         let explanation = memory
-            .explain(assertion_id, mneme_memory::Policy::default())
+            .explain(
+                assertion_id,
+                mneme_memory::Policy {
+                    max_explanation_nodes: 64,
+                    max_excerpt_bytes: 4096,
+                },
+            )
             .expect("explain");
         assert_eq!(
             explanation.assertion.lifecycle,
             mneme_core::Lifecycle::Proposed
         );
         let again = memory
-            .explain(assertion_id, mneme_memory::Policy::default())
+            .explain(
+                assertion_id,
+                mneme_memory::Policy {
+                    max_explanation_nodes: 64,
+                    max_excerpt_bytes: 4096,
+                },
+            )
             .expect("explain");
         assert_eq!(again.assertion.lifecycle, mneme_core::Lifecycle::Proposed);
     }
@@ -426,7 +438,13 @@ fn source_change_after_extraction_keeps_the_pinned_citation() {
             .commit(batch("source-v2", vec![source], vec![blob]))
             .expect("source change");
         let explanation = memory
-            .explain(assertion_id, mneme_memory::Policy::default())
+            .explain(
+                assertion_id,
+                mneme_memory::Policy {
+                    max_explanation_nodes: 64,
+                    max_excerpt_bytes: 4096,
+                },
+            )
             .expect("explain");
         let evidence = &explanation.evidence[0];
         assert_eq!(evidence.source_revision, SOURCE_REV);
@@ -1349,7 +1367,13 @@ fn pruned_source_is_reported_without_inventing_an_excerpt() {
             .commit(batch("prune", vec![pruned], Vec::new()))
             .expect("prune");
         let explanation = memory
-            .explain(assertion_id, mneme_memory::Policy::default())
+            .explain(
+                assertion_id,
+                mneme_memory::Policy {
+                    max_explanation_nodes: 64,
+                    max_excerpt_bytes: 4096,
+                },
+            )
             .expect("explain");
         assert_eq!(
             explanation.evidence[0].availability,
@@ -1451,7 +1475,13 @@ fn correction_retraction_and_history_do_not_assert_the_opposite() {
         assert_eq!(beliefs[0].value, mneme_core::Value::string("LMDB"));
         assert_eq!(memory.revisions(assertion_id).expect("history").len(), 3);
         let explanation = memory
-            .explain(assertion_id, mneme_memory::Policy::default())
+            .explain(
+                assertion_id,
+                mneme_memory::Policy {
+                    max_explanation_nodes: 64,
+                    max_excerpt_bytes: 4096,
+                },
+            )
             .expect("corrected explanation");
         assert_eq!(
             explanation.assertion.lifecycle,
@@ -2050,7 +2080,13 @@ fn erased_and_inaccessible_sources_are_labelled_without_text() {
                 .commit(batch("unavailable", vec![replacement], Vec::new()))
                 .expect("source state");
             let explanation = memory
-                .explain(assertion, mneme_memory::Policy::default())
+                .explain(
+                    assertion,
+                    mneme_memory::Policy {
+                        max_explanation_nodes: 64,
+                        max_excerpt_bytes: 4096,
+                    },
+                )
                 .expect("explain");
             assert!(explanation.evidence[0].excerpt.is_none());
             assert_eq!(
@@ -2100,7 +2136,14 @@ fn memory_explanation_rechecks_the_current_eligibility_generation() {
     workspace.advance_eligibility_barrier().expect("barrier");
     let memory = mneme_memory::Memory::new(&mut workspace);
     let error = memory
-        .explain_at(assertion, Some(generation), mneme_memory::Policy::default())
+        .explain_at(
+            assertion,
+            Some(generation),
+            mneme_memory::Policy {
+                max_explanation_nodes: 64,
+                max_excerpt_bytes: 4096,
+            },
+        )
         .expect_err("stale generation");
     assert!(matches!(
         error,

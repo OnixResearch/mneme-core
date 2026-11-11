@@ -540,7 +540,13 @@ fn structured_candidates_keep_datalog_coverage_and_derivations() {
     request.structured = Some(mneme_recall::StructuredRequest {
         bundle: claim_bundle(),
         query: mneme_datalog::Query::all("claim", 10),
-        limits: mneme_datalog::Limits::default(),
+        limits: mneme_datalog::Limits {
+            max_work: 100_000,
+            max_time_ms: 2_000,
+            max_result_rows: 1_000,
+            max_supports_per_fact: 8,
+            max_recursion_depth: 32,
+        },
         incomplete_extents: std::collections::BTreeSet::new(),
     });
     let response = mneme_recall::RecallService::new(&mut harness.workspace)

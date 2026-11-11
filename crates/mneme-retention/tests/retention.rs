@@ -355,7 +355,13 @@ fn pruning_keeps_a_permitted_assertion_and_reports_pruned_bytes() {
             Some(mneme_core::ContentDigest::of_source_bytes(SOURCE_A))
         );
         let explanation = view
-            .explain(assertion, Default::default())
+            .explain(
+                assertion,
+                mneme_memory::Policy {
+                    max_explanation_nodes: 64,
+                    max_excerpt_bytes: 4096,
+                },
+            )
             .expect("explain");
         assert!(
             explanation
@@ -484,7 +490,13 @@ fn support_retraction_keeps_an_independent_proof() {
         let view = memory.view().expect("view");
         assert!(view.assertion_eligible(assertion));
         let explanation = view
-            .explain(assertion, Default::default())
+            .explain(
+                assertion,
+                mneme_memory::Policy {
+                    max_explanation_nodes: 64,
+                    max_excerpt_bytes: 4096,
+                },
+            )
             .expect("explain");
         let withdrawn = explanation
             .evidence
@@ -558,7 +570,13 @@ fn forget_preserves_an_independent_assertion_without_its_forgotten_citation() {
             std::collections::BTreeSet::from([rid(0x32)])
         );
         let explanation = view
-            .explain(assertion, Default::default())
+            .explain(
+                assertion,
+                mneme_memory::Policy {
+                    max_explanation_nodes: 64,
+                    max_excerpt_bytes: 4096,
+                },
+            )
             .expect("explain");
         assert!(
             explanation
