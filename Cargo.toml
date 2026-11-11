@@ -4,6 +4,7 @@ members = [
   "crates/mneme-core",
   "crates/mneme-store",
   "crates/mneme-memory",
+  "crates/mneme-consolidation",
   "crates/mneme-retention",
   "crates/mneme-doc",
   "crates/mneme-datalog",
@@ -24,6 +25,7 @@ rust-version = "1.99"
 mneme-core = { path = "crates/mneme-core" }
 mneme-store = { path = "crates/mneme-store" }
 mneme-memory = { path = "crates/mneme-memory" }
+mneme-consolidation = { path = "crates/mneme-consolidation" }
 mneme-retention = { path = "crates/mneme-retention" }
 mneme-doc = { path = "crates/mneme-doc" }
 mneme-datalog = { path = "crates/mneme-datalog" }

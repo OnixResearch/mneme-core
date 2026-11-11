@@ -1350,6 +1350,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mneme-consolidation"
+version = "0.1.0"
+dependencies = [
+ "mneme-core",
+]
+
+[[package]]
 name = "mneme-core"
 version = "0.1.0"
 dependencies = [
