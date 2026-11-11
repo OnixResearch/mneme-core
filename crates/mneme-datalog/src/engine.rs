@@ -122,7 +122,7 @@ impl<'a> Evaluation<'a> {
         support: Derivation,
         sources: &BTreeSet<SourceKey>,
     ) -> bool {
-        let changed = self.add_fact(predicate, terms.clone(), support);
+        let is_changed = self.add_fact(predicate, terms.clone(), support);
         if let Some(data) = self
             .facts
             .get_mut(predicate)
@@ -130,7 +130,7 @@ impl<'a> Evaluation<'a> {
         {
             data.sources.extend(sources.iter().copied());
         }
-        changed
+        is_changed
     }
 }
 
@@ -414,10 +414,10 @@ fn evaluate_rules(
             if !evaluation.remaining() {
                 break;
             }
-            let mut changed = false;
+            let mut is_changed = false;
             for rule in rules {
                 match evaluate_rule(evaluation, rule)? {
-                    RuleOutcome::Changed => changed = true,
+                    RuleOutcome::Changed => is_changed = true,
                     RuleOutcome::Stable => {}
                     RuleOutcome::Skipped => {}
                 }
@@ -426,11 +426,11 @@ fn evaluate_rules(
                 }
             }
             rounds += 1;
-            let depth_exhausted = rounds > evaluation.limits.max_recursion_depth;
-            if !changed || !evaluation.remaining() {
+            let is_depth_exhausted = rounds > evaluation.limits.max_recursion_depth;
+            if !is_changed || !evaluation.remaining() {
                 break;
             }
-            if depth_exhausted {
+            if is_depth_exhausted {
                 if evaluation.status == ExecutionStatus::Complete {
                     evaluation.status = ExecutionStatus::Partial;
                 }
@@ -452,12 +452,12 @@ fn evaluate_rule(
     evaluation: &mut Evaluation<'_>,
     rule: &Rule,
 ) -> Result<RuleOutcome, crate::DatalogError> {
-    let mut body_complete = true;
+    let mut is_body_complete = true;
     for literal in &rule.body {
         match literal {
             Literal::Positive(atom) | Literal::Negative(atom) => {
                 if evaluation.coverage_status(&atom.predicate) != CoverageStatus::Complete {
-                    body_complete = false;
+                    is_body_complete = false;
                 }
             }
             Literal::Aggregate { .. } => {}
@@ -481,7 +481,7 @@ fn evaluate_rule(
         .body
         .iter()
         .any(|literal| matches!(literal, Literal::Negative(_)));
-    if (aggregate.is_some() || has_negative) && !body_complete {
+    if (aggregate.is_some() || has_negative) && !is_body_complete {
         return Ok(RuleOutcome::Skipped);
     }
     let mut bindings = vec![BTreeMap::<String, Value>::new()];
@@ -521,11 +521,11 @@ fn evaluate_rule(
         }
     }
     if let Some((function, input, output)) = aggregate {
-        if !body_complete {
+        if !is_body_complete {
             return Ok(RuleOutcome::Skipped);
         }
         let grouped = aggregate_rows(&rule.head, &output, function, &input, &bindings)?;
-        let mut changed = false;
+        let mut is_changed = false;
         for aggregate_row in grouped {
             let (support, sources) =
                 aggregate_support(rule, evaluation, &bindings, &aggregate_row.binding_indices);
@@ -535,24 +535,24 @@ fn evaluate_rule(
                 support,
                 &sources,
             ) {
-                changed = true;
+                is_changed = true;
             }
         }
-        return Ok(if changed {
+        return Ok(if is_changed {
             RuleOutcome::Changed
         } else {
             RuleOutcome::Stable
         });
     }
-    let mut changed = false;
+    let mut is_changed = false;
     for binding in &bindings {
         let terms = head_terms(&rule.head, binding)?;
         let (support, sources) = instantiated_support(rule, evaluation, binding);
         if evaluation.add_fact_with_sources(&rule.head.predicate, terms, support, &sources) {
-            changed = true;
+            is_changed = true;
         }
     }
-    Ok(if changed {
+    Ok(if is_changed {
         RuleOutcome::Changed
     } else {
         RuleOutcome::Stable
@@ -807,7 +807,7 @@ fn aggregate_support(
             }
         }
     }
-    let truncated = premises.len() > 64;
+    let is_truncated = premises.len() > 64;
     premises.truncate(64);
     let support = Derivation {
         rule_id: rule.id.clone(),
@@ -817,7 +817,7 @@ fn aggregate_support(
         temporal_parameters: Vec::new(),
         revision: evaluation.context.served_revision,
         scope: evaluation.context.scope.clone(),
-        truncated,
+        truncated: is_truncated,
     };
     (support, sources)
 }
@@ -943,7 +943,7 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
         .map(|rule| rule.head.predicate.clone())
         .collect::<BTreeSet<_>>();
     loop {
-        let mut changed = false;
+        let mut is_changed = false;
         let mut next = evaluation.base_coverage.clone();
         for head in &heads {
             let rules = evaluation
@@ -952,8 +952,8 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
                 .iter()
                 .filter(|rule| &rule.head.predicate == head)
                 .collect::<Vec<_>>();
-            let mut all_complete = !rules.is_empty();
-            let mut any_incomplete = false;
+            let mut is_all_complete = !rules.is_empty();
+            let mut is_any_incomplete = false;
             let mut has_seed = false;
             for rule in rules {
                 let has_self = rule.body.iter().any(
@@ -962,7 +962,7 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
                 if !has_self {
                     has_seed = true;
                 }
-                let body_complete = evaluation.status == ExecutionStatus::Complete
+                let is_body_complete = evaluation.status == ExecutionStatus::Complete
                     && rule.body.iter().all(|literal| match literal {
                         Literal::Positive(atom) | Literal::Negative(atom) => {
                             if matches!(literal, Literal::Positive(_)) && &atom.predicate == head {
@@ -973,15 +973,15 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
                         Literal::Forbidden(_) => false,
                         Literal::Aggregate { .. } | Literal::Compare { .. } => true,
                     });
-                if body_complete {
+                if is_body_complete {
                     continue;
                 }
-                all_complete = false;
-                any_incomplete = true;
+                is_all_complete = false;
+                is_any_incomplete = true;
             }
-            let status = if all_complete && has_seed {
+            let status = if is_all_complete && has_seed {
                 CoverageStatus::Complete
-            } else if any_incomplete {
+            } else if is_any_incomplete {
                 CoverageStatus::Incomplete
             } else {
                 CoverageStatus::Unknown
@@ -990,9 +990,9 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
         }
         if next != evaluation.coverage {
             evaluation.coverage = next;
-            changed = true;
+            is_changed = true;
         }
-        if !changed {
+        if !is_changed {
             break;
         }
     }

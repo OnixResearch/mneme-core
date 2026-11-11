@@ -176,9 +176,9 @@ fn minimal_signed_bytes(value: &BigInt) -> Vec<u8> {
     while bytes.len() > 1 {
         let first = bytes[0];
         let second = bytes[1];
-        let redundant_positive = first == 0x00 && second & 0x80 == 0;
-        let redundant_negative = first == 0xFF && second & 0x80 != 0;
-        if redundant_positive || redundant_negative {
+        let is_redundant_positive = first == 0x00 && second & 0x80 == 0;
+        let is_redundant_negative = first == 0xFF && second & 0x80 != 0;
+        if is_redundant_positive || is_redundant_negative {
             bytes.remove(0);
         } else {
             break;

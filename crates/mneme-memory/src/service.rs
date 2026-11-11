@@ -303,14 +303,14 @@ fn validate_batch(
                     )));
                 }
                 if assertion.lifecycle == Lifecycle::Accepted && assertion.stance == Stance::Deny {
-                    let complete = assertion
+                    let is_complete = assertion
                         .record
                         .payload
                         .get("completeness")
                         .and_then(Value::as_symbol)
                         .map(|symbol| symbol.as_str() == "declared-complete")
                         .unwrap_or(false);
-                    if !complete {
+                    if !is_complete {
                         return Err(MemoryError::policy(format!(
                             "accepted negative assertion {} lacks a declared-complete basis",
                             assertion.record.record_id

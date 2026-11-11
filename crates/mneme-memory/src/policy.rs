@@ -579,15 +579,15 @@ impl MemoryView {
                     end: right_end,
                 },
             ) => {
-                let left_start_before_right_end = match (left_start, right_end) {
+                let is_left_start_before_right_end = match (left_start, right_end) {
                     (Some(left), Some(right)) => left <= right,
                     _ => true,
                 };
-                let right_start_before_left_end = match (right_start, left_end) {
+                let is_right_start_before_left_end = match (right_start, left_end) {
                     (Some(right), Some(left)) => right <= left,
                     _ => true,
                 };
-                left_start_before_right_end && right_start_before_left_end
+                is_left_start_before_right_end && is_right_start_before_left_end
             }
         }
     }
@@ -621,13 +621,13 @@ impl MemoryView {
                 if !Self::validity_overlaps(left.valid_time, right.valid_time) {
                     continue;
                 }
-                let incompatible = match (left.stance, right.stance) {
+                let is_incompatible = match (left.stance, right.stance) {
                     (Stance::Affirm, Stance::Deny) | (Stance::Deny, Stance::Affirm) => true,
                     (Stance::Affirm, Stance::Affirm) => left.value != right.value,
                     (Stance::Deny, Stance::Deny) => false,
                     (Stance::Hypothesis, _) | (_, Stance::Hypothesis) => false,
                 };
-                if incompatible {
+                if is_incompatible {
                     let group = groups
                         .entry((left.subject, left.predicate.clone()))
                         .or_default();
@@ -838,7 +838,7 @@ impl MemoryView {
         if !visiting.insert(assertion_id) {
             return false;
         }
-        let result = (|| {
+        let is_result = (|| {
             let assertion = self.assertion(assertion_id).ok()?;
             if self
                 .suppression_for(&assertion.record)
@@ -864,7 +864,7 @@ impl MemoryView {
         })()
         .unwrap_or(false);
         visiting.remove(&assertion_id);
-        result
+        is_result
     }
 
     fn derivation_eligible_inner(
@@ -875,9 +875,9 @@ impl MemoryView {
         if !visiting.insert(derivation.record.record_id) {
             return false;
         }
-        let result = self.derivation_eligible_inner_body(derivation, visiting);
+        let is_result = self.derivation_eligible_inner_body(derivation, visiting);
         visiting.remove(&derivation.record.record_id);
-        result
+        is_result
     }
 
     fn derivation_revision_matches(&self, derivation: &DerivationView) -> bool {
@@ -902,7 +902,7 @@ impl MemoryView {
             let Some(envelope) = self.records.get(premise) else {
                 return false;
             };
-            let eligible = match envelope.kind {
+            let is_eligible = match envelope.kind {
                 RecordKind::Assertion => self.assertion_eligible_inner(*premise, visiting),
                 RecordKind::Derivation => match self.derivation(*premise) {
                     Ok(premise_derivation) => {
@@ -925,7 +925,7 @@ impl MemoryView {
                 | RecordKind::DocumentBinding
                 | RecordKind::DocumentAnchor => false,
             };
-            if !eligible {
+            if !is_eligible {
                 return false;
             }
         }
@@ -961,7 +961,7 @@ impl MemoryView {
         let mut alternatives = Vec::new();
         for derivation in self.derivations_for(conclusion)? {
             let mut visiting = BTreeSet::new();
-            let eligible = self.derivation_eligible_inner(&derivation, &mut visiting);
+            let is_eligible = self.derivation_eligible_inner(&derivation, &mut visiting);
             let mut reasons = Vec::new();
             if !self.derivation_revision_matches(&derivation) {
                 reasons.push(
@@ -982,7 +982,7 @@ impl MemoryView {
                 derivation: derivation.record.record_id,
                 rule_id: derivation.rule_id,
                 rule_version: derivation.rule_version,
-                eligible,
+                eligible: is_eligible,
                 reasons,
             });
         }
@@ -993,13 +993,13 @@ impl MemoryView {
     pub fn explain(&self, assertion: RecordId, policy: Policy) -> Result<Explanation> {
         let assertion = self.assertion(assertion)?;
         let mut nodes = 1;
-        let mut truncated = false;
+        let mut is_truncated = false;
         let decisions = self.decisions_for(assertion.record.record_id)?;
         let mut evidence_explanations = Vec::new();
         let mut roots = BTreeSet::new();
         for evidence_id in &assertion.evidence {
             if nodes >= policy.max_explanation_nodes {
-                truncated = true;
+                is_truncated = true;
                 break;
             }
             let evidence = self.evidence(*evidence_id)?;
@@ -1015,11 +1015,11 @@ impl MemoryView {
                         .saturating_add(1)
                         .min(bytes.len());
                     if start <= end {
-                        let truncated_excerpt = end - start > policy.max_excerpt_bytes;
+                        let is_truncated_excerpt = end - start > policy.max_excerpt_bytes;
                         let end = start + (end - start).min(policy.max_excerpt_bytes);
                         Some(SourceExcerpt {
                             bytes: bytes[start..end].to_vec(),
-                            truncated: truncated_excerpt,
+                            truncated: is_truncated_excerpt,
                         })
                     } else {
                         None
@@ -1028,11 +1028,11 @@ impl MemoryView {
                 _ => None,
             };
             let evidence_roots = self.evidence_roots(*evidence_id).unwrap_or_default();
-            let withdrawn = self
+            let is_withdrawn = self
                 .suppression_for(&evidence.record)
                 .is_some_and(|suppression| suppression.mode == SuppressionMode::Withdrawn);
-            let eligible = !withdrawn;
-            if eligible && evidence.relation == SupportRelation::Supports {
+            let is_eligible = !is_withdrawn;
+            if is_eligible && evidence.relation == SupportRelation::Supports {
                 roots.extend(evidence_roots.iter().copied());
             }
             evidence_explanations.push(EvidenceExplanation {
@@ -1044,8 +1044,8 @@ impl MemoryView {
                 span_end: evidence.span.map(|span| span.end()),
                 excerpt,
                 ancestry_roots: evidence_roots,
-                withdrawn,
-                eligible,
+                withdrawn: is_withdrawn,
+                eligible: is_eligible,
             });
             nodes += 1;
         }
@@ -1078,7 +1078,7 @@ impl MemoryView {
             evidence: evidence_explanations,
             derivations,
             corroboration,
-            truncated: truncated || nodes > policy.max_explanation_nodes,
+            truncated: is_truncated || nodes > policy.max_explanation_nodes,
         })
     }
 }

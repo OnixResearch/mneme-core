@@ -410,19 +410,19 @@ impl<'w> Retention<'w> {
                     }
                 }
                 "publication-intent" => {
-                    let suppressed = self.workspace.publication_intent_has_state(
+                    let is_suppressed = self.workspace.publication_intent_has_state(
                         &location.locator,
                         mneme_store::PublicationState::Suppressed,
                     )?;
                     self.workspace.verify_retention_location(
                         &operation.operation_id,
                         &location.location_id,
-                        if suppressed {
+                        if is_suppressed {
                             RetentionLocationState::Verified
                         } else {
                             RetentionLocationState::Failed
                         },
-                        if suppressed {
+                        if is_suppressed {
                             None
                         } else {
                             Some("publication-not-suppressed")
@@ -505,7 +505,7 @@ impl<'w> Retention<'w> {
         if summary.failed > 0 {
             limitations.push("managed-cleanup-failed".to_owned());
         }
-        let physical_cleanup_complete = summary.pending == 0
+        let is_physical_cleanup_complete = summary.pending == 0
             && summary.failed == 0
             && summary.retained_shared == 0
             && summary.unavailable == 0;
@@ -515,7 +515,7 @@ impl<'w> Retention<'w> {
             state: operation.state,
             generation: operation.generation,
             logical_withdrawal: true,
-            physical_cleanup_complete,
+            physical_cleanup_complete: is_physical_cleanup_complete,
             cleanup: summary,
             locations,
             limitations,
@@ -952,22 +952,22 @@ fn plan_forget(
     // required premise is suppressed, when its conclusion is suppressed, or
     // when it depends on another suppressed derivation.
     loop {
-        let mut changed = false;
+        let mut is_changed = false;
         for record in visible_records(view)? {
             if record.kind != RecordKind::Derivation {
                 continue;
             }
             let derivation = view.derivation(record.record_id)?;
-            let invalid = suppressed_assertions.contains(&derivation.conclusion)
+            let is_invalid = suppressed_assertions.contains(&derivation.conclusion)
                 || derivation.premises.iter().any(|premise| {
                     suppressed_assertions.contains(premise)
                         || suppressed_derivations.contains(premise)
                 });
-            if invalid && derivation.record.scope != request.scope {
+            if is_invalid && derivation.record.scope != request.scope {
                 return Err(RetentionError::Unauthorized);
             }
-            if invalid && suppressed_derivations.insert(record.record_id) {
-                changed = true;
+            if is_invalid && suppressed_derivations.insert(record.record_id) {
+                is_changed = true;
             }
         }
         // An assertion with no evidence of its own survives only through a
@@ -986,11 +986,11 @@ fn plan_forget(
                     })
                 {
                     suppressed_assertions.insert(record.record_id);
-                    changed = true;
+                    is_changed = true;
                 }
             }
         }
-        if !changed {
+        if !is_changed {
             break;
         }
     }
@@ -1185,7 +1185,7 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
     let targets: BTreeSet<RecordId> = sources.iter().copied().collect();
     let mut deps = Dependencies::default();
     loop {
-        let mut changed = false;
+        let mut is_changed = false;
         let closure: BTreeSet<RecordId> = targets
             .iter()
             .chain(deps.episodes.iter())
@@ -1199,16 +1199,16 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
                         continue;
                     }
                     let episode = view.episode(record.record_id)?;
-                    let linked_source = episode
+                    let is_linked_source = episode
                         .source
                         .is_some_and(|source| closure.contains(&source));
-                    let linked_related = episode
+                    let is_linked_related = episode
                         .related
                         .iter()
                         .any(|related| closure.contains(related));
-                    if linked_source || linked_related {
+                    if is_linked_source || is_linked_related {
                         deps.episodes.insert(record.record_id);
-                        changed = true;
+                        is_changed = true;
                     }
                 }
                 RecordKind::Evidence => {
@@ -1223,7 +1223,7 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
                             .any(|ancestor| closure.contains(ancestor))
                     {
                         deps.evidence.insert(record.record_id);
-                        changed = true;
+                        is_changed = true;
                     }
                 }
                 RecordKind::Assertion => {
@@ -1237,7 +1237,7 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
                         .any(|evidence| deps.evidence.contains(evidence))
                     {
                         deps.assertions.insert(record.record_id);
-                        changed = true;
+                        is_changed = true;
                     }
                 }
                 RecordKind::Derivation => {
@@ -1248,13 +1248,13 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
                         .any(|premise| deps.assertions.contains(premise))
                         && deps.assertions.insert(derivation.conclusion)
                     {
-                        changed = true;
+                        is_changed = true;
                     }
                 }
                 _ => {}
             }
         }
-        if !changed {
+        if !is_changed {
             return Ok(deps);
         }
     }
@@ -1302,7 +1302,7 @@ fn dependent_derivations(
     let mut affected_assertions = BTreeSet::from([assertion]);
     let mut derivations = BTreeSet::new();
     loop {
-        let mut changed = false;
+        let mut is_changed = false;
         for record in visible_records(view)? {
             if record.kind != RecordKind::Derivation {
                 continue;
@@ -1321,11 +1321,11 @@ fn dependent_derivations(
                 }
                 derivations.insert(record.record_id);
                 if affected_assertions.insert(derivation.conclusion) {
-                    changed = true;
+                    is_changed = true;
                 }
             }
         }
-        if !changed {
+        if !is_changed {
             return Ok(derivations.into_iter().collect());
         }
     }

@@ -991,7 +991,7 @@ impl<'w> Documents<'w> {
         }
         let (_, bytes) = self.current_document_source(document_id, &request.import.scope)?;
         let patched = patch_entity_header(&bytes, request.entity)?;
-        let publish = request.publish;
+        let is_publish = request.publish;
         let import = request.import;
         let prepared = self.prepare_source(&import, &patched)?;
         self.require_valid(&prepared)?;
@@ -999,7 +999,7 @@ impl<'w> Documents<'w> {
             import,
             prepared,
             PreparationOptions {
-                publish,
+                publish: is_publish,
                 external_import: false,
             },
         )
@@ -1271,7 +1271,7 @@ impl<'w> Documents<'w> {
             &request.render_config,
             Some(deadline),
         );
-        let valid = !diagnostics.iter().any(|diagnostic| diagnostic.fatal);
+        let is_valid = !diagnostics.iter().any(|diagnostic| diagnostic.fatal);
         let included = resolved
             .closure
             .iter()
@@ -1295,12 +1295,12 @@ impl<'w> Documents<'w> {
             includes: included.clone(),
             diagnostics,
             preview_diagnostics: rendered.diagnostics,
-            valid,
+            valid: is_valid,
             preview_html: rendered.html,
         };
         let mut records = Vec::new();
         let mut binding = None;
-        if valid {
+        if is_valid {
             let mut source_draft = build_source(
                 source_id,
                 source_revision,

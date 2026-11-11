@@ -211,11 +211,11 @@ pub fn decode_value(
     match tag {
         "bool" => {
             reject_extra(object, &[TAG, VALUE], path)?;
-            let boolean = object
+            let is_boolean = object
                 .get(VALUE)
                 .and_then(serde_json::Value::as_bool)
                 .ok_or_else(|| invalid(&path.named(VALUE), "bool value must be a JSON boolean"))?;
-            Ok(crate::value::Value::Boolean(boolean))
+            Ok(crate::value::Value::Boolean(is_boolean))
         }
         "double" => {
             reject_extra(object, &[TAG, "bits"], path)?;

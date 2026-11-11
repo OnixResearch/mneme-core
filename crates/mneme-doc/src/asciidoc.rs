@@ -126,8 +126,8 @@ fn lines(text: &str) -> Vec<Line<'_>> {
 pub fn parse_header(text: &str) -> Result<Header, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut header = Header::default();
-    let mut seen_entity = false;
-    let mut conditional = false;
+    let mut is_seen_entity = false;
+    let mut is_conditional = false;
     let all = lines(text);
     for line in &all {
         let content = line.text.trim();
@@ -141,7 +141,7 @@ pub fn parse_header(text: &str) -> Result<Header, Vec<Diagnostic>> {
             || content.starts_with("ifndef::")
             || content.starts_with("ifeval::")
         {
-            conditional = true;
+            is_conditional = true;
             continue;
         }
         if let Some(title) = content.strip_prefix("= ") {
@@ -170,7 +170,7 @@ pub fn parse_header(text: &str) -> Result<Header, Vec<Diagnostic>> {
             if name.trim() != "entity-id" {
                 continue;
             }
-            if seen_entity {
+            if is_seen_entity {
                 diagnostics.push(Diagnostic::new(
                     "binding-conflict",
                     "document declares entity-id more than once",
@@ -180,7 +180,7 @@ pub fn parse_header(text: &str) -> Result<Header, Vec<Diagnostic>> {
                 ));
                 continue;
             }
-            seen_entity = true;
+            is_seen_entity = true;
             let value = value.trim();
             if value.is_empty() {
                 diagnostics.push(Diagnostic::new(
@@ -219,7 +219,7 @@ pub fn parse_header(text: &str) -> Result<Header, Vec<Diagnostic>> {
             }
         }
     }
-    if conditional && seen_entity {
+    if is_conditional && is_seen_entity {
         diagnostics.push(Diagnostic::new(
             "binding-conditional",
             "entity-id cannot be controlled by a conditional",
@@ -258,13 +258,13 @@ pub fn scan_includes(text: &str) -> Vec<IncludeDirective> {
         if target.is_empty() {
             continue;
         }
-        let optional = attributes
+        let is_optional = attributes
             .split(',')
             .any(|attribute| attribute.trim().trim_matches('"') == "opts=optional");
         if let Some(span) = line.span() {
             includes.push(IncludeDirective {
                 target: target.to_owned(),
-                optional,
+                optional: is_optional,
                 span,
                 line: line.number,
                 column: start + 1,
@@ -391,26 +391,26 @@ pub struct Paragraph {
 /// listing/passthrough blocks, tables, and the document header.
 pub fn scan_paragraphs(text: &str) -> Vec<Paragraph> {
     let mut paragraphs = Vec::new();
-    let mut in_header = true;
+    let mut is_in_header = true;
     let mut mode = None::<&str>;
     let mut current: Option<(usize, usize, usize, usize)> = None;
     for line in lines(text) {
         let trimmed = line.text.trim();
-        if in_header {
+        if is_in_header {
             if trimmed.is_empty() {
-                in_header = false;
+                is_in_header = false;
             }
             continue;
         }
         if let Some(block) = mode {
-            let closes = match block {
+            let is_closes = match block {
                 "----" | "...." => trimmed == "----" || trimmed == "....",
                 "++++" => trimmed == "++++",
                 "////" => trimmed == "////",
                 "|===" => trimmed == "|===",
                 _ => false,
             };
-            if closes {
+            if is_closes {
                 mode = None;
             }
             continue;

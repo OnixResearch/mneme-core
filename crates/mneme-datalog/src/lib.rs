@@ -561,12 +561,12 @@ impl<'w> DatalogService<'w> {
             &request.limits,
             &request.incomplete_extents,
         );
-        let cancellation_requested = request
+        let is_cancellation_requested = request
             .cancellation
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::Relaxed));
         if let Some(existing) = self.builds.get(&build_id).cloned()
-            && !cancellation_requested
+            && !is_cancellation_requested
             && !matches!(
                 existing.status,
                 ExecutionStatus::Timeout | ExecutionStatus::Cancelled | ExecutionStatus::Failed
@@ -797,15 +797,15 @@ impl<'w> DatalogService<'w> {
             query.limit.min(build.limits.max_result_rows)
         };
         rows.truncate(limit);
-        let truncated = total > limit;
-        let terminal_failure = matches!(
+        let is_truncated = total > limit;
+        let is_terminal_failure = matches!(
             build.status,
             ExecutionStatus::Timeout | ExecutionStatus::Cancelled | ExecutionStatus::Failed
         );
-        let exhaustive =
-            coverage.status == CoverageStatus::Complete && !truncated && !terminal_failure;
-        let absence_established = exhaustive && rows.is_empty();
-        let status = if exhaustive {
+        let is_exhaustive =
+            coverage.status == CoverageStatus::Complete && !is_truncated && !is_terminal_failure;
+        let is_absence_established = is_exhaustive && rows.is_empty();
+        let status = if is_exhaustive {
             ExecutionStatus::Complete
         } else {
             build.status
@@ -815,12 +815,12 @@ impl<'w> DatalogService<'w> {
             status,
             coverage: build.coverage.clone(),
             rows,
-            exhaustive,
-            truncated,
-            absence_established,
-            reason: if absence_established {
+            exhaustive: is_exhaustive,
+            truncated: is_truncated,
+            absence_established: is_absence_established,
+            reason: if is_absence_established {
                 Some("absence within the declared complete relation".to_owned())
-            } else if !exhaustive {
+            } else if !is_exhaustive {
                 Some("result is not exhaustive for this context".to_owned())
             } else {
                 None

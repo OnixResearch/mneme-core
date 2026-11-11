@@ -138,19 +138,19 @@ pub fn run_worker(
         std::thread::sleep(Duration::from_millis(5));
     };
     let stdout = read_bounded(&stdout_path, limits.max_output_bytes)?;
-    let output_limited = stdout.1;
+    let is_output_limited = stdout.1;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).map_err(|_| {
         CapabilityError::LimitExceeded("worker elapsed time exceeds u64 milliseconds".to_owned())
     })?;
     Ok(WorkerOutcome {
-        status: if output_limited {
+        status: if is_output_limited {
             WorkerStatus::Partial
         } else {
             status
         },
         output: stdout.0,
         elapsed_ms,
-        reason: if output_limited {
+        reason: if is_output_limited {
             Some("worker output exceeded the configured budget".to_owned())
         } else if status == WorkerStatus::Timeout {
             Some("worker exceeded its wall-clock budget".to_owned())
@@ -175,9 +175,9 @@ fn read_bounded(path: &Path, limit: usize) -> Result<(String, bool), CapabilityE
     file.take((limit as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| CapabilityError::InvalidRequest(format!("worker output: {error}")))?;
-    let limited = bytes.len() > limit;
+    let is_limited = bytes.len() > limit;
     bytes.truncate(limit);
-    Ok((String::from_utf8_lossy(&bytes).into_owned(), limited))
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), is_limited))
 }
 
 fn write_program(

@@ -192,14 +192,14 @@ impl Renderer<'_> {
             match mode {
                 Block::Listing | Block::Passthrough | Block::Comment | Block::Table => {
                     let trimmed = content.trim();
-                    let closes = match mode {
+                    let is_closes = match mode {
                         Block::Listing => trimmed == "----" || trimmed == "....",
                         Block::Passthrough => trimmed == "++++",
                         Block::Comment => trimmed == "////",
                         Block::Table => trimmed == "|===",
                         Block::Normal => false,
                     };
-                    if closes {
+                    if is_closes {
                         match mode {
                             Block::Listing => {
                                 let _ = write!(
@@ -335,7 +335,7 @@ impl Renderer<'_> {
             }
             if is_list_item(content, '*') || is_list_item(content, '.') {
                 self.flush_paragraph(&mut paragraph, &mut pending_anchor);
-                let ordered = is_list_item(content, '.');
+                let is_ordered = is_list_item(content, '.');
                 let mut items = Vec::new();
                 let mut current_line = line_number;
                 let mut current_content = content.to_owned();
@@ -347,7 +347,7 @@ impl Renderer<'_> {
                         .strip_suffix('\r')
                         .unwrap_or_else(|| next.strip_suffix('\n').unwrap_or(next));
                     if is_list_item(next_content, '*') || is_list_item(next_content, '.') {
-                        if is_list_item(next_content, '.') != ordered {
+                        if is_list_item(next_content, '.') != is_ordered {
                             break;
                         }
                         items.push(current_content);
@@ -359,12 +359,12 @@ impl Renderer<'_> {
                 }
                 items.push(current_content);
                 skip_until = line_number + items.len().saturating_sub(1);
-                let tag = if ordered { "ol" } else { "ul" };
+                let tag = if is_ordered { "ol" } else { "ul" };
                 let _ = write!(self.html, "<{tag}>");
                 for item in items {
                     let text = item
                         .trim_start()
-                        .strip_prefix(if ordered { "." } else { "*" })
+                        .strip_prefix(if is_ordered { "." } else { "*" })
                         .unwrap_or(&item)
                         .trim();
                     let (rendered, diagnostics) = inline(text, line_number, &self.config.version);

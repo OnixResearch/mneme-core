@@ -43,12 +43,12 @@ pub fn decode(text: &str) -> Result<Vec<u8>, &'static str> {
     let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
     let groups = bytes.len() / 4;
     for (index, group) in bytes.chunks(4).enumerate() {
-        let last = index + 1 == groups;
+        let is_last = index + 1 == groups;
         let padding = group.iter().rev().take_while(|byte| **byte == b'=').count();
         if padding > 2 {
             return Err("base64 padding exceeds two characters");
         }
-        if padding > 0 && !last {
+        if padding > 0 && !is_last {
             return Err("base64 padding is only permitted at the end");
         }
         let decoded = [

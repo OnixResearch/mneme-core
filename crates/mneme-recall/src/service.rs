@@ -97,20 +97,20 @@ impl<'w> RecallService<'w> {
         let view = self.view(request.revision, generation)?;
         let served_revision = view.revision();
         let mut mode_reports = Vec::new();
-        let requested_structured = request.modes.contains(&RecallMode::Structured);
-        if requested_structured && request.structured.is_none() && !request.allow_fallback {
+        let is_requested_structured = request.modes.contains(&RecallMode::Structured);
+        if is_requested_structured && request.structured.is_none() && !request.allow_fallback {
             return Err(RecallError::ModeUnavailable {
                 mode: RecallMode::Structured.name().to_owned(),
                 reason: "no structured request was supplied".to_owned(),
             });
         }
-        let fallback_lexical = requested_structured
+        let is_fallback_lexical = is_requested_structured
             && request.structured.is_none()
             && request.allow_fallback
             && !request.modes.contains(&RecallMode::Lexical);
-        let use_lexical = request.modes.contains(&RecallMode::Lexical) || fallback_lexical;
-        let use_vector = request.modes.contains(&RecallMode::Vector);
-        if !use_lexical && !use_vector && request.structured.is_none() {
+        let is_use_lexical = request.modes.contains(&RecallMode::Lexical) || is_fallback_lexical;
+        let is_use_vector = request.modes.contains(&RecallMode::Vector);
+        if !is_use_lexical && !is_use_vector && request.structured.is_none() {
             return Err(RecallError::ModeUnavailable {
                 mode: "all requested modes".to_owned(),
                 reason: "no candidate mode can execute".to_owned(),
@@ -121,7 +121,7 @@ impl<'w> RecallService<'w> {
         }
 
         let mut index = None;
-        if use_lexical || use_vector {
+        if is_use_lexical || is_use_vector {
             let key = IndexKey {
                 revision: request.revision,
                 scope: request.scope.clone(),
@@ -144,7 +144,7 @@ impl<'w> RecallService<'w> {
 
         let mut ranking = Vec::new();
         let mut candidates: BTreeMap<String, RecallCandidate> = BTreeMap::new();
-        if use_lexical {
+        if is_use_lexical {
             let index = index.as_ref().ok_or_else(|| {
                 RecallError::InvalidRequest("lexical index was not built".to_owned())
             })?;
@@ -170,14 +170,14 @@ impl<'w> RecallService<'w> {
                 coverage: index.coverage.clone(),
                 candidates: entries.len(),
                 relation_exhaustive: None,
-                reason: if fallback_lexical {
+                reason: if is_fallback_lexical {
                     Some("lexical fallback for an unavailable requested mode".to_owned())
                 } else {
                     None
                 },
             });
         }
-        if use_vector {
+        if is_use_vector {
             let index = index.as_ref().ok_or_else(|| {
                 RecallError::InvalidRequest("vector index was not built".to_owned())
             })?;
@@ -212,7 +212,7 @@ impl<'w> RecallService<'w> {
 
         let mut execution = RecallExecution::Complete;
         let mut reasons = Vec::new();
-        if requested_structured {
+        if is_requested_structured {
             match request.structured.as_ref() {
                 None => {
                     mode_reports.push(ModeReport {
@@ -229,7 +229,7 @@ impl<'w> RecallService<'w> {
                         relation_exhaustive: None,
                         reason: Some("structured mode was not configured".to_owned()),
                     });
-                    if !request.allow_fallback && !use_lexical {
+                    if !request.allow_fallback && !is_use_lexical {
                         return Err(RecallError::ModeUnavailable {
                             mode: RecallMode::Structured.name().to_owned(),
                             reason: "structured mode has no request and fallback is disabled"
@@ -573,8 +573,8 @@ fn lexical_rank(
         if matched == 0 {
             continue;
         }
-        let phrase = !query_lower.is_empty() && document.normalized.contains(&query_lower);
-        let score = matched as f64 / query_terms.len() as f64 + if phrase { 0.5 } else { 0.0 };
+        let is_phrase = !query_lower.is_empty() && document.normalized.contains(&query_lower);
+        let score = matched as f64 / query_terms.len() as f64 + if is_phrase { 0.5 } else { 0.0 };
         entries.push((document.id.clone(), document.clone(), score));
     }
     sort_rank(&mut entries);
@@ -745,14 +745,14 @@ fn pack(
     ordered.extend(duplicates);
     let mut returned = Vec::new();
     let mut omissions = Vec::new();
-    let mut truncated = false;
+    let mut is_truncated = false;
     let mut remaining = request.max_context_bytes;
     let max_time_ms = match u64::try_from(request.max_time_ms) {
         Ok(value) => value,
         Err(_) => {
             *execution = RecallExecution::Timeout;
             reasons.push("recall time budget exceeds u64 milliseconds".to_owned());
-            return (returned, omissions, truncated);
+            return (returned, omissions, is_truncated);
         }
     };
     let deadline = Duration::from_millis(max_time_ms);
@@ -806,7 +806,7 @@ fn pack(
             }
             candidate.text.truncate(end);
             candidate.text_truncated = true;
-            truncated = true;
+            is_truncated = true;
             if candidate.quote
                 && let Some(span) = candidate.span
             {
@@ -824,7 +824,7 @@ fn pack(
         remaining = remaining.saturating_sub(candidate.text.len());
         returned.push(candidate);
     }
-    (returned, omissions, truncated)
+    (returned, omissions, is_truncated)
 }
 
 fn floor_boundary(text: &str, mut index: usize) -> usize {

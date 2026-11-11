@@ -1182,10 +1182,10 @@ impl Workspace {
                     path: candidate.path.clone(),
                 });
             }
-            let matching = new_records
+            let is_matching = new_records
                 .iter()
                 .any(|record| candidate_matches(candidate, record));
-            if !matching {
+            if !is_matching {
                 return Err(StoreError::InvalidCandidate {
                     path: candidate.path.clone(),
                 });
@@ -2430,11 +2430,11 @@ impl Workspace {
                     });
                 }
                 if let Some(digest) = retained_source_digest(&record) {
-                    let allowed_absence = matches!(
+                    let is_allowed_absence = matches!(
                         current.get(&record_id),
                         Some(SourcePresence::Unavailable(Some(previous))) if *previous == digest
                     );
-                    if !allowed_absence {
+                    if !is_allowed_absence {
                         required.insert(*digest.as_bytes());
                     }
                 }

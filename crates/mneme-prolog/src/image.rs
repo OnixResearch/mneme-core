@@ -108,7 +108,7 @@ pub fn build_input_image(
     let mut relations = Vec::new();
     let mut rule_versions = BTreeMap::new();
     let mut rule_context: Option<(String, String)> = None;
-    let mut all_complete = true;
+    let mut is_all_complete = true;
     for result in results {
         if result.context.served_revision != expected_revision
             || result.served_revision != expected_revision
@@ -144,13 +144,13 @@ pub fn build_input_image(
                 result.context.rule_bundle_version.clone(),
             );
         }
-        let coverage_complete = result.exhaustive
+        let is_coverage_complete = result.exhaustive
             && result
                 .coverage
                 .iter()
                 .all(|coverage| coverage.status == mneme_datalog::CoverageStatus::Complete)
             && result.status == ExecutionStatus::Complete;
-        all_complete &= coverage_complete;
+        is_all_complete &= is_coverage_complete;
         let mut rows = Vec::new();
         for row in &result.rows {
             for support in &row.supports {
@@ -184,7 +184,7 @@ pub fn build_input_image(
             predicate,
             rows,
             coverage: InputCoverage {
-                complete: coverage_complete,
+                complete: is_coverage_complete,
                 reason: result.reason.clone(),
             },
         });
@@ -206,8 +206,8 @@ pub fn build_input_image(
         canonical,
         relations,
         coverage: InputCoverage {
-            complete: all_complete,
-            reason: if all_complete {
+            complete: is_all_complete,
+            reason: if is_all_complete {
                 None
             } else {
                 Some("one or more selected Datalog relations are incomplete".to_owned())

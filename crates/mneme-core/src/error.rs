@@ -6,7 +6,7 @@
 //! separate so a caller can distinguish malformed syntax from a schema or
 //! domain refusal.
 
-use std::fmt;
+
 
 use serde::Serialize;
 use serde::ser::Serializer;
@@ -49,8 +49,8 @@ impl Stage {
     }
 }
 
-impl fmt::Display for Stage {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Stage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
@@ -154,8 +154,8 @@ impl ErrorCode {
     }
 }
 
-impl fmt::Display for ErrorCode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
@@ -226,8 +226,8 @@ impl Path {
     }
 }
 
-impl fmt::Display for Path {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Path {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("$")?;
         for segment in &self.segments {
             match segment {
@@ -279,8 +279,8 @@ impl Diagnostic {
     }
 }
 
-impl fmt::Display for Diagnostic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}: {}: {}", self.path, self.code, self.message)
     }
 }

@@ -84,11 +84,11 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
         let mut negative_vars = BTreeSet::new();
         let mut compare_vars = BTreeSet::new();
         let mut aggregate = None;
-        let mut seen_forbidden = false;
+        let mut is_seen_forbidden = false;
         for (index, literal) in rule.body.iter().enumerate() {
             match literal {
                 Literal::Forbidden(name) => {
-                    seen_forbidden = true;
+                    is_seen_forbidden = true;
                     diagnostics.push(diag(
                         "forbidden-builtin",
                         Some(rule.id.clone()),
@@ -173,16 +173,16 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
                 }
             }
         }
-        if seen_forbidden {
+        if is_seen_forbidden {
             continue;
         }
         if aggregate.is_some() {
-            let mut all_positive_complete = true;
+            let mut is_all_positive_complete = true;
             for literal in &rule.body {
                 if let Literal::Positive(atom) = literal
                     && !bundle.complete_predicates.contains(&atom.predicate)
                 {
-                    all_positive_complete = false;
+                    is_all_positive_complete = false;
                     diagnostics.push(diag(
                         "aggregate-coverage",
                         Some(rule.id.clone()),
@@ -193,7 +193,7 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
                     ));
                 }
             }
-            if !all_positive_complete {
+            if !is_all_positive_complete {
                 // The diagnostic above is sufficient.
             }
         }
@@ -301,10 +301,10 @@ fn strata(
         .collect::<BTreeMap<_, _>>();
     let limit = arities.len() + bundle.rules.len() + 2;
     for _ in 0..limit {
-        let mut changed = false;
+        let mut is_changed = false;
         for rule in &bundle.rules {
             let mut base = 0_usize;
-            let mut nonmonotone = false;
+            let mut is_nonmonotone = false;
             for literal in &rule.body {
                 match literal {
                     Literal::Positive(atom) => {
@@ -312,20 +312,20 @@ fn strata(
                     }
                     Literal::Negative(atom) => {
                         base = base.max(*strata.get(&atom.predicate).unwrap_or(&0));
-                        nonmonotone = true;
+                        is_nonmonotone = true;
                     }
-                    Literal::Aggregate { .. } => nonmonotone = true,
+                    Literal::Aggregate { .. } => is_nonmonotone = true,
                     _ => {}
                 }
             }
-            let target = base.saturating_add(usize::from(nonmonotone));
+            let target = base.saturating_add(usize::from(is_nonmonotone));
             let entry = strata.entry(rule.head.predicate.clone()).or_insert(0);
             if *entry < target {
                 *entry = target;
-                changed = true;
+                is_changed = true;
             }
         }
-        if !changed {
+        if !is_changed {
             return Ok(strata);
         }
     }
