@@ -9,7 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mneme_core::{RecordId, RevisionId, ScopeId, WorkspaceRevisionId};
 
-use crate::{ConsolidationProposal, InputKey, ProposalDisposition, SupportOutcome};
+use crate::procedure::{ProcedureValidator, WorkerPrivileges, validate_procedure};
+use crate::{
+    ConsolidationProposal, InputKey, ProposalDisposition, ProposalOperation, SupportOutcome,
+};
 
 /// Current workspace state used by acceptance preconditions.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +79,15 @@ pub struct RejectionCommand {
     pub reason: String,
 }
 
+/// A separate procedural acceptance command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcedureAcceptanceCommand {
+    pub idempotency_key: String,
+    pub proposal_id: String,
+    pub proposal_revision: u64,
+    pub decision: RecordId,
+}
+
 /// Why acceptance or rejection did not apply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictKind {
@@ -89,6 +101,7 @@ pub enum ConflictKind {
     ForgottenSource,
     PrunedSource,
     AlreadyDecided,
+    ProcedureRequiresValidator,
     UnsupportedAcceptance,
     IdempotencyMismatch,
 }
@@ -124,6 +137,7 @@ pub struct ProposalRegistry {
     proposals: BTreeMap<String, RegisteredProposal>,
     acceptances: BTreeMap<String, (AcceptanceCommand, CommandOutcome)>,
     rejections: BTreeMap<String, (RejectionCommand, CommandOutcome)>,
+    procedure_acceptances: BTreeMap<String, (ProcedureAcceptanceCommand, CommandOutcome)>,
 }
 
 impl ProposalRegistry {
@@ -133,6 +147,7 @@ impl ProposalRegistry {
             proposals: BTreeMap::new(),
             acceptances: BTreeMap::new(),
             rejections: BTreeMap::new(),
+            procedure_acceptances: BTreeMap::new(),
         }
     }
 
@@ -208,6 +223,15 @@ impl ProposalRegistry {
             return self.conflict(
                 ConflictKind::StaleProposalRevision,
                 "proposal revision changed",
+            );
+        }
+        if matches!(
+            registered.proposal.operation,
+            ProposalOperation::Procedure(_)
+        ) {
+            return self.conflict(
+                ConflictKind::ProcedureRequiresValidator,
+                "procedural proposal requires its separate validator command",
             );
         }
         if !matches!(
@@ -364,6 +388,96 @@ impl ProposalRegistry {
             proposal_revision: registered.proposal_revision,
         };
         self.rejections
+            .insert(command.idempotency_key.clone(), (command, outcome.clone()));
+        outcome
+    }
+
+    /// Validate and accept a procedural proposal through its own command.
+    /// The validator inspects content only; no instruction, rule, or tool is
+    /// executed and worker privileges are not mutated.
+    pub fn accept_procedure(
+        &mut self,
+        command: ProcedureAcceptanceCommand,
+        validator: &dyn ProcedureValidator,
+        privileges: &WorkerPrivileges,
+    ) -> CommandOutcome {
+        if let Some((stored, _)) = self.procedure_acceptances.get(&command.idempotency_key) {
+            return if stored == &command {
+                CommandOutcome::PriorOutcome {
+                    proposal_id: command.proposal_id,
+                    detail: "procedural acceptance already recorded".to_owned(),
+                }
+            } else {
+                CommandOutcome::Conflict {
+                    kind: ConflictKind::IdempotencyMismatch,
+                    detail: "idempotency key was reused with a different procedural acceptance"
+                        .to_owned(),
+                }
+            };
+        }
+        let Some(registered) = self.proposals.get(&command.proposal_id).cloned() else {
+            return CommandOutcome::Conflict {
+                kind: ConflictKind::MissingProposal,
+                detail: "proposal is not registered".to_owned(),
+            };
+        };
+        if !matches!(
+            registered.proposal.disposition,
+            ProposalDisposition::Pending
+        ) {
+            return CommandOutcome::Conflict {
+                kind: ConflictKind::AlreadyDecided,
+                detail: "proposal already has a terminal disposition".to_owned(),
+            };
+        }
+        if registered.proposal_revision != command.proposal_revision {
+            return CommandOutcome::Conflict {
+                kind: ConflictKind::StaleProposalRevision,
+                detail: "proposal revision changed".to_owned(),
+            };
+        }
+        if self.current.scope != registered.expected.scope
+            || registered.proposal.scope != self.current.scope
+        {
+            return self.conflict(
+                ConflictKind::Unauthorized,
+                "proposal is outside the current authorized scope",
+            );
+        }
+        if self.current.eligibility_generation != registered.expected.eligibility_generation {
+            return self.conflict(
+                ConflictKind::StaleGeneration,
+                "eligibility generation changed",
+            );
+        }
+        let validation = match validate_procedure(&registered.proposal, validator, privileges) {
+            Ok(validation) => validation,
+            Err(error) => {
+                return self.conflict(ConflictKind::UnsupportedAcceptance, &error);
+            }
+        };
+        if !validation.approved {
+            return self.conflict(
+                ConflictKind::UnsupportedAcceptance,
+                "procedural validator rejected the proposal",
+            );
+        }
+        let Some(registered) = self.proposals.get_mut(&command.proposal_id) else {
+            return CommandOutcome::Conflict {
+                kind: ConflictKind::MissingProposal,
+                detail: "proposal disappeared".to_owned(),
+            };
+        };
+        registered.proposal.disposition = ProposalDisposition::Accepted {
+            decision: command.decision,
+        };
+        registered.proposal_revision = registered.proposal_revision.saturating_add(1);
+        let outcome = CommandOutcome::Accepted {
+            proposal_id: command.proposal_id.clone(),
+            decision: command.decision,
+            proposal_revision: registered.proposal_revision,
+        };
+        self.procedure_acceptances
             .insert(command.idempotency_key.clone(), (command, outcome.clone()));
         outcome
     }
@@ -639,6 +753,155 @@ mod tests {
             scope.accept(scope_command),
             CommandOutcome::Conflict {
                 kind: ConflictKind::Unauthorized,
+                ..
+            }
+        ));
+    }
+
+    struct TestValidator {
+        approved: bool,
+        executed: bool,
+        effects: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ProcedureValidator for TestValidator {
+        fn identity(&self) -> &str {
+            "prolog-policy/v1"
+        }
+
+        fn supports(&self, kind: crate::ProcedureKind) -> bool {
+            kind == crate::ProcedureKind::PrologRule
+        }
+
+        fn validate(
+            &self,
+            _procedure: &crate::ProcedureProposal,
+            _privileges: &WorkerPrivileges,
+        ) -> Result<crate::procedure::ProcedureValidation, String> {
+            Ok(crate::procedure::ProcedureValidation {
+                validator: self.identity().to_owned(),
+                approved: self.approved,
+                rationale: "content inspected as data".to_owned(),
+                embedded_instructions_are_data: true,
+                executed: self.executed,
+            })
+        }
+    }
+
+    fn procedure_registry() -> ProposalRegistry {
+        let fixture = fixture().expect("fixture");
+        let mut proposal = fixture.proposals[2].clone();
+        proposal.disposition = ProposalDisposition::Pending;
+        let (_, state) = command();
+        let mut registry = ProposalRegistry::new(state.clone());
+        registry
+            .register(proposal, 1, state)
+            .expect("register procedure");
+        registry
+    }
+
+    fn procedure_command() -> ProcedureAcceptanceCommand {
+        ProcedureAcceptanceCommand {
+            idempotency_key: "procedure-1".to_owned(),
+            proposal_id: "proposal-procedure".to_owned(),
+            proposal_revision: 1,
+            decision: RecordId::from_bytes([0x60; 16]),
+        }
+    }
+
+    #[test]
+    fn normal_acceptance_requires_the_procedure_validator() {
+        let mut registry = procedure_registry();
+        let (mut command, _) = command();
+        command.proposal_id = "proposal-procedure".to_owned();
+        assert!(matches!(
+            registry.accept(command),
+            CommandOutcome::Conflict {
+                kind: ConflictKind::ProcedureRequiresValidator,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn procedure_validation_does_not_execute_or_change_privileges() {
+        let mut registry = procedure_registry();
+        let validator = TestValidator {
+            approved: true,
+            executed: false,
+            effects: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let privileges = WorkerPrivileges {
+            allowed_tools: BTreeSet::from(["recall".to_owned()]),
+            may_install_procedures: false,
+        };
+        let before = privileges.clone();
+        let content = registry
+            .inspect("proposal-procedure")
+            .expect("inspect")
+            .proposal;
+        let content_before = match &content.operation {
+            ProposalOperation::Procedure(procedure) => procedure.content.clone(),
+            _ => return,
+        };
+        assert!(matches!(
+            registry.accept_procedure(procedure_command(), &validator, &privileges),
+            CommandOutcome::Accepted { .. }
+        ));
+        assert_eq!(privileges, before);
+        assert_eq!(
+            validator.effects.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        let after = registry
+            .inspect("proposal-procedure")
+            .expect("inspect")
+            .proposal;
+        let content_after = match &after.operation {
+            ProposalOperation::Procedure(procedure) => procedure.content.clone(),
+            _ => return,
+        };
+        assert_eq!(content_before, content_after);
+    }
+
+    #[test]
+    fn rejected_or_executing_validators_cannot_accept_procedure() {
+        let mut rejected = procedure_registry();
+        let privileges = WorkerPrivileges {
+            allowed_tools: BTreeSet::new(),
+            may_install_procedures: false,
+        };
+        let validator = TestValidator {
+            approved: false,
+            executed: false,
+            effects: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        assert!(matches!(
+            rejected.accept_procedure(procedure_command(), &validator, &privileges),
+            CommandOutcome::Conflict {
+                kind: ConflictKind::UnsupportedAcceptance,
+                ..
+            }
+        ));
+        assert!(matches!(
+            rejected
+                .inspect("proposal-procedure")
+                .expect("inspect")
+                .proposal
+                .disposition,
+            ProposalDisposition::Pending
+        ));
+
+        let mut executing = procedure_registry();
+        let validator = TestValidator {
+            approved: true,
+            executed: true,
+            effects: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        assert!(matches!(
+            executing.accept_procedure(procedure_command(), &validator, &privileges),
+            CommandOutcome::Conflict {
+                kind: ConflictKind::UnsupportedAcceptance,
                 ..
             }
         ));

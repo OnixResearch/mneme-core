@@ -19,6 +19,7 @@ use mneme_recall::RecallResponse;
 pub mod commands;
 pub mod generator;
 pub mod job;
+pub mod procedure;
 
 /// Resource limits for one consolidation job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
