@@ -9,22 +9,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use mneme_core::{
-    ContentDigest, Lifecycle, RecordEnvelope, RecordId, RecordKind, Reference, RevisionId, ScopeId,
-    Timestamp, ValidTime, Value, WorkspaceRevisionId,
-};
-use mneme_memory::{
-    DecisionKind, MemoryError, MemoryView, build_assertion_revision, build_decision,
-    build_unavailable_source_with_digest,
-};
-use mneme_store::{
-    RetentionCommit, RetentionJobState, RetentionLocationPlan, RetentionLocationState,
-    RetentionLocationStateRecord, RetentionOperation, RetentionSelector, RetentionSuppression,
-    StoreError, SuppressionMode, Workspace,
-};
-
 /// The policy version implemented by this build.
 pub const POLICY_VERSION: &str = "retention-policy/v1";
 
@@ -53,15 +37,15 @@ impl OperationKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selector {
     /// One source record identity.
-    Source(RecordId),
+    Source(mneme_core::RecordId),
     /// A source pinned to one revision.
-    SourceRevision(RecordId, RevisionId),
+    SourceRevision(mneme_core::RecordId, mneme_core::RevisionId),
     /// Withdraw support derived from a source without retracting every claim.
-    SourceSupport(RecordId),
+    SourceSupport(mneme_core::RecordId),
     /// One assertion identity.
-    Assertion(RecordId),
+    Assertion(mneme_core::RecordId),
     /// Every authorized source with exact content identity.
-    Content(ContentDigest),
+    Content(mneme_core::ContentDigest),
 }
 
 impl Selector {
@@ -103,24 +87,24 @@ impl Default for RetentionPolicy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetentionRequest {
     pub actor: String,
-    pub scope: ScopeId,
-    pub base_revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
     pub idempotency_key: String,
     pub operation: OperationKind,
     pub selector: Selector,
     /// Required by valid-time expiry.
-    pub effective: Option<Timestamp>,
+    pub effective: Option<mneme_core::Timestamp>,
     pub policy: RetentionPolicy,
 }
 
 /// A suppression selected by the plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlannedSuppression {
-    pub target: RecordId,
-    pub revision: Option<RevisionId>,
-    pub kind: RecordKind,
-    pub mode: SuppressionMode,
-    pub content_digest: Option<ContentDigest>,
+    pub target: mneme_core::RecordId,
+    pub revision: Option<mneme_core::RevisionId>,
+    pub kind: mneme_core::RecordKind,
+    pub mode: mneme_store::SuppressionMode,
+    pub content_digest: Option<mneme_core::ContentDigest>,
 }
 
 /// The inspectable impact plan for one retention request.
@@ -129,22 +113,22 @@ pub struct RetentionPlan {
     pub operation_id: String,
     pub request: RetentionRequest,
     pub generation: u64,
-    pub source_targets: Vec<RecordId>,
-    pub retracted_assertions: Vec<RecordId>,
-    pub expired_assertions: Vec<(RecordId, Timestamp)>,
-    pub revised_assertions: Vec<RecordId>,
-    pub surviving_assertions: Vec<RecordId>,
-    pub withdrawn_evidence: Vec<RecordId>,
+    pub source_targets: Vec<mneme_core::RecordId>,
+    pub retracted_assertions: Vec<mneme_core::RecordId>,
+    pub expired_assertions: Vec<(mneme_core::RecordId, mneme_core::Timestamp)>,
+    pub revised_assertions: Vec<mneme_core::RecordId>,
+    pub surviving_assertions: Vec<mneme_core::RecordId>,
+    pub withdrawn_evidence: Vec<mneme_core::RecordId>,
     pub suppressed: Vec<PlannedSuppression>,
-    pub invalidated_derivations: Vec<RecordId>,
-    pub locations: Vec<RetentionLocationPlan>,
+    pub invalidated_derivations: Vec<mneme_core::RecordId>,
+    pub locations: Vec<mneme_store::RetentionLocationPlan>,
     pub retained_metadata: Vec<String>,
     pub limitations: Vec<String>,
     pub warnings: Vec<String>,
     /// Lifecycle drafts committed with the barrier.
     pub records: Vec<mneme_store::RecordDraft>,
     /// The barrier, suppression entries, and cleanup inventory.
-    pub commit: RetentionCommit,
+    pub commit: mneme_store::RetentionCommit,
 }
 
 /// Counts of terminal managed-location outcomes.
@@ -163,14 +147,14 @@ pub struct CleanupSummary {
 pub struct RetentionResult {
     pub operation_id: String,
     pub operation_kind: String,
-    pub state: RetentionJobState,
+    pub state: mneme_store::RetentionJobState,
     pub generation: u64,
     /// Logical withdrawal is in force as soon as the barrier commits.
     pub logical_withdrawal: bool,
     /// Every registered managed payload was purged or verified absent.
     pub physical_cleanup_complete: bool,
     pub cleanup: CleanupSummary,
-    pub locations: Vec<RetentionLocationStateRecord>,
+    pub locations: Vec<mneme_store::RetentionLocationStateRecord>,
     pub limitations: Vec<String>,
     pub retained_metadata: Vec<String>,
 }
@@ -182,7 +166,7 @@ pub struct RetentionAudit {
     pub operation_kind: String,
     pub policy_version: String,
     pub generation: u64,
-    pub state: RetentionJobState,
+    pub state: mneme_store::RetentionJobState,
     pub selector_kinds: Vec<String>,
     pub suppressed_records: usize,
     pub retained_metadata: Vec<String>,
@@ -192,9 +176,9 @@ pub struct RetentionAudit {
 #[derive(Debug, thiserror::Error)]
 pub enum RetentionError {
     #[error(transparent)]
-    Store(#[from] StoreError),
+    Store(#[from] mneme_store::StoreError),
     #[error(transparent)]
-    Memory(#[from] MemoryError),
+    Memory(#[from] mneme_memory::MemoryError),
     #[error("retention selector is not authorized in the requested scope")]
     Unauthorized,
     #[error("retention target is not available in the requested scope")]
@@ -214,12 +198,12 @@ pub type Result<T, E = RetentionError> = std::result::Result<T, E>;
 
 /// Retention operations over one mutable workspace handle.
 pub struct Retention<'w> {
-    workspace: &'w mut Workspace,
+    workspace: &'w mut mneme_store::Workspace,
 }
 
 impl<'w> Retention<'w> {
     /// Wrap a workspace.
-    pub fn new(workspace: &'w mut Workspace) -> Self {
+    pub fn new(workspace: &'w mut mneme_store::Workspace) -> Self {
         Retention { workspace }
     }
 
@@ -244,7 +228,7 @@ impl<'w> Retention<'w> {
                 || selectors.len() != 1
                 || selectors[0] != selector_row(&request)
             {
-                return Err(StoreError::IdempotencyConflict {
+                return Err(mneme_store::StoreError::IdempotencyConflict {
                     key: request.idempotency_key,
                 }
                 .into());
@@ -254,14 +238,14 @@ impl<'w> Retention<'w> {
         let plan = self.plan(request)?;
         let base = self.workspace.current_revision()?;
         if plan.request.base_revision != base {
-            return Err(RetentionError::Store(StoreError::StaleBase {
+            return Err(RetentionError::Store(mneme_store::StoreError::StaleBase {
                 base: plan.request.base_revision,
                 current: base,
             }));
         }
         let generation = self.workspace.eligibility_generation()?;
         if plan.generation != generation.saturating_add(1) {
-            return Err(StoreError::BarrierAdvanced {
+            return Err(mneme_store::StoreError::BarrierAdvanced {
                 pinned: plan.generation,
                 current: generation.saturating_add(1),
             }
@@ -282,12 +266,12 @@ impl<'w> Retention<'w> {
             .workspace
             .retention_operation(&plan.operation_id)?
             .ok_or_else(|| {
-                RetentionError::Store(StoreError::InvalidCommand(
+                RetentionError::Store(mneme_store::StoreError::InvalidCommand(
                     "retention operation was not committed".to_owned(),
                 ))
             })?;
         if operation.outcome_revision != outcome.revision {
-            return Err(RetentionError::Store(StoreError::Integrity {
+            return Err(RetentionError::Store(mneme_store::StoreError::Integrity {
                 revision: outcome.revision,
                 reason: "retention operation names a different revision".to_owned(),
             }));
@@ -311,9 +295,9 @@ impl<'w> Retention<'w> {
             .workspace
             .retention_operation(operation_id)?
             .ok_or(RetentionError::NotFound)?;
-        if operation.state != RetentionJobState::Complete {
+        if operation.state != mneme_store::RetentionJobState::Complete {
             self.workspace
-                .set_retention_state(operation_id, RetentionJobState::Partial)?;
+                .set_retention_state(operation_id, mneme_store::RetentionJobState::Partial)?;
         }
         let operation = self
             .workspace
@@ -345,13 +329,13 @@ impl<'w> Retention<'w> {
         })
     }
 
-    fn view(&self) -> Result<MemoryView> {
+    fn view(&self) -> Result<mneme_memory::MemoryView> {
         let revision = self.workspace.current_revision()?;
         let snapshot = self.workspace.snapshot_at(revision, None)?;
         let history = self.history(&snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
         let suppressions = self.workspace.active_suppressions()?;
-        Ok(MemoryView::with_retention(
+        Ok(mneme_memory::MemoryView::with_retention(
             snapshot,
             self.workspace.root(),
             history,
@@ -363,8 +347,13 @@ impl<'w> Retention<'w> {
     fn history(
         &self,
         snapshot: &mneme_store::Snapshot,
-    ) -> Result<BTreeMap<(RecordId, RevisionId), RecordEnvelope>> {
-        let mut history = BTreeMap::new();
+    ) -> Result<
+        std::collections::BTreeMap<
+            (mneme_core::RecordId, mneme_core::RevisionId),
+            mneme_core::RecordEnvelope,
+        >,
+    > {
+        let mut history = std::collections::BTreeMap::new();
         for record in &snapshot.records {
             for revision in self.workspace.record_revisions(record.record_id)? {
                 history.insert((revision.record_id, revision.revision_id), revision);
@@ -373,12 +362,14 @@ impl<'w> Retention<'w> {
         Ok(history)
     }
 
-    fn cleanup(&mut self, operation: RetentionOperation) -> Result<RetentionResult> {
-        if operation.state == RetentionJobState::Complete {
+    fn cleanup(&mut self, operation: mneme_store::RetentionOperation) -> Result<RetentionResult> {
+        if operation.state == mneme_store::RetentionJobState::Complete {
             return self.result(operation);
         }
-        self.workspace
-            .set_retention_state(&operation.operation_id, RetentionJobState::CleanupPending)?;
+        self.workspace.set_retention_state(
+            &operation.operation_id,
+            mneme_store::RetentionJobState::CleanupPending,
+        )?;
         let locations = self
             .workspace
             .retention_locations(&operation.operation_id)?;
@@ -395,14 +386,15 @@ impl<'w> Retention<'w> {
                         &location.locator,
                     ) {
                         Ok(_) => {}
-                        Err(StoreError::InjectedFault(point)) => {
-                            return Err(StoreError::InjectedFault(point).into());
+                        Err(mneme_store::StoreError::InjectedFault(point)) => {
+                            return Err(mneme_store::StoreError::InjectedFault(point).into());
                         }
-                        Err(StoreError::Io { .. }) | Err(StoreError::CorruptBlob { .. }) => {
+                        Err(mneme_store::StoreError::Io { .. })
+                        | Err(mneme_store::StoreError::CorruptBlob { .. }) => {
                             self.workspace.verify_retention_location(
                                 &operation.operation_id,
                                 &location.location_id,
-                                RetentionLocationState::Failed,
+                                mneme_store::RetentionLocationState::Failed,
                                 Some("payload-removal-failed"),
                             )?;
                         }
@@ -418,9 +410,9 @@ impl<'w> Retention<'w> {
                         &operation.operation_id,
                         &location.location_id,
                         if is_suppressed {
-                            RetentionLocationState::Verified
+                            mneme_store::RetentionLocationState::Verified
                         } else {
-                            RetentionLocationState::Failed
+                            mneme_store::RetentionLocationState::Failed
                         },
                         if is_suppressed {
                             None
@@ -433,7 +425,7 @@ impl<'w> Retention<'w> {
                     self.workspace.verify_retention_location(
                         &operation.operation_id,
                         &location.location_id,
-                        RetentionLocationState::Absent,
+                        mneme_store::RetentionLocationState::Absent,
                         None,
                     )?;
                 }
@@ -444,14 +436,14 @@ impl<'w> Retention<'w> {
                         &location.locator,
                     ) {
                         Ok(_) => {}
-                        Err(StoreError::InjectedFault(point)) => {
-                            return Err(StoreError::InjectedFault(point).into());
+                        Err(mneme_store::StoreError::InjectedFault(point)) => {
+                            return Err(mneme_store::StoreError::InjectedFault(point).into());
                         }
-                        Err(StoreError::Io { .. }) => {
+                        Err(mneme_store::StoreError::Io { .. }) => {
                             self.workspace.verify_retention_location(
                                 &operation.operation_id,
                                 &location.location_id,
-                                RetentionLocationState::Failed,
+                                mneme_store::RetentionLocationState::Failed,
                                 Some("working-file-removal-failed"),
                             )?;
                         }
@@ -462,7 +454,7 @@ impl<'w> Retention<'w> {
                     self.workspace.verify_retention_location(
                         &operation.operation_id,
                         &location.location_id,
-                        RetentionLocationState::Failed,
+                        mneme_store::RetentionLocationState::Failed,
                         Some("unregistered-location-kind"),
                     )?;
                 }
@@ -477,9 +469,9 @@ impl<'w> Retention<'w> {
             || summary.retained_shared > 0
             || summary.unavailable > 0
         {
-            RetentionJobState::Partial
+            mneme_store::RetentionJobState::Partial
         } else {
-            RetentionJobState::Complete
+            mneme_store::RetentionJobState::Complete
         };
         self.workspace
             .set_retention_state(&operation.operation_id, state)?;
@@ -490,7 +482,7 @@ impl<'w> Retention<'w> {
         self.result(operation)
     }
 
-    fn result(&self, operation: RetentionOperation) -> Result<RetentionResult> {
+    fn result(&self, operation: mneme_store::RetentionOperation) -> Result<RetentionResult> {
         let locations = self
             .workspace
             .retention_locations(&operation.operation_id)?;
@@ -524,18 +516,19 @@ impl<'w> Retention<'w> {
     }
 }
 
-fn summarize(locations: &[RetentionLocationStateRecord]) -> CleanupSummary {
+fn summarize(locations: &[mneme_store::RetentionLocationStateRecord]) -> CleanupSummary {
     let mut summary = CleanupSummary::default();
     for location in locations {
         match location.state {
-            RetentionLocationState::Pending => summary.pending += 1,
-            RetentionLocationState::Purged => summary.purged += 1,
-            RetentionLocationState::Absent | RetentionLocationState::Verified => {
+            mneme_store::RetentionLocationState::Pending => summary.pending += 1,
+            mneme_store::RetentionLocationState::Purged => summary.purged += 1,
+            mneme_store::RetentionLocationState::Absent
+            | mneme_store::RetentionLocationState::Verified => {
                 summary.absent += 1;
             }
-            RetentionLocationState::RetainedShared => summary.retained_shared += 1,
-            RetentionLocationState::Unavailable => summary.unavailable += 1,
-            RetentionLocationState::Failed => summary.failed += 1,
+            mneme_store::RetentionLocationState::RetainedShared => summary.retained_shared += 1,
+            mneme_store::RetentionLocationState::Unavailable => summary.unavailable += 1,
+            mneme_store::RetentionLocationState::Failed => summary.failed += 1,
         }
     }
     summary
@@ -595,8 +588,8 @@ fn validate_request(request: &RetentionRequest) -> Result<()> {
 }
 
 fn build_plan(
-    workspace: &Workspace,
-    view: &MemoryView,
+    workspace: &mneme_store::Workspace,
+    view: &mneme_memory::MemoryView,
     request: &RetentionRequest,
 ) -> Result<RetentionPlan> {
     validate_request(request)?;
@@ -619,7 +612,7 @@ fn build_plan(
         limitations: Vec::new(),
         warnings: Vec::new(),
         records: Vec::new(),
-        commit: RetentionCommit {
+        commit: mneme_store::RetentionCommit {
             operation_id,
             operation_kind: request.operation.name().to_owned(),
             policy_version: request.policy.version.clone(),
@@ -641,7 +634,7 @@ fn build_plan(
     plan.commit.suppressions = plan
         .suppressed
         .iter()
-        .map(|suppression| RetentionSuppression {
+        .map(|suppression| mneme_store::RetentionSuppression {
             operation_id: plan.operation_id.clone(),
             target: suppression.target,
             revision: suppression.revision,
@@ -655,7 +648,7 @@ fn build_plan(
     Ok(plan)
 }
 
-fn selector_row(request: &RetentionRequest) -> RetentionSelector {
+fn selector_row(request: &RetentionRequest) -> mneme_store::RetentionSelector {
     let (target, revision, digest) = match request.selector {
         Selector::Source(source) => (Some(source), None, None),
         Selector::SourceRevision(source, revision) => (Some(source), Some(revision), None),
@@ -663,7 +656,7 @@ fn selector_row(request: &RetentionRequest) -> RetentionSelector {
         Selector::Assertion(assertion) => (Some(assertion), None, None),
         Selector::Content(digest) => (None, None, Some(digest)),
     };
-    RetentionSelector {
+    mneme_store::RetentionSelector {
         ordinal: 0,
         kind: request.selector.kind().to_owned(),
         target,
@@ -673,7 +666,7 @@ fn selector_row(request: &RetentionRequest) -> RetentionSelector {
 }
 
 fn plan_expiry(
-    view: &MemoryView,
+    view: &mneme_memory::MemoryView,
     request: &RetentionRequest,
     plan: &mut RetentionPlan,
 ) -> Result<()> {
@@ -695,7 +688,7 @@ fn plan_expiry(
     );
     plan.records.push(mneme_store::RecordDraft {
         schema_version: assertion.record.schema_version,
-        kind: RecordKind::Assertion,
+        kind: mneme_core::RecordKind::Assertion,
         record_id: assertion.record.record_id,
         revision_id: fresh_revision()?,
         predecessor: Some(assertion.record.revision_id),
@@ -710,13 +703,16 @@ fn plan_expiry(
     Ok(())
 }
 
-fn expired_time(valid_time: ValidTime, effective: Timestamp) -> Result<ValidTime> {
+fn expired_time(
+    valid_time: mneme_core::ValidTime,
+    effective: mneme_core::Timestamp,
+) -> Result<mneme_core::ValidTime> {
     match valid_time {
-        ValidTime::Unknown => Ok(ValidTime::Bounded {
+        mneme_core::ValidTime::Unknown => Ok(mneme_core::ValidTime::Bounded {
             start: None,
             end: Some(effective),
         }),
-        ValidTime::Bounded { start, end } => {
+        mneme_core::ValidTime::Bounded { start, end } => {
             if start.is_some_and(|start| effective < start) {
                 return Err(RetentionError::Conflict(
                     "requested expiry precedes the valid-time start",
@@ -727,7 +723,7 @@ fn expired_time(valid_time: ValidTime, effective: Timestamp) -> Result<ValidTime
                     "valid time already ends at or before the requested expiry",
                 ));
             }
-            Ok(ValidTime::Bounded {
+            Ok(mneme_core::ValidTime::Bounded {
                 start,
                 end: Some(effective),
             })
@@ -736,7 +732,7 @@ fn expired_time(valid_time: ValidTime, effective: Timestamp) -> Result<ValidTime
 }
 
 fn plan_retraction(
-    view: &MemoryView,
+    view: &mneme_memory::MemoryView,
     request: &RetentionRequest,
     plan: &mut RetentionPlan,
 ) -> Result<()> {
@@ -750,17 +746,17 @@ fn plan_retraction(
     };
     let assertion = view.assertion(assertion_id).map_err(map_missing)?;
     authorize(&assertion.record, &request.scope)?;
-    if assertion.lifecycle == Lifecycle::Retracted {
+    if assertion.lifecycle == mneme_core::Lifecycle::Retracted {
         return Err(RetentionError::Conflict("assertion is already retracted"));
     }
     let decision_id = fresh_id()?;
     let decision_revision = fresh_revision()?;
     let assertion_revision = fresh_revision()?;
-    let decision = build_decision(
+    let decision = mneme_memory::build_decision(
         decision_id,
         decision_revision,
         &assertion.record.scope,
-        DecisionKind::Retraction,
+        mneme_memory::DecisionKind::Retraction,
         assertion_id,
         &request.actor,
         &request.policy.version,
@@ -770,11 +766,11 @@ fn plan_retraction(
         &[],
         &[],
     );
-    let retracted = build_assertion_revision(
+    let retracted = mneme_memory::build_assertion_revision(
         &assertion.record,
         assertion_revision,
-        Lifecycle::Retracted,
-        Reference::local(decision_id, RecordKind::Decision),
+        mneme_core::Lifecycle::Retracted,
+        mneme_core::Reference::local(decision_id, mneme_core::RecordKind::Decision),
         None,
     );
     plan.records.push(decision);
@@ -789,31 +785,31 @@ fn plan_retraction(
 }
 
 fn plan_support_retraction(
-    view: &MemoryView,
+    view: &mneme_memory::MemoryView,
     request: &RetentionRequest,
-    source: RecordId,
+    source: mneme_core::RecordId,
     plan: &mut RetentionPlan,
 ) -> Result<()> {
     let source_view = view.source(source).map_err(map_missing)?;
     authorize(&source_view.record, &request.scope)?;
     let deps = dependencies_for_sources(view, &[source])?;
     authorize_dependencies(view, &deps, &request.scope)?;
-    let withdrawn: BTreeSet<RecordId> = deps.evidence.clone();
+    let withdrawn: std::collections::BTreeSet<mneme_core::RecordId> = deps.evidence.clone();
     let mode = if request.policy.retain_withdrawn_evidence_metadata {
-        SuppressionMode::Withdrawn
+        mneme_store::SuppressionMode::Withdrawn
     } else {
-        SuppressionMode::Forgotten
+        mneme_store::SuppressionMode::Forgotten
     };
     for evidence in &deps.evidence {
         let record = view.record(*evidence)?;
         plan.suppressed.push(PlannedSuppression {
             target: *evidence,
             revision: None,
-            kind: RecordKind::Evidence,
+            kind: mneme_core::RecordKind::Evidence,
             mode,
             content_digest: None,
         });
-        if mode == SuppressionMode::Forgotten {
+        if mode == mneme_store::SuppressionMode::Forgotten {
             add_record_blob_locations(view, record, plan)?;
         }
     }
@@ -837,12 +833,12 @@ fn plan_support_retraction(
 }
 
 fn plan_pruning(
-    view: &MemoryView,
+    view: &mneme_memory::MemoryView,
     request: &RetentionRequest,
     plan: &mut RetentionPlan,
 ) -> Result<()> {
     let (sources, _digest) = resolve_sources(view, request)?;
-    let mut source_digests = BTreeSet::new();
+    let mut source_digests = std::collections::BTreeSet::new();
     let deps = dependencies_for_sources(view, &sources)?;
     authorize_dependencies(view, &deps, &request.scope)?;
     if !deps.assertions.is_empty() && !request.policy.retain_assertion_after_prune {
@@ -858,7 +854,7 @@ fn plan_pruning(
             ));
         };
         source_digests.insert(digest);
-        let mut revision = build_unavailable_source_with_digest(
+        let mut revision = mneme_memory::build_unavailable_source_with_digest(
             *source,
             fresh_revision()?,
             &source_view.record.scope,
@@ -878,7 +874,7 @@ fn plan_pruning(
             plan,
         );
         if let Some(path) = &source_view.path_hint {
-            plan.locations.push(RetentionLocationPlan {
+            plan.locations.push(mneme_store::RetentionLocationPlan {
                 location_id: format!("working-file:{}", path),
                 location_kind: "working-file".to_owned(),
                 locator: format!("{path}#{}", digest.to_hex()),
@@ -895,20 +891,30 @@ fn plan_pruning(
 }
 
 fn plan_forget(
-    workspace: &Workspace,
-    view: &MemoryView,
+    workspace: &mneme_store::Workspace,
+    view: &mneme_memory::MemoryView,
     request: &RetentionRequest,
     plan: &mut RetentionPlan,
 ) -> Result<()> {
     let (sources, _) = resolve_sources(view, request)?;
     let deps = dependencies_for_sources(view, &sources)?;
     authorize_dependencies(view, &deps, &request.scope)?;
-    let mut forgotten_records: BTreeSet<RecordId> = BTreeSet::new();
-    let mut forgotten_revisions: BTreeSet<(RecordId, RevisionId)> = BTreeSet::new();
-    let mut suppressed_assertions: BTreeSet<RecordId> = BTreeSet::new();
-    let mut suppressed_derivations: BTreeSet<RecordId> = BTreeSet::new();
-    let mut revised_assertions: BTreeSet<RecordId> = BTreeSet::new();
-    let mut source_digests: BTreeMap<RecordId, ContentDigest> = BTreeMap::new();
+    let mut forgotten_records: std::collections::BTreeSet<mneme_core::RecordId> =
+        std::collections::BTreeSet::new();
+    let mut forgotten_revisions: std::collections::BTreeSet<(
+        mneme_core::RecordId,
+        mneme_core::RevisionId,
+    )> = std::collections::BTreeSet::new();
+    let mut suppressed_assertions: std::collections::BTreeSet<mneme_core::RecordId> =
+        std::collections::BTreeSet::new();
+    let mut suppressed_derivations: std::collections::BTreeSet<mneme_core::RecordId> =
+        std::collections::BTreeSet::new();
+    let mut revised_assertions: std::collections::BTreeSet<mneme_core::RecordId> =
+        std::collections::BTreeSet::new();
+    let mut source_digests: std::collections::BTreeMap<
+        mneme_core::RecordId,
+        mneme_core::ContentDigest,
+    > = std::collections::BTreeMap::new();
 
     for source in &sources {
         let source_view = view.source(*source).map_err(map_missing)?;
@@ -925,7 +931,7 @@ fn plan_forget(
         if let Some(path) = &source_view.path_hint
             && let Some(digest) = source_digests.get(source)
         {
-            plan.locations.push(RetentionLocationPlan {
+            plan.locations.push(mneme_store::RetentionLocationPlan {
                 location_id: format!("working-file:{}", path),
                 location_kind: "working-file".to_owned(),
                 locator: format!("{path}#{}", digest.to_hex()),
@@ -939,7 +945,7 @@ fn plan_forget(
     for evidence in &deps.evidence {
         forgotten_records.insert(*evidence);
     }
-    let withdrawn: BTreeSet<RecordId> = deps.evidence.clone();
+    let withdrawn: std::collections::BTreeSet<mneme_core::RecordId> = deps.evidence.clone();
     for assertion_id in &deps.assertions {
         if independent_evidence_exists(view, *assertion_id, &withdrawn, None)? {
             revised_assertions.insert(*assertion_id);
@@ -954,7 +960,7 @@ fn plan_forget(
     loop {
         let mut is_changed = false;
         for record in visible_records(view)? {
-            if record.kind != RecordKind::Derivation {
+            if record.kind != mneme_core::RecordKind::Derivation {
                 continue;
             }
             let derivation = view.derivation(record.record_id)?;
@@ -974,7 +980,7 @@ fn plan_forget(
         // derivation. Once every derivation is suppressed, the assertion is a
         // semantic copy with no remaining proof.
         for record in visible_records(view)? {
-            if record.kind != RecordKind::Assertion {
+            if record.kind != mneme_core::RecordKind::Assertion {
                 continue;
             }
             let assertion = view.assertion(record.record_id)?;
@@ -996,20 +1002,22 @@ fn plan_forget(
     }
     for assertion_id in &revised_assertions {
         let assertion = view.assertion(*assertion_id)?;
-        let remaining: Vec<Reference> = assertion
+        let remaining: Vec<mneme_core::Reference> = assertion
             .evidence
             .iter()
             .filter(|evidence| !withdrawn.contains(evidence))
-            .map(|evidence| Reference::local(*evidence, RecordKind::Evidence))
+            .map(|evidence| {
+                mneme_core::Reference::local(*evidence, mneme_core::RecordKind::Evidence)
+            })
             .collect();
         let mut payload = assertion.record.payload.clone();
         payload.insert(
             mneme_core::Symbol::from("evidence"),
-            Value::set(remaining.iter().map(Reference::to_value)),
+            mneme_core::Value::set(remaining.iter().map(mneme_core::Reference::to_value)),
         );
         plan.records.push(mneme_store::RecordDraft {
             schema_version: assertion.record.schema_version,
-            kind: RecordKind::Assertion,
+            kind: mneme_core::RecordKind::Assertion,
             record_id: assertion.record.record_id,
             revision_id: fresh_revision()?,
             predecessor: Some(assertion.record.revision_id),
@@ -1033,14 +1041,17 @@ fn plan_forget(
     // suppressed record. Records without registered ancestry are an explicit
     // policy limitation rather than guessed at by text matching.
     for record in visible_records(view)? {
-        if !matches!(record.kind, RecordKind::Checkpoint | RecordKind::Proposal) {
+        if !matches!(
+            record.kind,
+            mneme_core::RecordKind::Checkpoint | mneme_core::RecordKind::Proposal
+        ) {
             continue;
         }
         let targets = forgotten_records
             .iter()
             .chain(deps.evidence.iter())
             .copied()
-            .collect::<BTreeSet<_>>();
+            .collect::<std::collections::BTreeSet<_>>();
         if references_any(&record.payload.to_value(), &targets) {
             if record.scope != request.scope {
                 return Err(RetentionError::Unauthorized);
@@ -1054,7 +1065,7 @@ fn plan_forget(
             target: *record_id,
             revision: None,
             kind: record.kind,
-            mode: SuppressionMode::Forgotten,
+            mode: mneme_store::SuppressionMode::Forgotten,
             content_digest: source_digests
                 .get(record_id)
                 .copied()
@@ -1074,7 +1085,7 @@ fn plan_forget(
             target: *assertion_id,
             revision: Some(*revision),
             kind: record.kind,
-            mode: SuppressionMode::Forgotten,
+            mode: mneme_store::SuppressionMode::Forgotten,
             content_digest: None,
         });
     }
@@ -1083,7 +1094,7 @@ fn plan_forget(
             suppression.target,
             suppression
                 .revision
-                .unwrap_or(RevisionId::from_bytes([0; 16])),
+                .unwrap_or(mneme_core::RevisionId::from_bytes([0; 16])),
         )
     });
     plan.invalidated_derivations = suppressed_derivations.iter().copied().collect();
@@ -1104,9 +1115,9 @@ fn plan_forget(
 }
 
 fn resolve_sources(
-    view: &MemoryView,
+    view: &mneme_memory::MemoryView,
     request: &RetentionRequest,
-) -> Result<(Vec<RecordId>, Option<ContentDigest>)> {
+) -> Result<(Vec<mneme_core::RecordId>, Option<mneme_core::ContentDigest>)> {
     match request.selector {
         Selector::Source(source) => {
             let record = view.source(source).map_err(map_missing)?;
@@ -1124,7 +1135,7 @@ fn resolve_sources(
         Selector::Content(digest) => {
             let mut sources = Vec::new();
             for record in visible_records(view)? {
-                if record.kind != RecordKind::SourceRevision {
+                if record.kind != mneme_core::RecordKind::SourceRevision {
                     continue;
                 }
                 let source = view.source(record.record_id)?;
@@ -1147,11 +1158,11 @@ fn resolve_sources(
     }
 }
 
-fn visible_records(view: &MemoryView) -> Result<Vec<RecordEnvelope>> {
+fn visible_records(view: &mneme_memory::MemoryView) -> Result<Vec<mneme_core::RecordEnvelope>> {
     Ok(view.snapshot().records.clone())
 }
 
-fn authorize(record: &RecordEnvelope, scope: &ScopeId) -> Result<()> {
+fn authorize(record: &mneme_core::RecordEnvelope, scope: &mneme_core::ScopeId) -> Result<()> {
     if &record.scope == scope {
         Ok(())
     } else {
@@ -1159,7 +1170,11 @@ fn authorize(record: &RecordEnvelope, scope: &ScopeId) -> Result<()> {
     }
 }
 
-fn authorize_dependencies(view: &MemoryView, deps: &Dependencies, scope: &ScopeId) -> Result<()> {
+fn authorize_dependencies(
+    view: &mneme_memory::MemoryView,
+    deps: &Dependencies,
+    scope: &mneme_core::ScopeId,
+) -> Result<()> {
     for record in deps
         .episodes
         .iter()
@@ -1176,17 +1191,21 @@ fn authorize_dependencies(view: &MemoryView, deps: &Dependencies, scope: &ScopeI
 
 #[derive(Clone, Debug, Default)]
 struct Dependencies {
-    episodes: BTreeSet<RecordId>,
-    evidence: BTreeSet<RecordId>,
-    assertions: BTreeSet<RecordId>,
+    episodes: std::collections::BTreeSet<mneme_core::RecordId>,
+    evidence: std::collections::BTreeSet<mneme_core::RecordId>,
+    assertions: std::collections::BTreeSet<mneme_core::RecordId>,
 }
 
-fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<Dependencies> {
-    let targets: BTreeSet<RecordId> = sources.iter().copied().collect();
+fn dependencies_for_sources(
+    view: &mneme_memory::MemoryView,
+    sources: &[mneme_core::RecordId],
+) -> Result<Dependencies> {
+    let targets: std::collections::BTreeSet<mneme_core::RecordId> =
+        sources.iter().copied().collect();
     let mut deps = Dependencies::default();
     loop {
         let mut is_changed = false;
-        let closure: BTreeSet<RecordId> = targets
+        let closure: std::collections::BTreeSet<mneme_core::RecordId> = targets
             .iter()
             .chain(deps.episodes.iter())
             .chain(deps.evidence.iter())
@@ -1194,7 +1213,7 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
             .collect();
         for record in visible_records(view)? {
             match record.kind {
-                RecordKind::Episode => {
+                mneme_core::RecordKind::Episode => {
                     if deps.episodes.contains(&record.record_id) {
                         continue;
                     }
@@ -1211,7 +1230,7 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
                         is_changed = true;
                     }
                 }
-                RecordKind::Evidence => {
+                mneme_core::RecordKind::Evidence => {
                     if deps.evidence.contains(&record.record_id) {
                         continue;
                     }
@@ -1226,7 +1245,7 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
                         is_changed = true;
                     }
                 }
-                RecordKind::Assertion => {
+                mneme_core::RecordKind::Assertion => {
                     if deps.assertions.contains(&record.record_id) {
                         continue;
                     }
@@ -1240,7 +1259,7 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
                         is_changed = true;
                     }
                 }
-                RecordKind::Derivation => {
+                mneme_core::RecordKind::Derivation => {
                     let derivation = view.derivation(record.record_id)?;
                     if derivation
                         .premises
@@ -1261,10 +1280,10 @@ fn dependencies_for_sources(view: &MemoryView, sources: &[RecordId]) -> Result<D
 }
 
 fn independent_evidence_exists(
-    view: &MemoryView,
-    assertion_id: RecordId,
-    withdrawn: &BTreeSet<RecordId>,
-    target_source: Option<RecordId>,
+    view: &mneme_memory::MemoryView,
+    assertion_id: mneme_core::RecordId,
+    withdrawn: &std::collections::BTreeSet<mneme_core::RecordId>,
+    target_source: Option<mneme_core::RecordId>,
 ) -> Result<bool> {
     let assertion = view.assertion(assertion_id)?;
     for evidence_id in &assertion.evidence {
@@ -1295,16 +1314,16 @@ fn independent_evidence_exists(
 }
 
 fn dependent_derivations(
-    view: &MemoryView,
-    assertion: RecordId,
-    scope: &ScopeId,
-) -> Result<Vec<RecordId>> {
-    let mut affected_assertions = BTreeSet::from([assertion]);
-    let mut derivations = BTreeSet::new();
+    view: &mneme_memory::MemoryView,
+    assertion: mneme_core::RecordId,
+    scope: &mneme_core::ScopeId,
+) -> Result<Vec<mneme_core::RecordId>> {
+    let mut affected_assertions = std::collections::BTreeSet::from([assertion]);
+    let mut derivations = std::collections::BTreeSet::new();
     loop {
         let mut is_changed = false;
         for record in visible_records(view)? {
-            if record.kind != RecordKind::Derivation {
+            if record.kind != mneme_core::RecordKind::Derivation {
                 continue;
             }
             let derivation = view.derivation(record.record_id)?;
@@ -1331,23 +1350,27 @@ fn dependent_derivations(
     }
 }
 
-fn fresh_id() -> Result<RecordId> {
-    Ok(RecordId::from_bytes(mneme_store::blob::random_bytes()?))
+fn fresh_id() -> Result<mneme_core::RecordId> {
+    Ok(mneme_core::RecordId::from_bytes(
+        mneme_store::blob::random_bytes()?,
+    ))
 }
 
-fn fresh_revision() -> Result<RevisionId> {
-    Ok(RevisionId::from_bytes(mneme_store::blob::random_bytes()?))
+fn fresh_revision() -> Result<mneme_core::RevisionId> {
+    Ok(mneme_core::RevisionId::from_bytes(
+        mneme_store::blob::random_bytes()?,
+    ))
 }
 
-fn map_missing(error: MemoryError) -> RetentionError {
+fn map_missing(error: mneme_memory::MemoryError) -> RetentionError {
     match error {
-        MemoryError::Missing { .. } => RetentionError::NotFound,
+        mneme_memory::MemoryError::Missing { .. } => RetentionError::NotFound,
         other => RetentionError::Memory(other),
     }
 }
 
 fn add_blob_location(
-    digest: ContentDigest,
+    digest: mneme_core::ContentDigest,
     kind: &str,
     location_id: String,
     plan: &mut RetentionPlan,
@@ -1359,7 +1382,7 @@ fn add_blob_location(
     {
         return;
     }
-    plan.locations.push(RetentionLocationPlan {
+    plan.locations.push(mneme_store::RetentionLocationPlan {
         location_id,
         location_kind: kind.to_owned(),
         locator: digest.to_hex(),
@@ -1367,8 +1390,8 @@ fn add_blob_location(
 }
 
 fn add_record_blob_locations(
-    _view: &MemoryView,
-    record: &RecordEnvelope,
+    _view: &mneme_memory::MemoryView,
+    record: &mneme_core::RecordEnvelope,
     plan: &mut RetentionPlan,
 ) -> Result<()> {
     let digest = record.full_digest();
@@ -1393,7 +1416,7 @@ fn add_inventory_locations(plan: &mut RetentionPlan) {
             .iter()
             .any(|location| location.location_id == location_id)
         {
-            plan.locations.push(RetentionLocationPlan {
+            plan.locations.push(mneme_store::RetentionLocationPlan {
                 location_id,
                 location_kind: kind.to_owned(),
                 locator: label.to_owned(),
@@ -1402,31 +1425,36 @@ fn add_inventory_locations(plan: &mut RetentionPlan) {
     }
 }
 
-fn references_any(value: &Value, targets: &BTreeSet<RecordId>) -> bool {
-    if let Ok(reference) = Reference::from_value(value, &mneme_core::Path::root()) {
+fn references_any(
+    value: &mneme_core::Value,
+    targets: &std::collections::BTreeSet<mneme_core::RecordId>,
+) -> bool {
+    if let Ok(reference) = mneme_core::Reference::from_value(value, &mneme_core::Path::root()) {
         return reference
             .target()
             .is_some_and(|target| targets.contains(&target));
     }
     match value {
-        Value::Record(record) => {
+        mneme_core::Value::Record(record) => {
             record.label();
             record
                 .fields()
                 .iter()
                 .any(|field| references_any(field, targets))
         }
-        Value::Sequence(items) => items.iter().any(|item| references_any(item, targets)),
-        Value::Set(items) => items.iter().any(|item| references_any(item, targets)),
-        Value::Dictionary(entries) => entries
+        mneme_core::Value::Sequence(items) => {
+            items.iter().any(|item| references_any(item, targets))
+        }
+        mneme_core::Value::Set(items) => items.iter().any(|item| references_any(item, targets)),
+        mneme_core::Value::Dictionary(entries) => entries
             .iter()
             .any(|(key, value)| references_any(key, targets) || references_any(value, targets)),
-        Value::Embedded(inner) => references_any(inner, targets),
-        Value::Boolean(_)
-        | Value::Double(_)
-        | Value::SignedInteger(_)
-        | Value::Symbol(_)
-        | Value::String(_)
-        | Value::ByteString(_) => false,
+        mneme_core::Value::Embedded(inner) => references_any(inner, targets),
+        mneme_core::Value::Boolean(_)
+        | mneme_core::Value::Double(_)
+        | mneme_core::Value::SignedInteger(_)
+        | mneme_core::Value::Symbol(_)
+        | mneme_core::Value::String(_)
+        | mneme_core::Value::ByteString(_) => false,
     }
 }

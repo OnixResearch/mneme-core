@@ -6,11 +6,7 @@
 //! payloads happen to match. Exact AsciiDoc source bytes use the raw-byte
 //! profile and never a semantic projection.
 
-use sha2::{Digest, Sha256};
-
-use crate::binary;
-use crate::error::{Diagnostic, ErrorCode, Path, Stage};
-use crate::value::Value;
+use sha2::Digest;
 
 /// The supported hash algorithm.
 pub const ALGORITHM_SHA256: &str = "sha256";
@@ -144,12 +140,12 @@ impl ContentDigest {
     }
 
     /// Digest a complete record envelope value.
-    pub fn of_full_record(value: &Value) -> Self {
+    pub fn of_full_record(value: &crate::value::Value) -> Self {
         Self::of_value(value, ValueBoundary::FullRecord)
     }
 
     /// Digest a selected payload value.
-    pub fn of_payload(value: &Value) -> Self {
+    pub fn of_payload(value: &crate::value::Value) -> Self {
         Self::of_value(value, ValueBoundary::Payload)
     }
 
@@ -159,17 +155,17 @@ impl ContentDigest {
             algorithm: HashAlgorithm::Sha256,
             profile: EncodingProfile::RawBytesV1,
             boundary: ValueBoundary::SourceBytes,
-            bytes: Sha256::digest(bytes).into(),
+            bytes: sha2::Sha256::digest(bytes).into(),
         }
     }
 
-    fn of_value(value: &Value, boundary: ValueBoundary) -> Self {
-        let encoded = binary::encode(value);
+    fn of_value(value: &crate::value::Value, boundary: ValueBoundary) -> Self {
+        let encoded = crate::binary::encode(value);
         ContentDigest {
             algorithm: HashAlgorithm::Sha256,
             profile: EncodingProfile::CanonicalBinaryV1,
             boundary,
-            bytes: Sha256::digest(encoded).into(),
+            bytes: sha2::Sha256::digest(encoded).into(),
         }
     }
 
@@ -203,63 +199,66 @@ impl ContentDigest {
     }
 
     /// Encode as `<digest algorithm profile boundary #"…">`.
-    pub fn to_value(self) -> Value {
-        Value::record_named(
+    pub fn to_value(self) -> crate::value::Value {
+        crate::value::Value::record_named(
             "digest",
             vec![
-                Value::symbol(self.algorithm.symbol()),
-                Value::symbol(self.profile.symbol()),
-                Value::symbol(self.boundary.symbol()),
-                Value::bytes(self.bytes.to_vec()),
+                crate::value::Value::symbol(self.algorithm.symbol()),
+                crate::value::Value::symbol(self.profile.symbol()),
+                crate::value::Value::symbol(self.boundary.symbol()),
+                crate::value::Value::bytes(self.bytes.to_vec()),
             ],
         )
     }
 
     /// Decode and verify supported metadata.
-    pub fn from_value(value: &Value, path: &Path) -> Result<Self, Diagnostic> {
+    pub fn from_value(
+        value: &crate::value::Value,
+        path: &crate::error::Path,
+    ) -> Result<Self, crate::error::Diagnostic> {
         let type_error = || {
-            Diagnostic::new(
-                Stage::Domain,
-                ErrorCode::TypeMismatch,
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Domain,
+                crate::error::ErrorCode::TypeMismatch,
                 path.clone(),
                 "expected <digest algorithm profile boundary #\"32-byte-digest\">",
             )
         };
         let record = value.as_record().ok_or_else(type_error)?;
-        if record.label() != &Value::symbol("digest") || record.fields().len() != 4 {
+        if record.label() != &crate::value::Value::symbol("digest") || record.fields().len() != 4 {
             return Err(type_error());
         }
         let algorithm_text = record.fields()[0].as_symbol().ok_or_else(type_error)?;
         let Some(algorithm) = HashAlgorithm::parse(algorithm_text.as_str()) else {
-            return Err(Diagnostic::new(
-                Stage::Domain,
-                ErrorCode::UnsupportedAlgorithm,
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Domain,
+                crate::error::ErrorCode::UnsupportedAlgorithm,
                 path.clone(),
                 format!("unsupported digest algorithm {algorithm_text}"),
             ));
         };
         let profile_text = record.fields()[1].as_symbol().ok_or_else(type_error)?;
         let Some(profile) = EncodingProfile::parse(profile_text.as_str()) else {
-            return Err(Diagnostic::new(
-                Stage::Domain,
-                ErrorCode::UnsupportedEncodingProfile,
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Domain,
+                crate::error::ErrorCode::UnsupportedEncodingProfile,
                 path.clone(),
                 format!("unsupported digest encoding profile {profile_text}"),
             ));
         };
         let boundary_text = record.fields()[2].as_symbol().ok_or_else(type_error)?;
         let Some(boundary) = ValueBoundary::parse(boundary_text.as_str()) else {
-            return Err(Diagnostic::new(
-                Stage::Domain,
-                ErrorCode::UnsupportedEncodingProfile,
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Domain,
+                crate::error::ErrorCode::UnsupportedEncodingProfile,
                 path.clone(),
                 format!("unsupported digest value boundary {boundary_text}"),
             ));
         };
         if !boundary.is_compatible_with(profile) {
-            return Err(Diagnostic::new(
-                Stage::Domain,
-                ErrorCode::UnsupportedEncodingProfile,
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Domain,
+                crate::error::ErrorCode::UnsupportedEncodingProfile,
                 path.clone(),
                 format!(
                     "encoding profile {profile_text} cannot cover value boundary {boundary_text}"
@@ -270,9 +269,9 @@ impl ContentDigest {
             return Err(type_error());
         };
         let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
-            Diagnostic::new(
-                Stage::Domain,
-                ErrorCode::TypeMismatch,
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Domain,
+                crate::error::ErrorCode::TypeMismatch,
                 path.clone(),
                 "digest bytes must be exactly 32 bytes",
             )
@@ -303,13 +302,25 @@ mod tests {
 
     #[test]
     fn equivalent_unordered_collections_have_equal_digests() {
-        let left = Value::dictionary([
-            (Value::symbol("a"), Value::integer(1_i64)),
-            (Value::symbol("b"), Value::integer(2_i64)),
+        let left = crate::value::Value::dictionary([
+            (
+                crate::value::Value::symbol("a"),
+                crate::value::Value::integer(1_i64),
+            ),
+            (
+                crate::value::Value::symbol("b"),
+                crate::value::Value::integer(2_i64),
+            ),
         ]);
-        let right = Value::dictionary([
-            (Value::symbol("b"), Value::integer(2_i64)),
-            (Value::symbol("a"), Value::integer(1_i64)),
+        let right = crate::value::Value::dictionary([
+            (
+                crate::value::Value::symbol("b"),
+                crate::value::Value::integer(2_i64),
+            ),
+            (
+                crate::value::Value::symbol("a"),
+                crate::value::Value::integer(1_i64),
+            ),
         ]);
         assert_eq!(
             ContentDigest::of_payload(&left),
@@ -320,48 +331,49 @@ mod tests {
     #[test]
     fn metadata_roundtrips_and_rejects_incompatible_profiles() {
         let digest = ContentDigest::of_source_bytes(b"exact bytes");
-        let decoded = ContentDigest::from_value(&digest.to_value(), &Path::root()).expect("decode");
+        let decoded = ContentDigest::from_value(&digest.to_value(), &crate::error::Path::root())
+            .expect("decode");
         assert_eq!(decoded, digest);
         assert!(decoded.verify_source_bytes(b"exact bytes"));
         assert!(!decoded.verify_source_bytes(b"different"));
 
-        let incompatible = Value::record_named(
+        let incompatible = crate::value::Value::record_named(
             "digest",
             vec![
-                Value::symbol("sha256"),
-                Value::symbol("raw-bytes-v1"),
-                Value::symbol("full-record"),
-                Value::bytes(vec![0_u8; 32]),
+                crate::value::Value::symbol("sha256"),
+                crate::value::Value::symbol("raw-bytes-v1"),
+                crate::value::Value::symbol("full-record"),
+                crate::value::Value::bytes(vec![0_u8; 32]),
             ],
         );
         assert_eq!(
-            ContentDigest::from_value(&incompatible, &Path::root())
+            ContentDigest::from_value(&incompatible, &crate::error::Path::root())
                 .expect_err("incompatible")
                 .code,
-            ErrorCode::UnsupportedEncodingProfile
+            crate::error::ErrorCode::UnsupportedEncodingProfile
         );
 
-        let unsupported = Value::record_named(
+        let unsupported = crate::value::Value::record_named(
             "digest",
             vec![
-                Value::symbol("md5"),
-                Value::symbol("raw-bytes-v1"),
-                Value::symbol("source-bytes"),
-                Value::bytes(vec![0_u8; 32]),
+                crate::value::Value::symbol("md5"),
+                crate::value::Value::symbol("raw-bytes-v1"),
+                crate::value::Value::symbol("source-bytes"),
+                crate::value::Value::bytes(vec![0_u8; 32]),
             ],
         );
         assert_eq!(
-            ContentDigest::from_value(&unsupported, &Path::root())
+            ContentDigest::from_value(&unsupported, &crate::error::Path::root())
                 .expect_err("unsupported")
                 .code,
-            ErrorCode::UnsupportedAlgorithm
+            crate::error::ErrorCode::UnsupportedAlgorithm
         );
     }
 
     #[test]
     fn raw_source_bytes_are_hashed_separately_from_semantic_values() {
         let source = ContentDigest::of_source_bytes(b"hello");
-        let semantic = ContentDigest::of_payload(&Value::string("hello"));
+        let semantic = ContentDigest::of_payload(&crate::value::Value::string("hello"));
         assert_ne!(source, semantic);
         assert_eq!(source.profile(), EncodingProfile::RawBytesV1);
         assert_eq!(source.boundary(), ValueBoundary::SourceBytes);

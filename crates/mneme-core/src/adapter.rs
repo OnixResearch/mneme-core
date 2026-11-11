@@ -6,13 +6,6 @@
 //! out-of-range integer fails explicitly and is never replaced with a string,
 //! float, atom, or null.
 
-use std::collections::BTreeSet;
-
-use num_bigint::BigInt;
-
-use crate::error::{Diagnostic, ErrorCode, Path, Stage};
-use crate::value::Value;
-
 /// A Preserves value kind as seen by an adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ValueKind {
@@ -48,19 +41,19 @@ impl ValueKind {
     }
 
     /// The kind of a value.
-    pub fn of(value: &Value) -> Self {
+    pub fn of(value: &crate::value::Value) -> Self {
         match value {
-            Value::Boolean(_) => ValueKind::Boolean,
-            Value::Double(_) => ValueKind::Double,
-            Value::SignedInteger(_) => ValueKind::SignedInteger,
-            Value::String(_) => ValueKind::String,
-            Value::ByteString(_) => ValueKind::ByteString,
-            Value::Symbol(_) => ValueKind::Symbol,
-            Value::Record(_) => ValueKind::Record,
-            Value::Sequence(_) => ValueKind::Sequence,
-            Value::Set(_) => ValueKind::Set,
-            Value::Dictionary(_) => ValueKind::Dictionary,
-            Value::Embedded(_) => ValueKind::Embedded,
+            crate::value::Value::Boolean(_) => ValueKind::Boolean,
+            crate::value::Value::Double(_) => ValueKind::Double,
+            crate::value::Value::SignedInteger(_) => ValueKind::SignedInteger,
+            crate::value::Value::String(_) => ValueKind::String,
+            crate::value::Value::ByteString(_) => ValueKind::ByteString,
+            crate::value::Value::Symbol(_) => ValueKind::Symbol,
+            crate::value::Value::Record(_) => ValueKind::Record,
+            crate::value::Value::Sequence(_) => ValueKind::Sequence,
+            crate::value::Value::Set(_) => ValueKind::Set,
+            crate::value::Value::Dictionary(_) => ValueKind::Dictionary,
+            crate::value::Value::Embedded(_) => ValueKind::Embedded,
         }
     }
 }
@@ -68,9 +61,9 @@ impl ValueKind {
 /// The value kinds and numeric range an adapter declares.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdapterCapabilities {
-    kinds: BTreeSet<ValueKind>,
-    integer_min: Option<BigInt>,
-    integer_max: Option<BigInt>,
+    kinds: std::collections::BTreeSet<ValueKind>,
+    integer_min: Option<num_bigint::BigInt>,
+    integer_max: Option<num_bigint::BigInt>,
 }
 
 impl AdapterCapabilities {
@@ -85,7 +78,7 @@ impl AdapterCapabilities {
 
     /// Declare an inclusive integer range.
     #[must_use]
-    pub fn with_integer_range(mut self, min: BigInt, max: BigInt) -> Self {
+    pub fn with_integer_range(mut self, min: num_bigint::BigInt, max: num_bigint::BigInt) -> Self {
         self.integer_min = Some(min);
         self.integer_max = Some(max);
         self
@@ -97,7 +90,7 @@ impl AdapterCapabilities {
     }
 
     /// The declared inclusive integer range.
-    pub fn integer_range(&self) -> Option<(&BigInt, &BigInt)> {
+    pub fn integer_range(&self) -> Option<(&num_bigint::BigInt, &num_bigint::BigInt)> {
         match (&self.integer_min, &self.integer_max) {
             (Some(min), Some(max)) => Some((min, max)),
             _ => None,
@@ -107,27 +100,27 @@ impl AdapterCapabilities {
 
 /// Project a value into an adapter, refusing every unrepresentable part.
 pub fn project_value(
-    value: &Value,
+    value: &crate::value::Value,
     capabilities: &AdapterCapabilities,
-    path: &Path,
-) -> Result<Value, Diagnostic> {
+    path: &crate::error::Path,
+) -> Result<crate::value::Value, crate::error::Diagnostic> {
     let kind = ValueKind::of(value);
     if !capabilities.supports(kind) {
-        return Err(Diagnostic::new(
-            Stage::Adapter,
-            ErrorCode::AdapterUnsupportedKind,
+        return Err(crate::error::Diagnostic::new(
+            crate::error::Stage::Adapter,
+            crate::error::ErrorCode::AdapterUnsupportedKind,
             path.clone(),
             format!("adapter cannot represent a {}", kind.name()),
         ));
     }
     match value {
-        Value::SignedInteger(integer) => {
+        crate::value::Value::SignedInteger(integer) => {
             if let Some((min, max)) = capabilities.integer_range() {
                 let value = integer.as_bigint();
                 if value < min || value > max {
-                    return Err(Diagnostic::new(
-                        Stage::Adapter,
-                        ErrorCode::AdapterIntegerOutOfRange,
+                    return Err(crate::error::Diagnostic::new(
+                        crate::error::Stage::Adapter,
+                        crate::error::ErrorCode::AdapterIntegerOutOfRange,
                         path.clone(),
                         format!(
                             "integer {value} is outside the adapter range [{min}, {max}]; no lossy conversion is applied"
@@ -137,29 +130,29 @@ pub fn project_value(
             }
             Ok(value.clone())
         }
-        Value::Record(record) => {
+        crate::value::Value::Record(record) => {
             let label = project_value(record.label(), capabilities, &path.field("label"))?;
             let mut fields = Vec::with_capacity(record.fields().len());
             for (index, field) in record.fields().iter().enumerate() {
                 fields.push(project_value(field, capabilities, &path.index(index))?);
             }
-            Ok(Value::record(label, fields))
+            Ok(crate::value::Value::record(label, fields))
         }
-        Value::Sequence(items) => {
+        crate::value::Value::Sequence(items) => {
             let mut projected = Vec::with_capacity(items.len());
             for (index, item) in items.iter().enumerate() {
                 projected.push(project_value(item, capabilities, &path.index(index))?);
             }
-            Ok(Value::sequence(projected))
+            Ok(crate::value::Value::sequence(projected))
         }
-        Value::Set(items) => {
-            let mut projected = BTreeSet::new();
+        crate::value::Value::Set(items) => {
+            let mut projected = std::collections::BTreeSet::new();
             for (index, item) in items.iter().enumerate() {
                 projected.insert(project_value(item, capabilities, &path.index(index))?);
             }
-            Ok(Value::set(projected))
+            Ok(crate::value::Value::set(projected))
         }
-        Value::Dictionary(entries) => {
+        crate::value::Value::Dictionary(entries) => {
             let mut projected = Vec::with_capacity(entries.len());
             for (index, (key, item)) in entries.iter().enumerate() {
                 projected.push((
@@ -167,11 +160,11 @@ pub fn project_value(
                     project_value(item, capabilities, &path.index(index).field("value"))?,
                 ));
             }
-            Ok(Value::dictionary(projected))
+            Ok(crate::value::Value::dictionary(projected))
         }
-        Value::Embedded(inner) => Err(Diagnostic::new(
-            Stage::Adapter,
-            ErrorCode::AdapterUnsupportedKind,
+        crate::value::Value::Embedded(inner) => Err(crate::error::Diagnostic::new(
+            crate::error::Stage::Adapter,
+            crate::error::ErrorCode::AdapterUnsupportedKind,
             path.clone(),
             format!(
                 "adapter cannot represent a live embedded value ({})",
@@ -202,15 +195,21 @@ mod tests {
 
     #[test]
     fn large_integers_fail_explicitly_without_coercion() {
-        let large = Value::integer(
+        let large = crate::value::Value::integer(
             "87112285931760246646623899502532662132736"
-                .parse::<BigInt>()
+                .parse::<num_bigint::BigInt>()
                 .expect("integer"),
         );
-        let capabilities =
-            full().with_integer_range(BigInt::from(i64::MIN), BigInt::from(i64::MAX));
-        let error = project_value(&large, &capabilities, &Path::root()).expect_err("range");
-        assert_eq!(error.code, ErrorCode::AdapterIntegerOutOfRange);
+        let capabilities = full().with_integer_range(
+            num_bigint::BigInt::from(i64::MIN),
+            num_bigint::BigInt::from(i64::MAX),
+        );
+        let error =
+            project_value(&large, &capabilities, &crate::error::Path::root()).expect_err("range");
+        assert_eq!(
+            error.code,
+            crate::error::ErrorCode::AdapterIntegerOutOfRange
+        );
         assert_eq!(error.path.to_string(), "$");
         // No fallback value is produced: the error carries no replacement.
         assert!(!error.message.contains("string"));
@@ -220,26 +219,31 @@ mod tests {
     fn unsupported_kinds_fail_without_partial_output() {
         let capabilities =
             AdapterCapabilities::new([ValueKind::SignedInteger, ValueKind::Sequence]);
-        let value = Value::sequence(vec![Value::integer(1_i64), Value::bytes([1_u8])]);
-        let error = project_value(&value, &capabilities, &Path::root()).expect_err("bytes");
-        assert_eq!(error.code, ErrorCode::AdapterUnsupportedKind);
+        let value = crate::value::Value::sequence(vec![
+            crate::value::Value::integer(1_i64),
+            crate::value::Value::bytes([1_u8]),
+        ]);
+        let error =
+            project_value(&value, &capabilities, &crate::error::Path::root()).expect_err("bytes");
+        assert_eq!(error.code, crate::error::ErrorCode::AdapterUnsupportedKind);
         assert_eq!(error.path.to_string(), "$[1]");
     }
 
     #[test]
     fn supported_values_project_with_their_kinds() {
-        let capabilities = full().with_integer_range(BigInt::from(-10), BigInt::from(10));
-        let value = Value::record_named(
+        let capabilities =
+            full().with_integer_range(num_bigint::BigInt::from(-10), num_bigint::BigInt::from(10));
+        let value = crate::value::Value::record_named(
             "sample",
             vec![
-                Value::integer(10_i64),
-                Value::symbol("s"),
-                Value::string("s"),
-                Value::set([Value::integer(1_i64)]),
+                crate::value::Value::integer(10_i64),
+                crate::value::Value::symbol("s"),
+                crate::value::Value::string("s"),
+                crate::value::Value::set([crate::value::Value::integer(1_i64)]),
             ],
         );
         assert_eq!(
-            project_value(&value, &capabilities, &Path::root()).expect("projected"),
+            project_value(&value, &capabilities, &crate::error::Path::root()).expect("projected"),
             value
         );
     }

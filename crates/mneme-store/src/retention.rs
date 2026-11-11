@@ -3,10 +3,6 @@
 //! The ledger contains minimal identity and status metadata. It never stores
 //! forgotten source text, quotations, or human-readable storage errors.
 
-use std::collections::BTreeSet;
-
-use mneme_core::{ContentDigest, RecordId, RevisionId, ScopeId, Value, WorkspaceRevisionId};
-
 /// Whether a suppression is inspectable but ineligible, or payload-hidden.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SuppressionMode {
@@ -41,29 +37,29 @@ pub struct RetentionSelector {
     pub ordinal: u32,
     /// `source`, `source-support`, `assertion`, or `content`.
     pub kind: String,
-    pub target: Option<RecordId>,
-    pub revision: Option<RevisionId>,
-    pub digest: Option<ContentDigest>,
+    pub target: Option<mneme_core::RecordId>,
+    pub revision: Option<mneme_core::RevisionId>,
+    pub digest: Option<mneme_core::ContentDigest>,
 }
 
 impl RetentionSelector {
-    pub(crate) fn to_value(&self) -> Value {
-        Value::record_named(
+    pub(crate) fn to_value(&self) -> mneme_core::Value {
+        mneme_core::Value::record_named(
             "retention-selector",
             vec![
-                Value::integer(i64::from(self.ordinal)),
-                Value::symbol(self.kind.clone()),
+                mneme_core::Value::integer(i64::from(self.ordinal)),
+                mneme_core::Value::symbol(self.kind.clone()),
                 match self.target {
                     Some(target) => target.to_value(),
-                    None => Value::symbol("none"),
+                    None => mneme_core::Value::symbol("none"),
                 },
                 match self.revision {
                     Some(revision) => revision.to_value(),
-                    None => Value::symbol("none"),
+                    None => mneme_core::Value::symbol("none"),
                 },
                 match self.digest {
                     Some(digest) => digest.to_value(),
-                    None => Value::symbol("none"),
+                    None => mneme_core::Value::symbol("none"),
                 },
             ],
         )
@@ -74,12 +70,12 @@ impl RetentionSelector {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetentionSuppression {
     pub operation_id: String,
-    pub target: RecordId,
-    pub revision: Option<RevisionId>,
+    pub target: mneme_core::RecordId,
+    pub revision: Option<mneme_core::RevisionId>,
     pub target_kind: String,
     pub mode: SuppressionMode,
     /// A digest used only for content-match replay blocking.
-    pub content_digest: Option<ContentDigest>,
+    pub content_digest: Option<mneme_core::ContentDigest>,
     pub generation: u64,
 }
 
@@ -87,23 +83,23 @@ impl RetentionSuppression {
     // Generation is read from the SQLite i64 ledger column, so the conversion is
     // within range for every stored suppression.
     #[allow(unknown_lints, fallible_int_fallback, sentinel_fallback)]
-    pub(crate) fn to_value(&self) -> Value {
-        Value::record_named(
+    pub(crate) fn to_value(&self) -> mneme_core::Value {
+        mneme_core::Value::record_named(
             "retention-suppression",
             vec![
-                Value::string(self.operation_id.clone()),
+                mneme_core::Value::string(self.operation_id.clone()),
                 self.target.to_value(),
                 match self.revision {
                     Some(revision) => revision.to_value(),
-                    None => Value::symbol("none"),
+                    None => mneme_core::Value::symbol("none"),
                 },
-                Value::symbol(self.target_kind.clone()),
-                Value::symbol(self.mode.as_str().to_owned()),
+                mneme_core::Value::symbol(self.target_kind.clone()),
+                mneme_core::Value::symbol(self.mode.as_str().to_owned()),
                 match self.content_digest {
                     Some(digest) => digest.to_value(),
-                    None => Value::symbol("none"),
+                    None => mneme_core::Value::symbol("none"),
                 },
-                Value::integer(i64::try_from(self.generation).unwrap_or(i64::MAX)),
+                mneme_core::Value::integer(i64::try_from(self.generation).unwrap_or(i64::MAX)),
             ],
         )
     }
@@ -121,13 +117,13 @@ pub struct RetentionLocationPlan {
 }
 
 impl RetentionLocationPlan {
-    fn to_value(&self) -> Value {
-        Value::record_named(
+    fn to_value(&self) -> mneme_core::Value {
+        mneme_core::Value::record_named(
             "retention-location",
             vec![
-                Value::string(self.location_id.clone()),
-                Value::symbol(self.location_kind.clone()),
-                Value::string(self.locator.clone()),
+                mneme_core::Value::string(self.location_id.clone()),
+                mneme_core::Value::symbol(self.location_kind.clone()),
+                mneme_core::Value::string(self.locator.clone()),
             ],
         )
     }
@@ -148,17 +144,24 @@ pub struct RetentionCommit {
 
 impl RetentionCommit {
     /// Normalized identity used by the commit request digest.
-    pub fn to_value(&self) -> Value {
-        Value::record_named(
+    pub fn to_value(&self) -> mneme_core::Value {
+        mneme_core::Value::record_named(
             "retention-commit",
             vec![
-                Value::string(self.operation_id.clone()),
-                Value::symbol(self.operation_kind.clone()),
-                Value::string(self.policy_version.clone()),
-                Value::set(self.selectors.iter().map(RetentionSelector::to_value)),
-                Value::set(self.suppressions.iter().map(RetentionSuppression::to_value)),
-                Value::set(self.locations.iter().map(RetentionLocationPlan::to_value)),
-                Value::set(self.retained_metadata.iter().cloned().map(Value::string)),
+                mneme_core::Value::string(self.operation_id.clone()),
+                mneme_core::Value::symbol(self.operation_kind.clone()),
+                mneme_core::Value::string(self.policy_version.clone()),
+                mneme_core::Value::set(self.selectors.iter().map(RetentionSelector::to_value)),
+                mneme_core::Value::set(
+                    self.suppressions.iter().map(RetentionSuppression::to_value),
+                ),
+                mneme_core::Value::set(self.locations.iter().map(RetentionLocationPlan::to_value)),
+                mneme_core::Value::set(
+                    self.retained_metadata
+                        .iter()
+                        .cloned()
+                        .map(mneme_core::Value::string),
+                ),
             ],
         )
     }
@@ -174,7 +177,7 @@ impl RetentionCommit {
         if self.policy_version.trim().is_empty() {
             return Err("retention policy version must not be empty".to_owned());
         }
-        let mut suppressions = BTreeSet::new();
+        let mut suppressions = std::collections::BTreeSet::new();
         for suppression in &self.suppressions {
             if suppression.operation_id != self.operation_id {
                 return Err("suppression names a different operation".to_owned());
@@ -186,7 +189,7 @@ impl RetentionCommit {
                 return Err("duplicate retention suppression target".to_owned());
             }
         }
-        let mut locations = BTreeSet::new();
+        let mut locations = std::collections::BTreeSet::new();
         for location in &self.locations {
             if location.location_id.trim().is_empty() {
                 return Err("retention location id must not be empty".to_owned());
@@ -243,11 +246,11 @@ pub struct RetentionOperation {
     pub operation_id: String,
     pub operation_kind: String,
     pub actor: String,
-    pub scope: ScopeId,
+    pub scope: mneme_core::ScopeId,
     pub policy_version: String,
     pub state: RetentionJobState,
     pub generation: u64,
-    pub outcome_revision: WorkspaceRevisionId,
+    pub outcome_revision: mneme_core::WorkspaceRevisionId,
     pub outcome_sequence: u64,
     pub retained_metadata: Vec<String>,
     pub created_at_ns: i64,

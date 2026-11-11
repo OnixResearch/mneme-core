@@ -5,63 +5,44 @@
 //! normal workspace command. No draft can promote a claim without an explicit
 //! decision record in the same batch.
 
-use std::collections::BTreeMap;
-use std::path::Path;
-
-use mneme_core::{
-    ContentDigest, Lifecycle, Origin, Payload, RecordEnvelope, RecordId, RecordedTime, Reference,
-    RevisionId, ScopeId, SnapshotIndex, SourceContent, SourceSpan, Symbol, Timestamp, ValidTime,
-    Value, WorkspaceRevisionId,
-};
-use mneme_store::{
-    CommitCommand, CommitOutcome, PublicationDraft, RecordDraft, Snapshot, SourceBlobDraft,
-    StoreError, Workspace,
-};
-
-use crate::error::{MemoryError, Result};
-use crate::model::{
-    AssertionView, DecisionKind, DecisionView, DerivationView, EpisodeView, EvidenceView,
-    SourceView, Stance, SupportRelation,
-};
-use crate::policy::{
-    ACTION_COMPLETED_PREDICATE, BeliefView, ConflictGroup, Explanation, MemoryView, Policy,
-};
-
 /// A memory batch submitted through the workspace coordinator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemoryBatch {
     pub actor: String,
-    pub scope: ScopeId,
+    pub scope: mneme_core::ScopeId,
     pub idempotency_key: String,
-    pub records: Vec<RecordDraft>,
-    pub source_blobs: Vec<SourceBlobDraft>,
-    pub publications: Vec<PublicationDraft>,
+    pub records: Vec<mneme_store::RecordDraft>,
+    pub source_blobs: Vec<mneme_store::SourceBlobDraft>,
+    pub publications: Vec<mneme_store::PublicationDraft>,
 }
 
 /// The memory service over one mutable workspace handle.
 pub struct Memory<'w> {
-    workspace: &'w mut Workspace,
+    workspace: &'w mut mneme_store::Workspace,
 }
 
 impl<'w> Memory<'w> {
     /// Wrap a workspace.
-    pub fn new(workspace: &'w mut Workspace) -> Self {
+    pub fn new(workspace: &'w mut mneme_store::Workspace) -> Self {
         Memory { workspace }
     }
 
     /// The current pinned view.
-    pub fn view(&self) -> Result<MemoryView> {
+    pub fn view(&self) -> crate::error::Result<crate::policy::MemoryView> {
         self.view_at(None)
     }
 
     /// A view fenced by an expected eligibility generation.
-    pub fn view_at(&self, pinned_generation: Option<u64>) -> Result<MemoryView> {
+    pub fn view_at(
+        &self,
+        pinned_generation: Option<u64>,
+    ) -> crate::error::Result<crate::policy::MemoryView> {
         let revision = self.workspace.current_revision()?;
         let snapshot = self.workspace.snapshot_at(revision, pinned_generation)?;
         let history = load_history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
         let suppressions = self.workspace.active_suppressions()?;
-        Ok(MemoryView::with_retention(
+        Ok(crate::policy::MemoryView::with_retention(
             snapshot,
             self.workspace.root(),
             history,
@@ -71,37 +52,53 @@ impl<'w> Memory<'w> {
     }
 
     /// All retained revisions of one record.
-    pub fn revisions(&self, record: RecordId) -> Result<Vec<RecordEnvelope>> {
+    pub fn revisions(
+        &self,
+        record: mneme_core::RecordId,
+    ) -> crate::error::Result<Vec<mneme_core::RecordEnvelope>> {
         Ok(self.workspace.record_revisions(record)?)
     }
 
     /// Explain one current assertion.
-    pub fn explain(&self, assertion: RecordId, policy: Policy) -> Result<Explanation> {
+    pub fn explain(
+        &self,
+        assertion: mneme_core::RecordId,
+        policy: crate::policy::Policy,
+    ) -> crate::error::Result<crate::policy::Explanation> {
         self.explain_at(assertion, None, policy)
     }
 
     /// Explain one assertion under a pinned eligibility generation.
     pub fn explain_at(
         &self,
-        assertion: RecordId,
+        assertion: mneme_core::RecordId,
         pinned_generation: Option<u64>,
-        policy: Policy,
-    ) -> Result<Explanation> {
+        policy: crate::policy::Policy,
+    ) -> crate::error::Result<crate::policy::Explanation> {
         self.view_at(pinned_generation)?.explain(assertion, policy)
     }
 
     /// Current beliefs under an explicit scope and effective-time policy.
-    pub fn beliefs(&self, view: &BeliefView) -> Result<Vec<AssertionView>> {
+    pub fn beliefs(
+        &self,
+        view: &crate::policy::BeliefView,
+    ) -> crate::error::Result<Vec<crate::model::AssertionView>> {
         self.view()?.current_beliefs(view)
     }
 
     /// Conflicts among currently eligible claims.
-    pub fn conflicts(&self, view: &BeliefView) -> Result<Vec<ConflictGroup>> {
+    pub fn conflicts(
+        &self,
+        view: &crate::policy::BeliefView,
+    ) -> crate::error::Result<Vec<crate::policy::ConflictGroup>> {
         self.view()?.conflicts(view)
     }
 
     /// Validate and commit a memory batch.
-    pub fn commit(&mut self, batch: MemoryBatch) -> Result<CommitOutcome> {
+    pub fn commit(
+        &mut self,
+        batch: MemoryBatch,
+    ) -> crate::error::Result<mneme_store::CommitOutcome> {
         let base = self.workspace.current_revision()?;
         self.commit_at_base(batch, base)
     }
@@ -112,8 +109,8 @@ impl<'w> Memory<'w> {
     pub fn commit_at_base(
         &mut self,
         batch: MemoryBatch,
-        base: WorkspaceRevisionId,
-    ) -> Result<CommitOutcome> {
+        base: mneme_core::WorkspaceRevisionId,
+    ) -> crate::error::Result<mneme_store::CommitOutcome> {
         let snapshot = self.workspace.snapshot()?;
         let history = load_history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
@@ -126,7 +123,7 @@ impl<'w> Memory<'w> {
             &sequences,
             &suppressions,
         )?;
-        let outcome = self.workspace.commit(CommitCommand {
+        let outcome = self.workspace.commit(mneme_store::CommitCommand {
             base,
             actor: batch.actor,
             scope: batch.scope,
@@ -142,10 +139,15 @@ impl<'w> Memory<'w> {
 }
 
 fn load_history(
-    workspace: &Workspace,
-    snapshot: &Snapshot,
-) -> Result<BTreeMap<(RecordId, RevisionId), RecordEnvelope>> {
-    let mut history = BTreeMap::new();
+    workspace: &mneme_store::Workspace,
+    snapshot: &mneme_store::Snapshot,
+) -> crate::error::Result<
+    std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+> {
+    let mut history = std::collections::BTreeMap::new();
     for record in &snapshot.records {
         for revision in workspace.record_revisions(record.record_id)? {
             history.insert((revision.record_id, revision.revision_id), revision);
@@ -155,39 +157,45 @@ fn load_history(
 }
 
 fn validate_batch(
-    snapshot: &Snapshot,
-    root: &Path,
+    snapshot: &mneme_store::Snapshot,
+    root: &std::path::Path,
     batch: &MemoryBatch,
-    history: &BTreeMap<(RecordId, RevisionId), RecordEnvelope>,
-    revision_sequences: &BTreeMap<WorkspaceRevisionId, u64>,
+    history: &std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+    revision_sequences: &std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
     suppressions: &[mneme_store::RetentionSuppression],
-) -> Result<()> {
-    let mut combined: BTreeMap<RecordId, RecordEnvelope> = snapshot
-        .records
-        .iter()
-        .map(|record| (record.record_id, record.clone()))
-        .collect();
-    let mut supplied_sources: BTreeMap<ContentDigest, Vec<u8>> = BTreeMap::new();
+) -> crate::error::Result<()> {
+    let mut combined: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope> =
+        snapshot
+            .records
+            .iter()
+            .map(|record| (record.record_id, record.clone()))
+            .collect();
+    let mut supplied_sources: std::collections::BTreeMap<mneme_core::ContentDigest, Vec<u8>> =
+        std::collections::BTreeMap::new();
     for source in &batch.source_blobs {
         supplied_sources.insert(source.digest(), source.bytes.clone());
     }
     for draft in &batch.records {
-        let envelope = draft
-            .clone()
-            .into_envelope(RecordedTime::new(Timestamp::from_nanos(0), 0));
+        let envelope = draft.clone().into_envelope(mneme_core::RecordedTime::new(
+            mneme_core::Timestamp::from_nanos(0),
+            0,
+        ));
         if envelope.scope != batch.scope {
-            return Err(MemoryError::policy(format!(
+            return Err(crate::error::MemoryError::policy(format!(
                 "record {} scope {} differs from batch scope {}",
                 envelope.record_id, envelope.scope, batch.scope
             )));
         }
         combined.insert(envelope.record_id, envelope);
     }
-    let mut index = SnapshotIndex::new();
+    let mut index = mneme_core::SnapshotIndex::new();
     for record in combined.values() {
         index.insert(record.record_id, record.kind, record.revision_id);
     }
-    let virtual_snapshot = Snapshot {
+    let virtual_snapshot = mneme_store::Snapshot {
         revision: snapshot.revision,
         sequence: snapshot.sequence,
         parent: snapshot.parent,
@@ -196,7 +204,7 @@ fn validate_batch(
         records: combined.values().cloned().collect(),
         index,
     };
-    let view = MemoryView::with_retention(
+    let view = crate::policy::MemoryView::with_retention(
         virtual_snapshot,
         root,
         history.clone(),
@@ -205,44 +213,45 @@ fn validate_batch(
     );
 
     for draft in &batch.records {
-        let envelope = draft
-            .clone()
-            .into_envelope(RecordedTime::new(Timestamp::from_nanos(0), 0));
+        let envelope = draft.clone().into_envelope(mneme_core::RecordedTime::new(
+            mneme_core::Timestamp::from_nanos(0),
+            0,
+        ));
         match envelope.kind {
             mneme_core::RecordKind::Evidence => {
-                let evidence = EvidenceView::parse(envelope.clone())?;
+                let evidence = crate::model::EvidenceView::parse(envelope.clone())?;
                 if view.suppression_for(&envelope).is_some_and(|suppression| {
                     suppression.mode == mneme_store::SuppressionMode::Withdrawn
                 }) {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "evidence {} is withdrawn and cannot be newly cited",
                         evidence.record.record_id
                     )));
                 }
                 let source = view.evidence_source(&evidence).map_err(|_| {
-                    MemoryError::policy(format!(
+                    crate::error::MemoryError::policy(format!(
                         "evidence {} references missing source {}",
                         evidence.record.record_id, evidence.source
                     ))
                 })?;
-                if let Reference::Pinned { revision, .. } = evidence.source_reference
+                if let mneme_core::Reference::Pinned { revision, .. } = evidence.source_reference
                     && revision != source.record.revision_id
                 {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "evidence {} pins source revision {revision}, but the source record is {}",
                         evidence.record.record_id, source.record.revision_id
                     )));
                 }
                 let bytes = source_bytes(&source, &supplied_sources, root)?;
                 if evidence.span.is_none() && evidence.anchor.is_none() {
-                    return Err(MemoryError::policy(
+                    return Err(crate::error::MemoryError::policy(
                         "evidence requires an exact span or a stable anchor",
                     ));
                 }
                 if let Some(span) = evidence.span
                     && span.end() >= bytes.len() as u64
                 {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "evidence {} span ends at byte {} beyond {} retained bytes",
                         evidence.record.record_id,
                         span.end(),
@@ -252,11 +261,13 @@ fn validate_batch(
                 if let Some(anchor) = &evidence.anchor
                     && anchor.trim().is_empty()
                 {
-                    return Err(MemoryError::policy("evidence anchor must not be empty"));
+                    return Err(crate::error::MemoryError::policy(
+                        "evidence anchor must not be empty",
+                    ));
                 }
                 for ancestor in &evidence.ancestry {
                     if !combined.contains_key(ancestor) {
-                        return Err(MemoryError::policy(format!(
+                        return Err(crate::error::MemoryError::policy(format!(
                             "evidence {} ancestry names missing record {ancestor}",
                             evidence.record.record_id
                         )));
@@ -266,7 +277,7 @@ fn validate_batch(
                 view.evidence_roots(evidence.record.record_id)?;
             }
             mneme_core::RecordKind::Assertion => {
-                let assertion = AssertionView::parse(envelope.clone())?;
+                let assertion = crate::model::AssertionView::parse(envelope.clone())?;
                 for evidence_id in &assertion.evidence {
                     if let Ok(evidence_record) = view.envelope(*evidence_id)
                         && view
@@ -275,43 +286,47 @@ fn validate_batch(
                                 suppression.mode == mneme_store::SuppressionMode::Withdrawn
                             })
                     {
-                        return Err(MemoryError::policy(format!(
+                        return Err(crate::error::MemoryError::policy(format!(
                             "assertion {} cites withdrawn evidence {evidence_id}",
                             assertion.record.record_id
                         )));
                     }
                 }
                 if !view.lifecycle_decision_valid(&assertion)? {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "assertion {} lifecycle {} lacks a matching decision",
                         assertion.record.record_id,
                         assertion.lifecycle.symbol()
                     )));
                 }
-                if assertion.origin == Origin::ModelExtraction && assertion.extraction.is_none() {
-                    return Err(MemoryError::policy(format!(
+                if assertion.origin == mneme_core::Origin::ModelExtraction
+                    && assertion.extraction.is_none()
+                {
+                    return Err(crate::error::MemoryError::policy(format!(
                         "model-extracted assertion {} must retain extraction lineage",
                         assertion.record.record_id
                     )));
                 }
-                if assertion.predicate == ACTION_COMPLETED_PREDICATE
+                if assertion.predicate == crate::policy::ACTION_COMPLETED_PREDICATE
                     && !view.has_observed_outcome(&assertion)?
                 {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "completed-action assertion {} has no observed outcome episode",
                         assertion.record.record_id
                     )));
                 }
-                if assertion.lifecycle == Lifecycle::Accepted && assertion.stance == Stance::Deny {
+                if assertion.lifecycle == mneme_core::Lifecycle::Accepted
+                    && assertion.stance == crate::model::Stance::Deny
+                {
                     let is_complete = assertion
                         .record
                         .payload
                         .get("completeness")
-                        .and_then(Value::as_symbol)
+                        .and_then(mneme_core::Value::as_symbol)
                         .map(|symbol| symbol.as_str() == "declared-complete")
                         .unwrap_or(false);
                     if !is_complete {
-                        return Err(MemoryError::policy(format!(
+                        return Err(crate::error::MemoryError::policy(format!(
                             "accepted negative assertion {} lacks a declared-complete basis",
                             assertion.record.record_id
                         )));
@@ -319,7 +334,7 @@ fn validate_batch(
                 }
                 for evidence in &assertion.evidence {
                     if !combined.contains_key(evidence) {
-                        return Err(MemoryError::policy(format!(
+                        return Err(crate::error::MemoryError::policy(format!(
                             "assertion {} evidence reference {evidence} is missing",
                             assertion.record.record_id
                         )));
@@ -327,46 +342,54 @@ fn validate_batch(
                 }
             }
             mneme_core::RecordKind::Decision => {
-                let decision = DecisionView::parse(envelope.clone())?;
+                let decision = crate::model::DecisionView::parse(envelope.clone())?;
                 if decision.actor.trim().is_empty() || decision.policy.trim().is_empty() {
-                    return Err(MemoryError::policy(
+                    return Err(crate::error::MemoryError::policy(
                         "decision actor and policy must be non-empty",
                     ));
                 }
                 if decision.input_revision != snapshot.revision {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "decision {} evaluates revision {}, not the current base {}",
                         decision.record.record_id, decision.input_revision, snapshot.revision
                     )));
                 }
-                let target = AssertionView::parse(
+                let target = crate::model::AssertionView::parse(
                     combined
                         .get(&decision.target)
-                        .ok_or(MemoryError::policy(format!(
+                        .ok_or(crate::error::MemoryError::policy(format!(
                             "decision {} targets missing assertion {}",
                             decision.record.record_id, decision.target
                         )))?
                         .clone(),
                 )?;
                 if target.decision != Some(decision.record.record_id) {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "decision {} is not linked from its target assertion",
                         decision.record.record_id
                     )));
                 }
                 let expected = match decision.decision_kind {
-                    DecisionKind::Acceptance => (Lifecycle::Accepted, "accepted"),
-                    DecisionKind::Retraction => (Lifecycle::Retracted, "retracted"),
-                    DecisionKind::Supersession => (Lifecycle::Superseded, "superseded"),
-                    DecisionKind::ConflictResolution => (Lifecycle::Disputed, "disputed"),
-                    DecisionKind::Other(_) => {
-                        return Err(MemoryError::policy(
+                    crate::model::DecisionKind::Acceptance => {
+                        (mneme_core::Lifecycle::Accepted, "accepted")
+                    }
+                    crate::model::DecisionKind::Retraction => {
+                        (mneme_core::Lifecycle::Retracted, "retracted")
+                    }
+                    crate::model::DecisionKind::Supersession => {
+                        (mneme_core::Lifecycle::Superseded, "superseded")
+                    }
+                    crate::model::DecisionKind::ConflictResolution => {
+                        (mneme_core::Lifecycle::Disputed, "disputed")
+                    }
+                    crate::model::DecisionKind::Other(_) => {
+                        return Err(crate::error::MemoryError::policy(
                             "unknown decision kind cannot be committed",
                         ));
                     }
                 };
                 if target.lifecycle != expected.0 || decision.outcome != expected.1 {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "decision {} outcome {} does not match target lifecycle {}",
                         decision.record.record_id,
                         decision.outcome,
@@ -375,7 +398,7 @@ fn validate_batch(
                 }
                 for evidence in &decision.evidence {
                     if !combined.contains_key(evidence) {
-                        return Err(MemoryError::policy(format!(
+                        return Err(crate::error::MemoryError::policy(format!(
                             "decision {} evidence {evidence} is missing",
                             decision.record.record_id
                         )));
@@ -383,9 +406,9 @@ fn validate_batch(
                 }
             }
             mneme_core::RecordKind::Derivation => {
-                let derivation = DerivationView::parse(envelope.clone())?;
+                let derivation = crate::model::DerivationView::parse(envelope.clone())?;
                 if derivation.evaluation_revision != snapshot.revision {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "derivation {} evaluates revision {}, not the current base {}",
                         derivation.record.record_id,
                         derivation.evaluation_revision,
@@ -393,14 +416,14 @@ fn validate_batch(
                     )));
                 }
                 if !combined.contains_key(&derivation.conclusion) {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "derivation {} conclusion {} is missing",
                         derivation.record.record_id, derivation.conclusion
                     )));
                 }
                 for premise in &derivation.premises {
                     if !combined.contains_key(premise) {
-                        return Err(MemoryError::policy(format!(
+                        return Err(crate::error::MemoryError::policy(format!(
                             "derivation {} premise {premise} is missing",
                             derivation.record.record_id
                         )));
@@ -408,10 +431,10 @@ fn validate_batch(
                 }
             }
             mneme_core::RecordKind::Episode => {
-                let episode = EpisodeView::parse(envelope.clone())?;
+                let episode = crate::model::EpisodeView::parse(envelope.clone())?;
                 for related in &episode.related {
                     if !combined.contains_key(related) {
-                        return Err(MemoryError::policy(format!(
+                        return Err(crate::error::MemoryError::policy(format!(
                             "episode {} related record {related} is missing",
                             episode.record.record_id
                         )));
@@ -422,14 +445,14 @@ fn validate_batch(
                 let (revision, episodes, verified) =
                     view.checkpoint_revision(envelope.record_id)?;
                 if revision != snapshot.revision {
-                    return Err(MemoryError::policy(format!(
+                    return Err(crate::error::MemoryError::policy(format!(
                         "checkpoint {} references revision {revision}, not the current base {}",
                         envelope.record_id, snapshot.revision
                     )));
                 }
                 for linked in episodes.iter().chain(verified.iter()) {
                     if !combined.contains_key(linked) {
-                        return Err(MemoryError::policy(format!(
+                        return Err(crate::error::MemoryError::policy(format!(
                             "checkpoint {} references missing record {linked}",
                             envelope.record_id
                         )));
@@ -443,12 +466,12 @@ fn validate_batch(
 }
 
 fn source_bytes(
-    source: &SourceView,
-    supplied: &BTreeMap<ContentDigest, Vec<u8>>,
-    root: &Path,
-) -> Result<Vec<u8>> {
+    source: &crate::model::SourceView,
+    supplied: &std::collections::BTreeMap<mneme_core::ContentDigest, Vec<u8>>,
+    root: &std::path::Path,
+) -> crate::error::Result<Vec<u8>> {
     let Some(digest) = source.digest() else {
-        return Err(MemoryError::policy(
+        return Err(crate::error::MemoryError::policy(
             "new evidence requires retained source bytes",
         ));
     };
@@ -457,78 +480,90 @@ fn source_bytes(
     }
     match mneme_store::blob::read(root, digest) {
         Ok(bytes) => Ok(bytes),
-        Err(StoreError::MissingBlob { .. }) => Err(MemoryError::policy(
+        Err(mneme_store::StoreError::MissingBlob { .. }) => Err(crate::error::MemoryError::policy(
             "new evidence cites a source whose committed bytes are missing",
         )),
-        Err(StoreError::CorruptBlob { reason, .. }) => Err(MemoryError::policy(format!(
-            "new evidence cites corrupt source bytes: {reason}"
-        ))),
+        Err(mneme_store::StoreError::CorruptBlob { reason, .. }) => {
+            Err(crate::error::MemoryError::policy(format!(
+                "new evidence cites corrupt source bytes: {reason}"
+            )))
+        }
         Err(error) => Err(error.into()),
     }
 }
 
-fn reference(target: RecordId, kind: mneme_core::RecordKind) -> Reference {
-    Reference::local(target, kind)
+fn reference(target: mneme_core::RecordId, kind: mneme_core::RecordKind) -> mneme_core::Reference {
+    mneme_core::Reference::local(target, kind)
 }
 
-fn pinned(target: RecordId, revision: RevisionId, kind: mneme_core::RecordKind) -> Reference {
-    Reference::pinned(target, revision, kind)
+fn pinned(
+    target: mneme_core::RecordId,
+    revision: mneme_core::RevisionId,
+    kind: mneme_core::RecordKind,
+) -> mneme_core::Reference {
+    mneme_core::Reference::pinned(target, revision, kind)
 }
 
-fn ref_set(references: &[Reference]) -> Value {
-    Value::set(references.iter().map(Reference::to_value))
+fn ref_set(references: &[mneme_core::Reference]) -> mneme_core::Value {
+    mneme_core::Value::set(references.iter().map(mneme_core::Reference::to_value))
 }
 
-fn valid_time_value(valid_time: ValidTime) -> Value {
+fn valid_time_value(valid_time: mneme_core::ValidTime) -> mneme_core::Value {
     valid_time.to_value()
 }
 
 /// Build a retained source revision and its exact source blob.
 #[allow(clippy::too_many_arguments)]
 pub fn build_source(
-    record_id: RecordId,
-    revision_id: RevisionId,
-    scope: &ScopeId,
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
     bytes: &[u8],
     media_type: &str,
-    entity: Option<RecordId>,
+    entity: Option<mneme_core::RecordId>,
     path_hint: Option<&str>,
-) -> Result<(RecordDraft, SourceBlobDraft)> {
+) -> crate::error::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
     let retained = mneme_core::RetainedSource::new(
-        ContentDigest::of_source_bytes(bytes),
+        mneme_core::ContentDigest::of_source_bytes(bytes),
         bytes.len() as u64,
         media_type,
     )
-    .map_err(|message| MemoryError::policy(message.to_owned()))?;
+    .map_err(|message| crate::error::MemoryError::policy(message.to_owned()))?;
     let mut entries = vec![
         (
-            Symbol::from("content"),
-            SourceContent::Retained(retained).to_value(),
+            mneme_core::Symbol::from("content"),
+            mneme_core::SourceContent::Retained(retained).to_value(),
         ),
-        (Symbol::from("acquisition"), Value::symbol("authored")),
+        (
+            mneme_core::Symbol::from("acquisition"),
+            mneme_core::Value::symbol("authored"),
+        ),
     ];
     if let Some(entity) = entity {
         entries.push((
-            Symbol::from("entity"),
+            mneme_core::Symbol::from("entity"),
             reference(entity, mneme_core::RecordKind::Entity).to_value(),
         ));
     }
     if let Some(path) = path_hint {
-        entries.push((Symbol::from("path-hint"), Value::string(path)));
+        entries.push((
+            mneme_core::Symbol::from("path-hint"),
+            mneme_core::Value::string(path),
+        ));
     }
     Ok((
-        RecordDraft {
+        mneme_store::RecordDraft {
             schema_version: 2,
             kind: mneme_core::RecordKind::SourceRevision,
             record_id,
             revision_id,
             predecessor: None,
             scope: scope.clone(),
-            payload: Payload::new(entries),
+            payload: mneme_core::Payload::new(entries),
         },
-        SourceBlobDraft {
+        mneme_store::SourceBlobDraft {
             bytes: bytes.to_vec(),
-            media_type: Symbol::from(media_type),
+            media_type: mneme_core::Symbol::from(media_type),
         },
     ))
 }
@@ -536,14 +571,14 @@ pub fn build_source(
 /// Build an unavailable or pruned source revision.
 #[allow(clippy::too_many_arguments)]
 pub fn build_unavailable_source(
-    record_id: RecordId,
-    revision_id: RevisionId,
-    scope: &ScopeId,
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
     reason: &str,
     availability: &str,
-    entity: Option<RecordId>,
+    entity: Option<mneme_core::RecordId>,
     path_hint: Option<&str>,
-) -> RecordDraft {
+) -> mneme_store::RecordDraft {
     build_unavailable_source_with_digest(
         record_id,
         revision_id,
@@ -560,107 +595,131 @@ pub fn build_unavailable_source(
 /// bytes it no longer stores.
 #[allow(clippy::too_many_arguments)]
 pub fn build_unavailable_source_with_digest(
-    record_id: RecordId,
-    revision_id: RevisionId,
-    scope: &ScopeId,
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
     reason: &str,
     availability: &str,
-    prior_digest: Option<ContentDigest>,
-    entity: Option<RecordId>,
+    prior_digest: Option<mneme_core::ContentDigest>,
+    entity: Option<mneme_core::RecordId>,
     path_hint: Option<&str>,
-) -> RecordDraft {
+) -> mneme_store::RecordDraft {
     let mut entries = vec![
         (
-            Symbol::from("content"),
-            SourceContent::Unavailable {
+            mneme_core::Symbol::from("content"),
+            mneme_core::SourceContent::Unavailable {
                 reason: reason.to_owned(),
             }
             .to_value(),
         ),
-        (Symbol::from("acquisition"), Value::symbol("authored")),
-        (Symbol::from("availability"), Value::symbol(availability)),
+        (
+            mneme_core::Symbol::from("acquisition"),
+            mneme_core::Value::symbol("authored"),
+        ),
+        (
+            mneme_core::Symbol::from("availability"),
+            mneme_core::Value::symbol(availability),
+        ),
     ];
     if let Some(entity) = entity {
         entries.push((
-            Symbol::from("entity"),
+            mneme_core::Symbol::from("entity"),
             reference(entity, mneme_core::RecordKind::Entity).to_value(),
         ));
     }
     if let Some(path) = path_hint {
-        entries.push((Symbol::from("path-hint"), Value::string(path)));
+        entries.push((
+            mneme_core::Symbol::from("path-hint"),
+            mneme_core::Value::string(path),
+        ));
     }
     if let Some(digest) = prior_digest {
-        entries.push((Symbol::from("content-digest"), digest.to_value()));
+        entries.push((
+            mneme_core::Symbol::from("content-digest"),
+            digest.to_value(),
+        ));
     }
-    RecordDraft {
+    mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::SourceRevision,
         record_id,
         revision_id,
         predecessor: None,
         scope: scope.clone(),
-        payload: Payload::new(entries),
+        payload: mneme_core::Payload::new(entries),
     }
 }
 
 /// Build an episode, including optional related-record links.
 #[allow(clippy::too_many_arguments)]
 pub fn build_episode(
-    record_id: RecordId,
-    revision_id: RevisionId,
-    scope: &ScopeId,
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
     actor: &str,
     episode_type: &str,
-    occurred: ValidTime,
+    occurred: mneme_core::ValidTime,
     summary: &str,
-    source: Option<Reference>,
-    related: &[Reference],
-) -> RecordDraft {
+    source: Option<mneme_core::Reference>,
+    related: &[mneme_core::Reference],
+) -> mneme_store::RecordDraft {
     let mut entries = vec![
-        (Symbol::from("actor"), Value::string(actor)),
-        (Symbol::from("episode-type"), Value::symbol(episode_type)),
-        (Symbol::from("occurred"), valid_time_value(occurred)),
-        (Symbol::from("summary"), Value::string(summary)),
+        (
+            mneme_core::Symbol::from("actor"),
+            mneme_core::Value::string(actor),
+        ),
+        (
+            mneme_core::Symbol::from("episode-type"),
+            mneme_core::Value::symbol(episode_type),
+        ),
+        (
+            mneme_core::Symbol::from("occurred"),
+            valid_time_value(occurred),
+        ),
+        (
+            mneme_core::Symbol::from("summary"),
+            mneme_core::Value::string(summary),
+        ),
     ];
     if let Some(source) = source {
-        entries.push((Symbol::from("source"), source.to_value()));
+        entries.push((mneme_core::Symbol::from("source"), source.to_value()));
     }
     if !related.is_empty() {
-        entries.push((Symbol::from("related"), ref_set(related)));
+        entries.push((mneme_core::Symbol::from("related"), ref_set(related)));
     }
-    RecordDraft {
+    mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Episode,
         record_id,
         revision_id,
         predecessor: None,
         scope: scope.clone(),
-        payload: Payload::new(entries),
+        payload: mneme_core::Payload::new(entries),
     }
 }
 
 /// Build evidence over an exact source revision.
 #[allow(clippy::too_many_arguments)]
 pub fn build_evidence(
-    record_id: RecordId,
-    revision_id: RevisionId,
-    scope: &ScopeId,
-    assertion: RecordId,
-    source: RecordId,
-    source_revision: RevisionId,
-    span: Option<SourceSpan>,
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    assertion: mneme_core::RecordId,
+    source: mneme_core::RecordId,
+    source_revision: mneme_core::RevisionId,
+    span: Option<mneme_core::SourceSpan>,
     anchor: Option<&str>,
-    relation: SupportRelation,
-    origin: Origin,
-    ancestry: &[Reference],
-) -> RecordDraft {
+    relation: crate::model::SupportRelation,
+    origin: mneme_core::Origin,
+    ancestry: &[mneme_core::Reference],
+) -> mneme_store::RecordDraft {
     let mut entries = vec![
         (
-            Symbol::from("assertion"),
+            mneme_core::Symbol::from("assertion"),
             reference(assertion, mneme_core::RecordKind::Assertion).to_value(),
         ),
         (
-            Symbol::from("source"),
+            mneme_core::Symbol::from("source"),
             pinned(
                 source,
                 source_revision,
@@ -669,29 +728,35 @@ pub fn build_evidence(
             .to_value(),
         ),
         (
-            Symbol::from("relation"),
-            Value::symbol(match relation {
-                SupportRelation::Supports => "supports",
-                SupportRelation::Challenges => "challenges",
+            mneme_core::Symbol::from("relation"),
+            mneme_core::Value::symbol(match relation {
+                crate::model::SupportRelation::Supports => "supports",
+                crate::model::SupportRelation::Challenges => "challenges",
             }),
         ),
-        (Symbol::from("origin"), Value::symbol(origin.symbol())),
-        (Symbol::from("ancestry"), ref_set(ancestry)),
+        (
+            mneme_core::Symbol::from("origin"),
+            mneme_core::Value::symbol(origin.symbol()),
+        ),
+        (mneme_core::Symbol::from("ancestry"), ref_set(ancestry)),
     ];
     if let Some(span) = span {
-        entries.push((Symbol::from("span"), span.to_value()));
+        entries.push((mneme_core::Symbol::from("span"), span.to_value()));
     }
     if let Some(anchor) = anchor {
-        entries.push((Symbol::from("anchor"), Value::string(anchor)));
+        entries.push((
+            mneme_core::Symbol::from("anchor"),
+            mneme_core::Value::string(anchor),
+        ));
     }
-    RecordDraft {
+    mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Evidence,
         record_id,
         revision_id,
         predecessor: None,
         scope: scope.clone(),
-        payload: Payload::new(entries),
+        payload: mneme_core::Payload::new(entries),
     }
 }
 
@@ -699,122 +764,167 @@ pub fn build_evidence(
 /// accepted lifecycle.
 #[allow(clippy::too_many_arguments)]
 pub fn build_proposed_assertion(
-    record_id: RecordId,
-    revision_id: RevisionId,
-    scope: &ScopeId,
-    subject: RecordId,
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    subject: mneme_core::RecordId,
     predicate: &str,
-    value: Value,
-    stance: Stance,
-    origin: Origin,
+    value: mneme_core::Value,
+    stance: crate::model::Stance,
+    origin: mneme_core::Origin,
     asserted_by: &str,
-    valid_time: ValidTime,
-    evidence: &[Reference],
+    valid_time: mneme_core::ValidTime,
+    evidence: &[mneme_core::Reference],
     extraction: Option<(&str, &str)>,
-    superseded_by: Option<Reference>,
-) -> RecordDraft {
+    superseded_by: Option<mneme_core::Reference>,
+) -> mneme_store::RecordDraft {
     let mut entries = vec![
         (
-            Symbol::from("subject"),
+            mneme_core::Symbol::from("subject"),
             reference(subject, mneme_core::RecordKind::Entity).to_value(),
         ),
-        (Symbol::from("predicate"), Value::symbol(predicate)),
-        (Symbol::from("value"), value),
         (
-            Symbol::from("stance"),
-            Value::symbol(match stance {
-                Stance::Affirm => "affirm",
-                Stance::Deny => "deny",
-                Stance::Hypothesis => "hypothesis",
+            mneme_core::Symbol::from("predicate"),
+            mneme_core::Value::symbol(predicate),
+        ),
+        (mneme_core::Symbol::from("value"), value),
+        (
+            mneme_core::Symbol::from("stance"),
+            mneme_core::Value::symbol(match stance {
+                crate::model::Stance::Affirm => "affirm",
+                crate::model::Stance::Deny => "deny",
+                crate::model::Stance::Hypothesis => "hypothesis",
             }),
         ),
-        (Symbol::from("lifecycle"), Value::symbol("proposed")),
-        (Symbol::from("origin"), Value::symbol(origin.symbol())),
-        (Symbol::from("asserted-by"), Value::string(asserted_by)),
-        (Symbol::from("valid-time"), valid_time_value(valid_time)),
-        (Symbol::from("evidence"), ref_set(evidence)),
+        (
+            mneme_core::Symbol::from("lifecycle"),
+            mneme_core::Value::symbol("proposed"),
+        ),
+        (
+            mneme_core::Symbol::from("origin"),
+            mneme_core::Value::symbol(origin.symbol()),
+        ),
+        (
+            mneme_core::Symbol::from("asserted-by"),
+            mneme_core::Value::string(asserted_by),
+        ),
+        (
+            mneme_core::Symbol::from("valid-time"),
+            valid_time_value(valid_time),
+        ),
+        (mneme_core::Symbol::from("evidence"), ref_set(evidence)),
     ];
     if let Some((model, prompt)) = extraction {
         entries.push((
-            Symbol::from("extraction"),
-            Value::record_named(
+            mneme_core::Symbol::from("extraction"),
+            mneme_core::Value::record_named(
                 "extraction",
-                vec![Value::string(model), Value::string(prompt)],
+                vec![
+                    mneme_core::Value::string(model),
+                    mneme_core::Value::string(prompt),
+                ],
             ),
         ));
     }
     if let Some(superseded_by) = superseded_by {
-        entries.push((Symbol::from("superseded-by"), superseded_by.to_value()));
+        entries.push((
+            mneme_core::Symbol::from("superseded-by"),
+            superseded_by.to_value(),
+        ));
     }
-    RecordDraft {
+    mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Assertion,
         record_id,
         revision_id,
         predecessor: None,
         scope: scope.clone(),
-        payload: Payload::new(entries),
+        payload: mneme_core::Payload::new(entries),
     }
 }
 
 /// Build an attributed decision.
 #[allow(clippy::too_many_arguments)]
 pub fn build_decision(
-    record_id: RecordId,
-    revision_id: RevisionId,
-    scope: &ScopeId,
-    kind: DecisionKind,
-    target: RecordId,
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    kind: crate::model::DecisionKind,
+    target: mneme_core::RecordId,
     actor: &str,
     policy: &str,
-    input_revision: WorkspaceRevisionId,
+    input_revision: mneme_core::WorkspaceRevisionId,
     outcome: &str,
     rationale: &str,
-    evidence: &[Reference],
-    related: &[Reference],
-) -> RecordDraft {
+    evidence: &[mneme_core::Reference],
+    related: &[mneme_core::Reference],
+) -> mneme_store::RecordDraft {
     let mut entries = vec![
-        (Symbol::from("decision-kind"), Value::symbol(kind.name())),
         (
-            Symbol::from("target"),
+            mneme_core::Symbol::from("decision-kind"),
+            mneme_core::Value::symbol(kind.name()),
+        ),
+        (
+            mneme_core::Symbol::from("target"),
             reference(target, mneme_core::RecordKind::Assertion).to_value(),
         ),
-        (Symbol::from("actor"), Value::string(actor)),
-        (Symbol::from("policy"), Value::string(policy)),
-        (Symbol::from("input-revision"), input_revision.to_value()),
-        (Symbol::from("outcome"), Value::symbol(outcome)),
-        (Symbol::from("rationale"), Value::string(rationale)),
-        (Symbol::from("evidence"), ref_set(evidence)),
+        (
+            mneme_core::Symbol::from("actor"),
+            mneme_core::Value::string(actor),
+        ),
+        (
+            mneme_core::Symbol::from("policy"),
+            mneme_core::Value::string(policy),
+        ),
+        (
+            mneme_core::Symbol::from("input-revision"),
+            input_revision.to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("outcome"),
+            mneme_core::Value::symbol(outcome),
+        ),
+        (
+            mneme_core::Symbol::from("rationale"),
+            mneme_core::Value::string(rationale),
+        ),
+        (mneme_core::Symbol::from("evidence"), ref_set(evidence)),
     ];
     if !related.is_empty() {
-        entries.push((Symbol::from("related"), ref_set(related)));
+        entries.push((mneme_core::Symbol::from("related"), ref_set(related)));
     }
-    RecordDraft {
+    mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Decision,
         record_id,
         revision_id,
         predecessor: None,
         scope: scope.clone(),
-        payload: Payload::new(entries),
+        payload: mneme_core::Payload::new(entries),
     }
 }
 
 /// Build the next assertion revision with an explicit lifecycle and decision.
 pub fn build_assertion_revision(
-    assertion: &RecordEnvelope,
-    revision_id: RevisionId,
-    lifecycle: Lifecycle,
-    decision: Reference,
-    superseded_by: Option<Reference>,
-) -> RecordDraft {
+    assertion: &mneme_core::RecordEnvelope,
+    revision_id: mneme_core::RevisionId,
+    lifecycle: mneme_core::Lifecycle,
+    decision: mneme_core::Reference,
+    superseded_by: Option<mneme_core::Reference>,
+) -> mneme_store::RecordDraft {
     let mut payload = assertion.payload.clone();
-    payload.insert(Symbol::from("lifecycle"), Value::symbol(lifecycle.symbol()));
-    payload.insert(Symbol::from("decision"), decision.to_value());
+    payload.insert(
+        mneme_core::Symbol::from("lifecycle"),
+        mneme_core::Value::symbol(lifecycle.symbol()),
+    );
+    payload.insert(mneme_core::Symbol::from("decision"), decision.to_value());
     if let Some(superseded_by) = superseded_by {
-        payload.insert(Symbol::from("superseded-by"), superseded_by.to_value());
+        payload.insert(
+            mneme_core::Symbol::from("superseded-by"),
+            superseded_by.to_value(),
+        );
     }
-    RecordDraft {
+    mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Assertion,
         record_id: assertion.record_id,
@@ -828,36 +938,45 @@ pub fn build_assertion_revision(
 /// Build a derivation with a complete premise set.
 #[allow(clippy::too_many_arguments)]
 pub fn build_derivation(
-    record_id: RecordId,
-    revision_id: RevisionId,
-    scope: &ScopeId,
-    conclusion: RecordId,
-    premises: &[Reference],
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    conclusion: mneme_core::RecordId,
+    premises: &[mneme_core::Reference],
     rule_id: &str,
     rule_version: i64,
-    evaluation_revision: WorkspaceRevisionId,
+    evaluation_revision: mneme_core::WorkspaceRevisionId,
     completeness: &str,
-) -> RecordDraft {
-    RecordDraft {
+) -> mneme_store::RecordDraft {
+    mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Derivation,
         record_id,
         revision_id,
         predecessor: None,
         scope: scope.clone(),
-        payload: Payload::new([
+        payload: mneme_core::Payload::new([
             (
-                Symbol::from("conclusion"),
+                mneme_core::Symbol::from("conclusion"),
                 reference(conclusion, mneme_core::RecordKind::Assertion).to_value(),
             ),
-            (Symbol::from("premises"), ref_set(premises)),
-            (Symbol::from("rule-id"), Value::string(rule_id)),
-            (Symbol::from("rule-version"), Value::integer(rule_version)),
+            (mneme_core::Symbol::from("premises"), ref_set(premises)),
             (
-                Symbol::from("evaluation-revision"),
+                mneme_core::Symbol::from("rule-id"),
+                mneme_core::Value::string(rule_id),
+            ),
+            (
+                mneme_core::Symbol::from("rule-version"),
+                mneme_core::Value::integer(rule_version),
+            ),
+            (
+                mneme_core::Symbol::from("evaluation-revision"),
                 evaluation_revision.to_value(),
             ),
-            (Symbol::from("completeness"), Value::symbol(completeness)),
+            (
+                mneme_core::Symbol::from("completeness"),
+                mneme_core::Value::symbol(completeness),
+            ),
         ]),
     }
 }
@@ -865,36 +984,45 @@ pub fn build_derivation(
 /// Build a checkpoint pinned to the current episode/revision state.
 #[allow(clippy::too_many_arguments)]
 pub fn build_checkpoint(
-    record_id: RecordId,
-    revision_id: RevisionId,
-    scope: &ScopeId,
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
     goal: &str,
     state: &str,
-    episodes: &[Reference],
-    verified_outcomes: &[Reference],
-    revision: WorkspaceRevisionId,
+    episodes: &[mneme_core::Reference],
+    verified_outcomes: &[mneme_core::Reference],
+    revision: mneme_core::WorkspaceRevisionId,
     note: Option<&str>,
-) -> RecordDraft {
+) -> mneme_store::RecordDraft {
     let mut entries = vec![
-        (Symbol::from("goal"), Value::string(goal)),
-        (Symbol::from("state"), Value::symbol(state)),
-        (Symbol::from("episodes"), ref_set(episodes)),
         (
-            Symbol::from("verified-outcomes"),
+            mneme_core::Symbol::from("goal"),
+            mneme_core::Value::string(goal),
+        ),
+        (
+            mneme_core::Symbol::from("state"),
+            mneme_core::Value::symbol(state),
+        ),
+        (mneme_core::Symbol::from("episodes"), ref_set(episodes)),
+        (
+            mneme_core::Symbol::from("verified-outcomes"),
             ref_set(verified_outcomes),
         ),
-        (Symbol::from("revision"), revision.to_value()),
+        (mneme_core::Symbol::from("revision"), revision.to_value()),
     ];
     if let Some(note) = note {
-        entries.push((Symbol::from("note"), Value::string(note)));
+        entries.push((
+            mneme_core::Symbol::from("note"),
+            mneme_core::Value::string(note),
+        ));
     }
-    RecordDraft {
+    mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Checkpoint,
         record_id,
         revision_id,
         predecessor: None,
         scope: scope.clone(),
-        payload: Payload::new(entries),
+        payload: mneme_core::Payload::new(entries),
     }
 }

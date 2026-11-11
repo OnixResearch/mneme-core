@@ -6,13 +6,7 @@
 //! alone. Unknown validity, an open lower bound, an open upper bound, and an
 //! always-valid claim are distinct states; unknown validity is not the epoch.
 
-use std::fmt;
-
-use num_bigint::BigInt;
 use num_traits::ToPrimitive;
-
-use crate::error::{Diagnostic, ErrorCode, Path, Stage};
-use crate::value::Value;
 
 /// A UTC instant with nanosecond precision, stored as nanoseconds since the
 /// Unix epoch. The `i64` range covers 1677-09-21 through 2262-04-11.
@@ -156,16 +150,19 @@ impl Timestamp {
     }
 
     /// The typed Preserves instant record `<instant nanos>`.
-    pub fn to_value(self) -> Value {
-        Value::record_named("instant", vec![Value::integer(self.0)])
+    pub fn to_value(self) -> crate::value::Value {
+        crate::value::Value::record_named("instant", vec![crate::value::Value::integer(self.0)])
     }
 
     /// Decode `<instant nanos>`.
-    pub fn from_value(value: &Value, path: &Path) -> Result<Self, Diagnostic> {
+    pub fn from_value(
+        value: &crate::value::Value,
+        path: &crate::error::Path,
+    ) -> Result<Self, crate::error::Diagnostic> {
         let Some(record) = value.as_record() else {
             return Err(type_error(path, "expected <instant nanoseconds>"));
         };
-        if record.label() != &Value::symbol("instant") || record.fields().len() != 1 {
+        if record.label() != &crate::value::Value::symbol("instant") || record.fields().len() != 1 {
             return Err(type_error(path, "expected <instant nanoseconds>"));
         }
         let Some(integer) = record.fields()[0].as_integer() else {
@@ -175,9 +172,9 @@ impl Timestamp {
             ));
         };
         let Some(nanos) = integer.to_i64() else {
-            return Err(Diagnostic::new(
-                Stage::Domain,
-                ErrorCode::InvalidTimestamp,
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Domain,
+                crate::error::ErrorCode::InvalidTimestamp,
                 path.clone(),
                 "instant is outside the supported nanosecond range",
             ));
@@ -186,16 +183,16 @@ impl Timestamp {
     }
 }
 
-impl fmt::Display for Timestamp {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Timestamp {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.to_rfc3339())
     }
 }
 
-fn type_error(path: &Path, message: &'static str) -> Diagnostic {
-    Diagnostic::new(
-        Stage::Domain,
-        ErrorCode::TypeMismatch,
+fn type_error(path: &crate::error::Path, message: &'static str) -> crate::error::Diagnostic {
+    crate::error::Diagnostic::new(
+        crate::error::Stage::Domain,
+        crate::error::ErrorCode::TypeMismatch,
         path.clone(),
         message,
     )
@@ -329,16 +326,16 @@ impl ValidTime {
     }
 
     /// Validate an interval constructed through a decoder.
-    pub fn validate(&self, path: &Path) -> Result<(), Diagnostic> {
+    pub fn validate(&self, path: &crate::error::Path) -> Result<(), crate::error::Diagnostic> {
         if let ValidTime::Bounded {
             start: Some(start),
             end: Some(end),
         } = self
             && end < start
         {
-            return Err(Diagnostic::new(
-                Stage::Domain,
-                ErrorCode::InvalidInterval,
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Domain,
+                crate::error::ErrorCode::InvalidInterval,
                 path.clone(),
                 "valid-time end precedes its start",
             ));
@@ -347,28 +344,34 @@ impl ValidTime {
     }
 
     /// Encode as `<valid-time …>`.
-    pub fn to_value(self) -> Value {
+    pub fn to_value(self) -> crate::value::Value {
         match self {
-            ValidTime::Unknown => Value::record_named("valid-time", vec![Value::symbol("unknown")]),
+            ValidTime::Unknown => crate::value::Value::record_named(
+                "valid-time",
+                vec![crate::value::Value::symbol("unknown")],
+            ),
             ValidTime::Bounded { start, end } => {
                 let bound = |value: Option<Timestamp>| match value {
                     Some(timestamp) => timestamp.to_value(),
-                    None => Value::symbol("open"),
+                    None => crate::value::Value::symbol("open"),
                 };
-                Value::record_named("valid-time", vec![bound(start), bound(end)])
+                crate::value::Value::record_named("valid-time", vec![bound(start), bound(end)])
             }
         }
     }
 
     /// Decode `<valid-time unknown>` or `<valid-time start end>`.
-    pub fn from_value(value: &Value, path: &Path) -> Result<Self, Diagnostic> {
+    pub fn from_value(
+        value: &crate::value::Value,
+        path: &crate::error::Path,
+    ) -> Result<Self, crate::error::Diagnostic> {
         let Some(record) = value.as_record() else {
             return Err(type_error(
                 path,
                 "expected <valid-time unknown> or <valid-time start end>",
             ));
         };
-        if record.label() != &Value::symbol("valid-time") {
+        if record.label() != &crate::value::Value::symbol("valid-time") {
             return Err(type_error(
                 path,
                 "expected <valid-time unknown> or <valid-time start end>",
@@ -379,7 +382,7 @@ impl ValidTime {
                 Ok(ValidTime::Unknown)
             }
             [start, end] => {
-                let decode_bound = |value: &Value| -> Result<Option<Timestamp>, Diagnostic> {
+                let decode_bound = |value: &crate::value::Value| -> Result<Option<Timestamp>, crate::error::Diagnostic> {
                     if value.as_symbol().map(|symbol| symbol.as_str()) == Some("open") {
                         return Ok(None);
                     }
@@ -421,22 +424,27 @@ impl RecordedTime {
     }
 
     /// Encode as `<recorded-time <instant …> order>`.
-    pub fn to_value(self) -> Value {
-        Value::record_named(
+    pub fn to_value(self) -> crate::value::Value {
+        crate::value::Value::record_named(
             "recorded-time",
             vec![
                 self.at.to_value(),
-                Value::integer(BigInt::from(self.revision_order)),
+                crate::value::Value::integer(num_bigint::BigInt::from(self.revision_order)),
             ],
         )
     }
 
     /// Decode `<recorded-time <instant …> order>`.
-    pub fn from_value(value: &Value, path: &Path) -> Result<Self, Diagnostic> {
+    pub fn from_value(
+        value: &crate::value::Value,
+        path: &crate::error::Path,
+    ) -> Result<Self, crate::error::Diagnostic> {
         let Some(record) = value.as_record() else {
             return Err(type_error(path, "expected <recorded-time instant order>"));
         };
-        if record.label() != &Value::symbol("recorded-time") || record.fields().len() != 2 {
+        if record.label() != &crate::value::Value::symbol("recorded-time")
+            || record.fields().len() != 2
+        {
             return Err(type_error(path, "expected <recorded-time instant order>"));
         }
         let at = Timestamp::from_value(&record.fields()[0], path)?;
@@ -507,7 +515,8 @@ mod tests {
         ] {
             assert_ne!(left, right);
             assert_eq!(
-                ValidTime::from_value(&left.to_value(), &Path::root()).expect("decode"),
+                ValidTime::from_value(&left.to_value(), &crate::error::Path::root())
+                    .expect("decode"),
                 left
             );
         }
@@ -517,20 +526,26 @@ mod tests {
     fn invalid_interval_is_rejected_at_its_field_path() {
         let start = Timestamp::from_nanos(2_000);
         let end = Timestamp::from_nanos(1_000);
-        let value = Value::record_named("valid-time", vec![start.to_value(), end.to_value()]);
-        let decoded = ValidTime::from_value(&value, &Path::root()).expect("structurally valid");
+        let value =
+            crate::value::Value::record_named("valid-time", vec![start.to_value(), end.to_value()]);
+        let decoded =
+            ValidTime::from_value(&value, &crate::error::Path::root()).expect("structurally valid");
         let error = decoded
-            .validate(&Path::root().field("payload").field("valid-time"))
+            .validate(
+                &crate::error::Path::root()
+                    .field("payload")
+                    .field("valid-time"),
+            )
             .expect_err("end precedes start");
-        assert_eq!(error.code, ErrorCode::InvalidInterval);
+        assert_eq!(error.code, crate::error::ErrorCode::InvalidInterval);
         assert_eq!(error.path.to_string(), "$.payload.valid-time");
     }
 
     #[test]
     fn recorded_time_keeps_wall_clock_and_order_separate() {
         let recorded = RecordedTime::new(Timestamp::from_nanos(5), 17);
-        let decoded =
-            RecordedTime::from_value(&recorded.to_value(), &Path::root()).expect("decode");
+        let decoded = RecordedTime::from_value(&recorded.to_value(), &crate::error::Path::root())
+            .expect("decode");
         assert_eq!(decoded, recorded);
         assert_eq!(decoded.revision_order(), 17);
         assert_eq!(decoded.at().nanos(), 5);

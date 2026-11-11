@@ -1,18 +1,6 @@
 //! Versioned tagged-JSON command envelopes and local session authorization.
 
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
-
-use mneme_core::{
-    ContentDigest, Diagnostic, RecordEnvelope, RecordId, RevisionId, SchemaRegistry, ScopeClass,
-    ScopeId, Timestamp, Value, WorkspaceRevisionId, validate_record_value,
-};
-use mneme_recall::{RecallMode, TemporalMode};
-use mneme_retention::Selector;
-use mneme_store::SourceBlobDraft;
 use serde::Deserialize;
-
-use crate::error::{ApiError, ApiResult};
 
 /// Command format and version.
 pub const COMMAND_FORMAT: &str = "mneme.agent-command";
@@ -25,7 +13,7 @@ pub const RESULT_VERSION: u64 = 1;
 #[derive(Clone, Debug, Deserialize)]
 pub struct SessionConfig {
     pub principal: String,
-    pub workspace_root: PathBuf,
+    pub workspace_root: std::path::PathBuf,
     pub scopes: Vec<String>,
 }
 
@@ -33,20 +21,24 @@ pub struct SessionConfig {
 #[derive(Clone, Debug)]
 pub struct LocalSession {
     pub principal: String,
-    pub workspace_root: PathBuf,
-    scopes: BTreeSet<ScopeId>,
+    pub workspace_root: std::path::PathBuf,
+    scopes: std::collections::BTreeSet<mneme_core::ScopeId>,
 }
 
 impl LocalSession {
-    pub fn load(path: &Path) -> ApiResult<Self> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|error| ApiError::invalid(format!("cannot read session file: {error}")))?;
-        let config: SessionConfig = serde_json::from_str(&text)
-            .map_err(|error| ApiError::invalid(format!("invalid session file: {error}")))?;
+    pub fn load(path: &std::path::Path) -> crate::error::ApiResult<Self> {
+        let text = std::fs::read_to_string(path).map_err(|error| {
+            crate::error::ApiError::invalid(format!("cannot read session file: {error}"))
+        })?;
+        let config: SessionConfig = serde_json::from_str(&text).map_err(|error| {
+            crate::error::ApiError::invalid(format!("invalid session file: {error}"))
+        })?;
         if config.principal.trim().is_empty() {
-            return Err(ApiError::invalid("session principal must not be empty"));
+            return Err(crate::error::ApiError::invalid(
+                "session principal must not be empty",
+            ));
         }
-        let mut scopes = BTreeSet::new();
+        let mut scopes = std::collections::BTreeSet::new();
         for scope in config.scopes {
             scopes.insert(parse_scope_text(&scope)?);
         }
@@ -57,15 +49,15 @@ impl LocalSession {
         })
     }
 
-    pub fn authorize(&self, scope: &ScopeId) -> ApiResult<()> {
+    pub fn authorize(&self, scope: &mneme_core::ScopeId) -> crate::error::ApiResult<()> {
         if self.scopes.contains(scope) {
             Ok(())
         } else {
-            Err(ApiError::denied())
+            Err(crate::error::ApiError::denied())
         }
     }
 
-    pub fn scopes(&self) -> impl Iterator<Item = &ScopeId> {
+    pub fn scopes(&self) -> impl Iterator<Item = &mneme_core::ScopeId> {
         self.scopes.iter()
     }
 }
@@ -75,32 +67,32 @@ impl LocalSession {
 pub enum ApiCommand {
     Record {
         request_id: String,
-        scope: ScopeId,
-        base: WorkspaceRevisionId,
+        scope: mneme_core::ScopeId,
+        base: mneme_core::WorkspaceRevisionId,
         key: String,
-        records: Vec<RecordEnvelope>,
-        sources: Vec<SourceBlobDraft>,
+        records: Vec<mneme_core::RecordEnvelope>,
+        sources: Vec<mneme_store::SourceBlobDraft>,
     },
     Accept {
         request_id: String,
-        scope: ScopeId,
-        base: WorkspaceRevisionId,
+        scope: mneme_core::ScopeId,
+        base: mneme_core::WorkspaceRevisionId,
         key: String,
-        assertion: RecordId,
-        decision: RecordId,
-        decision_revision: RevisionId,
-        accepted_revision: RevisionId,
+        assertion: mneme_core::RecordId,
+        decision: mneme_core::RecordId,
+        decision_revision: mneme_core::RevisionId,
+        accepted_revision: mneme_core::RevisionId,
         policy: String,
         rationale: String,
     },
     Recall {
         request_id: String,
-        scope: ScopeId,
-        revision: Option<WorkspaceRevisionId>,
+        scope: mneme_core::ScopeId,
+        revision: Option<mneme_core::WorkspaceRevisionId>,
         query: String,
-        at: Timestamp,
-        temporal: TemporalMode,
-        modes: BTreeSet<RecallMode>,
+        at: mneme_core::Timestamp,
+        temporal: mneme_recall::TemporalMode,
+        modes: std::collections::BTreeSet<mneme_recall::RecallMode>,
         allow_stale: bool,
         allow_fallback: bool,
         allow_partial: bool,
@@ -113,41 +105,41 @@ pub enum ApiCommand {
     },
     Explain {
         request_id: String,
-        scope: ScopeId,
-        assertion: RecordId,
+        scope: mneme_core::ScopeId,
+        assertion: mneme_core::RecordId,
         max_nodes: usize,
         max_excerpt_bytes: usize,
     },
     Revise {
         request_id: String,
-        scope: ScopeId,
-        base: WorkspaceRevisionId,
+        scope: mneme_core::ScopeId,
+        base: mneme_core::WorkspaceRevisionId,
         key: String,
-        assertion: RecordId,
+        assertion: mneme_core::RecordId,
         action: ReviseAction,
         rationale: String,
-        decision: RecordId,
-        decision_revision: RevisionId,
-        revised_revision: RevisionId,
-        superseded_by: Option<RecordId>,
+        decision: mneme_core::RecordId,
+        decision_revision: mneme_core::RevisionId,
+        revised_revision: mneme_core::RevisionId,
+        superseded_by: Option<mneme_core::RecordId>,
     },
     Resume {
         request_id: String,
-        scope: ScopeId,
-        checkpoint: RecordId,
+        scope: mneme_core::ScopeId,
+        checkpoint: mneme_core::RecordId,
     },
     Forget {
         request_id: String,
-        scope: ScopeId,
-        base: WorkspaceRevisionId,
+        scope: mneme_core::ScopeId,
+        base: mneme_core::WorkspaceRevisionId,
         key: String,
-        selector: Selector,
-        effective: Option<Timestamp>,
+        selector: mneme_retention::Selector,
+        effective: Option<mneme_core::Timestamp>,
     },
     ProposalInspect {
         request_id: String,
-        scope: ScopeId,
-        assertion: RecordId,
+        scope: mneme_core::ScopeId,
+        assertion: mneme_core::RecordId,
     },
     Capabilities {
         request_id: String,
@@ -191,7 +183,7 @@ impl ApiCommand {
         }
     }
 
-    pub fn scope(&self) -> Option<&ScopeId> {
+    pub fn scope(&self) -> Option<&mneme_core::ScopeId> {
         match self {
             ApiCommand::Record { scope, .. }
             | ApiCommand::Accept { scope, .. }
@@ -205,16 +197,16 @@ impl ApiCommand {
         }
     }
 
-    pub fn from_value(value: &Value) -> ApiResult<Self> {
+    pub fn from_value(value: &mneme_core::Value) -> crate::error::ApiResult<Self> {
         let envelope = Fields::new(value)?;
         if envelope.text("format")? != COMMAND_FORMAT {
-            return Err(ApiError::new(
+            return Err(crate::error::ApiError::new(
                 crate::error::ApiErrorCode::UnsupportedVersion,
                 "unsupported command format",
             ));
         }
         if envelope.integer("version")? != COMMAND_VERSION as i64 {
-            return Err(ApiError::new(
+            return Err(crate::error::ApiError::new(
                 crate::error::ApiErrorCode::UnsupportedVersion,
                 "unsupported command version",
             ));
@@ -231,10 +223,10 @@ impl ApiCommand {
                 let records = fields
                     .field("records")?
                     .as_sequence()
-                    .ok_or_else(|| ApiError::invalid("records must be a sequence"))?
+                    .ok_or_else(|| crate::error::ApiError::invalid("records must be a sequence"))?
                     .iter()
                     .map(parse_record)
-                    .collect::<ApiResult<Vec<_>>>()?;
+                    .collect::<crate::error::ApiResult<Vec<_>>>()?;
                 let sources = match fields.optional("sources") {
                     Some(value) => parse_sources(value)?,
                     None => Vec::new(),
@@ -267,7 +259,7 @@ impl ApiCommand {
                 let fields = Fields::new(payload)?;
                 let modes = match fields.optional("modes") {
                     Some(value) => parse_modes(value)?,
-                    None => BTreeSet::from([RecallMode::Lexical]),
+                    None => std::collections::BTreeSet::from([mneme_recall::RecallMode::Lexical]),
                 };
                 Ok(ApiCommand::Recall {
                     request_id,
@@ -342,7 +334,7 @@ impl ApiCommand {
                 })
             }
             "capabilities" => Ok(ApiCommand::Capabilities { request_id }),
-            _ => Err(ApiError::new(
+            _ => Err(crate::error::ApiError::new(
                 crate::error::ApiErrorCode::UnsupportedVersion,
                 "unsupported operation",
             )),
@@ -350,14 +342,17 @@ impl ApiCommand {
     }
 }
 
-fn parse_record(value: &Value) -> ApiResult<RecordEnvelope> {
-    validate_record_value(value, &SchemaRegistry::production(), None).map_err(ApiError::diagnostics)
+fn parse_record(value: &mneme_core::Value) -> crate::error::ApiResult<mneme_core::RecordEnvelope> {
+    mneme_core::validate_record_value(value, &mneme_core::SchemaRegistry::production(), None)
+        .map_err(crate::error::ApiError::diagnostics)
 }
 
-fn parse_sources(value: &Value) -> ApiResult<Vec<SourceBlobDraft>> {
+fn parse_sources(
+    value: &mneme_core::Value,
+) -> crate::error::ApiResult<Vec<mneme_store::SourceBlobDraft>> {
     let sequence = value
         .as_sequence()
-        .ok_or_else(|| ApiError::invalid("sources must be a sequence"))?;
+        .ok_or_else(|| crate::error::ApiError::invalid("sources must be a sequence"))?;
     sequence
         .iter()
         .map(|source| {
@@ -365,10 +360,12 @@ fn parse_sources(value: &Value) -> ApiResult<Vec<SourceBlobDraft>> {
             let bytes = fields
                 .field("bytes")?
                 .as_bytes()
-                .ok_or_else(|| ApiError::invalid("source bytes must be a byte string"))?
+                .ok_or_else(|| {
+                    crate::error::ApiError::invalid("source bytes must be a byte string")
+                })?
                 .to_vec();
             let media_type = fields.text("media-type")?.to_owned();
-            Ok(SourceBlobDraft {
+            Ok(mneme_store::SourceBlobDraft {
                 bytes,
                 media_type: media_type.as_str().into(),
             })
@@ -376,192 +373,216 @@ fn parse_sources(value: &Value) -> ApiResult<Vec<SourceBlobDraft>> {
         .collect()
 }
 
-fn parse_modes(value: &Value) -> ApiResult<BTreeSet<RecallMode>> {
+fn parse_modes(
+    value: &mneme_core::Value,
+) -> crate::error::ApiResult<std::collections::BTreeSet<mneme_recall::RecallMode>> {
     let sequence = value
         .as_sequence()
-        .ok_or_else(|| ApiError::invalid("modes must be a sequence"))?;
+        .ok_or_else(|| crate::error::ApiError::invalid("modes must be a sequence"))?;
     sequence
         .iter()
         .map(
             |value| match value.as_symbol().map(|symbol| symbol.as_str()) {
-                Some("lexical") => Ok(RecallMode::Lexical),
-                Some("structured") => Ok(RecallMode::Structured),
-                Some("vector") => Ok(RecallMode::Vector),
-                _ => Err(ApiError::invalid("unknown recall mode")),
+                Some("lexical") => Ok(mneme_recall::RecallMode::Lexical),
+                Some("structured") => Ok(mneme_recall::RecallMode::Structured),
+                Some("vector") => Ok(mneme_recall::RecallMode::Vector),
+                _ => Err(crate::error::ApiError::invalid("unknown recall mode")),
             },
         )
         .collect()
 }
 
-fn parse_temporal(value: &str) -> ApiResult<TemporalMode> {
+fn parse_temporal(value: &str) -> crate::error::ApiResult<mneme_recall::TemporalMode> {
     match value {
-        "current" => Ok(TemporalMode::Current),
-        "historical" => Ok(TemporalMode::Historical),
-        "inspection" => Ok(TemporalMode::Inspection),
-        _ => Err(ApiError::invalid("unknown temporal mode")),
+        "current" => Ok(mneme_recall::TemporalMode::Current),
+        "historical" => Ok(mneme_recall::TemporalMode::Historical),
+        "inspection" => Ok(mneme_recall::TemporalMode::Inspection),
+        _ => Err(crate::error::ApiError::invalid("unknown temporal mode")),
     }
 }
 
-fn parse_action(value: &str) -> ApiResult<ReviseAction> {
+fn parse_action(value: &str) -> crate::error::ApiResult<ReviseAction> {
     match value {
         "supersede" | "correct" => Ok(ReviseAction::Supersede),
         "dispute" => Ok(ReviseAction::Dispute),
         "retract" => Ok(ReviseAction::Retract),
-        _ => Err(ApiError::invalid("unknown revision action")),
+        _ => Err(crate::error::ApiError::invalid("unknown revision action")),
     }
 }
 
-fn parse_selector(value: &Value) -> ApiResult<Selector> {
+fn parse_selector(value: &mneme_core::Value) -> crate::error::ApiResult<mneme_retention::Selector> {
     let fields = Fields::new(value)?;
     match fields.symbol("kind")? {
-        "source" => Ok(Selector::Source(fields.record("target")?)),
-        "assertion" => Ok(Selector::Assertion(fields.record("target")?)),
-        "source-support" => Ok(Selector::SourceSupport(fields.record("target")?)),
+        "source" => Ok(mneme_retention::Selector::Source(fields.record("target")?)),
+        "assertion" => Ok(mneme_retention::Selector::Assertion(
+            fields.record("target")?,
+        )),
+        "source-support" => Ok(mneme_retention::Selector::SourceSupport(
+            fields.record("target")?,
+        )),
         "digest" => {
-            let digest = ContentDigest::from_value(
+            let digest = mneme_core::ContentDigest::from_value(
                 fields.field("target")?,
                 &mneme_core::Path::root().field("target"),
             )
-            .map_err(ApiError::from_diagnostic)?;
-            Ok(Selector::Content(digest))
+            .map_err(crate::error::ApiError::from_diagnostic)?;
+            Ok(mneme_retention::Selector::Content(digest))
         }
-        _ => Err(ApiError::invalid("unknown forget selector")),
+        _ => Err(crate::error::ApiError::invalid("unknown forget selector")),
     }
 }
 
-fn parse_scope_text(text: &str) -> ApiResult<ScopeId> {
+fn parse_scope_text(text: &str) -> crate::error::ApiResult<mneme_core::ScopeId> {
     let (class, local) = text
         .split_once(':')
-        .ok_or_else(|| ApiError::invalid("scope must be class:local"))?;
-    let class = ScopeClass::parse(class).ok_or_else(|| ApiError::invalid("unknown scope class"))?;
-    ScopeId::new(class, local).map_err(ApiError::invalid)
+        .ok_or_else(|| crate::error::ApiError::invalid("scope must be class:local"))?;
+    let class = mneme_core::ScopeClass::parse(class)
+        .ok_or_else(|| crate::error::ApiError::invalid("unknown scope class"))?;
+    mneme_core::ScopeId::new(class, local).map_err(crate::error::ApiError::invalid)
 }
 
 struct Fields<'a> {
-    values: &'a std::collections::BTreeMap<Value, Value>,
+    values: &'a std::collections::BTreeMap<mneme_core::Value, mneme_core::Value>,
 }
 
 impl<'a> Fields<'a> {
-    fn new(value: &'a Value) -> ApiResult<Self> {
+    fn new(value: &'a mneme_core::Value) -> crate::error::ApiResult<Self> {
         let values = value
             .as_dictionary()
-            .ok_or_else(|| ApiError::invalid("expected an object"))?;
+            .ok_or_else(|| crate::error::ApiError::invalid("expected an object"))?;
         Ok(Fields { values })
     }
 
-    fn field(&self, name: &str) -> ApiResult<&'a Value> {
+    fn field(&self, name: &str) -> crate::error::ApiResult<&'a mneme_core::Value> {
         self.values
-            .get(&Value::symbol(name))
-            .ok_or_else(|| ApiError::invalid(format!("missing field {name}")))
+            .get(&mneme_core::Value::symbol(name))
+            .ok_or_else(|| crate::error::ApiError::invalid(format!("missing field {name}")))
     }
 
-    fn optional(&self, name: &str) -> Option<&'a Value> {
-        self.values.get(&Value::symbol(name))
+    fn optional(&self, name: &str) -> Option<&'a mneme_core::Value> {
+        self.values.get(&mneme_core::Value::symbol(name))
     }
 
-    fn text(&self, name: &str) -> ApiResult<&'a str> {
+    fn text(&self, name: &str) -> crate::error::ApiResult<&'a str> {
         self.field(name)?
             .as_string()
-            .ok_or_else(|| ApiError::invalid(format!("{name} must be text")))
+            .ok_or_else(|| crate::error::ApiError::invalid(format!("{name} must be text")))
     }
 
-    fn symbol(&self, name: &str) -> ApiResult<&'a str> {
+    fn symbol(&self, name: &str) -> crate::error::ApiResult<&'a str> {
         self.field(name)?
             .as_symbol()
             .map(|symbol| symbol.as_str())
-            .ok_or_else(|| ApiError::invalid(format!("{name} must be a symbol")))
+            .ok_or_else(|| crate::error::ApiError::invalid(format!("{name} must be a symbol")))
     }
 
-    fn integer(&self, name: &str) -> ApiResult<i64> {
+    fn integer(&self, name: &str) -> crate::error::ApiResult<i64> {
         self.field(name)?
             .as_integer()
             .and_then(|integer| integer.to_i64())
-            .ok_or_else(|| ApiError::invalid(format!("{name} must be an integer")))
+            .ok_or_else(|| crate::error::ApiError::invalid(format!("{name} must be an integer")))
     }
 
     fn boolean_or(&self, name: &str, default: bool) -> bool {
         self.optional(name)
-            .and_then(Value::as_boolean)
+            .and_then(mneme_core::Value::as_boolean)
             .unwrap_or(default)
     }
 
-    fn usize_or(&self, name: &str, default: usize) -> ApiResult<usize> {
+    fn usize_or(&self, name: &str, default: usize) -> crate::error::ApiResult<usize> {
         match self.optional(name) {
             Some(value) => value
                 .as_integer()
                 .and_then(|integer| integer.to_i64())
                 .and_then(|integer| usize::try_from(integer).ok())
-                .ok_or_else(|| ApiError::invalid(format!("{name} must be a non-negative integer"))),
+                .ok_or_else(|| {
+                    crate::error::ApiError::invalid(format!(
+                        "{name} must be a non-negative integer"
+                    ))
+                }),
             None => Ok(default),
         }
     }
 
-    fn u128_or(&self, name: &str, default: u128) -> ApiResult<u128> {
+    fn u128_or(&self, name: &str, default: u128) -> crate::error::ApiResult<u128> {
         match self.optional(name) {
             Some(value) => value
                 .as_integer()
                 .and_then(|integer| integer.to_i64())
                 .and_then(|integer| u128::try_from(integer).ok())
-                .ok_or_else(|| ApiError::invalid(format!("{name} must be a non-negative integer"))),
+                .ok_or_else(|| {
+                    crate::error::ApiError::invalid(format!(
+                        "{name} must be a non-negative integer"
+                    ))
+                }),
             None => Ok(default),
         }
     }
 
-    fn record(&self, name: &str) -> ApiResult<RecordId> {
-        RecordId::from_value(self.field(name)?, &mneme_core::Path::root())
-            .map_err(ApiError::from_diagnostic)
+    fn record(&self, name: &str) -> crate::error::ApiResult<mneme_core::RecordId> {
+        mneme_core::RecordId::from_value(self.field(name)?, &mneme_core::Path::root())
+            .map_err(crate::error::ApiError::from_diagnostic)
     }
 
-    fn optional_record(&self, name: &str) -> ApiResult<Option<RecordId>> {
+    fn optional_record(&self, name: &str) -> crate::error::ApiResult<Option<mneme_core::RecordId>> {
         self.optional(name)
             .map(|value| {
-                RecordId::from_value(value, &mneme_core::Path::root())
-                    .map_err(ApiError::from_diagnostic)
+                mneme_core::RecordId::from_value(value, &mneme_core::Path::root())
+                    .map_err(crate::error::ApiError::from_diagnostic)
             })
             .transpose()
     }
 
-    fn revision(&self, name: &str) -> ApiResult<WorkspaceRevisionId> {
-        WorkspaceRevisionId::from_value(self.field(name)?, &mneme_core::Path::root())
-            .map_err(ApiError::from_diagnostic)
+    fn revision(&self, name: &str) -> crate::error::ApiResult<mneme_core::WorkspaceRevisionId> {
+        mneme_core::WorkspaceRevisionId::from_value(self.field(name)?, &mneme_core::Path::root())
+            .map_err(crate::error::ApiError::from_diagnostic)
     }
 
-    fn optional_revision(&self, name: &str) -> ApiResult<Option<WorkspaceRevisionId>> {
+    fn optional_revision(
+        &self,
+        name: &str,
+    ) -> crate::error::ApiResult<Option<mneme_core::WorkspaceRevisionId>> {
         self.optional(name)
             .map(|value| {
-                WorkspaceRevisionId::from_value(value, &mneme_core::Path::root())
-                    .map_err(ApiError::from_diagnostic)
+                mneme_core::WorkspaceRevisionId::from_value(value, &mneme_core::Path::root())
+                    .map_err(crate::error::ApiError::from_diagnostic)
             })
             .transpose()
     }
 
-    fn revision_id(&self, name: &str) -> ApiResult<RevisionId> {
-        RevisionId::from_value(self.field(name)?, &mneme_core::Path::root())
-            .map_err(ApiError::from_diagnostic)
+    fn revision_id(&self, name: &str) -> crate::error::ApiResult<mneme_core::RevisionId> {
+        mneme_core::RevisionId::from_value(self.field(name)?, &mneme_core::Path::root())
+            .map_err(crate::error::ApiError::from_diagnostic)
     }
 
-    fn scope(&self, name: &str) -> ApiResult<ScopeId> {
+    fn scope(&self, name: &str) -> crate::error::ApiResult<mneme_core::ScopeId> {
         let value = self.field(name)?;
         if let Some(text) = value.as_string() {
             return parse_scope_text(text);
         }
-        ScopeId::from_value(value, &mneme_core::Path::root()).map_err(ApiError::from_diagnostic)
+        mneme_core::ScopeId::from_value(value, &mneme_core::Path::root())
+            .map_err(crate::error::ApiError::from_diagnostic)
     }
 
-    fn timestamp(&self, name: &str) -> ApiResult<Timestamp> {
+    fn timestamp(&self, name: &str) -> crate::error::ApiResult<mneme_core::Timestamp> {
         let text = self.text(name)?;
-        Timestamp::parse(text).map_err(|message| ApiError::invalid(format!("{name}: {message}")))
+        mneme_core::Timestamp::parse(text)
+            .map_err(|message| crate::error::ApiError::invalid(format!("{name}: {message}")))
     }
 
-    fn optional_timestamp(&self, name: &str) -> ApiResult<Option<Timestamp>> {
+    fn optional_timestamp(
+        &self,
+        name: &str,
+    ) -> crate::error::ApiResult<Option<mneme_core::Timestamp>> {
         self.optional(name)
             .map(|value| {
                 value
                     .as_string()
-                    .ok_or_else(|| ApiError::invalid(format!("{name} must be text")))
+                    .ok_or_else(|| crate::error::ApiError::invalid(format!("{name} must be text")))
                     .and_then(|text| {
-                        Timestamp::parse(text)
-                            .map_err(|message| ApiError::invalid(format!("{name}: {message}")))
+                        mneme_core::Timestamp::parse(text).map_err(|message| {
+                            crate::error::ApiError::invalid(format!("{name}: {message}"))
+                        })
                     })
             })
             .transpose()
@@ -569,7 +590,7 @@ impl<'a> Fields<'a> {
 }
 
 /// Convert a validated envelope to a coordinator draft.
-pub fn record_draft(record: RecordEnvelope) -> mneme_store::RecordDraft {
+pub fn record_draft(record: mneme_core::RecordEnvelope) -> mneme_store::RecordDraft {
     mneme_store::RecordDraft {
         schema_version: record.schema_version,
         kind: record.kind,
@@ -582,17 +603,18 @@ pub fn record_draft(record: RecordEnvelope) -> mneme_store::RecordDraft {
 }
 
 /// Decode a tagged JSON command document.
-pub fn decode_command(text: &str) -> ApiResult<ApiCommand> {
-    let value = mneme_core::decode_document(text).map_err(ApiError::from_diagnostic)?;
+pub fn decode_command(text: &str) -> crate::error::ApiResult<ApiCommand> {
+    let value =
+        mneme_core::decode_document(text).map_err(crate::error::ApiError::from_diagnostic)?;
     ApiCommand::from_value(&value)
 }
 
 /// Field diagnostic helper for adapters.
-pub fn diagnostic_fields(diagnostics: Vec<Diagnostic>) -> Value {
-    Value::sequence(
+pub fn diagnostic_fields(diagnostics: Vec<mneme_core::Diagnostic>) -> mneme_core::Value {
+    mneme_core::Value::sequence(
         diagnostics
             .into_iter()
-            .map(|diagnostic| Value::string(diagnostic.to_string()))
+            .map(|diagnostic| mneme_core::Value::string(diagnostic.to_string()))
             .collect(),
     )
 }

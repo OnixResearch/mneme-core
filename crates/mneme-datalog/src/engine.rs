@@ -1,76 +1,63 @@
 //! Snapshot fact loading, bounded fixpoint evaluation, and coverage.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
-
-use mneme_core::{Lifecycle, RecordEnvelope, RecordId, RecordKind, Reference, ScopeId, Value};
-use mneme_memory::{AssertionView, MemoryView};
-
-use crate::{
-    AggregateFunction, Atom, BuildRequest, CompareOp, Coverage, CoverageStatus, Derivation,
-    ExecutionStatus, FactData, Limits, Literal, Premise, Rule, RuleBundle, RuleProgram, SourceKey,
-    Term,
-};
-
-type FactKey = Vec<Value>;
+type FactKey = Vec<mneme_core::Value>;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FactStore {
-    pub rows: BTreeMap<FactKey, FactData>,
+    pub rows: std::collections::BTreeMap<FactKey, crate::FactData>,
     pub truncated: bool,
 }
 
 pub(crate) struct BuildFacts {
-    pub facts: BTreeMap<String, FactStore>,
-    pub coverage: Vec<Coverage>,
-    pub status: ExecutionStatus,
+    pub facts: std::collections::BTreeMap<String, FactStore>,
+    pub coverage: Vec<crate::Coverage>,
+    pub status: crate::ExecutionStatus,
     pub work: u64,
     pub support_truncated: bool,
 }
 
 struct Evaluation<'a> {
-    bundle: &'a RuleBundle,
+    bundle: &'a crate::RuleBundle,
     context: &'a crate::BuildContext,
-    limits: &'a Limits,
-    facts: BTreeMap<String, FactStore>,
-    coverage: BTreeMap<String, CoverageStatus>,
-    base_coverage: BTreeMap<String, CoverageStatus>,
+    limits: &'a crate::Limits,
+    facts: std::collections::BTreeMap<String, FactStore>,
+    coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
+    base_coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
     work: u64,
-    start: Instant,
+    start: std::time::Instant,
     cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    status: ExecutionStatus,
+    status: crate::ExecutionStatus,
     support_truncated: bool,
 }
 
 impl<'a> Evaluation<'a> {
     fn remaining(&self) -> bool {
-        self.status == ExecutionStatus::Complete
+        self.status == crate::ExecutionStatus::Complete
     }
 
     fn cancelled(&self) -> bool {
         self.cancellation
             .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     #[allow(unknown_lints, ambient_clock)] // wall-clock budget is the evaluation shell
     fn charge(&mut self, amount: u64) -> bool {
         if self.cancelled() {
-            self.status = ExecutionStatus::Cancelled;
+            self.status = crate::ExecutionStatus::Cancelled;
             return false;
         }
         self.work = self.work.saturating_add(amount);
         if self.work > self.limits.max_work {
-            self.status = ExecutionStatus::Timeout;
+            self.status = crate::ExecutionStatus::Timeout;
             return false;
         }
         let Ok(max_time_ms) = u64::try_from(self.limits.max_time_ms) else {
-            self.status = ExecutionStatus::Timeout;
+            self.status = crate::ExecutionStatus::Timeout;
             return false;
         };
-        if self.start.elapsed() > Duration::from_millis(max_time_ms) {
-            self.status = ExecutionStatus::Timeout;
+        if self.start.elapsed() > std::time::Duration::from_millis(max_time_ms) {
+            self.status = crate::ExecutionStatus::Timeout;
             return false;
         }
         true
@@ -80,14 +67,19 @@ impl<'a> Evaluation<'a> {
         self.facts.get(predicate)
     }
 
-    fn coverage_status(&self, predicate: &str) -> CoverageStatus {
+    fn coverage_status(&self, predicate: &str) -> crate::CoverageStatus {
         self.coverage
             .get(predicate)
             .copied()
-            .unwrap_or(CoverageStatus::Unknown)
+            .unwrap_or(crate::CoverageStatus::Unknown)
     }
 
-    fn add_fact(&mut self, predicate: &str, terms: Vec<Value>, support: Derivation) -> bool {
+    fn add_fact(
+        &mut self,
+        predicate: &str,
+        terms: Vec<mneme_core::Value>,
+        support: crate::Derivation,
+    ) -> bool {
         let store = self.facts.entry(predicate.to_owned()).or_default();
         if let Some(data) = store.rows.get_mut(&terms) {
             if !data.supports.iter().any(|existing| {
@@ -105,9 +97,9 @@ impl<'a> Evaluation<'a> {
         } else {
             store.rows.insert(
                 terms,
-                FactData {
+                crate::FactData {
                     supports: vec![support],
-                    sources: BTreeSet::new(),
+                    sources: std::collections::BTreeSet::new(),
                     truncated: false,
                 },
             );
@@ -118,9 +110,9 @@ impl<'a> Evaluation<'a> {
     fn add_fact_with_sources(
         &mut self,
         predicate: &str,
-        terms: Vec<Value>,
-        support: Derivation,
-        sources: &BTreeSet<SourceKey>,
+        terms: Vec<mneme_core::Value>,
+        support: crate::Derivation,
+        sources: &std::collections::BTreeSet<crate::SourceKey>,
     ) -> bool {
         let is_changed = self.add_fact(predicate, terms.clone(), support);
         if let Some(data) = self
@@ -136,22 +128,22 @@ impl<'a> Evaluation<'a> {
 
 #[allow(unknown_lints, ambient_clock)] // one evaluation start time for the bounded build
 pub(crate) fn build(
-    view: &MemoryView,
-    request: &BuildRequest,
+    view: &mneme_memory::MemoryView,
+    request: &crate::BuildRequest,
     context: &crate::BuildContext,
-    program: &RuleProgram,
+    program: &crate::RuleProgram,
 ) -> Result<BuildFacts, crate::DatalogError> {
     let mut evaluation = Evaluation {
         bundle: &request.bundle,
         context,
         limits: &request.limits,
-        facts: BTreeMap::new(),
-        coverage: BTreeMap::new(),
-        base_coverage: BTreeMap::new(),
+        facts: std::collections::BTreeMap::new(),
+        coverage: std::collections::BTreeMap::new(),
+        base_coverage: std::collections::BTreeMap::new(),
         work: 0,
-        start: Instant::now(),
+        start: std::time::Instant::now(),
         cancellation: request.cancellation.clone(),
-        status: ExecutionStatus::Complete,
+        status: crate::ExecutionStatus::Complete,
         support_truncated: false,
     };
     load_base_facts(
@@ -162,15 +154,15 @@ pub(crate) fn build(
     )?;
     evaluate_rules(&mut evaluation, &program.strata)?;
     let coverage = final_coverage(&evaluation);
-    let status = if evaluation.status != ExecutionStatus::Complete {
+    let status = if evaluation.status != crate::ExecutionStatus::Complete {
         evaluation.status
     } else if coverage
         .iter()
-        .any(|coverage| coverage.status != CoverageStatus::Complete)
+        .any(|coverage| coverage.status != crate::CoverageStatus::Complete)
     {
-        ExecutionStatus::Partial
+        crate::ExecutionStatus::Partial
     } else {
-        ExecutionStatus::Complete
+        crate::ExecutionStatus::Complete
     };
     Ok(BuildFacts {
         facts: evaluation.facts,
@@ -182,10 +174,10 @@ pub(crate) fn build(
 }
 
 fn load_base_facts(
-    view: &MemoryView,
-    scope: &ScopeId,
+    view: &mneme_memory::MemoryView,
+    scope: &mneme_core::ScopeId,
     evaluation: &mut Evaluation<'_>,
-    incomplete_extents: &BTreeSet<String>,
+    incomplete_extents: &std::collections::BTreeSet<String>,
 ) -> Result<(), crate::DatalogError> {
     let known = [
         "entity",
@@ -198,9 +190,9 @@ fn load_base_facts(
     ];
     for predicate in known {
         let status = if incomplete_extents.contains(predicate) {
-            CoverageStatus::Incomplete
+            crate::CoverageStatus::Incomplete
         } else {
-            CoverageStatus::Complete
+            crate::CoverageStatus::Complete
         };
         evaluation.coverage.insert(predicate.to_owned(), status);
         evaluation
@@ -211,24 +203,24 @@ fn load_base_facts(
         if !known.contains(&predicate.as_str()) {
             evaluation
                 .coverage
-                .insert(predicate.clone(), CoverageStatus::Unknown);
+                .insert(predicate.clone(), crate::CoverageStatus::Unknown);
             evaluation
                 .base_coverage
-                .insert(predicate.clone(), CoverageStatus::Unknown);
+                .insert(predicate.clone(), crate::CoverageStatus::Unknown);
         } else if incomplete_extents.contains(predicate) {
             evaluation
                 .coverage
-                .insert(predicate.clone(), CoverageStatus::Incomplete);
+                .insert(predicate.clone(), crate::CoverageStatus::Incomplete);
             evaluation
                 .base_coverage
-                .insert(predicate.clone(), CoverageStatus::Incomplete);
+                .insert(predicate.clone(), crate::CoverageStatus::Incomplete);
         } else {
             evaluation
                 .coverage
-                .insert(predicate.clone(), CoverageStatus::Complete);
+                .insert(predicate.clone(), crate::CoverageStatus::Complete);
             evaluation
                 .base_coverage
-                .insert(predicate.clone(), CoverageStatus::Complete);
+                .insert(predicate.clone(), crate::CoverageStatus::Complete);
         }
         let _ = arity;
     }
@@ -237,33 +229,37 @@ fn load_base_facts(
             continue;
         }
         match record.kind {
-            RecordKind::Entity => {
+            mneme_core::RecordKind::Entity => {
                 let entity_type = record
                     .payload
                     .get("entity-type")
-                    .and_then(Value::as_symbol)
-                    .map(|symbol| Value::symbol(symbol.as_str().to_owned()))
-                    .unwrap_or_else(|| Value::symbol("unknown"));
+                    .and_then(mneme_core::Value::as_symbol)
+                    .map(|symbol| mneme_core::Value::symbol(symbol.as_str().to_owned()))
+                    .unwrap_or_else(|| mneme_core::Value::symbol("unknown"));
                 let label = record
                     .payload
                     .get("label")
-                    .and_then(Value::as_string)
-                    .map(|label| Value::string(label.to_owned()))
-                    .unwrap_or_else(|| Value::string(""));
+                    .and_then(mneme_core::Value::as_string)
+                    .map(|label| mneme_core::Value::string(label.to_owned()))
+                    .unwrap_or_else(|| mneme_core::Value::string(""));
                 evaluation.add_fact_with_sources(
                     "entity",
                     vec![record.record_id.to_value(), entity_type, label],
-                    canonical_support(record, evaluation.context, BTreeSet::new()),
-                    &BTreeSet::new(),
+                    canonical_support(
+                        record,
+                        evaluation.context,
+                        std::collections::BTreeSet::new(),
+                    ),
+                    &std::collections::BTreeSet::new(),
                 );
             }
-            RecordKind::Relation => {
+            mneme_core::RecordKind::Relation => {
                 let relation_type = record
                     .payload
                     .get("relation-type")
-                    .and_then(Value::as_symbol)
-                    .map(|symbol| Value::symbol(symbol.as_str().to_owned()))
-                    .unwrap_or_else(|| Value::symbol("unknown"));
+                    .and_then(mneme_core::Value::as_symbol)
+                    .map(|symbol| mneme_core::Value::symbol(symbol.as_str().to_owned()))
+                    .unwrap_or_else(|| mneme_core::Value::symbol("unknown"));
                 if let (Some(from), Some(to)) = (
                     reference_target(record, "from"),
                     reference_target(record, "to"),
@@ -271,14 +267,18 @@ fn load_base_facts(
                     evaluation.add_fact_with_sources(
                         "relation",
                         vec![relation_type, from.to_value(), to.to_value()],
-                        canonical_support(record, evaluation.context, BTreeSet::new()),
-                        &BTreeSet::new(),
+                        canonical_support(
+                            record,
+                            evaluation.context,
+                            std::collections::BTreeSet::new(),
+                        ),
+                        &std::collections::BTreeSet::new(),
                     );
                 }
             }
-            RecordKind::Assertion => {
-                if let Ok(assertion) = AssertionView::parse(record.clone())
-                    && assertion.lifecycle == Lifecycle::Accepted
+            mneme_core::RecordKind::Assertion => {
+                if let Ok(assertion) = mneme_memory::AssertionView::parse(record.clone())
+                    && assertion.lifecycle == mneme_core::Lifecycle::Accepted
                     && view.accepted_decision(&assertion).unwrap_or(false)
                     && view.assertion_has_current_basis(&assertion)
                 {
@@ -287,7 +287,7 @@ fn load_base_facts(
                         "assertion",
                         vec![
                             assertion.subject.to_value(),
-                            Value::symbol(assertion.predicate.clone()),
+                            mneme_core::Value::symbol(assertion.predicate.clone()),
                             assertion.value.clone(),
                             assertion.record_id().to_value(),
                         ],
@@ -301,13 +301,13 @@ fn load_base_facts(
                     );
                 }
             }
-            RecordKind::Evidence => {
+            mneme_core::RecordKind::Evidence => {
                 if let Ok(evidence) = mneme_memory::EvidenceView::parse(record.clone()) {
                     let sources = match evidence.source_reference {
-                        Reference::Pinned {
+                        mneme_core::Reference::Pinned {
                             target, revision, ..
-                        } => BTreeSet::from([(target, revision)]),
-                        _ => BTreeSet::new(),
+                        } => std::collections::BTreeSet::from([(target, revision)]),
+                        _ => std::collections::BTreeSet::new(),
                     };
                     let availability = sources.iter().next().and_then(|(source, revision)| {
                         view.source_at(*source, *revision)
@@ -327,36 +327,41 @@ fn load_base_facts(
                     );
                 }
             }
-            RecordKind::Document => {
+            mneme_core::RecordKind::Document => {
                 let entity = reference_target(record, "entity")
                     .map(|entity| entity.to_value())
-                    .unwrap_or_else(|| Value::symbol("unbound"));
+                    .unwrap_or_else(|| mneme_core::Value::symbol("unbound"));
                 let path = record
                     .payload
                     .get("path")
-                    .and_then(Value::as_string)
-                    .map(|path| Value::string(path.to_owned()))
-                    .unwrap_or_else(|| Value::symbol("unpathed"));
+                    .and_then(mneme_core::Value::as_string)
+                    .map(|path| mneme_core::Value::string(path.to_owned()))
+                    .unwrap_or_else(|| mneme_core::Value::symbol("unpathed"));
                 evaluation.add_fact_with_sources(
                     "document",
                     vec![record.record_id.to_value(), entity, path],
-                    canonical_support(record, evaluation.context, BTreeSet::new()),
-                    &BTreeSet::new(),
+                    canonical_support(
+                        record,
+                        evaluation.context,
+                        std::collections::BTreeSet::new(),
+                    ),
+                    &std::collections::BTreeSet::new(),
                 );
             }
-            RecordKind::SourceRevision => {
+            mneme_core::RecordKind::SourceRevision => {
                 if let Ok(source) = mneme_memory::SourceView::parse(record.clone()) {
                     let availability = view.source_status(record.record_id).ok().map_or_else(
                         || "unknown".to_owned(),
                         |status| status.availability().name().to_owned(),
                     );
-                    let sources = BTreeSet::from([(record.record_id, record.revision_id)]);
+                    let sources =
+                        std::collections::BTreeSet::from([(record.record_id, record.revision_id)]);
                     evaluation.add_fact_with_sources(
                         "source",
                         vec![
                             record.record_id.to_value(),
                             record.revision_id.to_value(),
-                            Value::string(availability),
+                            mneme_core::Value::string(availability),
                         ],
                         canonical_support_with_availability(
                             record,
@@ -368,20 +373,27 @@ fn load_base_facts(
                     );
                 }
             }
-            RecordKind::Derivation => {
+            mneme_core::RecordKind::Derivation => {
                 if let Some(conclusion) = reference_target(record, "conclusion")
-                    && let Some(premises) = record.payload.get("premises").and_then(Value::as_set)
+                    && let Some(premises) = record
+                        .payload
+                        .get("premises")
+                        .and_then(mneme_core::Value::as_set)
                 {
                     for premise in premises {
                         if let Ok(reference) =
-                            Reference::from_value(premise, &mneme_core::Path::root())
+                            mneme_core::Reference::from_value(premise, &mneme_core::Path::root())
                             && let Some(target) = reference.target()
                         {
                             evaluation.add_fact_with_sources(
                                 "derivation",
                                 vec![conclusion.to_value(), target.to_value()],
-                                canonical_support(record, evaluation.context, BTreeSet::new()),
-                                &BTreeSet::new(),
+                                canonical_support(
+                                    record,
+                                    evaluation.context,
+                                    std::collections::BTreeSet::new(),
+                                ),
+                                &std::collections::BTreeSet::new(),
                             );
                         }
                     }
@@ -389,7 +401,7 @@ fn load_base_facts(
             }
             _ => {}
         }
-        if evaluation.status != ExecutionStatus::Complete {
+        if evaluation.status != crate::ExecutionStatus::Complete {
             return Ok(());
         }
         if !evaluation.charge(1) {
@@ -401,9 +413,10 @@ fn load_base_facts(
 
 fn evaluate_rules(
     evaluation: &mut Evaluation<'_>,
-    rule_strata: &BTreeMap<String, usize>,
+    rule_strata: &std::collections::BTreeMap<String, usize>,
 ) -> Result<(), crate::DatalogError> {
-    let mut strata: BTreeMap<usize, Vec<&Rule>> = BTreeMap::new();
+    let mut strata: std::collections::BTreeMap<usize, Vec<&crate::Rule>> =
+        std::collections::BTreeMap::new();
     for rule in &evaluation.bundle.rules {
         let stratum = rule_strata.get(&rule.head.predicate).copied().unwrap_or(0);
         strata.entry(stratum).or_default().push(rule);
@@ -431,8 +444,8 @@ fn evaluate_rules(
                 break;
             }
             if is_depth_exhausted {
-                if evaluation.status == ExecutionStatus::Complete {
-                    evaluation.status = ExecutionStatus::Partial;
+                if evaluation.status == crate::ExecutionStatus::Complete {
+                    evaluation.status = crate::ExecutionStatus::Partial;
                 }
                 break;
             }
@@ -450,23 +463,23 @@ enum RuleOutcome {
 
 fn evaluate_rule(
     evaluation: &mut Evaluation<'_>,
-    rule: &Rule,
+    rule: &crate::Rule,
 ) -> Result<RuleOutcome, crate::DatalogError> {
     let mut is_body_complete = true;
     for literal in &rule.body {
         match literal {
-            Literal::Positive(atom) | Literal::Negative(atom) => {
-                if evaluation.coverage_status(&atom.predicate) != CoverageStatus::Complete {
+            crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
+                if evaluation.coverage_status(&atom.predicate) != crate::CoverageStatus::Complete {
                     is_body_complete = false;
                 }
             }
-            Literal::Aggregate { .. } => {}
-            Literal::Forbidden(_) => return Ok(RuleOutcome::Skipped),
-            Literal::Compare { .. } => {}
+            crate::Literal::Aggregate { .. } => {}
+            crate::Literal::Forbidden(_) => return Ok(RuleOutcome::Skipped),
+            crate::Literal::Compare { .. } => {}
         }
     }
     let aggregate = rule.body.iter().find_map(|literal| {
-        if let Literal::Aggregate {
+        if let crate::Literal::Aggregate {
             function,
             input,
             output,
@@ -480,13 +493,13 @@ fn evaluate_rule(
     let has_negative = rule
         .body
         .iter()
-        .any(|literal| matches!(literal, Literal::Negative(_)));
+        .any(|literal| matches!(literal, crate::Literal::Negative(_)));
     if (aggregate.is_some() || has_negative) && !is_body_complete {
         return Ok(RuleOutcome::Skipped);
     }
-    let mut bindings = vec![BTreeMap::<String, Value>::new()];
+    let mut bindings = vec![std::collections::BTreeMap::<String, mneme_core::Value>::new()];
     for literal in &rule.body {
-        if let Literal::Positive(atom) = literal {
+        if let crate::Literal::Positive(atom) = literal {
             if !evaluation.charge(bindings.len() as u64) {
                 return Ok(RuleOutcome::Skipped);
             }
@@ -498,8 +511,8 @@ fn evaluate_rule(
     }
     for literal in &rule.body {
         match literal {
-            Literal::Negative(atom) => {
-                if evaluation.coverage_status(&atom.predicate) != CoverageStatus::Complete {
+            crate::Literal::Negative(atom) => {
+                if evaluation.coverage_status(&atom.predicate) != crate::CoverageStatus::Complete {
                     return Ok(RuleOutcome::Skipped);
                 }
                 bindings.retain(|binding| !matches_atom(evaluation, atom, binding));
@@ -507,7 +520,7 @@ fn evaluate_rule(
                     return Ok(RuleOutcome::Stable);
                 }
             }
-            Literal::Compare { op, left, right } => {
+            crate::Literal::Compare { op, left, right } => {
                 bindings.retain(|binding| {
                     let left = term_value(left, binding);
                     let right = term_value(right, binding);
@@ -561,9 +574,9 @@ fn evaluate_rule(
 
 fn join(
     evaluation: &Evaluation<'_>,
-    bindings: &[BTreeMap<String, Value>],
-    atom: &Atom,
-) -> Vec<BTreeMap<String, Value>> {
+    bindings: &[std::collections::BTreeMap<String, mneme_core::Value>],
+    atom: &crate::Atom,
+) -> Vec<std::collections::BTreeMap<String, mneme_core::Value>> {
     let Some(store) = evaluation.relation(&atom.predicate) else {
         return Vec::new();
     };
@@ -583,8 +596,8 @@ fn join(
 
 fn matches_atom(
     evaluation: &Evaluation<'_>,
-    atom: &Atom,
-    binding: &BTreeMap<String, Value>,
+    atom: &crate::Atom,
+    binding: &std::collections::BTreeMap<String, mneme_core::Value>,
 ) -> bool {
     let Some(store) = evaluation.relation(&atom.predicate) else {
         return false;
@@ -596,30 +609,32 @@ fn matches_atom(
                 .iter()
                 .zip(terms)
                 .all(|(term, value)| match term {
-                    Term::Constant(expected) => expected == value,
-                    Term::Variable(name) => binding.get(name).is_none_or(|bound| bound == value),
+                    crate::Term::Constant(expected) => expected == value,
+                    crate::Term::Variable(name) => {
+                        binding.get(name).is_none_or(|bound| bound == value)
+                    }
                 })
     })
 }
 
 fn unify(
-    atom: &Atom,
-    terms: &[Value],
-    binding: &BTreeMap<String, Value>,
-    data: &FactData,
-) -> Option<BTreeMap<String, Value>> {
+    atom: &crate::Atom,
+    terms: &[mneme_core::Value],
+    binding: &std::collections::BTreeMap<String, mneme_core::Value>,
+    data: &crate::FactData,
+) -> Option<std::collections::BTreeMap<String, mneme_core::Value>> {
     if data.supports.is_empty() {
         return None;
     }
     let mut extended = binding.clone();
     for (term, value) in atom.terms.iter().zip(terms) {
         match term {
-            Term::Constant(expected) => {
+            crate::Term::Constant(expected) => {
                 if expected != value {
                     return None;
                 }
             }
-            Term::Variable(name) => {
+            crate::Term::Variable(name) => {
                 if let Some(existing) = extended.get(name) {
                     if existing != value {
                         return None;
@@ -633,28 +648,31 @@ fn unify(
     Some(extended)
 }
 
-fn term_value(term: &Term, binding: &BTreeMap<String, Value>) -> Option<Value> {
+fn term_value(
+    term: &crate::Term,
+    binding: &std::collections::BTreeMap<String, mneme_core::Value>,
+) -> Option<mneme_core::Value> {
     match term {
-        Term::Constant(value) => Some(value.clone()),
-        Term::Variable(name) => binding.get(name).cloned(),
+        crate::Term::Constant(value) => Some(value.clone()),
+        crate::Term::Variable(name) => binding.get(name).cloned(),
     }
 }
 
-fn compare(op: CompareOp, left: &Value, right: &Value) -> bool {
+fn compare(op: crate::CompareOp, left: &mneme_core::Value, right: &mneme_core::Value) -> bool {
     match op {
-        CompareOp::Eq => left == right,
-        CompareOp::Ne => left != right,
-        CompareOp::Lt => left < right,
-        CompareOp::Le => left <= right,
-        CompareOp::Gt => left > right,
-        CompareOp::Ge => left >= right,
+        crate::CompareOp::Eq => left == right,
+        crate::CompareOp::Ne => left != right,
+        crate::CompareOp::Lt => left < right,
+        crate::CompareOp::Le => left <= right,
+        crate::CompareOp::Gt => left > right,
+        crate::CompareOp::Ge => left >= right,
     }
 }
 
 fn head_terms(
-    head: &Atom,
-    binding: &BTreeMap<String, Value>,
-) -> Result<Vec<Value>, crate::DatalogError> {
+    head: &crate::Atom,
+    binding: &std::collections::BTreeMap<String, mneme_core::Value>,
+) -> Result<Vec<mneme_core::Value>, crate::DatalogError> {
     head.terms
         .iter()
         .map(|term| {
@@ -667,23 +685,23 @@ fn head_terms(
 
 #[derive(Clone, Debug)]
 struct AggregateRow {
-    head_terms: Vec<Value>,
+    head_terms: Vec<mneme_core::Value>,
     binding_indices: Vec<usize>,
 }
 
 #[allow(unknown_lints, fallible_int_fallback)] // row count is bounded by the result-row limit
 fn aggregate_rows(
-    head: &Atom,
+    head: &crate::Atom,
     output: &str,
-    function: AggregateFunction,
-    input: &Term,
-    bindings: &[BTreeMap<String, Value>],
+    function: crate::AggregateFunction,
+    input: &crate::Term,
+    bindings: &[std::collections::BTreeMap<String, mneme_core::Value>],
 ) -> Result<Vec<AggregateRow>, crate::DatalogError> {
     let group_variables = head
         .terms
         .iter()
         .filter_map(|term| {
-            if let Term::Variable(name) = term {
+            if let crate::Term::Variable(name) = term {
                 if name != output {
                     Some(name.clone())
                 } else {
@@ -693,8 +711,11 @@ fn aggregate_rows(
                 None
             }
         })
-        .collect::<BTreeSet<_>>();
-    let mut groups: BTreeMap<Vec<Value>, (Vec<usize>, Vec<Value>)> = BTreeMap::new();
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut groups: std::collections::BTreeMap<
+        Vec<mneme_core::Value>,
+        (Vec<usize>, Vec<mneme_core::Value>),
+    > = std::collections::BTreeMap::new();
     for (index, binding) in bindings.iter().enumerate() {
         let key = group_variables
             .iter()
@@ -713,12 +734,12 @@ fn aggregate_rows(
     let mut output_rows = Vec::new();
     for (_, (indices, values)) in groups {
         let value = match function {
-            AggregateFunction::Count => {
-                Value::integer(i64::try_from(values.len()).map_err(|_| {
+            crate::AggregateFunction::Count => {
+                mneme_core::Value::integer(i64::try_from(values.len()).map_err(|_| {
                     crate::DatalogError::Failed("aggregate count exceeds i64".to_owned())
                 })?)
             }
-            AggregateFunction::Sum => {
+            crate::AggregateFunction::Sum => {
                 let mut total = 0_u64;
                 for value in &values {
                     let Some(integer) = value.as_integer().and_then(|integer| integer.to_i64())
@@ -734,16 +755,16 @@ fn aggregate_rows(
                     })?;
                     total = total.saturating_add(integer);
                 }
-                Value::integer(total)
+                mneme_core::Value::integer(total)
             }
-            AggregateFunction::Min => values
+            crate::AggregateFunction::Min => values
                 .into_iter()
                 .min()
-                .unwrap_or_else(|| Value::integer(0)),
-            AggregateFunction::Max => values
+                .unwrap_or_else(|| mneme_core::Value::integer(0)),
+            crate::AggregateFunction::Max => values
                 .into_iter()
                 .max()
-                .unwrap_or_else(|| Value::integer(0)),
+                .unwrap_or_else(|| mneme_core::Value::integer(0)),
         };
         let Some(first) = indices.first().and_then(|index| bindings.get(*index)) else {
             continue;
@@ -752,9 +773,9 @@ fn aggregate_rows(
             .terms
             .iter()
             .map(|term| match term {
-                Term::Constant(value) => Some(value.clone()),
-                Term::Variable(name) if name == output => Some(value.clone()),
-                Term::Variable(name) => first.get(name).cloned(),
+                crate::Term::Constant(value) => Some(value.clone()),
+                crate::Term::Variable(name) if name == output => Some(value.clone()),
+                crate::Term::Variable(name) => first.get(name).cloned(),
             })
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| {
@@ -769,12 +790,15 @@ fn aggregate_rows(
 }
 
 fn instantiated_support(
-    rule: &Rule,
+    rule: &crate::Rule,
     evaluation: &Evaluation<'_>,
-    binding: &BTreeMap<String, Value>,
-) -> (Derivation, BTreeSet<SourceKey>) {
+    binding: &std::collections::BTreeMap<String, mneme_core::Value>,
+) -> (
+    crate::Derivation,
+    std::collections::BTreeSet<crate::SourceKey>,
+) {
     let (premises, sources) = premises_for_binding(rule, evaluation, binding);
-    let support = Derivation {
+    let support = crate::Derivation {
         rule_id: rule.id.clone(),
         rule_version: evaluation.context.rule_bundle_version.clone(),
         premises: premises.clone(),
@@ -788,13 +812,16 @@ fn instantiated_support(
 }
 
 fn aggregate_support(
-    rule: &Rule,
+    rule: &crate::Rule,
     evaluation: &Evaluation<'_>,
-    bindings: &[BTreeMap<String, Value>],
+    bindings: &[std::collections::BTreeMap<String, mneme_core::Value>],
     indices: &[usize],
-) -> (Derivation, BTreeSet<SourceKey>) {
+) -> (
+    crate::Derivation,
+    std::collections::BTreeSet<crate::SourceKey>,
+) {
     let mut premises = Vec::new();
-    let mut sources = BTreeSet::new();
+    let mut sources = std::collections::BTreeSet::new();
     for index in indices {
         if let Some(binding) = bindings.get(*index) {
             let (binding_premises, binding_sources) =
@@ -809,7 +836,7 @@ fn aggregate_support(
     }
     let is_truncated = premises.len() > 64;
     premises.truncate(64);
-    let support = Derivation {
+    let support = crate::Derivation {
         rule_id: rule.id.clone(),
         rule_version: evaluation.context.rule_bundle_version.clone(),
         premises,
@@ -823,15 +850,18 @@ fn aggregate_support(
 }
 
 fn premises_for_binding(
-    rule: &Rule,
+    rule: &crate::Rule,
     evaluation: &Evaluation<'_>,
-    binding: &BTreeMap<String, Value>,
-) -> (Vec<Premise>, BTreeSet<SourceKey>) {
+    binding: &std::collections::BTreeMap<String, mneme_core::Value>,
+) -> (
+    Vec<crate::Premise>,
+    std::collections::BTreeSet<crate::SourceKey>,
+) {
     let mut premises = Vec::new();
-    let mut sources = BTreeSet::new();
+    let mut sources = std::collections::BTreeSet::new();
     for literal in &rule.body {
         match literal {
-            Literal::Positive(atom) | Literal::Negative(atom) => {
+            crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
                 if let Some(store) = evaluation.relation(&atom.predicate) {
                     let terms = atom
                         .terms
@@ -840,7 +870,7 @@ fn premises_for_binding(
                         .collect::<Vec<_>>();
                     if let Some(data) = store.rows.get(&terms) {
                         sources.extend(data.sources.iter().copied());
-                        premises.push(Premise {
+                        premises.push(crate::Premise {
                             predicate: atom.predicate.clone(),
                             terms,
                             canonical: data
@@ -866,23 +896,23 @@ fn premises_for_binding(
 }
 
 fn canonical_support(
-    record: &RecordEnvelope,
+    record: &mneme_core::RecordEnvelope,
     context: &crate::BuildContext,
-    sources: BTreeSet<SourceKey>,
-) -> Derivation {
+    sources: std::collections::BTreeSet<crate::SourceKey>,
+) -> crate::Derivation {
     canonical_support_with_availability(record, context, sources, None)
 }
 
 fn canonical_support_with_availability(
-    record: &RecordEnvelope,
+    record: &mneme_core::RecordEnvelope,
     context: &crate::BuildContext,
-    sources: BTreeSet<SourceKey>,
+    sources: std::collections::BTreeSet<crate::SourceKey>,
     availability: Option<String>,
-) -> Derivation {
-    Derivation {
+) -> crate::Derivation {
+    crate::Derivation {
         rule_id: "canonical".to_owned(),
         rule_version: "1".to_owned(),
-        premises: vec![Premise {
+        premises: vec![crate::Premise {
             predicate: record.kind.symbol().to_owned(),
             terms: Vec::new(),
             canonical: Some(record.record_id),
@@ -898,10 +928,10 @@ fn canonical_support_with_availability(
 }
 
 fn assertion_sources(
-    view: &MemoryView,
-    assertion: &AssertionView,
-) -> (BTreeSet<SourceKey>, Option<String>) {
-    let mut sources = BTreeSet::new();
+    view: &mneme_memory::MemoryView,
+    assertion: &mneme_memory::AssertionView,
+) -> (std::collections::BTreeSet<crate::SourceKey>, Option<String>) {
+    let mut sources = std::collections::BTreeSet::new();
     let mut availability = None;
     for evidence in &assertion.evidence {
         if let Ok(evidence) = view.evidence(*evidence) {
@@ -927,11 +957,14 @@ fn assertion_sources(
     (sources, availability)
 }
 
-fn reference_target(record: &RecordEnvelope, name: &str) -> Option<RecordId> {
+fn reference_target(
+    record: &mneme_core::RecordEnvelope,
+    name: &str,
+) -> Option<mneme_core::RecordId> {
     record
         .payload
         .get(name)
-        .and_then(|value| Reference::from_value(value, &mneme_core::Path::root()).ok())
+        .and_then(|value| mneme_core::Reference::from_value(value, &mneme_core::Path::root()).ok())
         .and_then(|reference| reference.target())
 }
 
@@ -941,7 +974,7 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
         .rules
         .iter()
         .map(|rule| rule.head.predicate.clone())
-        .collect::<BTreeSet<_>>();
+        .collect::<std::collections::BTreeSet<_>>();
     loop {
         let mut is_changed = false;
         let mut next = evaluation.base_coverage.clone();
@@ -957,21 +990,24 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
             let mut has_seed = false;
             for rule in rules {
                 let has_self = rule.body.iter().any(
-                    |literal| matches!(literal, Literal::Positive(atom) if &atom.predicate == head),
+                    |literal| matches!(literal, crate::Literal::Positive(atom) if &atom.predicate == head),
                 );
                 if !has_self {
                     has_seed = true;
                 }
-                let is_body_complete = evaluation.status == ExecutionStatus::Complete
+                let is_body_complete = evaluation.status == crate::ExecutionStatus::Complete
                     && rule.body.iter().all(|literal| match literal {
-                        Literal::Positive(atom) | Literal::Negative(atom) => {
-                            if matches!(literal, Literal::Positive(_)) && &atom.predicate == head {
+                        crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
+                            if matches!(literal, crate::Literal::Positive(_))
+                                && &atom.predicate == head
+                            {
                                 return true;
                             }
-                            evaluation.coverage_status(&atom.predicate) == CoverageStatus::Complete
+                            evaluation.coverage_status(&atom.predicate)
+                                == crate::CoverageStatus::Complete
                         }
-                        Literal::Forbidden(_) => false,
-                        Literal::Aggregate { .. } | Literal::Compare { .. } => true,
+                        crate::Literal::Forbidden(_) => false,
+                        crate::Literal::Aggregate { .. } | crate::Literal::Compare { .. } => true,
                     });
                 if is_body_complete {
                     continue;
@@ -980,11 +1016,11 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
                 is_any_incomplete = true;
             }
             let status = if is_all_complete && has_seed {
-                CoverageStatus::Complete
+                crate::CoverageStatus::Complete
             } else if is_any_incomplete {
-                CoverageStatus::Incomplete
+                crate::CoverageStatus::Incomplete
             } else {
-                CoverageStatus::Unknown
+                crate::CoverageStatus::Unknown
             };
             next.insert(head.clone(), status);
         }
@@ -998,23 +1034,25 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
     }
 }
 
-fn final_coverage(evaluation: &Evaluation<'_>) -> Vec<Coverage> {
-    let mut predicates = BTreeSet::new();
+fn final_coverage(evaluation: &Evaluation<'_>) -> Vec<crate::Coverage> {
+    let mut predicates = std::collections::BTreeSet::new();
     predicates.extend(evaluation.facts.keys().cloned());
     predicates.extend(evaluation.coverage.keys().cloned());
     predicates
         .into_iter()
         .map(|predicate| {
             let status = evaluation.coverage_status(&predicate);
-            Coverage {
+            crate::Coverage {
                 predicate,
                 status,
                 reason: match status {
-                    CoverageStatus::Complete => None,
-                    CoverageStatus::Incomplete => {
+                    crate::CoverageStatus::Complete => None,
+                    crate::CoverageStatus::Incomplete => {
                         Some("declared extent or dependency is incomplete".to_owned())
                     }
-                    CoverageStatus::Unknown => Some("predicate coverage is unknown".to_owned()),
+                    crate::CoverageStatus::Unknown => {
+                        Some("predicate coverage is unknown".to_owned())
+                    }
                 },
             }
         })

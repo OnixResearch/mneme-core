@@ -6,8 +6,6 @@
 //! separate so a caller can distinguish malformed syntax from a schema or
 //! domain refusal.
 
-
-
 use serde::Serialize;
 use serde::ser::Serializer;
 

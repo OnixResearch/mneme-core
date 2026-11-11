@@ -3,19 +3,6 @@
 //! The response keeps execution, corpus coverage, and result exhaustiveness
 //! separate. A ranked candidate set is never evidence of absence.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
-use mneme_core::{
-    RecordId, RecordedTime, RevisionId, ScopeId, SourceSpan, Timestamp, ValidTime,
-    WorkspaceRevisionId,
-};
-use mneme_datalog::{Derivation, Limits, Query, RuleBundle};
-use mneme_memory::{AssertionView, SourceAvailability};
-
-use crate::INDEX_SCHEMA_VERSION;
-
 /// A candidate-generation mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RecallMode {
@@ -63,27 +50,27 @@ impl TemporalMode {
 #[derive(Clone, Debug)]
 pub struct StructuredRequest {
     /// Versioned Datalog profile.
-    pub bundle: RuleBundle,
+    pub bundle: mneme_datalog::RuleBundle,
     /// Query over one declared relation.
-    pub query: Query,
+    pub query: mneme_datalog::Query,
     /// Evaluation bounds.
-    pub limits: Limits,
+    pub limits: mneme_datalog::Limits,
     /// Explicitly incomplete inputs, such as a prior top-k candidate set.
-    pub incomplete_extents: BTreeSet<String>,
+    pub incomplete_extents: std::collections::BTreeSet<String>,
 }
 
 /// One recall operation.
 #[derive(Clone, Debug)]
 pub struct RecallRequest {
     pub actor: String,
-    pub scope: ScopeId,
-    pub revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub revision: mneme_core::WorkspaceRevisionId,
     pub query: String,
     /// Instant used by `TemporalMode::Current` for valid-time eligibility.
-    pub at: Timestamp,
+    pub at: mneme_core::Timestamp,
     pub temporal: TemporalMode,
     /// Explicit candidate modes. The lexical mode is independently usable.
-    pub modes: BTreeSet<RecallMode>,
+    pub modes: std::collections::BTreeSet<RecallMode>,
     pub structured: Option<StructuredRequest>,
     /// Permit an older served revision when explicitly requested.
     pub allow_stale: bool,
@@ -102,16 +89,16 @@ pub struct RecallRequest {
     pub max_quote_bytes: usize,
     /// Maximum elapsed time for candidate generation and packing.
     pub max_time_ms: u128,
-    pub cancellation: Option<Arc<AtomicBool>>,
+    pub cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl RecallRequest {
     /// A current-mode, lexical-only request with conservative budgets.
     pub fn lexical(
         actor: impl Into<String>,
-        scope: ScopeId,
-        revision: WorkspaceRevisionId,
-        at: Timestamp,
+        scope: mneme_core::ScopeId,
+        revision: mneme_core::WorkspaceRevisionId,
+        at: mneme_core::Timestamp,
         query: impl Into<String>,
     ) -> Self {
         RecallRequest {
@@ -121,7 +108,7 @@ impl RecallRequest {
             query: query.into(),
             at,
             temporal: TemporalMode::Current,
-            modes: BTreeSet::from([RecallMode::Lexical]),
+            modes: std::collections::BTreeSet::from([RecallMode::Lexical]),
             structured: None,
             allow_stale: false,
             allow_fallback: true,
@@ -217,7 +204,7 @@ pub struct ModeReport {
     pub mode: RecallMode,
     pub status: ModeStatus,
     pub index_version: Option<String>,
-    pub revision: Option<WorkspaceRevisionId>,
+    pub revision: Option<mneme_core::WorkspaceRevisionId>,
     pub coverage: IndexCoverage,
     pub candidates: usize,
     /// A structured relationship result may be exhaustive independently; ranked
@@ -230,12 +217,12 @@ pub struct ModeReport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecallContext {
     pub schema_version: u32,
-    pub scope: ScopeId,
-    pub requested_revision: WorkspaceRevisionId,
-    pub served_revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub requested_revision: mneme_core::WorkspaceRevisionId,
+    pub served_revision: mneme_core::WorkspaceRevisionId,
     pub eligibility_generation: u64,
     pub temporal: TemporalMode,
-    pub index_versions: BTreeMap<String, String>,
+    pub index_versions: std::collections::BTreeMap<String, String>,
     pub fusion_policy: String,
 }
 
@@ -266,15 +253,15 @@ impl ContentKind {
 pub struct ClaimStatus {
     pub lifecycle: String,
     pub stance: String,
-    pub valid_time: ValidTime,
-    pub recorded: RecordedTime,
-    pub superseded_by: Option<RecordId>,
-    pub decision: Option<RecordId>,
+    pub valid_time: mneme_core::ValidTime,
+    pub recorded: mneme_core::RecordedTime,
+    pub superseded_by: Option<mneme_core::RecordId>,
+    pub decision: Option<mneme_core::RecordId>,
     pub asserted_by: String,
 }
 
 impl ClaimStatus {
-    pub(crate) fn from_assertion(assertion: &AssertionView) -> Self {
+    pub(crate) fn from_assertion(assertion: &mneme_memory::AssertionView) -> Self {
         ClaimStatus {
             lifecycle: assertion.lifecycle.symbol().to_owned(),
             stance: match assertion.stance {
@@ -295,12 +282,12 @@ impl ClaimStatus {
 /// Evidence attribution retained independently of whether a quote is available.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecallEvidence {
-    pub evidence: RecordId,
-    pub source: RecordId,
-    pub source_revision: Option<RevisionId>,
-    pub span: Option<SourceSpan>,
-    pub availability: SourceAvailability,
-    pub ancestry_roots: BTreeSet<(RecordId, RevisionId)>,
+    pub evidence: mneme_core::RecordId,
+    pub source: mneme_core::RecordId,
+    pub source_revision: Option<mneme_core::RevisionId>,
+    pub span: Option<mneme_core::SourceSpan>,
+    pub availability: mneme_memory::SourceAvailability,
+    pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
 }
 
 /// One ranked item before or after context packing.
@@ -310,24 +297,24 @@ pub struct RecallCandidate {
     pub content_kind: ContentKind,
     pub text: String,
     pub text_truncated: bool,
-    pub source: Option<RecordId>,
-    pub source_revision: Option<RevisionId>,
-    pub span: Option<SourceSpan>,
+    pub source: Option<mneme_core::RecordId>,
+    pub source_revision: Option<mneme_core::RevisionId>,
+    pub span: Option<mneme_core::SourceSpan>,
     pub field_path: String,
-    pub assertion: Option<RecordId>,
-    pub episode: Option<RecordId>,
-    pub entity: Option<RecordId>,
+    pub assertion: Option<mneme_core::RecordId>,
+    pub episode: Option<mneme_core::RecordId>,
+    pub entity: Option<mneme_core::RecordId>,
     pub claim_status: Option<ClaimStatus>,
     /// Exact attribution for a source excerpt; claims and summaries are not quotes.
     pub quote: bool,
     pub evidence: Vec<RecallEvidence>,
-    pub derivations: Vec<Derivation>,
-    pub ancestry_roots: BTreeSet<(RecordId, RevisionId)>,
+    pub derivations: Vec<mneme_datalog::Derivation>,
+    pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
     /// False when another selected candidate shares this candidate's ancestry.
     pub independent_support: bool,
-    pub origins: BTreeSet<RecallMode>,
+    pub origins: std::collections::BTreeSet<RecallMode>,
     pub score: f64,
-    pub score_components: BTreeMap<String, f64>,
+    pub score_components: std::collections::BTreeMap<String, f64>,
 }
 
 /// Why a candidate was not returned.
@@ -379,7 +366,7 @@ pub struct RecallResponse {
 /// Indexing levels stored with a cached index.
 #[derive(Clone, Debug)]
 pub(crate) struct CachedIndex {
-    pub revision: WorkspaceRevisionId,
+    pub revision: mneme_core::WorkspaceRevisionId,
     pub coverage: IndexCoverage,
     pub(crate) documents: Vec<IndexedDocument>,
 }
@@ -391,20 +378,20 @@ pub(crate) struct IndexedDocument {
     pub kind: ContentKind,
     pub text: String,
     pub normalized: String,
-    pub terms: BTreeSet<String>,
-    pub trigrams: BTreeMap<u64, u32>,
+    pub terms: std::collections::BTreeSet<String>,
+    pub trigrams: std::collections::BTreeMap<u64, u32>,
     pub trigram_norm: f64,
     pub field_path: String,
-    pub source: Option<RecordId>,
-    pub source_revision: Option<RevisionId>,
-    pub span: Option<SourceSpan>,
-    pub assertion: Option<RecordId>,
-    pub episode: Option<RecordId>,
-    pub entity: Option<RecordId>,
+    pub source: Option<mneme_core::RecordId>,
+    pub source_revision: Option<mneme_core::RevisionId>,
+    pub span: Option<mneme_core::SourceSpan>,
+    pub assertion: Option<mneme_core::RecordId>,
+    pub episode: Option<mneme_core::RecordId>,
+    pub entity: Option<mneme_core::RecordId>,
     pub claim_status: Option<ClaimStatus>,
     pub evidence: Vec<RecallEvidence>,
-    pub ancestry_roots: BTreeSet<(RecordId, RevisionId)>,
+    pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
 }
 
 /// Constants exported for evaluation and cache identity.
-pub const RECALL_CONTEXT_SCHEMA_VERSION: u32 = INDEX_SCHEMA_VERSION;
+pub const RECALL_CONTEXT_SCHEMA_VERSION: u32 = crate::INDEX_SCHEMA_VERSION;

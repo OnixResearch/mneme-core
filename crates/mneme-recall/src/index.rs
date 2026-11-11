@@ -1,29 +1,19 @@
 //! In-memory lexical and local token-vector index over one scoped snapshot.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use mneme_core::{Lifecycle, RecordId, RecordKind, Reference, ScopeId, SourceSpan, Value, text};
-use mneme_memory::{
-    AssertionView, BeliefView, EpisodeView, MemoryView, SourceAvailability, SourceStatus,
-};
-
-use crate::error::Result;
-use crate::model::{
-    CachedIndex, ClaimStatus, ContentKind, IndexCoverage, IndexedDocument, RecallEvidence,
-    RecallRequest, TemporalMode,
-};
-
 /// Index schema and tokenizer version.
 pub const LEXICAL_INDEX_VERSION: &str = "mneme-lexical-token-v1";
 /// Sparse character-trigram vector projection. This is not a learned model.
 pub const VECTOR_INDEX_VERSION: &str = "mneme-trigram-hash-v1";
 
 /// Build a fresh index for the request's temporal selection.
-pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<CachedIndex> {
+pub(crate) fn build_index(
+    view: &mneme_memory::MemoryView,
+    request: &crate::model::RecallRequest,
+) -> crate::error::Result<crate::model::CachedIndex> {
     let snapshot = view.snapshot().clone();
     let mut documents = Vec::new();
     let mut skipped = 0_usize;
-    let mut skip_reasons = BTreeSet::new();
+    let mut skip_reasons = std::collections::BTreeSet::new();
 
     let entities = entity_labels(view, &request.scope);
     for record in snapshot
@@ -32,7 +22,7 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
         .filter(|record| record.scope == request.scope)
     {
         match record.kind {
-            RecordKind::Entity => {
+            mneme_core::RecordKind::Entity => {
                 let label = entities
                     .get(&record.record_id)
                     .cloned()
@@ -40,17 +30,17 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
                 let entity_type = record
                     .payload
                     .get("entity-type")
-                    .map(text::render)
+                    .map(mneme_core::text::render)
                     .unwrap_or_default();
                 let properties = record
                     .payload
                     .get("properties")
-                    .map(text::render)
+                    .map(mneme_core::text::render)
                     .unwrap_or_default();
                 let body = format!("{label} {entity_type} {properties}");
                 documents.push(document(
                     format!("entity:{}", record.record_id),
-                    ContentKind::TypedField,
+                    crate::model::ContentKind::TypedField,
                     body,
                     "entity.label".to_owned(),
                     None,
@@ -61,11 +51,11 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
                     None,
                     None,
                     Vec::new(),
-                    BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
                 ));
             }
-            RecordKind::Episode => {
-                let episode = EpisodeView::parse(record.clone())?;
+            mneme_core::RecordKind::Episode => {
+                let episode = mneme_memory::EpisodeView::parse(record.clone())?;
                 let body = format!(
                     "{} {} {}",
                     episode.summary,
@@ -84,7 +74,7 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
                 };
                 documents.push(document(
                     format!("episode:{}", record.record_id),
-                    ContentKind::EpisodeSummary,
+                    crate::model::ContentKind::EpisodeSummary,
                     body,
                     "episode.summary".to_owned(),
                     source,
@@ -95,15 +85,15 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
                     None,
                     None,
                     Vec::new(),
-                    BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
                 ));
             }
-            RecordKind::SourceRevision => {
+            mneme_core::RecordKind::SourceRevision => {
                 let source = view.source(record.record_id)?;
                 if let Some(path) = &source.path_hint {
                     documents.push(document(
                         format!("source-path:{}:{}", record.record_id, record.revision_id),
-                        ContentKind::TypedField,
+                        crate::model::ContentKind::TypedField,
                         path.clone(),
                         "source.path-hint".to_owned(),
                         Some(record.record_id),
@@ -114,15 +104,15 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
                         None,
                         None,
                         Vec::new(),
-                        BTreeSet::from([(record.record_id, record.revision_id)]),
+                        std::collections::BTreeSet::from([(record.record_id, record.revision_id)]),
                     ));
                 }
                 match view.source_status_for(&source)? {
-                    SourceStatus::Retained(bytes) => match String::from_utf8(bytes) {
+                    mneme_memory::SourceStatus::Retained(bytes) => match String::from_utf8(bytes) {
                         Ok(body) => {
                             documents.push(document(
                                 format!("source:{}:{}", record.record_id, record.revision_id),
-                                ContentKind::SourceExcerpt,
+                                crate::model::ContentKind::SourceExcerpt,
                                 body,
                                 "source.content".to_owned(),
                                 Some(record.record_id),
@@ -133,7 +123,10 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
                                 None,
                                 None,
                                 Vec::new(),
-                                BTreeSet::from([(record.record_id, record.revision_id)]),
+                                std::collections::BTreeSet::from([(
+                                    record.record_id,
+                                    record.revision_id,
+                                )]),
                             ));
                         }
                         Err(_) => {
@@ -156,7 +149,7 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
 
     let assertions = selected_assertions(view, request)?;
     for assertion in assertions {
-        let status = ClaimStatus::from_assertion(&assertion);
+        let status = crate::model::ClaimStatus::from_assertion(&assertion);
         let (evidence, roots) = evidence_refs(view, &assertion);
         let subject = entities
             .get(&assertion.subject)
@@ -165,13 +158,13 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
         let body = format!(
             "{} {} {} {}",
             assertion.predicate,
-            text::render(&assertion.value),
+            mneme_core::text::render(&assertion.value),
             subject,
             assertion.asserted_by
         );
         documents.push(document(
             format!("assertion:{}", assertion.record.record_id),
-            ContentKind::Claim,
+            crate::model::ContentKind::Claim,
             body,
             format!("assertion.{}", assertion.predicate),
             None,
@@ -188,38 +181,43 @@ pub(crate) fn build_index(view: &MemoryView, request: &RecallRequest) -> Result<
 
     let indexed = documents.len();
     let coverage = if skipped == 0 {
-        IndexCoverage::complete(indexed)
+        crate::model::IndexCoverage::complete(indexed)
     } else {
-        IndexCoverage::incomplete(
+        crate::model::IndexCoverage::incomplete(
             indexed,
             skipped,
             skip_reasons.into_iter().collect::<Vec<_>>().join("; "),
         )
     };
-    Ok(CachedIndex {
+    Ok(crate::model::CachedIndex {
         revision: view.revision(),
         coverage,
         documents,
     })
 }
 
-fn selected_assertions(view: &MemoryView, request: &RecallRequest) -> Result<Vec<AssertionView>> {
+fn selected_assertions(
+    view: &mneme_memory::MemoryView,
+    request: &crate::model::RecallRequest,
+) -> crate::error::Result<Vec<mneme_memory::AssertionView>> {
     match request.temporal {
-        TemporalMode::Current => Ok(view.current_beliefs(&BeliefView {
-            scope: request.scope.clone(),
-            at: request.at,
-            include_hypothetical: request.include_hypothetical,
-            include_disputed: request.include_disputed,
-        })?),
-        TemporalMode::Historical => Ok(view
+        crate::model::TemporalMode::Current => {
+            Ok(view.current_beliefs(&mneme_memory::BeliefView {
+                scope: request.scope.clone(),
+                at: request.at,
+                include_hypothetical: request.include_hypothetical,
+                include_disputed: request.include_disputed,
+            })?)
+        }
+        crate::model::TemporalMode::Historical => Ok(view
             .assertions()?
             .into_iter()
             .filter(|assertion| {
                 assertion.record.scope == request.scope
-                    && assertion.lifecycle != Lifecycle::Proposed
+                    && assertion.lifecycle != mneme_core::Lifecycle::Proposed
             })
             .collect()),
-        TemporalMode::Inspection => Ok(view
+        crate::model::TemporalMode::Inspection => Ok(view
             .assertions()?
             .into_iter()
             .filter(|assertion| assertion.record.scope == request.scope)
@@ -227,29 +225,32 @@ fn selected_assertions(view: &MemoryView, request: &RecallRequest) -> Result<Vec
     }
 }
 
-fn entity_labels(view: &MemoryView, scope: &ScopeId) -> BTreeMap<RecordId, String> {
+fn entity_labels(
+    view: &mneme_memory::MemoryView,
+    scope: &mneme_core::ScopeId,
+) -> std::collections::BTreeMap<mneme_core::RecordId, String> {
     view.snapshot()
         .records
         .iter()
-        .filter(|record| record.kind == RecordKind::Entity && &record.scope == scope)
+        .filter(|record| record.kind == mneme_core::RecordKind::Entity && &record.scope == scope)
         .filter_map(|record| {
             record
                 .payload
                 .get("label")
-                .and_then(Value::as_string)
+                .and_then(mneme_core::Value::as_string)
                 .map(|label| (record.record_id, label.to_owned()))
         })
         .collect()
 }
 
 fn evidence_refs(
-    view: &MemoryView,
-    assertion: &AssertionView,
+    view: &mneme_memory::MemoryView,
+    assertion: &mneme_memory::AssertionView,
 ) -> (
-    Vec<RecallEvidence>,
-    BTreeSet<(RecordId, mneme_core::RevisionId)>,
+    Vec<crate::model::RecallEvidence>,
+    std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
 ) {
-    let mut roots = BTreeSet::new();
+    let mut roots = std::collections::BTreeSet::new();
     let mut refs = Vec::new();
     for evidence_id in &assertion.evidence {
         let Ok(evidence) = view.evidence(*evidence_id) else {
@@ -261,16 +262,16 @@ fn evidence_refs(
         let availability = view
             .source_status_for(&source)
             .map(|status| status.availability())
-            .unwrap_or_else(|_| SourceAvailability::Unavailable {
+            .unwrap_or_else(|_| mneme_memory::SourceAvailability::Unavailable {
                 reason: "source could not be read".to_owned(),
             });
         let source_revision = match evidence.source_reference {
-            Reference::Pinned { revision, .. } => Some(revision),
+            mneme_core::Reference::Pinned { revision, .. } => Some(revision),
             _ => Some(source.record.revision_id),
         };
         let evidence_roots = view.evidence_roots(*evidence_id).unwrap_or_default();
         roots.extend(evidence_roots.iter().copied());
-        refs.push(RecallEvidence {
+        refs.push(crate::model::RecallEvidence {
             evidence: *evidence_id,
             source: evidence.source,
             source_revision,
@@ -285,19 +286,19 @@ fn evidence_refs(
 #[allow(clippy::too_many_arguments)]
 fn document(
     id: String,
-    kind: ContentKind,
+    kind: crate::model::ContentKind,
     text: String,
     field_path: String,
-    source: Option<RecordId>,
+    source: Option<mneme_core::RecordId>,
     source_revision: Option<mneme_core::RevisionId>,
-    span: Option<SourceSpan>,
-    assertion: Option<RecordId>,
-    episode: Option<RecordId>,
-    entity: Option<RecordId>,
-    claim_status: Option<ClaimStatus>,
-    evidence: Vec<RecallEvidence>,
-    ancestry_roots: BTreeSet<(RecordId, mneme_core::RevisionId)>,
-) -> IndexedDocument {
+    span: Option<mneme_core::SourceSpan>,
+    assertion: Option<mneme_core::RecordId>,
+    episode: Option<mneme_core::RecordId>,
+    entity: Option<mneme_core::RecordId>,
+    claim_status: Option<crate::model::ClaimStatus>,
+    evidence: Vec<crate::model::RecallEvidence>,
+    ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+) -> crate::model::IndexedDocument {
     let normalized = text.to_lowercase();
     let terms = tokenize(&normalized);
     let trigrams = trigram_counts(&normalized);
@@ -306,7 +307,7 @@ fn document(
         .map(|count| f64::from(*count) * f64::from(*count))
         .sum::<f64>()
         .sqrt();
-    IndexedDocument {
+    crate::model::IndexedDocument {
         id,
         kind,
         text,
@@ -328,7 +329,7 @@ fn document(
 }
 
 /// Tokenize lower-case alphanumeric runs for lexical candidate generation.
-pub(crate) fn tokenize(text: &str) -> BTreeSet<String> {
+pub(crate) fn tokenize(text: &str) -> std::collections::BTreeSet<String> {
     text.split(|character: char| !character.is_alphanumeric())
         .filter(|term| !term.is_empty())
         .map(ToOwned::to_owned)
@@ -336,9 +337,9 @@ pub(crate) fn tokenize(text: &str) -> BTreeSet<String> {
 }
 
 /// Hash character trigrams into a sparse vector.
-pub(crate) fn trigram_counts(text: &str) -> BTreeMap<u64, u32> {
+pub(crate) fn trigram_counts(text: &str) -> std::collections::BTreeMap<u64, u32> {
     let characters = text.chars().collect::<Vec<_>>();
-    let mut counts = BTreeMap::new();
+    let mut counts = std::collections::BTreeMap::new();
     if characters.is_empty() {
         return counts;
     }
@@ -368,7 +369,7 @@ pub(crate) fn source_excerpt(
     text: &str,
     query: &str,
     max_quote_bytes: usize,
-) -> Option<(String, SourceSpan)> {
+) -> Option<(String, mneme_core::SourceSpan)> {
     if text.is_empty() || max_quote_bytes == 0 {
         return None;
     }
@@ -391,7 +392,7 @@ pub(crate) fn source_excerpt(
     }
     let quote = text[start..end].to_owned();
     let inclusive_end = end.saturating_sub(1);
-    let span = SourceSpan::new(start as u64, inclusive_end as u64).ok()?;
+    let span = mneme_core::SourceSpan::new(start as u64, inclusive_end as u64).ok()?;
     Some((quote, span))
 }
 

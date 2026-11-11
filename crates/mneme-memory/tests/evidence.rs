@@ -2,48 +2,42 @@
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mneme_core::{
-    Lifecycle, Origin, RecordEnvelope, RecordId, Reference, RevisionId, ScopeClass, ScopeId,
-    SourceSpan, Symbol, Timestamp, ValidTime, Value, WorkspaceRevisionId, fixtures,
-};
-use mneme_memory::{
-    BeliefView, DecisionKind, Memory, MemoryBatch, Policy, Stance, build_assertion_revision,
-    build_checkpoint, build_decision, build_derivation, build_episode, build_evidence,
-    build_proposed_assertion, build_source, build_unavailable_source,
-};
-use mneme_store::{FixedClock, NoFaults, RecordDraft, SourceBlobDraft, Workspace, WorkspaceConfig};
-use tempfile::TempDir;
-
-fn scope() -> ScopeId {
-    ScopeId::new(ScopeClass::Project, "cedar").expect("scope")
+fn scope() -> mneme_core::ScopeId {
+    mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar").expect("scope")
 }
 
-fn rid(byte: u8) -> RecordId {
-    RecordId::from_bytes([byte; 16])
+fn rid(byte: u8) -> mneme_core::RecordId {
+    mneme_core::RecordId::from_bytes([byte; 16])
 }
 
-fn rev(byte: u8) -> RevisionId {
-    RevisionId::from_bytes([byte; 16])
+fn rev(byte: u8) -> mneme_core::RevisionId {
+    mneme_core::RevisionId::from_bytes([byte; 16])
 }
 
-fn config() -> WorkspaceConfig {
-    WorkspaceConfig {
-        clock: Box::new(FixedClock::new(Timestamp::from_nanos(1_000))),
-        faults: Box::new(NoFaults),
+fn config() -> mneme_store::WorkspaceConfig {
+    mneme_store::WorkspaceConfig {
+        clock: Box::new(mneme_store::FixedClock::new(
+            mneme_core::Timestamp::from_nanos(1_000),
+        )),
+        faults: Box::new(mneme_store::NoFaults),
     }
 }
 
-fn batch(key: &str, records: Vec<RecordDraft>, sources: Vec<SourceBlobDraft>) -> MemoryBatch {
+fn batch(
+    key: &str,
+    records: Vec<mneme_store::RecordDraft>,
+    sources: Vec<mneme_store::SourceBlobDraft>,
+) -> mneme_memory::MemoryBatch {
     batch_in(&scope(), key, records, sources)
 }
 
 fn batch_in(
-    scope: &ScopeId,
+    scope: &mneme_core::ScopeId,
     key: &str,
-    records: Vec<RecordDraft>,
-    sources: Vec<SourceBlobDraft>,
-) -> MemoryBatch {
-    MemoryBatch {
+    records: Vec<mneme_store::RecordDraft>,
+    sources: Vec<mneme_store::SourceBlobDraft>,
+) -> mneme_memory::MemoryBatch {
+    mneme_memory::MemoryBatch {
         actor: "test-author".to_owned(),
         scope: scope.clone(),
         idempotency_key: key.to_owned(),
@@ -53,8 +47,8 @@ fn batch_in(
     }
 }
 
-fn draft(envelope: &RecordEnvelope) -> RecordDraft {
-    RecordDraft {
+fn draft(envelope: &mneme_core::RecordEnvelope) -> mneme_store::RecordDraft {
+    mneme_store::RecordDraft {
         schema_version: envelope.schema_version,
         kind: envelope.kind,
         record_id: envelope.record_id,
@@ -65,28 +59,28 @@ fn draft(envelope: &RecordEnvelope) -> RecordDraft {
     }
 }
 
-const SOURCE_ID: RecordId = RecordId::from_bytes([0x02; 16]);
-const SOURCE_REV: RevisionId = RevisionId::from_bytes([0x52; 16]);
+const SOURCE_ID: mneme_core::RecordId = mneme_core::RecordId::from_bytes([0x02; 16]);
+const SOURCE_REV: mneme_core::RevisionId = mneme_core::RevisionId::from_bytes([0x52; 16]);
 
-fn setup() -> (TempDir, Workspace) {
+fn setup() -> (tempfile::TempDir, mneme_store::Workspace) {
     let temp = tempfile::tempdir().expect("temp");
-    let mut workspace = Workspace::create(temp.path(), config()).expect("create");
+    let mut workspace = mneme_store::Workspace::create(temp.path(), config()).expect("create");
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch(
                 "entity",
-                vec![draft(&fixtures::entity())],
+                vec![draft(&mneme_core::fixtures::entity())],
                 Vec::new(),
             ))
             .expect("entity");
-        let (source, blob) = build_source(
+        let (source, blob) = mneme_memory::build_source(
             SOURCE_ID,
             SOURCE_REV,
             &scope(),
-            fixtures::SOURCE_TEXT.as_bytes(),
+            mneme_core::fixtures::SOURCE_TEXT.as_bytes(),
             "text/asciidoc",
-            Some(fixtures::entity_id()),
+            Some(mneme_core::fixtures::entity_id()),
             Some("project.adoc"),
         )
         .expect("source");
@@ -97,7 +91,10 @@ fn setup() -> (TempDir, Workspace) {
     (temp, workspace)
 }
 
-fn latest(workspace: &Workspace, record: RecordId) -> RecordEnvelope {
+fn latest(
+    workspace: &mneme_store::Workspace,
+    record: mneme_core::RecordId,
+) -> mneme_core::RecordEnvelope {
     workspace
         .record_revisions(record)
         .expect("history")
@@ -108,22 +105,22 @@ fn latest(workspace: &Workspace, record: RecordId) -> RecordEnvelope {
 
 #[allow(clippy::too_many_arguments)]
 fn propose(
-    workspace: &mut Workspace,
+    workspace: &mut mneme_store::Workspace,
     key: &str,
-    scope: &ScopeId,
-    evidence_id: RecordId,
-    evidence_revision: RevisionId,
-    assertion_id: RecordId,
-    assertion_revision: RevisionId,
+    scope: &mneme_core::ScopeId,
+    evidence_id: mneme_core::RecordId,
+    evidence_revision: mneme_core::RevisionId,
+    assertion_id: mneme_core::RecordId,
+    assertion_revision: mneme_core::RevisionId,
     predicate: &str,
-    value: Value,
-    stance: Stance,
-    valid_time: ValidTime,
-    span: Option<SourceSpan>,
-    ancestry: &[Reference],
+    value: mneme_core::Value,
+    stance: mneme_memory::Stance,
+    valid_time: mneme_core::ValidTime,
+    span: Option<mneme_core::SourceSpan>,
+    ancestry: &[mneme_core::Reference],
     extraction: Option<(&str, &str)>,
-) -> RecordId {
-    let evidence = build_evidence(
+) -> mneme_core::RecordId {
+    let evidence = mneme_memory::build_evidence(
         evidence_id,
         evidence_revision,
         scope,
@@ -133,25 +130,25 @@ fn propose(
         span,
         Some("storage-decision"),
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
+        mneme_core::Origin::AuthoredStatement,
         ancestry,
     );
-    let assertion = build_proposed_assertion(
+    let assertion = mneme_memory::build_proposed_assertion(
         assertion_id,
         assertion_revision,
         scope,
-        fixtures::entity_id(),
+        mneme_core::fixtures::entity_id(),
         predicate,
         value,
         stance,
         if extraction.is_some() {
-            Origin::ModelExtraction
+            mneme_core::Origin::ModelExtraction
         } else {
-            Origin::AuthoredStatement
+            mneme_core::Origin::AuthoredStatement
         },
         "synthetic author",
         valid_time,
-        &[Reference::local(
+        &[mneme_core::Reference::local(
             evidence_id,
             mneme_core::RecordKind::Evidence,
         )],
@@ -159,7 +156,7 @@ fn propose(
         None,
     );
     {
-        let mut memory = Memory::new(workspace);
+        let mut memory = mneme_memory::Memory::new(workspace);
         memory
             .commit(batch_in(scope, key, vec![evidence, assertion], Vec::new()))
             .expect("proposal commit");
@@ -169,20 +166,20 @@ fn propose(
 
 #[allow(clippy::too_many_arguments)]
 fn decide(
-    workspace: &mut Workspace,
+    workspace: &mut mneme_store::Workspace,
     key: &str,
-    assertion: RecordId,
-    lifecycle: Lifecycle,
-    decision_id: RecordId,
-    decision_revision: RevisionId,
-    assertion_revision: RevisionId,
-    kind: DecisionKind,
+    assertion: mneme_core::RecordId,
+    lifecycle: mneme_core::Lifecycle,
+    decision_id: mneme_core::RecordId,
+    decision_revision: mneme_core::RevisionId,
+    assertion_revision: mneme_core::RevisionId,
+    kind: mneme_memory::DecisionKind,
     outcome: &str,
-    related: &[Reference],
+    related: &[mneme_core::Reference],
 ) {
     let base = workspace.current_revision().expect("base");
     let current = latest(workspace, assertion);
-    let decision = build_decision(
+    let decision = mneme_memory::build_decision(
         decision_id,
         decision_revision,
         &scope(),
@@ -196,14 +193,14 @@ fn decide(
         &[],
         related,
     );
-    let revision = build_assertion_revision(
+    let revision = mneme_memory::build_assertion_revision(
         &current,
         assertion_revision,
         lifecycle,
-        Reference::local(decision_id, mneme_core::RecordKind::Decision),
+        mneme_core::Reference::local(decision_id, mneme_core::RecordKind::Decision),
         None,
     );
-    let mut memory = Memory::new(workspace);
+    let mut memory = mneme_memory::Memory::new(workspace);
     memory
         .commit(batch(key, vec![decision, revision], Vec::new()))
         .expect("decision commit");
@@ -221,35 +218,38 @@ fn proposed_assertion_is_not_promoted_by_retrieval_or_explanation() {
         rid(0x20),
         rev(0x21),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
     );
-    let at = Timestamp::parse("2026-11-10T00:00:00Z").expect("time");
-    let view = BeliefView {
+    let at = mneme_core::Timestamp::parse("2026-11-10T00:00:00Z").expect("time");
+    let view = mneme_memory::BeliefView {
         scope: scope(),
         at,
         include_hypothetical: false,
         include_disputed: false,
     };
     {
-        let memory = Memory::new(&mut workspace);
+        let memory = mneme_memory::Memory::new(&mut workspace);
         assert!(memory.beliefs(&view).expect("beliefs").is_empty());
         let explanation = memory
-            .explain(assertion_id, Policy::default())
+            .explain(assertion_id, mneme_memory::Policy::default())
             .expect("explain");
-        assert_eq!(explanation.assertion.lifecycle, Lifecycle::Proposed);
+        assert_eq!(
+            explanation.assertion.lifecycle,
+            mneme_core::Lifecycle::Proposed
+        );
         let again = memory
-            .explain(assertion_id, Policy::default())
+            .explain(assertion_id, mneme_memory::Policy::default())
             .expect("explain");
-        assert_eq!(again.assertion.lifecycle, Lifecycle::Proposed);
+        assert_eq!(again.assertion.lifecycle, mneme_core::Lifecycle::Proposed);
     }
     assert_eq!(
         latest(&workspace, assertion_id).assertion_lifecycle(),
-        Some(Lifecycle::Proposed)
+        Some(mneme_core::Lifecycle::Proposed)
     );
 }
 
@@ -257,31 +257,31 @@ fn proposed_assertion_is_not_promoted_by_retrieval_or_explanation() {
 fn invalid_span_rejects_the_whole_batch() {
     let (_temp, mut workspace) = setup();
     let before = workspace.snapshot().expect("snapshot");
-    let evidence = build_evidence(
+    let evidence = mneme_memory::build_evidence(
         rid(0x10),
         rev(0x11),
         &scope(),
         rid(0x20),
         SOURCE_ID,
         SOURCE_REV,
-        Some(SourceSpan::new(0, 10_000).expect("ordered")),
+        Some(mneme_core::SourceSpan::new(0, 10_000).expect("ordered")),
         None,
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
+        mneme_core::Origin::AuthoredStatement,
         &[],
     );
-    let assertion = build_proposed_assertion(
+    let assertion = mneme_memory::build_proposed_assertion(
         rid(0x20),
         rev(0x21),
         &scope(),
-        fixtures::entity_id(),
+        mneme_core::fixtures::entity_id(),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        Origin::AuthoredStatement,
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::Origin::AuthoredStatement,
         "author",
-        ValidTime::always(),
-        &[Reference::local(
+        mneme_core::ValidTime::always(),
+        &[mneme_core::Reference::local(
             rid(0x10),
             mneme_core::RecordKind::Evidence,
         )],
@@ -289,7 +289,7 @@ fn invalid_span_rejects_the_whole_batch() {
         None,
     );
     let error = {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch("bad-span", vec![evidence, assertion], Vec::new()))
             .expect_err("span beyond source")
@@ -312,23 +312,23 @@ fn acceptance_requires_a_matching_decision() {
         rid(0x20),
         rev(0x21),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
     );
     let current = latest(&workspace, assertion_id);
-    let accepted_without_decision = build_assertion_revision(
+    let accepted_without_decision = mneme_memory::build_assertion_revision(
         &current,
         rev(0x22),
-        Lifecycle::Accepted,
-        Reference::local(rid(0x30), mneme_core::RecordKind::Decision),
+        mneme_core::Lifecycle::Accepted,
+        mneme_core::Reference::local(rid(0x30), mneme_core::RecordKind::Decision),
         None,
     );
     let error = {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch(
                 "missing-decision",
@@ -343,18 +343,18 @@ fn acceptance_requires_a_matching_decision() {
         &mut workspace,
         "accept",
         assertion_id,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
-    let at = Timestamp::parse("2026-11-10T00:00:00Z").expect("time");
-    let memory = Memory::new(&mut workspace);
+    let at = mneme_core::Timestamp::parse("2026-11-10T00:00:00Z").expect("time");
+    let memory = mneme_memory::Memory::new(&mut workspace);
     let beliefs = memory
-        .beliefs(&BeliefView {
+        .beliefs(&mneme_memory::BeliefView {
             scope: scope(),
             at,
             include_hypothetical: false,
@@ -362,7 +362,7 @@ fn acceptance_requires_a_matching_decision() {
         })
         .expect("beliefs");
     assert_eq!(beliefs.len(), 1);
-    assert_eq!(beliefs[0].lifecycle, Lifecycle::Accepted);
+    assert_eq!(beliefs[0].lifecycle, mneme_core::Lifecycle::Accepted);
 }
 
 #[test]
@@ -377,13 +377,18 @@ fn source_change_after_extraction_keeps_the_pinned_citation() {
         rid(0x20),
         rev(0x21),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         Some(
-            SourceSpan::new(
-                fixtures::SOURCE_TEXT.find("SQLite").expect("present") as u64,
-                fixtures::SOURCE_TEXT.find("SQLite").expect("present") as u64 + 5,
+            mneme_core::SourceSpan::new(
+                mneme_core::fixtures::SOURCE_TEXT
+                    .find("SQLite")
+                    .expect("present") as u64,
+                mneme_core::fixtures::SOURCE_TEXT
+                    .find("SQLite")
+                    .expect("present") as u64
+                    + 5,
             )
             .expect("span"),
         ),
@@ -394,34 +399,34 @@ fn source_change_after_extraction_keeps_the_pinned_citation() {
         &mut workspace,
         "accept",
         assertion_id,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
 
-    let changed = fixtures::SOURCE_TEXT.replace("SQLite", "LMDB");
-    let (mut source, blob) = build_source(
+    let changed = mneme_core::fixtures::SOURCE_TEXT.replace("SQLite", "LMDB");
+    let (mut source, blob) = mneme_memory::build_source(
         SOURCE_ID,
         rev(0x0c),
         &scope(),
         changed.as_bytes(),
         "text/asciidoc",
-        Some(fixtures::entity_id()),
+        Some(mneme_core::fixtures::entity_id()),
         Some("project.adoc"),
     )
     .expect("source");
     source.predecessor = Some(SOURCE_REV);
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch("source-v2", vec![source], vec![blob]))
             .expect("source change");
         let explanation = memory
-            .explain(assertion_id, Policy::default())
+            .explain(assertion_id, mneme_memory::Policy::default())
             .expect("explain");
         let evidence = &explanation.evidence[0];
         assert_eq!(evidence.source_revision, SOURCE_REV);
@@ -433,30 +438,30 @@ fn source_change_after_extraction_keeps_the_pinned_citation() {
 
 #[allow(clippy::too_many_arguments)]
 fn propose_bare(
-    workspace: &mut Workspace,
+    workspace: &mut mneme_store::Workspace,
     key: &str,
-    scope: &ScopeId,
-    assertion_id: RecordId,
-    assertion_revision: RevisionId,
+    scope: &mneme_core::ScopeId,
+    assertion_id: mneme_core::RecordId,
+    assertion_revision: mneme_core::RevisionId,
     predicate: &str,
-    value: Value,
-) -> RecordId {
-    let assertion = build_proposed_assertion(
+    value: mneme_core::Value,
+) -> mneme_core::RecordId {
+    let assertion = mneme_memory::build_proposed_assertion(
         assertion_id,
         assertion_revision,
         scope,
-        fixtures::entity_id(),
+        mneme_core::fixtures::entity_id(),
         predicate,
         value,
-        Stance::Affirm,
-        Origin::AuthoredStatement,
+        mneme_memory::Stance::Affirm,
+        mneme_core::Origin::AuthoredStatement,
         "author",
-        ValidTime::always(),
+        mneme_core::ValidTime::always(),
         &[],
         None,
         None,
     );
-    let mut memory = Memory::new(workspace);
+    let mut memory = mneme_memory::Memory::new(workspace);
     memory
         .commit(batch_in(scope, key, vec![assertion], Vec::new()))
         .expect("bare proposal");
@@ -466,7 +471,7 @@ fn propose_bare(
 #[test]
 fn future_and_unknown_validity_do_not_answer_the_current_view() {
     let (_temp, mut workspace) = setup();
-    let future = Timestamp::parse("2030-01-01T00:00:00Z").expect("future");
+    let future = mneme_core::Timestamp::parse("2030-01-01T00:00:00Z").expect("future");
     let future_claim = propose(
         &mut workspace,
         "future",
@@ -476,9 +481,9 @@ fn future_and_unknown_validity_do_not_answer_the_current_view() {
         rid(0x20),
         rev(0x21),
         "future-change",
-        Value::string("scheduled"),
-        Stance::Affirm,
-        ValidTime::since(future),
+        mneme_core::Value::string("scheduled"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::since(future),
         None,
         &[],
         None,
@@ -487,11 +492,11 @@ fn future_and_unknown_validity_do_not_answer_the_current_view() {
         &mut workspace,
         "future-accept",
         future_claim,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
@@ -504,9 +509,9 @@ fn future_and_unknown_validity_do_not_answer_the_current_view() {
         rid(0x24),
         rev(0x25),
         "unknown-time",
-        Value::string("unknown"),
-        Stance::Affirm,
-        ValidTime::Unknown,
+        mneme_core::Value::string("unknown"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::Unknown,
         None,
         &[],
         None,
@@ -515,24 +520,24 @@ fn future_and_unknown_validity_do_not_answer_the_current_view() {
         &mut workspace,
         "unknown-accept",
         unknown_claim,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x32),
         rev(0x33),
         rev(0x26),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
 
-    let memory = Memory::new(&mut workspace);
-    let today = BeliefView {
+    let memory = mneme_memory::Memory::new(&mut workspace);
+    let today = mneme_memory::BeliefView {
         scope: scope(),
-        at: Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
+        at: mneme_core::Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
         include_hypothetical: false,
         include_disputed: false,
     };
     assert!(memory.beliefs(&today).expect("today").is_empty());
-    let later = BeliefView {
+    let later = mneme_memory::BeliefView {
         at: future,
         ..today.clone()
     };
@@ -544,8 +549,8 @@ fn future_and_unknown_validity_do_not_answer_the_current_view() {
 #[test]
 fn hypothesis_scope_is_isolated_and_promotion_is_explicit() {
     let (_temp, mut workspace) = setup();
-    let hypothesis_scope =
-        ScopeId::new(ScopeClass::Hypothesis, "plan-1").expect("hypothesis scope");
+    let hypothesis_scope = mneme_core::ScopeId::new(mneme_core::ScopeClass::Hypothesis, "plan-1")
+        .expect("hypothesis scope");
     let assertion_id = propose(
         &mut workspace,
         "hypothesis",
@@ -555,20 +560,20 @@ fn hypothesis_scope_is_isolated_and_promotion_is_explicit() {
         rid(0x20),
         rev(0x21),
         "device-state",
-        Value::string("maybe-offline"),
-        Stance::Hypothesis,
-        ValidTime::always(),
+        mneme_core::Value::string("maybe-offline"),
+        mneme_memory::Stance::Hypothesis,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
     );
-    let today = BeliefView {
+    let today = mneme_memory::BeliefView {
         scope: scope(),
-        at: Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
+        at: mneme_core::Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
         include_hypothetical: false,
         include_disputed: false,
     };
-    let memory = Memory::new(&mut workspace);
+    let memory = mneme_memory::Memory::new(&mut workspace);
     assert!(memory.beliefs(&today).expect("project view").is_empty());
     assert!(
         memory
@@ -584,20 +589,20 @@ fn hypothesis_scope_is_isolated_and_promotion_is_explicit() {
     // Promotion requires an accepted revision in the operational scope with a
     // decision that targets the promoted record.
     let current = latest(&workspace, assertion_id);
-    let mut accepted = build_assertion_revision(
+    let mut accepted = mneme_memory::build_assertion_revision(
         &current,
         rev(0x22),
-        Lifecycle::Accepted,
-        Reference::local(rid(0x30), mneme_core::RecordKind::Decision),
+        mneme_core::Lifecycle::Accepted,
+        mneme_core::Reference::local(rid(0x30), mneme_core::RecordKind::Decision),
         None,
     );
     accepted.scope = scope();
     let base = workspace.current_revision().expect("base");
-    let decision = build_decision(
+    let decision = mneme_memory::build_decision(
         rid(0x30),
         rev(0x31),
         &scope(),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         assertion_id,
         "policy actor",
         "promotion-policy/v1",
@@ -608,7 +613,7 @@ fn hypothesis_scope_is_isolated_and_promotion_is_explicit() {
         &[],
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch("promote", vec![decision, accepted], Vec::new()))
             .expect("promotion");
@@ -630,9 +635,9 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
         rid(0x20),
         rev(0x21),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -646,9 +651,9 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
         rid(0x24),
         rev(0x25),
         "storage-engine",
-        Value::string("LMDB"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("LMDB"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -657,11 +662,11 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
         &mut workspace,
         "first-accept",
         first,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
@@ -669,21 +674,21 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
         &mut workspace,
         "second-accept",
         second,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x32),
         rev(0x33),
         rev(0x26),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
-    let view = BeliefView {
+    let view = mneme_memory::BeliefView {
         scope: scope(),
-        at: Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
+        at: mneme_core::Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
         include_hypothetical: false,
         include_disputed: true,
     };
-    let memory = Memory::new(&mut workspace);
+    let memory = mneme_memory::Memory::new(&mut workspace);
     let conflicts = memory.conflicts(&view).expect("conflicts");
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].assertions.len(), 2);
@@ -692,26 +697,26 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
     // Explicitly mark both claims disputed with related links.
     let first_envelope = latest(&workspace, first);
     let second_envelope = latest(&workspace, second);
-    let first_disputed = build_assertion_revision(
+    let first_disputed = mneme_memory::build_assertion_revision(
         &first_envelope,
         rev(0x23),
-        Lifecycle::Disputed,
-        Reference::local(rid(0x34), mneme_core::RecordKind::Decision),
+        mneme_core::Lifecycle::Disputed,
+        mneme_core::Reference::local(rid(0x34), mneme_core::RecordKind::Decision),
         None,
     );
-    let second_disputed = build_assertion_revision(
+    let second_disputed = mneme_memory::build_assertion_revision(
         &second_envelope,
         rev(0x27),
-        Lifecycle::Disputed,
-        Reference::local(rid(0x36), mneme_core::RecordKind::Decision),
+        mneme_core::Lifecycle::Disputed,
+        mneme_core::Reference::local(rid(0x36), mneme_core::RecordKind::Decision),
         None,
     );
     let base = workspace.current_revision().expect("base");
-    let decision_first = build_decision(
+    let decision_first = mneme_memory::build_decision(
         rid(0x34),
         rev(0x35),
         &scope(),
-        DecisionKind::ConflictResolution,
+        mneme_memory::DecisionKind::ConflictResolution,
         first,
         "policy actor",
         "conflict-policy/v1",
@@ -719,13 +724,16 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
         "disputed",
         "contradictory functional claims",
         &[],
-        &[Reference::local(second, mneme_core::RecordKind::Assertion)],
+        &[mneme_core::Reference::local(
+            second,
+            mneme_core::RecordKind::Assertion,
+        )],
     );
-    let decision_second = build_decision(
+    let decision_second = mneme_memory::build_decision(
         rid(0x36),
         rev(0x37),
         &scope(),
-        DecisionKind::ConflictResolution,
+        mneme_memory::DecisionKind::ConflictResolution,
         second,
         "policy actor",
         "conflict-policy/v1",
@@ -733,10 +741,13 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
         "disputed",
         "contradictory functional claims",
         &[],
-        &[Reference::local(first, mneme_core::RecordKind::Assertion)],
+        &[mneme_core::Reference::local(
+            first,
+            mneme_core::RecordKind::Assertion,
+        )],
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch(
                 "resolve-conflict",
@@ -751,7 +762,7 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
             .expect("resolution");
         let disputed = memory.beliefs(&view).expect("disputed view");
         assert_eq!(disputed.len(), 2);
-        let accepted_only = BeliefView {
+        let accepted_only = mneme_memory::BeliefView {
             include_disputed: false,
             ..view
         };
@@ -771,11 +782,11 @@ fn disjoint_validity_does_not_create_a_conflict() {
         rid(0x20),
         rev(0x21),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        ValidTime::between(
-            Timestamp::parse("2020-01-01T00:00:00Z").expect("start"),
-            Timestamp::parse("2021-01-01T00:00:00Z").expect("end"),
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::between(
+            mneme_core::Timestamp::parse("2020-01-01T00:00:00Z").expect("start"),
+            mneme_core::Timestamp::parse("2021-01-01T00:00:00Z").expect("end"),
         )
         .expect("interval"),
         None,
@@ -791,11 +802,11 @@ fn disjoint_validity_does_not_create_a_conflict() {
         rid(0x24),
         rev(0x25),
         "storage-engine",
-        Value::string("LMDB"),
-        Stance::Affirm,
-        ValidTime::between(
-            Timestamp::parse("2022-01-01T00:00:00Z").expect("start"),
-            Timestamp::parse("2023-01-01T00:00:00Z").expect("end"),
+        mneme_core::Value::string("LMDB"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::between(
+            mneme_core::Timestamp::parse("2022-01-01T00:00:00Z").expect("start"),
+            mneme_core::Timestamp::parse("2023-01-01T00:00:00Z").expect("end"),
         )
         .expect("interval"),
         None,
@@ -806,11 +817,11 @@ fn disjoint_validity_does_not_create_a_conflict() {
         &mut workspace,
         "past-accept",
         past,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
@@ -818,21 +829,21 @@ fn disjoint_validity_does_not_create_a_conflict() {
         &mut workspace,
         "future-accept",
         future,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x32),
         rev(0x33),
         rev(0x26),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
-    let view = BeliefView {
+    let view = mneme_memory::BeliefView {
         scope: scope(),
-        at: Timestamp::parse("2024-06-01T00:00:00Z").expect("at"),
+        at: mneme_core::Timestamp::parse("2024-06-01T00:00:00Z").expect("at"),
         include_hypothetical: false,
         include_disputed: false,
     };
-    let memory = Memory::new(&mut workspace);
+    let memory = mneme_memory::Memory::new(&mut workspace);
     assert!(memory.conflicts(&view).expect("conflicts").is_empty());
 }
 
@@ -848,9 +859,9 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         rid(0x20),
         rev(0x21),
         "premise-one",
-        Value::string("yes"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("yes"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -864,9 +875,9 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         rid(0x24),
         rev(0x25),
         "premise-two",
-        Value::string("yes"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("yes"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -880,9 +891,9 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         rid(0x28),
         rev(0x29),
         "premise-three",
-        Value::string("yes"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("yes"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -891,11 +902,11 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         &mut workspace,
         "p1a",
         premise_one,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x40),
         rev(0x41),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
@@ -903,11 +914,11 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         &mut workspace,
         "p2a",
         premise_two,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x42),
         rev(0x43),
         rev(0x26),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
@@ -915,11 +926,11 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         &mut workspace,
         "p3a",
         premise_three,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x44),
         rev(0x45),
         rev(0x2a),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
@@ -930,41 +941,41 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         rid(0x30),
         rev(0x31),
         "conclusion",
-        Value::string("derived"),
+        mneme_core::Value::string("derived"),
     );
     decide(
         &mut workspace,
         "conclusion-a",
         conclusion,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x46),
         rev(0x47),
         rev(0x32),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
     let base = workspace.current_revision().expect("base");
-    let derivation_one = build_derivation(
+    let derivation_one = mneme_memory::build_derivation(
         rid(0x50),
         rev(0x51),
         &scope(),
         conclusion,
         &[
-            Reference::local(premise_one, mneme_core::RecordKind::Assertion),
-            Reference::local(premise_two, mneme_core::RecordKind::Assertion),
+            mneme_core::Reference::local(premise_one, mneme_core::RecordKind::Assertion),
+            mneme_core::Reference::local(premise_two, mneme_core::RecordKind::Assertion),
         ],
         "rule-a",
         1,
         base,
         "complete",
     );
-    let derivation_two = build_derivation(
+    let derivation_two = mneme_memory::build_derivation(
         rid(0x52),
         rev(0x53),
         &scope(),
         conclusion,
-        &[Reference::local(
+        &[mneme_core::Reference::local(
             premise_three,
             mneme_core::RecordKind::Assertion,
         )],
@@ -974,7 +985,7 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         "complete",
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch(
                 "derivations",
@@ -994,15 +1005,15 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         &mut workspace,
         "retract-p1",
         premise_one,
-        Lifecycle::Retracted,
+        mneme_core::Lifecycle::Retracted,
         rid(0x48),
         rev(0x49),
         rev(0x23),
-        DecisionKind::Retraction,
+        mneme_memory::DecisionKind::Retraction,
         "retracted",
         &[],
     );
-    let memory = Memory::new(&mut workspace);
+    let memory = mneme_memory::Memory::new(&mut workspace);
     let view = memory.view().expect("view");
     assert!(view.assertion_eligible(conclusion));
     let alternatives = view
@@ -1027,7 +1038,7 @@ fn cyclic_derivations_are_never_eligible() {
         rid(0x20),
         rev(0x21),
         "cycle-a",
-        Value::string("a"),
+        mneme_core::Value::string("a"),
     );
     let second = propose_bare(
         &mut workspace,
@@ -1036,17 +1047,17 @@ fn cyclic_derivations_are_never_eligible() {
         rid(0x24),
         rev(0x25),
         "cycle-b",
-        Value::string("b"),
+        mneme_core::Value::string("b"),
     );
     decide(
         &mut workspace,
         "cycle-a-accept",
         first,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
@@ -1054,38 +1065,44 @@ fn cyclic_derivations_are_never_eligible() {
         &mut workspace,
         "cycle-b-accept",
         second,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x32),
         rev(0x33),
         rev(0x26),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
     let base = workspace.current_revision().expect("base");
-    let derivation_a = build_derivation(
+    let derivation_a = mneme_memory::build_derivation(
         rid(0x40),
         rev(0x41),
         &scope(),
         first,
-        &[Reference::local(second, mneme_core::RecordKind::Assertion)],
+        &[mneme_core::Reference::local(
+            second,
+            mneme_core::RecordKind::Assertion,
+        )],
         "cycle-rule",
         1,
         base,
         "complete",
     );
-    let derivation_b = build_derivation(
+    let derivation_b = mneme_memory::build_derivation(
         rid(0x42),
         rev(0x43),
         &scope(),
         second,
-        &[Reference::local(first, mneme_core::RecordKind::Assertion)],
+        &[mneme_core::Reference::local(
+            first,
+            mneme_core::RecordKind::Assertion,
+        )],
         "cycle-rule",
         1,
         base,
         "complete",
     );
-    let mut memory = Memory::new(&mut workspace);
+    let mut memory = mneme_memory::Memory::new(&mut workspace);
     memory
         .commit(batch(
             "cycle-derivations",
@@ -1108,72 +1125,72 @@ fn cyclic_derivations_are_never_eligible() {
 fn corroboration_counts_distinct_sources_not_record_copies() {
     let (_temp, mut workspace) = setup();
     let assertion_id = rid(0x20);
-    let evidence_one = build_evidence(
+    let evidence_one = mneme_memory::build_evidence(
         rid(0x10),
         rev(0x11),
         &scope(),
         assertion_id,
         SOURCE_ID,
         SOURCE_REV,
-        Some(SourceSpan::new(0, 3).expect("span")),
+        Some(mneme_core::SourceSpan::new(0, 3).expect("span")),
         None,
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
+        mneme_core::Origin::AuthoredStatement,
         &[],
     );
-    let evidence_two = build_evidence(
+    let evidence_two = mneme_memory::build_evidence(
         rid(0x12),
         rev(0x13),
         &scope(),
         assertion_id,
         SOURCE_ID,
         SOURCE_REV,
-        Some(SourceSpan::new(4, 7).expect("span")),
+        Some(mneme_core::SourceSpan::new(4, 7).expect("span")),
         None,
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
-        &[Reference::local(
+        mneme_core::Origin::AuthoredStatement,
+        &[mneme_core::Reference::local(
             rid(0x10),
             mneme_core::RecordKind::Evidence,
         )],
     );
-    let evidence_three = build_evidence(
+    let evidence_three = mneme_memory::build_evidence(
         rid(0x14),
         rev(0x15),
         &scope(),
         assertion_id,
         SOURCE_ID,
         SOURCE_REV,
-        Some(SourceSpan::new(8, 12).expect("span")),
+        Some(mneme_core::SourceSpan::new(8, 12).expect("span")),
         None,
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
-        &[Reference::local(
+        mneme_core::Origin::AuthoredStatement,
+        &[mneme_core::Reference::local(
             rid(0x10),
             mneme_core::RecordKind::Evidence,
         )],
     );
-    let assertion = build_proposed_assertion(
+    let assertion = mneme_memory::build_proposed_assertion(
         assertion_id,
         rev(0x21),
         &scope(),
-        fixtures::entity_id(),
+        mneme_core::fixtures::entity_id(),
         "corroborated",
-        Value::string("yes"),
-        Stance::Affirm,
-        Origin::AuthoredStatement,
+        mneme_core::Value::string("yes"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::Origin::AuthoredStatement,
         "author",
-        ValidTime::always(),
+        mneme_core::ValidTime::always(),
         &[
-            Reference::local(rid(0x10), mneme_core::RecordKind::Evidence),
-            Reference::local(rid(0x12), mneme_core::RecordKind::Evidence),
-            Reference::local(rid(0x14), mneme_core::RecordKind::Evidence),
+            mneme_core::Reference::local(rid(0x10), mneme_core::RecordKind::Evidence),
+            mneme_core::Reference::local(rid(0x12), mneme_core::RecordKind::Evidence),
+            mneme_core::Reference::local(rid(0x14), mneme_core::RecordKind::Evidence),
         ],
         None,
         None,
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch(
                 "corroboration",
@@ -1186,15 +1203,15 @@ fn corroboration_counts_distinct_sources_not_record_copies() {
         &mut workspace,
         "corroborated-accept",
         assertion_id,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
-    let memory = Memory::new(&mut workspace);
+    let memory = mneme_memory::Memory::new(&mut workspace);
     let corroboration = memory
         .view()
         .expect("view")
@@ -1208,58 +1225,58 @@ fn corroboration_counts_distinct_sources_not_record_copies() {
 fn cyclic_evidence_ancestry_is_rejected() {
     let (_temp, mut workspace) = setup();
     let assertion_id = rid(0x20);
-    let evidence_one = build_evidence(
+    let evidence_one = mneme_memory::build_evidence(
         rid(0x10),
         rev(0x11),
         &scope(),
         assertion_id,
         SOURCE_ID,
         SOURCE_REV,
-        Some(SourceSpan::new(0, 3).expect("span")),
+        Some(mneme_core::SourceSpan::new(0, 3).expect("span")),
         None,
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
-        &[Reference::local(
+        mneme_core::Origin::AuthoredStatement,
+        &[mneme_core::Reference::local(
             rid(0x12),
             mneme_core::RecordKind::Evidence,
         )],
     );
-    let evidence_two = build_evidence(
+    let evidence_two = mneme_memory::build_evidence(
         rid(0x12),
         rev(0x13),
         &scope(),
         assertion_id,
         SOURCE_ID,
         SOURCE_REV,
-        Some(SourceSpan::new(4, 7).expect("span")),
+        Some(mneme_core::SourceSpan::new(4, 7).expect("span")),
         None,
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
-        &[Reference::local(
+        mneme_core::Origin::AuthoredStatement,
+        &[mneme_core::Reference::local(
             rid(0x10),
             mneme_core::RecordKind::Evidence,
         )],
     );
-    let assertion = build_proposed_assertion(
+    let assertion = mneme_memory::build_proposed_assertion(
         assertion_id,
         rev(0x21),
         &scope(),
-        fixtures::entity_id(),
+        mneme_core::fixtures::entity_id(),
         "cyclic",
-        Value::string("no"),
-        Stance::Affirm,
-        Origin::AuthoredStatement,
+        mneme_core::Value::string("no"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::Origin::AuthoredStatement,
         "author",
-        ValidTime::always(),
+        mneme_core::ValidTime::always(),
         &[
-            Reference::local(rid(0x10), mneme_core::RecordKind::Evidence),
-            Reference::local(rid(0x12), mneme_core::RecordKind::Evidence),
+            mneme_core::Reference::local(rid(0x10), mneme_core::RecordKind::Evidence),
+            mneme_core::Reference::local(rid(0x12), mneme_core::RecordKind::Evidence),
         ],
         None,
         None,
     );
     let error = {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch(
                 "cyclic-ancestry",
@@ -1283,13 +1300,18 @@ fn pruned_source_is_reported_without_inventing_an_excerpt() {
         rid(0x20),
         rev(0x21),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         Some(
-            SourceSpan::new(
-                fixtures::SOURCE_TEXT.find("SQLite").expect("present") as u64,
-                fixtures::SOURCE_TEXT.find("SQLite").expect("present") as u64 + 5,
+            mneme_core::SourceSpan::new(
+                mneme_core::fixtures::SOURCE_TEXT
+                    .find("SQLite")
+                    .expect("present") as u64,
+                mneme_core::fixtures::SOURCE_TEXT
+                    .find("SQLite")
+                    .expect("present") as u64
+                    + 5,
             )
             .expect("span"),
         ),
@@ -1300,41 +1322,44 @@ fn pruned_source_is_reported_without_inventing_an_excerpt() {
         &mut workspace,
         "accept",
         assertion_id,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
     let (mut pruned, _) = (
-        build_unavailable_source(
+        mneme_memory::build_unavailable_source(
             SOURCE_ID,
             rev(0x53),
             &scope(),
             "raw bytes pruned under retention policy",
             "pruned",
-            Some(fixtures::entity_id()),
+            Some(mneme_core::fixtures::entity_id()),
             Some("project.adoc"),
         ),
         (),
     );
     pruned.predecessor = Some(SOURCE_REV);
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch("prune", vec![pruned], Vec::new()))
             .expect("prune");
         let explanation = memory
-            .explain(assertion_id, Policy::default())
+            .explain(assertion_id, mneme_memory::Policy::default())
             .expect("explain");
         assert_eq!(
             explanation.evidence[0].availability,
             mneme_memory::SourceAvailability::Pruned
         );
         assert!(explanation.evidence[0].excerpt.is_none());
-        assert_eq!(explanation.assertion.lifecycle, Lifecycle::Accepted);
+        assert_eq!(
+            explanation.assertion.lifecycle,
+            mneme_core::Lifecycle::Accepted
+        );
     }
 }
 
@@ -1350,9 +1375,9 @@ fn correction_retraction_and_history_do_not_assert_the_opposite() {
         rid(0x20),
         rev(0x21),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -1361,40 +1386,41 @@ fn correction_retraction_and_history_do_not_assert_the_opposite() {
         &mut workspace,
         "accept",
         assertion_id,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
     let accepted = latest(&workspace, assertion_id);
-    let mut corrected = build_assertion_revision(
+    let mut corrected = mneme_memory::build_assertion_revision(
         &accepted,
         rev(0x23),
-        Lifecycle::Accepted,
-        Reference::local(rid(0x32), mneme_core::RecordKind::Decision),
+        mneme_core::Lifecycle::Accepted,
+        mneme_core::Reference::local(rid(0x32), mneme_core::RecordKind::Decision),
         None,
     );
-    corrected
-        .payload
-        .insert(Symbol::from("value"), Value::string("LMDB"));
     corrected.payload.insert(
-        Symbol::from("valid-time"),
-        ValidTime::between(
-            Timestamp::parse("2020-01-01T00:00:00Z").expect("start"),
-            Timestamp::parse("2021-01-01T00:00:00Z").expect("end"),
+        mneme_core::Symbol::from("value"),
+        mneme_core::Value::string("LMDB"),
+    );
+    corrected.payload.insert(
+        mneme_core::Symbol::from("valid-time"),
+        mneme_core::ValidTime::between(
+            mneme_core::Timestamp::parse("2020-01-01T00:00:00Z").expect("start"),
+            mneme_core::Timestamp::parse("2021-01-01T00:00:00Z").expect("end"),
         )
         .expect("interval")
         .to_value(),
     );
     let base = workspace.current_revision().expect("base");
-    let correction_decision = build_decision(
+    let correction_decision = mneme_memory::build_decision(
         rid(0x32),
         rev(0x33),
         &scope(),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         assertion_id,
         "policy actor",
         "correction-policy/v1",
@@ -1405,7 +1431,7 @@ fn correction_retraction_and_history_do_not_assert_the_opposite() {
         &[],
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch(
                 "correct",
@@ -1414,20 +1440,23 @@ fn correction_retraction_and_history_do_not_assert_the_opposite() {
             ))
             .expect("correction");
         let beliefs = memory
-            .beliefs(&BeliefView {
+            .beliefs(&mneme_memory::BeliefView {
                 scope: scope(),
-                at: Timestamp::parse("2020-06-01T00:00:00Z").expect("historical"),
+                at: mneme_core::Timestamp::parse("2020-06-01T00:00:00Z").expect("historical"),
                 include_hypothetical: false,
                 include_disputed: false,
             })
             .expect("beliefs");
         assert_eq!(beliefs.len(), 1);
-        assert_eq!(beliefs[0].value, Value::string("LMDB"));
+        assert_eq!(beliefs[0].value, mneme_core::Value::string("LMDB"));
         assert_eq!(memory.revisions(assertion_id).expect("history").len(), 3);
         let explanation = memory
-            .explain(assertion_id, Policy::default())
+            .explain(assertion_id, mneme_memory::Policy::default())
             .expect("corrected explanation");
-        assert_eq!(explanation.assertion.lifecycle, Lifecycle::Accepted);
+        assert_eq!(
+            explanation.assertion.lifecycle,
+            mneme_core::Lifecycle::Accepted
+        );
         assert!(explanation.decisions.len() >= 2);
         assert_eq!(
             explanation.evidence[0].availability,
@@ -1438,20 +1467,20 @@ fn correction_retraction_and_history_do_not_assert_the_opposite() {
         &mut workspace,
         "retract",
         assertion_id,
-        Lifecycle::Retracted,
+        mneme_core::Lifecycle::Retracted,
         rid(0x34),
         rev(0x35),
         rev(0x24),
-        DecisionKind::Retraction,
+        mneme_memory::DecisionKind::Retraction,
         "retracted",
         &[],
     );
-    let memory = Memory::new(&mut workspace);
+    let memory = mneme_memory::Memory::new(&mut workspace);
     assert!(
         memory
-            .beliefs(&BeliefView {
+            .beliefs(&mneme_memory::BeliefView {
                 scope: scope(),
-                at: Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
+                at: mneme_core::Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
                 include_hypothetical: false,
                 include_disputed: false,
             })
@@ -1466,67 +1495,73 @@ fn correction_retraction_and_history_do_not_assert_the_opposite() {
             .assertions()
             .expect("assertions")
             .iter()
-            .all(|assertion| !matches!(assertion.stance, Stance::Deny))
+            .all(|assertion| !matches!(assertion.stance, mneme_memory::Stance::Deny))
     );
 }
 
 #[test]
 fn action_intent_without_an_observed_outcome_cannot_be_completed() {
     let (_temp, mut workspace) = setup();
-    let intent = build_episode(
+    let intent = mneme_memory::build_episode(
         rid(0x10),
         rev(0x11),
         &scope(),
         "agent",
         "intent",
-        ValidTime::Unknown,
+        mneme_core::ValidTime::Unknown,
         "plan to test the device",
         None,
         &[],
     );
-    let attempt = build_episode(
+    let attempt = mneme_memory::build_episode(
         rid(0x12),
         rev(0x13),
         &scope(),
         "agent",
         "attempt",
-        ValidTime::Unknown,
+        mneme_core::ValidTime::Unknown,
         "attempted the test with unknown result",
         None,
-        &[Reference::local(rid(0x10), mneme_core::RecordKind::Episode)],
+        &[mneme_core::Reference::local(
+            rid(0x10),
+            mneme_core::RecordKind::Episode,
+        )],
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch("episodes", vec![intent, attempt], Vec::new()))
             .expect("episodes");
     }
     let assertion_id = rid(0x20);
-    let evidence = build_evidence(
+    let evidence = mneme_memory::build_evidence(
         rid(0x14),
         rev(0x15),
         &scope(),
         assertion_id,
         SOURCE_ID,
         SOURCE_REV,
-        Some(SourceSpan::new(0, 4).expect("span")),
+        Some(mneme_core::SourceSpan::new(0, 4).expect("span")),
         None,
         mneme_memory::SupportRelation::Supports,
-        Origin::Observation,
-        &[Reference::local(rid(0x12), mneme_core::RecordKind::Episode)],
+        mneme_core::Origin::Observation,
+        &[mneme_core::Reference::local(
+            rid(0x12),
+            mneme_core::RecordKind::Episode,
+        )],
     );
-    let completed = build_proposed_assertion(
+    let completed = mneme_memory::build_proposed_assertion(
         assertion_id,
         rev(0x21),
         &scope(),
-        fixtures::entity_id(),
+        mneme_core::fixtures::entity_id(),
         "action-completed",
-        Value::string("device tested"),
-        Stance::Affirm,
-        Origin::Observation,
+        mneme_core::Value::string("device tested"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::Origin::Observation,
         "agent",
-        ValidTime::always(),
-        &[Reference::local(
+        mneme_core::ValidTime::always(),
+        &[mneme_core::Reference::local(
             rid(0x14),
             mneme_core::RecordKind::Evidence,
         )],
@@ -1534,7 +1569,7 @@ fn action_intent_without_an_observed_outcome_cannot_be_completed() {
         None,
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         let error = memory
             .commit(batch(
                 "false-completion",
@@ -1545,67 +1580,79 @@ fn action_intent_without_an_observed_outcome_cannot_be_completed() {
         assert!(error.to_string().contains("observed outcome"));
     }
 
-    let outcome = build_episode(
+    let outcome = mneme_memory::build_episode(
         rid(0x16),
         rev(0x17),
         &scope(),
         "agent",
         "outcome",
-        ValidTime::Unknown,
+        mneme_core::ValidTime::Unknown,
         "device responded",
         None,
-        &[Reference::local(rid(0x12), mneme_core::RecordKind::Episode)],
+        &[mneme_core::Reference::local(
+            rid(0x12),
+            mneme_core::RecordKind::Episode,
+        )],
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch("outcome", vec![outcome], Vec::new()))
             .expect("outcome");
     }
-    let evidence = build_evidence(
+    let evidence = mneme_memory::build_evidence(
         rid(0x14),
         rev(0x15),
         &scope(),
         assertion_id,
         SOURCE_ID,
         SOURCE_REV,
-        Some(SourceSpan::new(0, 4).expect("span")),
+        Some(mneme_core::SourceSpan::new(0, 4).expect("span")),
         None,
         mneme_memory::SupportRelation::Supports,
-        Origin::Observation,
-        &[Reference::local(rid(0x16), mneme_core::RecordKind::Episode)],
+        mneme_core::Origin::Observation,
+        &[mneme_core::Reference::local(
+            rid(0x16),
+            mneme_core::RecordKind::Episode,
+        )],
     );
-    let completed = build_proposed_assertion(
+    let completed = mneme_memory::build_proposed_assertion(
         assertion_id,
         rev(0x21),
         &scope(),
-        fixtures::entity_id(),
+        mneme_core::fixtures::entity_id(),
         "action-completed",
-        Value::string("device tested"),
-        Stance::Affirm,
-        Origin::Observation,
+        mneme_core::Value::string("device tested"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::Origin::Observation,
         "agent",
-        ValidTime::always(),
-        &[Reference::local(
+        mneme_core::ValidTime::always(),
+        &[mneme_core::Reference::local(
             rid(0x14),
             mneme_core::RecordKind::Evidence,
         )],
         None,
         None,
     );
-    let checkpoint = build_checkpoint(
+    let checkpoint = mneme_memory::build_checkpoint(
         rid(0x18),
         rev(0x19),
         &scope(),
         "verify device",
         "awaiting-verification",
-        &[Reference::local(rid(0x10), mneme_core::RecordKind::Episode)],
-        &[Reference::local(rid(0x16), mneme_core::RecordKind::Episode)],
+        &[mneme_core::Reference::local(
+            rid(0x10),
+            mneme_core::RecordKind::Episode,
+        )],
+        &[mneme_core::Reference::local(
+            rid(0x16),
+            mneme_core::RecordKind::Episode,
+        )],
         workspace.current_revision().expect("revision"),
         None,
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch(
                 "observed-completion",
@@ -1620,41 +1667,41 @@ fn action_intent_without_an_observed_outcome_cannot_be_completed() {
 fn accepted_absence_requires_an_explicit_completeness_basis() {
     let (_temp, mut workspace) = setup();
     let assertion_id = rid(0x20);
-    let mut assertion = build_proposed_assertion(
+    let mut assertion = mneme_memory::build_proposed_assertion(
         assertion_id,
         rev(0x21),
         &scope(),
-        fixtures::entity_id(),
+        mneme_core::fixtures::entity_id(),
         "blocker",
-        Value::string("none"),
-        Stance::Deny,
-        Origin::AuthoredStatement,
+        mneme_core::Value::string("none"),
+        mneme_memory::Stance::Deny,
+        mneme_core::Origin::AuthoredStatement,
         "author",
-        ValidTime::always(),
+        mneme_core::ValidTime::always(),
         &[],
         None,
         None,
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch("absence", vec![assertion.clone()], Vec::new()))
             .expect("proposed absence");
     }
     let current = latest(&workspace, assertion_id);
-    let accepted = build_assertion_revision(
+    let accepted = mneme_memory::build_assertion_revision(
         &current,
         rev(0x22),
-        Lifecycle::Accepted,
-        Reference::local(rid(0x30), mneme_core::RecordKind::Decision),
+        mneme_core::Lifecycle::Accepted,
+        mneme_core::Reference::local(rid(0x30), mneme_core::RecordKind::Decision),
         None,
     );
     let base = workspace.current_revision().expect("base");
-    let decision = build_decision(
+    let decision = mneme_memory::build_decision(
         rid(0x30),
         rev(0x31),
         &scope(),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         assertion_id,
         "policy actor",
         "absence-policy/v1",
@@ -1665,7 +1712,7 @@ fn accepted_absence_requires_an_explicit_completeness_basis() {
         &[],
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         let error = memory
             .commit(batch(
                 "accept-absence",
@@ -1678,31 +1725,31 @@ fn accepted_absence_requires_an_explicit_completeness_basis() {
     // A declared-complete basis is an explicit policy input, not a retrieval
     // side effect.
     assertion.payload.insert(
-        Symbol::from("completeness"),
-        Value::symbol("declared-complete"),
+        mneme_core::Symbol::from("completeness"),
+        mneme_core::Value::symbol("declared-complete"),
     );
     assertion.revision_id = rev(0x23);
     assertion.predecessor = Some(rev(0x21));
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch("declared-absence", vec![assertion], Vec::new()))
             .expect("declared complete basis");
     }
     let current = latest(&workspace, assertion_id);
-    let accepted = build_assertion_revision(
+    let accepted = mneme_memory::build_assertion_revision(
         &current,
         rev(0x24),
-        Lifecycle::Accepted,
-        Reference::local(rid(0x32), mneme_core::RecordKind::Decision),
+        mneme_core::Lifecycle::Accepted,
+        mneme_core::Reference::local(rid(0x32), mneme_core::RecordKind::Decision),
         None,
     );
     let base = workspace.current_revision().expect("base");
-    let decision = build_decision(
+    let decision = mneme_memory::build_decision(
         rid(0x32),
         rev(0x33),
         &scope(),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         assertion_id,
         "policy actor",
         "absence-policy/v1",
@@ -1712,7 +1759,7 @@ fn accepted_absence_requires_an_explicit_completeness_basis() {
         &[],
         &[],
     );
-    let mut memory = Memory::new(&mut workspace);
+    let mut memory = mneme_memory::Memory::new(&mut workspace);
     memory
         .commit(batch(
             "accept-declared-absence",
@@ -1734,9 +1781,9 @@ fn supersession_is_explicit_and_preserves_the_prior_revision() {
         rid(0x20),
         rev(0x21),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -1745,11 +1792,11 @@ fn supersession_is_explicit_and_preserves_the_prior_revision() {
         &mut workspace,
         "old-accept",
         old,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
@@ -1762,9 +1809,9 @@ fn supersession_is_explicit_and_preserves_the_prior_revision() {
         rid(0x24),
         rev(0x25),
         "storage-engine",
-        Value::string("LMDB"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("LMDB"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -1773,32 +1820,32 @@ fn supersession_is_explicit_and_preserves_the_prior_revision() {
         &mut workspace,
         "new-accept",
         replacement,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x32),
         rev(0x33),
         rev(0x26),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
     let current_old = latest(&workspace, old);
-    let mut superseded = build_assertion_revision(
+    let mut superseded = mneme_memory::build_assertion_revision(
         &current_old,
         rev(0x23),
-        Lifecycle::Superseded,
-        Reference::local(rid(0x34), mneme_core::RecordKind::Decision),
-        Some(Reference::local(
+        mneme_core::Lifecycle::Superseded,
+        mneme_core::Reference::local(rid(0x34), mneme_core::RecordKind::Decision),
+        Some(mneme_core::Reference::local(
             replacement,
             mneme_core::RecordKind::Assertion,
         )),
     );
     superseded.predecessor = Some(current_old.revision_id);
     let base = workspace.current_revision().expect("base");
-    let decision = build_decision(
+    let decision = mneme_memory::build_decision(
         rid(0x34),
         rev(0x35),
         &scope(),
-        DecisionKind::Supersession,
+        mneme_memory::DecisionKind::Supersession,
         old,
         "policy actor",
         "supersession-policy/v1",
@@ -1806,20 +1853,20 @@ fn supersession_is_explicit_and_preserves_the_prior_revision() {
         "superseded",
         "replaced by LMDB",
         &[],
-        &[Reference::local(
+        &[mneme_core::Reference::local(
             replacement,
             mneme_core::RecordKind::Assertion,
         )],
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch("supersede", vec![decision, superseded], Vec::new()))
             .expect("supersession");
         let beliefs = memory
-            .beliefs(&BeliefView {
+            .beliefs(&mneme_memory::BeliefView {
                 scope: scope(),
-                at: Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
+                at: mneme_core::Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
                 include_hypothetical: false,
                 include_disputed: false,
             })
@@ -1834,31 +1881,31 @@ fn supersession_is_explicit_and_preserves_the_prior_revision() {
 fn mismatched_source_revision_and_stale_decision_are_refused() {
     let (_temp, mut workspace) = setup();
     let assertion_id = rid(0x20);
-    let evidence = build_evidence(
+    let evidence = mneme_memory::build_evidence(
         rid(0x10),
         rev(0x11),
         &scope(),
         assertion_id,
         SOURCE_ID,
         rev(0x54),
-        Some(SourceSpan::new(0, 3).expect("span")),
+        Some(mneme_core::SourceSpan::new(0, 3).expect("span")),
         None,
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
+        mneme_core::Origin::AuthoredStatement,
         &[],
     );
-    let assertion = build_proposed_assertion(
+    let assertion = mneme_memory::build_proposed_assertion(
         assertion_id,
         rev(0x21),
         &scope(),
-        fixtures::entity_id(),
+        mneme_core::fixtures::entity_id(),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        Origin::AuthoredStatement,
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::Origin::AuthoredStatement,
         "author",
-        ValidTime::always(),
-        &[Reference::local(
+        mneme_core::ValidTime::always(),
+        &[mneme_core::Reference::local(
             rid(0x10),
             mneme_core::RecordKind::Evidence,
         )],
@@ -1866,7 +1913,7 @@ fn mismatched_source_revision_and_stale_decision_are_refused() {
         None,
     );
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         let error = memory
             .commit(batch(
                 "pinned-mismatch",
@@ -1886,9 +1933,9 @@ fn mismatched_source_revision_and_stale_decision_are_refused() {
         rid(0x24),
         rev(0x25),
         "stale-decision",
-        Value::string("value"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("value"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -1896,21 +1943,21 @@ fn mismatched_source_revision_and_stale_decision_are_refused() {
     // Advance the workspace so the decision's input revision is stale.
     let mut workspace = workspace;
     {
-        let mut memory = Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Memory::new(&mut workspace);
         memory
             .commit(batch(
                 "advance",
-                vec![build_proposed_assertion(
+                vec![mneme_memory::build_proposed_assertion(
                     rid(0x30),
                     rev(0x31),
                     &scope(),
-                    fixtures::entity_id(),
+                    mneme_core::fixtures::entity_id(),
                     "unrelated",
-                    Value::string("x"),
-                    Stance::Affirm,
-                    Origin::AuthoredStatement,
+                    mneme_core::Value::string("x"),
+                    mneme_memory::Stance::Affirm,
+                    mneme_core::Origin::AuthoredStatement,
                     "author",
-                    ValidTime::always(),
+                    mneme_core::ValidTime::always(),
                     &[],
                     None,
                     None,
@@ -1920,28 +1967,28 @@ fn mismatched_source_revision_and_stale_decision_are_refused() {
             .expect("advance");
     }
     let current = latest(&workspace, assertion_id);
-    let accepted = build_assertion_revision(
+    let accepted = mneme_memory::build_assertion_revision(
         &current,
         rev(0x26),
-        Lifecycle::Accepted,
-        Reference::local(rid(0x40), mneme_core::RecordKind::Decision),
+        mneme_core::Lifecycle::Accepted,
+        mneme_core::Reference::local(rid(0x40), mneme_core::RecordKind::Decision),
         None,
     );
-    let decision = build_decision(
+    let decision = mneme_memory::build_decision(
         rid(0x40),
         rev(0x41),
         &scope(),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         assertion_id,
         "policy actor",
         "stale-policy/v1",
-        WorkspaceRevisionId::from_bytes([0x7f; 16]),
+        mneme_core::WorkspaceRevisionId::from_bytes([0x7f; 16]),
         "accepted",
         "stale decision",
         &[],
         &[],
     );
-    let mut memory = Memory::new(&mut workspace);
+    let mut memory = mneme_memory::Memory::new(&mut workspace);
     let error = memory
         .commit(batch(
             "stale-decision",
@@ -1968,10 +2015,10 @@ fn erased_and_inaccessible_sources_are_labelled_without_text() {
             rid(0x20),
             rev(0x21),
             "storage-engine",
-            Value::string("SQLite"),
-            Stance::Affirm,
-            ValidTime::always(),
-            Some(SourceSpan::new(0, 5).expect("span")),
+            mneme_core::Value::string("SQLite"),
+            mneme_memory::Stance::Affirm,
+            mneme_core::ValidTime::always(),
+            Some(mneme_core::SourceSpan::new(0, 5).expect("span")),
             &[],
             None,
         );
@@ -1979,31 +2026,31 @@ fn erased_and_inaccessible_sources_are_labelled_without_text() {
             &mut workspace,
             "accept",
             assertion,
-            Lifecycle::Accepted,
+            mneme_core::Lifecycle::Accepted,
             rid(0x30),
             rev(0x31),
             rev(0x22),
-            DecisionKind::Acceptance,
+            mneme_memory::DecisionKind::Acceptance,
             "accepted",
             &[],
         );
-        let mut replacement = build_unavailable_source(
+        let mut replacement = mneme_memory::build_unavailable_source(
             SOURCE_ID,
             rev(0x55),
             &scope(),
             reason,
             availability,
-            Some(fixtures::entity_id()),
+            Some(mneme_core::fixtures::entity_id()),
             Some("project.adoc"),
         );
         replacement.predecessor = Some(SOURCE_REV);
         {
-            let mut memory = Memory::new(&mut workspace);
+            let mut memory = mneme_memory::Memory::new(&mut workspace);
             memory
                 .commit(batch("unavailable", vec![replacement], Vec::new()))
                 .expect("source state");
             let explanation = memory
-                .explain(assertion, Policy::default())
+                .explain(assertion, mneme_memory::Policy::default())
                 .expect("explain");
             assert!(explanation.evidence[0].excerpt.is_none());
             assert_eq!(
@@ -2030,9 +2077,9 @@ fn memory_explanation_rechecks_the_current_eligibility_generation() {
         rid(0x20),
         rev(0x21),
         "storage-engine",
-        Value::string("SQLite"),
-        Stance::Affirm,
-        ValidTime::always(),
+        mneme_core::Value::string("SQLite"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::ValidTime::always(),
         None,
         &[],
         None,
@@ -2041,19 +2088,19 @@ fn memory_explanation_rechecks_the_current_eligibility_generation() {
         &mut workspace,
         "accept",
         assertion,
-        Lifecycle::Accepted,
+        mneme_core::Lifecycle::Accepted,
         rid(0x30),
         rev(0x31),
         rev(0x22),
-        DecisionKind::Acceptance,
+        mneme_memory::DecisionKind::Acceptance,
         "accepted",
         &[],
     );
     let generation = workspace.eligibility_generation().expect("generation");
     workspace.advance_eligibility_barrier().expect("barrier");
-    let memory = Memory::new(&mut workspace);
+    let memory = mneme_memory::Memory::new(&mut workspace);
     let error = memory
-        .explain_at(assertion, Some(generation), Policy::default())
+        .explain_at(assertion, Some(generation), mneme_memory::Policy::default())
         .expect_err("stale generation");
     assert!(matches!(
         error,

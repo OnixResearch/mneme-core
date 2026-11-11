@@ -1,7 +1,5 @@
 //! Fault injection points for durability and recovery tests.
 
-use crate::error::{Result, StoreError};
-
 /// A durable boundary at which a test may simulate a process stop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FaultPoint {
@@ -48,9 +46,9 @@ impl FaultInjector for FaultAt {
 }
 
 /// Stop at a boundary if the injector requests it.
-pub fn check(faults: &dyn FaultInjector, point: FaultPoint) -> Result<()> {
+pub fn check(faults: &dyn FaultInjector, point: FaultPoint) -> crate::error::Result<()> {
     if faults.inject(point) {
-        Err(StoreError::InjectedFault(point))
+        Err(crate::error::StoreError::InjectedFault(point))
     } else {
         Ok(())
     }

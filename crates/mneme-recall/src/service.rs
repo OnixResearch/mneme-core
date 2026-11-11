@@ -1,28 +1,5 @@
 //! Bounded recall service over one mutable workspace handle.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
-
-use mneme_core::{
-    ContentDigest, RecordId, RevisionId, ScopeId, SourceSpan, Timestamp, Value,
-    WorkspaceRevisionId, text,
-};
-use mneme_datalog::{BuildRequest, CoverageStatus, DatalogBuild, DatalogService, ExecutionStatus};
-use mneme_memory::MemoryView;
-use mneme_store::{Snapshot, Workspace};
-
-use crate::error::{RecallError, Result};
-use crate::index::{
-    LEXICAL_INDEX_VERSION, VECTOR_INDEX_VERSION, build_index, source_excerpt, tokenize,
-    trigram_counts,
-};
-use crate::model::{
-    CachedIndex, ContentKind, DataBoundary, IndexCoverage, IndexedDocument, ModeReport, ModeStatus,
-    Omission, RecallCandidate, RecallContext, RecallExecution, RecallMode, RecallRequest,
-    RecallResponse, TemporalMode,
-};
-
 /// Ranking/fusion policy version.
 pub const FUSION_POLICY_VERSION: &str = "rrf-k60-v1";
 const RRF_K: f64 = 60.0;
@@ -30,40 +7,45 @@ const MIN_ITEM_BYTES: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct IndexKey {
-    revision: WorkspaceRevisionId,
-    scope: ScopeId,
+    revision: mneme_core::WorkspaceRevisionId,
+    scope: mneme_core::ScopeId,
     generation: u64,
-    temporal: TemporalMode,
-    at: Timestamp,
+    temporal: crate::model::TemporalMode,
+    at: mneme_core::Timestamp,
     include_disputed: bool,
     include_hypothetical: bool,
 }
 
 /// A recall service with a generation-fenced in-memory index cache.
 pub struct RecallService<'w> {
-    workspace: &'w mut Workspace,
-    indexes: BTreeMap<IndexKey, CachedIndex>,
+    workspace: &'w mut mneme_store::Workspace,
+    indexes: std::collections::BTreeMap<IndexKey, crate::model::CachedIndex>,
     cached_generation: Option<u64>,
 }
 
 impl<'w> RecallService<'w> {
     /// Wrap one mutable workspace.
-    pub fn new(workspace: &'w mut Workspace) -> Self {
+    pub fn new(workspace: &'w mut mneme_store::Workspace) -> Self {
         RecallService {
             workspace,
-            indexes: BTreeMap::new(),
+            indexes: std::collections::BTreeMap::new(),
             cached_generation: None,
         }
     }
 
     /// Execute one recall request, retrying once if an erasure/authorization
     /// barrier advances during candidate generation or packing.
-    pub fn recall(&mut self, request: RecallRequest) -> Result<RecallResponse> {
+    pub fn recall(
+        &mut self,
+        request: crate::model::RecallRequest,
+    ) -> crate::error::Result<crate::model::RecallResponse> {
         validate(&request)?;
         let mut last_barrier = None;
         for attempt in 0..2 {
             match self.recall_once(&request) {
-                Err(RecallError::BarrierAdvanced { pinned, current }) if attempt == 0 => {
+                Err(crate::error::RecallError::BarrierAdvanced { pinned, current })
+                    if attempt == 0 =>
+                {
                     last_barrier = Some((pinned, current));
                     self.indexes.clear();
                     self.cached_generation = None;
@@ -72,13 +54,18 @@ impl<'w> RecallService<'w> {
             }
         }
         Err(last_barrier
-            .map(|(pinned, current)| RecallError::BarrierAdvanced { pinned, current })
-            .unwrap_or_else(|| RecallError::InvalidRequest("recall retry exhausted".to_owned())))
+            .map(|(pinned, current)| crate::error::RecallError::BarrierAdvanced { pinned, current })
+            .unwrap_or_else(|| {
+                crate::error::RecallError::InvalidRequest("recall retry exhausted".to_owned())
+            }))
     }
 
     #[allow(unknown_lints, ambient_clock)] // recall wall-clock budget is the request shell
-    fn recall_once(&mut self, request: &RecallRequest) -> Result<RecallResponse> {
-        let started = Instant::now();
+    fn recall_once(
+        &mut self,
+        request: &crate::model::RecallRequest,
+    ) -> crate::error::Result<crate::model::RecallResponse> {
+        let started = std::time::Instant::now();
         let generation = self.workspace.eligibility_generation()?;
         if self.cached_generation != Some(generation) {
             self.indexes.clear();
@@ -89,7 +76,7 @@ impl<'w> RecallService<'w> {
         }
         let current_revision = self.workspace.current_revision()?;
         if current_revision != request.revision && !request.allow_stale {
-            return Err(RecallError::StaleRevision {
+            return Err(crate::error::RecallError::StaleRevision {
                 requested: request.revision,
                 current: current_revision,
             });
@@ -97,21 +84,24 @@ impl<'w> RecallService<'w> {
         let view = self.view(request.revision, generation)?;
         let served_revision = view.revision();
         let mut mode_reports = Vec::new();
-        let is_requested_structured = request.modes.contains(&RecallMode::Structured);
+        let is_requested_structured = request
+            .modes
+            .contains(&crate::model::RecallMode::Structured);
         if is_requested_structured && request.structured.is_none() && !request.allow_fallback {
-            return Err(RecallError::ModeUnavailable {
-                mode: RecallMode::Structured.name().to_owned(),
+            return Err(crate::error::RecallError::ModeUnavailable {
+                mode: crate::model::RecallMode::Structured.name().to_owned(),
                 reason: "no structured request was supplied".to_owned(),
             });
         }
         let is_fallback_lexical = is_requested_structured
             && request.structured.is_none()
             && request.allow_fallback
-            && !request.modes.contains(&RecallMode::Lexical);
-        let is_use_lexical = request.modes.contains(&RecallMode::Lexical) || is_fallback_lexical;
-        let is_use_vector = request.modes.contains(&RecallMode::Vector);
+            && !request.modes.contains(&crate::model::RecallMode::Lexical);
+        let is_use_lexical =
+            request.modes.contains(&crate::model::RecallMode::Lexical) || is_fallback_lexical;
+        let is_use_vector = request.modes.contains(&crate::model::RecallMode::Vector);
         if !is_use_lexical && !is_use_vector && request.structured.is_none() {
-            return Err(RecallError::ModeUnavailable {
+            return Err(crate::error::RecallError::ModeUnavailable {
                 mode: "all requested modes".to_owned(),
                 reason: "no candidate mode can execute".to_owned(),
             });
@@ -134,7 +124,7 @@ impl<'w> RecallService<'w> {
             let built = if let Some(cached) = self.indexes.get(&key) {
                 cached.clone()
             } else {
-                let built = build_index(&view, request)?;
+                let built = crate::index::build_index(&view, request)?;
                 self.indexes.insert(key, built.clone());
                 built
             };
@@ -143,29 +133,36 @@ impl<'w> RecallService<'w> {
         self.require_generation(generation)?;
 
         let mut ranking = Vec::new();
-        let mut candidates: BTreeMap<String, RecallCandidate> = BTreeMap::new();
+        let mut candidates: std::collections::BTreeMap<String, crate::model::RecallCandidate> =
+            std::collections::BTreeMap::new();
         if is_use_lexical {
             let index = index.as_ref().ok_or_else(|| {
-                RecallError::InvalidRequest("lexical index was not built".to_owned())
+                crate::error::RecallError::InvalidRequest("lexical index was not built".to_owned())
             })?;
             let entries = lexical_rank(index, request);
             for (id, document, score) in &entries {
                 let Some(candidate) = candidate_from_document(document, request, 0.0) else {
                     continue;
                 };
-                add_candidate(&mut candidates, candidate, RecallMode::Lexical, *score, id);
+                add_candidate(
+                    &mut candidates,
+                    candidate,
+                    crate::model::RecallMode::Lexical,
+                    *score,
+                    id,
+                );
             }
             ranking.push((
-                RecallMode::Lexical,
+                crate::model::RecallMode::Lexical,
                 entries
                     .iter()
                     .map(|(id, _, score)| (id.clone(), *score))
                     .collect::<Vec<_>>(),
             ));
-            mode_reports.push(ModeReport {
-                mode: RecallMode::Lexical,
-                status: ModeStatus::Used,
-                index_version: Some(LEXICAL_INDEX_VERSION.to_owned()),
+            mode_reports.push(crate::model::ModeReport {
+                mode: crate::model::RecallMode::Lexical,
+                status: crate::model::ModeStatus::Used,
+                index_version: Some(crate::index::LEXICAL_INDEX_VERSION.to_owned()),
                 revision: Some(index.revision),
                 coverage: index.coverage.clone(),
                 candidates: entries.len(),
@@ -179,26 +176,32 @@ impl<'w> RecallService<'w> {
         }
         if is_use_vector {
             let index = index.as_ref().ok_or_else(|| {
-                RecallError::InvalidRequest("vector index was not built".to_owned())
+                crate::error::RecallError::InvalidRequest("vector index was not built".to_owned())
             })?;
             let entries = vector_rank(index, request);
             for (id, document, score) in &entries {
                 let Some(candidate) = candidate_from_document(document, request, *score) else {
                     continue;
                 };
-                add_candidate(&mut candidates, candidate, RecallMode::Vector, *score, id);
+                add_candidate(
+                    &mut candidates,
+                    candidate,
+                    crate::model::RecallMode::Vector,
+                    *score,
+                    id,
+                );
             }
             ranking.push((
-                RecallMode::Vector,
+                crate::model::RecallMode::Vector,
                 entries
                     .iter()
                     .map(|(id, _, score)| (id.clone(), *score))
                     .collect::<Vec<_>>(),
             ));
-            mode_reports.push(ModeReport {
-                mode: RecallMode::Vector,
-                status: ModeStatus::Used,
-                index_version: Some(VECTOR_INDEX_VERSION.to_owned()),
+            mode_reports.push(crate::model::ModeReport {
+                mode: crate::model::RecallMode::Vector,
+                status: crate::model::ModeStatus::Used,
+                index_version: Some(crate::index::VECTOR_INDEX_VERSION.to_owned()),
                 revision: Some(index.revision),
                 coverage: index.coverage.clone(),
                 candidates: entries.len(),
@@ -210,17 +213,17 @@ impl<'w> RecallService<'w> {
             });
         }
 
-        let mut execution = RecallExecution::Complete;
+        let mut execution = crate::model::RecallExecution::Complete;
         let mut reasons = Vec::new();
         if is_requested_structured {
             match request.structured.as_ref() {
                 None => {
-                    mode_reports.push(ModeReport {
-                        mode: RecallMode::Structured,
-                        status: ModeStatus::Unavailable,
+                    mode_reports.push(crate::model::ModeReport {
+                        mode: crate::model::RecallMode::Structured,
+                        status: crate::model::ModeStatus::Unavailable,
                         index_version: None,
                         revision: Some(served_revision),
-                        coverage: IndexCoverage::incomplete(
+                        coverage: crate::model::IndexCoverage::incomplete(
                             0,
                             0,
                             "no structured Datalog request was supplied",
@@ -230,59 +233,65 @@ impl<'w> RecallService<'w> {
                         reason: Some("structured mode was not configured".to_owned()),
                     });
                     if !request.allow_fallback && !is_use_lexical {
-                        return Err(RecallError::ModeUnavailable {
-                            mode: RecallMode::Structured.name().to_owned(),
+                        return Err(crate::error::RecallError::ModeUnavailable {
+                            mode: crate::model::RecallMode::Structured.name().to_owned(),
                             reason: "structured mode has no request and fallback is disabled"
                                 .to_owned(),
                         });
                     }
-                    execution = RecallExecution::Partial;
+                    execution = crate::model::RecallExecution::Partial;
                     reasons.push("structured mode unavailable".to_owned());
                 }
                 Some(structured) => {
-                    let build = DatalogService::new(self.workspace).build(BuildRequest {
-                        actor: request.actor.clone(),
-                        scope: request.scope.clone(),
-                        revision: request.revision,
-                        bundle: structured.bundle.clone(),
-                        limits: structured.limits.clone(),
-                        publish: false,
-                        incomplete_extents: structured.incomplete_extents.clone(),
-                        cancellation: request.cancellation.clone(),
-                    });
+                    let build = mneme_datalog::DatalogService::new(self.workspace).build(
+                        mneme_datalog::BuildRequest {
+                            actor: request.actor.clone(),
+                            scope: request.scope.clone(),
+                            revision: request.revision,
+                            bundle: structured.bundle.clone(),
+                            limits: structured.limits.clone(),
+                            publish: false,
+                            incomplete_extents: structured.incomplete_extents.clone(),
+                            cancellation: request.cancellation.clone(),
+                        },
+                    );
                     match build {
                         Err(error) => {
-                            mode_reports.push(ModeReport {
-                                mode: RecallMode::Structured,
-                                status: ModeStatus::Failed,
+                            mode_reports.push(crate::model::ModeReport {
+                                mode: crate::model::RecallMode::Structured,
+                                status: crate::model::ModeStatus::Failed,
                                 index_version: Some(format!(
                                     "datalog:{}:{}",
                                     structured.bundle.id, structured.bundle.version
                                 )),
                                 revision: Some(served_revision),
-                                coverage: IndexCoverage::incomplete(0, 0, error.to_string()),
+                                coverage: crate::model::IndexCoverage::incomplete(
+                                    0,
+                                    0,
+                                    error.to_string(),
+                                ),
                                 candidates: 0,
                                 relation_exhaustive: None,
                                 reason: Some(error.to_string()),
                             });
                             execution = if request.allow_partial {
-                                RecallExecution::Partial
+                                crate::model::RecallExecution::Partial
                             } else {
-                                RecallExecution::Failed
+                                crate::model::RecallExecution::Failed
                             };
                             reasons.push(format!("structured mode failed: {error}"));
                         }
                         Ok(build) => {
-                            let rows = DatalogService::new(self.workspace)
+                            let rows = mneme_datalog::DatalogService::new(self.workspace)
                                 .query_build(&build, structured.query.clone());
                             match rows {
                                 Err(error) => {
-                                    mode_reports.push(ModeReport {
-                                        mode: RecallMode::Structured,
-                                        status: ModeStatus::Failed,
+                                    mode_reports.push(crate::model::ModeReport {
+                                        mode: crate::model::RecallMode::Structured,
+                                        status: crate::model::ModeStatus::Failed,
                                         index_version: Some(datalog_version(&build)),
                                         revision: Some(served_revision),
-                                        coverage: IndexCoverage::incomplete(
+                                        coverage: crate::model::IndexCoverage::incomplete(
                                             0,
                                             0,
                                             error.to_string(),
@@ -292,9 +301,9 @@ impl<'w> RecallService<'w> {
                                         reason: Some(error.to_string()),
                                     });
                                     execution = if request.allow_partial {
-                                        RecallExecution::Partial
+                                        crate::model::RecallExecution::Partial
                                     } else {
-                                        RecallExecution::Failed
+                                        crate::model::RecallExecution::Failed
                                     };
                                     reasons.push(format!("structured query failed: {error}"));
                                 }
@@ -313,7 +322,7 @@ impl<'w> RecallService<'w> {
                                             structured.query.predicate,
                                             row.values
                                                 .iter()
-                                                .map(text::render)
+                                                .map(mneme_core::text::render)
                                                 .collect::<Vec<_>>()
                                                 .join(" ")
                                         );
@@ -321,10 +330,10 @@ impl<'w> RecallService<'w> {
                                             .supports
                                             .iter()
                                             .flat_map(|support| support.sources.iter().copied())
-                                            .collect::<BTreeSet<_>>();
-                                        let candidate = RecallCandidate {
+                                            .collect::<std::collections::BTreeSet<_>>();
+                                        let candidate = crate::model::RecallCandidate {
                                             id: id.clone(),
-                                            content_kind: ContentKind::StructuredRow,
+                                            content_kind: crate::model::ContentKind::StructuredRow,
                                             text: body,
                                             text_truncated: false,
                                             source: None,
@@ -343,41 +352,51 @@ impl<'w> RecallService<'w> {
                                             derivations: row.supports.clone(),
                                             ancestry_roots: roots,
                                             independent_support: true,
-                                            origins: BTreeSet::new(),
+                                            origins: std::collections::BTreeSet::new(),
                                             score: 0.0,
-                                            score_components: BTreeMap::new(),
+                                            score_components: std::collections::BTreeMap::new(),
                                         };
                                         add_candidate(
                                             &mut candidates,
                                             candidate,
-                                            RecallMode::Structured,
+                                            crate::model::RecallMode::Structured,
                                             1.0,
                                             &id,
                                         );
                                         structured_ranking.push((id, 1.0));
                                     }
-                                    ranking.push((RecallMode::Structured, structured_ranking));
+                                    ranking.push((
+                                        crate::model::RecallMode::Structured,
+                                        structured_ranking,
+                                    ));
                                     let status = match rows.status {
-                                        ExecutionStatus::Complete => ModeStatus::Used,
-                                        ExecutionStatus::Timeout => ModeStatus::TimedOut,
-                                        ExecutionStatus::Cancelled => ModeStatus::Omitted,
-                                        ExecutionStatus::Failed | ExecutionStatus::Partial => {
-                                            ModeStatus::Failed
+                                        mneme_datalog::ExecutionStatus::Complete => {
+                                            crate::model::ModeStatus::Used
+                                        }
+                                        mneme_datalog::ExecutionStatus::Timeout => {
+                                            crate::model::ModeStatus::TimedOut
+                                        }
+                                        mneme_datalog::ExecutionStatus::Cancelled => {
+                                            crate::model::ModeStatus::Omitted
+                                        }
+                                        mneme_datalog::ExecutionStatus::Failed
+                                        | mneme_datalog::ExecutionStatus::Partial => {
+                                            crate::model::ModeStatus::Failed
                                         }
                                     };
-                                    if !matches!(status, ModeStatus::Used) {
+                                    if !matches!(status, crate::model::ModeStatus::Used) {
                                         execution = if request.allow_partial {
-                                            RecallExecution::Partial
+                                            crate::model::RecallExecution::Partial
                                         } else {
-                                            RecallExecution::Failed
+                                            crate::model::RecallExecution::Failed
                                         };
                                         reasons.push(format!(
                                             "structured mode finished with {:?}",
                                             rows.status
                                         ));
                                     }
-                                    mode_reports.push(ModeReport {
-                                        mode: RecallMode::Structured,
+                                    mode_reports.push(crate::model::ModeReport {
+                                        mode: crate::model::RecallMode::Structured,
                                         status,
                                         index_version: Some(datalog_version(&build)),
                                         revision: Some(served_revision),
@@ -398,34 +417,38 @@ impl<'w> RecallService<'w> {
         let mut fused = fuse(candidates, &ranking);
         let (mut returned, mut omissions, truncated) =
             pack(&mut fused, request, started, &mut execution, &mut reasons);
-        if execution == RecallExecution::Failed && !request.allow_partial {
+        if execution == crate::model::RecallExecution::Failed && !request.allow_partial {
             returned.clear();
             omissions.clear();
         }
         self.require_generation(generation)?;
         if cancelled(request) {
-            execution = RecallExecution::Cancelled;
+            execution = crate::model::RecallExecution::Cancelled;
             returned.clear();
             reasons.push("recall cancelled".to_owned());
         }
         let max_time_ms = u64::try_from(request.max_time_ms).map_err(|_| {
-            RecallError::InvalidRequest("recall time budget exceeds u64 milliseconds".to_owned())
+            crate::error::RecallError::InvalidRequest(
+                "recall time budget exceeds u64 milliseconds".to_owned(),
+            )
         })?;
-        if started.elapsed() > Duration::from_millis(max_time_ms)
-            && execution == RecallExecution::Complete
+        if started.elapsed() > std::time::Duration::from_millis(max_time_ms)
+            && execution == crate::model::RecallExecution::Complete
         {
-            execution = RecallExecution::Timeout;
+            execution = crate::model::RecallExecution::Timeout;
             reasons.push("recall exceeded its time budget".to_owned());
         }
-        let mut index_versions = BTreeMap::new();
+        let mut index_versions = std::collections::BTreeMap::new();
         for report in &mode_reports {
-            if let (Some(version), ModeStatus::Used) = (&report.index_version, report.status) {
+            if let (Some(version), crate::model::ModeStatus::Used) =
+                (&report.index_version, report.status)
+            {
                 index_versions.insert(report.mode.name().to_owned(), version.clone());
             }
         }
         let _ = current_revision;
-        Ok(RecallResponse {
-            context: RecallContext {
+        Ok(crate::model::RecallResponse {
+            context: crate::model::RecallContext {
                 schema_version: crate::INDEX_SCHEMA_VERSION,
                 scope: request.scope.clone(),
                 requested_revision: request.revision,
@@ -447,16 +470,20 @@ impl<'w> RecallService<'w> {
             } else {
                 Some(reasons.join("; "))
             },
-            boundary: DataBoundary::default(),
+            boundary: crate::model::DataBoundary::default(),
         })
     }
 
-    fn view(&self, revision: WorkspaceRevisionId, generation: u64) -> Result<MemoryView> {
+    fn view(
+        &self,
+        revision: mneme_core::WorkspaceRevisionId,
+        generation: u64,
+    ) -> crate::error::Result<mneme_memory::MemoryView> {
         let snapshot = self.workspace.snapshot_at(revision, Some(generation))?;
         let history = history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
         let suppressions = self.workspace.active_suppressions()?;
-        Ok(MemoryView::with_retention(
+        Ok(mneme_memory::MemoryView::with_retention(
             snapshot,
             self.workspace.root(),
             history,
@@ -465,10 +492,10 @@ impl<'w> RecallService<'w> {
         ))
     }
 
-    fn require_generation(&self, generation: u64) -> Result<()> {
+    fn require_generation(&self, generation: u64) -> crate::error::Result<()> {
         let current = self.workspace.eligibility_generation()?;
         if current != generation {
-            return Err(RecallError::BarrierAdvanced {
+            return Err(crate::error::RecallError::BarrierAdvanced {
                 pinned: generation,
                 current,
             });
@@ -477,34 +504,38 @@ impl<'w> RecallService<'w> {
     }
 }
 
-fn validate(request: &RecallRequest) -> Result<()> {
+fn validate(request: &crate::model::RecallRequest) -> crate::error::Result<()> {
     if request.actor.trim().is_empty() {
-        return Err(RecallError::InvalidRequest(
+        return Err(crate::error::RecallError::InvalidRequest(
             "actor must not be empty".to_owned(),
         ));
     }
     if request.modes.is_empty() {
-        return Err(RecallError::InvalidRequest(
+        return Err(crate::error::RecallError::InvalidRequest(
             "at least one recall mode is required".to_owned(),
         ));
     }
-    if request.structured.is_some() && !request.modes.contains(&RecallMode::Structured) {
-        return Err(RecallError::InvalidRequest(
+    if request.structured.is_some()
+        && !request
+            .modes
+            .contains(&crate::model::RecallMode::Structured)
+    {
+        return Err(crate::error::RecallError::InvalidRequest(
             "a structured request requires the structured mode".to_owned(),
         ));
     }
     if request.max_items == 0 {
-        return Err(RecallError::InvalidRequest(
+        return Err(crate::error::RecallError::InvalidRequest(
             "max_items must be greater than zero".to_owned(),
         ));
     }
     if request.max_context_bytes < MIN_ITEM_BYTES {
-        return Err(RecallError::InvalidRequest(
+        return Err(crate::error::RecallError::InvalidRequest(
             "max_context_bytes is too small for attribution".to_owned(),
         ));
     }
     if request.max_quote_bytes == 0 {
-        return Err(RecallError::InvalidRequest(
+        return Err(crate::error::RecallError::InvalidRequest(
             "max_quote_bytes must be greater than zero".to_owned(),
         ));
     }
@@ -512,10 +543,15 @@ fn validate(request: &RecallRequest) -> Result<()> {
 }
 
 fn history(
-    workspace: &Workspace,
-    snapshot: &Snapshot,
-) -> Result<BTreeMap<(RecordId, RevisionId), mneme_core::RecordEnvelope>> {
-    let mut history = BTreeMap::new();
+    workspace: &mneme_store::Workspace,
+    snapshot: &mneme_store::Snapshot,
+) -> crate::error::Result<
+    std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+> {
+    let mut history = std::collections::BTreeMap::new();
     for record in &snapshot.records {
         for revision in workspace.record_revisions(record.record_id)? {
             history.insert((revision.record_id, revision.revision_id), revision);
@@ -524,26 +560,29 @@ fn history(
     Ok(history)
 }
 
-fn cancelled(request: &RecallRequest) -> bool {
+fn cancelled(request: &crate::model::RecallRequest) -> bool {
     request
         .cancellation
         .as_ref()
-        .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-fn cancelled_response(request: &RecallRequest, generation: u64) -> RecallResponse {
-    RecallResponse {
-        context: RecallContext {
+fn cancelled_response(
+    request: &crate::model::RecallRequest,
+    generation: u64,
+) -> crate::model::RecallResponse {
+    crate::model::RecallResponse {
+        context: crate::model::RecallContext {
             schema_version: crate::INDEX_SCHEMA_VERSION,
             scope: request.scope.clone(),
             requested_revision: request.revision,
             served_revision: request.revision,
             eligibility_generation: generation,
             temporal: request.temporal,
-            index_versions: BTreeMap::new(),
+            index_versions: std::collections::BTreeMap::new(),
             fusion_policy: FUSION_POLICY_VERSION.to_owned(),
         },
-        status: RecallExecution::Cancelled,
+        status: crate::model::RecallExecution::Cancelled,
         modes: Vec::new(),
         candidates: Vec::new(),
         exhaustive: false,
@@ -551,15 +590,15 @@ fn cancelled_response(request: &RecallRequest, generation: u64) -> RecallRespons
         truncated: false,
         omissions: Vec::new(),
         reason: Some("recall cancelled before candidate generation".to_owned()),
-        boundary: DataBoundary::default(),
+        boundary: crate::model::DataBoundary::default(),
     }
 }
 
 fn lexical_rank(
-    index: &CachedIndex,
-    request: &RecallRequest,
-) -> Vec<(String, IndexedDocument, f64)> {
-    let query_terms = tokenize(&request.query.to_lowercase());
+    index: &crate::model::CachedIndex,
+    request: &crate::model::RecallRequest,
+) -> Vec<(String, crate::model::IndexedDocument, f64)> {
+    let query_terms = crate::index::tokenize(&request.query.to_lowercase());
     if query_terms.is_empty() {
         return Vec::new();
     }
@@ -582,10 +621,10 @@ fn lexical_rank(
 }
 
 fn vector_rank(
-    index: &CachedIndex,
-    request: &RecallRequest,
-) -> Vec<(String, IndexedDocument, f64)> {
-    let query_vector = trigram_counts(&request.query.to_lowercase());
+    index: &crate::model::CachedIndex,
+    request: &crate::model::RecallRequest,
+) -> Vec<(String, crate::model::IndexedDocument, f64)> {
+    let query_vector = crate::index::trigram_counts(&request.query.to_lowercase());
     if query_vector.is_empty() {
         return Vec::new();
     }
@@ -621,7 +660,7 @@ fn vector_rank(
     entries
 }
 
-fn sort_rank(entries: &mut [(String, IndexedDocument, f64)]) {
+fn sort_rank(entries: &mut [(String, crate::model::IndexedDocument, f64)]) {
     entries.sort_by(|left, right| {
         right
             .2
@@ -631,17 +670,18 @@ fn sort_rank(entries: &mut [(String, IndexedDocument, f64)]) {
 }
 
 fn candidate_from_document(
-    document: &IndexedDocument,
-    request: &RecallRequest,
+    document: &crate::model::IndexedDocument,
+    request: &crate::model::RecallRequest,
     _vector_score: f64,
-) -> Option<RecallCandidate> {
-    let (body, span) = if document.kind == ContentKind::SourceExcerpt {
-        let (body, span) = source_excerpt(&document.text, &request.query, request.max_quote_bytes)?;
+) -> Option<crate::model::RecallCandidate> {
+    let (body, span) = if document.kind == crate::model::ContentKind::SourceExcerpt {
+        let (body, span) =
+            crate::index::source_excerpt(&document.text, &request.query, request.max_quote_bytes)?;
         (body, Some(span))
     } else {
         (document.text.clone(), document.span)
     };
-    Some(RecallCandidate {
+    Some(crate::model::RecallCandidate {
         id: document.id.clone(),
         content_kind: document.kind,
         text: body,
@@ -654,21 +694,21 @@ fn candidate_from_document(
         episode: document.episode,
         entity: document.entity,
         claim_status: document.claim_status.clone(),
-        quote: document.kind == ContentKind::SourceExcerpt,
+        quote: document.kind == crate::model::ContentKind::SourceExcerpt,
         evidence: document.evidence.clone(),
         derivations: Vec::new(),
         ancestry_roots: document.ancestry_roots.clone(),
         independent_support: true,
-        origins: BTreeSet::new(),
+        origins: std::collections::BTreeSet::new(),
         score: 0.0,
-        score_components: BTreeMap::new(),
+        score_components: std::collections::BTreeMap::new(),
     })
 }
 
 fn add_candidate(
-    candidates: &mut BTreeMap<String, RecallCandidate>,
-    candidate: RecallCandidate,
-    mode: RecallMode,
+    candidates: &mut std::collections::BTreeMap<String, crate::model::RecallCandidate>,
+    candidate: crate::model::RecallCandidate,
+    mode: crate::model::RecallMode,
     score: f64,
     id: &str,
 ) {
@@ -689,9 +729,9 @@ fn add_candidate(
 }
 
 fn fuse(
-    candidates: BTreeMap<String, RecallCandidate>,
-    rankings: &[(RecallMode, Vec<(String, f64)>)],
-) -> Vec<RecallCandidate> {
+    candidates: std::collections::BTreeMap<String, crate::model::RecallCandidate>,
+    rankings: &[(crate::model::RecallMode, Vec<(String, f64)>)],
+) -> Vec<crate::model::RecallCandidate> {
     let mut fused = candidates;
     for (mode, ranking) in rankings {
         for (rank, (id, _raw)) in ranking.iter().enumerate() {
@@ -716,16 +756,20 @@ fn fuse(
 
 #[allow(unknown_lints, ambient_clock)] // packing deadline is the request shell
 fn pack(
-    candidates: &mut Vec<RecallCandidate>,
-    request: &RecallRequest,
-    started: Instant,
-    execution: &mut RecallExecution,
+    candidates: &mut Vec<crate::model::RecallCandidate>,
+    request: &crate::model::RecallRequest,
+    started: std::time::Instant,
+    execution: &mut crate::model::RecallExecution,
     reasons: &mut Vec<String>,
-) -> (Vec<RecallCandidate>, Vec<Omission>, bool) {
+) -> (
+    Vec<crate::model::RecallCandidate>,
+    Vec<crate::model::Omission>,
+    bool,
+) {
     let values = std::mem::take(candidates);
     let mut ordered = Vec::new();
     let mut duplicates = Vec::new();
-    let mut seen_roots = BTreeSet::new();
+    let mut seen_roots = std::collections::BTreeSet::new();
     for candidate in values {
         if candidate.ancestry_roots.is_empty() {
             ordered.push(candidate);
@@ -750,33 +794,33 @@ fn pack(
     let max_time_ms = match u64::try_from(request.max_time_ms) {
         Ok(value) => value,
         Err(_) => {
-            *execution = RecallExecution::Timeout;
+            *execution = crate::model::RecallExecution::Timeout;
             reasons.push("recall time budget exceeds u64 milliseconds".to_owned());
             return (returned, omissions, is_truncated);
         }
     };
-    let deadline = Duration::from_millis(max_time_ms);
+    let deadline = std::time::Duration::from_millis(max_time_ms);
     for candidate in ordered {
         if cancelled(request) {
-            *execution = RecallExecution::Cancelled;
+            *execution = crate::model::RecallExecution::Cancelled;
             reasons.push("recall cancelled during packing".to_owned());
-            omissions.push(Omission {
+            omissions.push(crate::model::Omission {
                 candidate: candidate.id,
                 reason: "cancelled".to_owned(),
             });
             continue;
         }
         if started.elapsed() > deadline {
-            *execution = RecallExecution::Timeout;
+            *execution = crate::model::RecallExecution::Timeout;
             reasons.push("recall timed out during packing".to_owned());
-            omissions.push(Omission {
+            omissions.push(crate::model::Omission {
                 candidate: candidate.id,
                 reason: "time-budget".to_owned(),
             });
             continue;
         }
         if returned.len() >= request.max_items {
-            omissions.push(Omission {
+            omissions.push(crate::model::Omission {
                 candidate: candidate.id,
                 reason: "item-limit".to_owned(),
             });
@@ -788,7 +832,7 @@ fn pack(
             remaining
         };
         if cap < MIN_ITEM_BYTES {
-            omissions.push(Omission {
+            omissions.push(crate::model::Omission {
                 candidate: candidate.id,
                 reason: "context-budget".to_owned(),
             });
@@ -798,7 +842,7 @@ fn pack(
         if candidate.text.len() > cap {
             let end = floor_boundary(&candidate.text, cap);
             if end == 0 {
-                omissions.push(Omission {
+                omissions.push(crate::model::Omission {
                     candidate: candidate.id,
                     reason: "context-budget".to_owned(),
                 });
@@ -811,11 +855,11 @@ fn pack(
                 && let Some(span) = candidate.span
             {
                 let start = span.start();
-                candidate.span = SourceSpan::new(start, start + end as u64 - 1).ok();
+                candidate.span = mneme_core::SourceSpan::new(start, start + end as u64 - 1).ok();
             }
         }
         if candidate.text.is_empty() {
-            omissions.push(Omission {
+            omissions.push(crate::model::Omission {
                 candidate: candidate.id,
                 reason: "empty-item".to_owned(),
             });
@@ -835,7 +879,7 @@ fn floor_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
-fn datalog_version(build: &DatalogBuild) -> String {
+fn datalog_version(build: &mneme_datalog::DatalogBuild) -> String {
     format!(
         "datalog:{}:{}:{}",
         build.context.rule_bundle_id,
@@ -845,38 +889,38 @@ fn datalog_version(build: &DatalogBuild) -> String {
 }
 
 fn structured_coverage(
-    build: &DatalogBuild,
+    build: &mneme_datalog::DatalogBuild,
     result: &mneme_datalog::QueryResult,
     predicate: &str,
-) -> IndexCoverage {
+) -> crate::model::IndexCoverage {
     let coverage = build
         .coverage
         .iter()
         .find(|coverage| coverage.predicate == predicate)
         .map(|coverage| coverage.status)
-        .unwrap_or(CoverageStatus::Unknown);
+        .unwrap_or(mneme_datalog::CoverageStatus::Unknown);
     if result.truncated {
-        return IndexCoverage::incomplete(
+        return crate::model::IndexCoverage::incomplete(
             result.rows.len(),
             0,
             "structured result hit its row cap",
         );
     }
-    if coverage == CoverageStatus::Complete && result.exhaustive {
-        return IndexCoverage::complete(result.rows.len());
+    if coverage == mneme_datalog::CoverageStatus::Complete && result.exhaustive {
+        return crate::model::IndexCoverage::complete(result.rows.len());
     }
-    let reason = if build.status == ExecutionStatus::Complete {
+    let reason = if build.status == mneme_datalog::ExecutionStatus::Complete {
         format!("declared relation coverage is {:?}", coverage)
     } else {
         format!("Datalog execution finished with {:?}", build.status)
     };
-    IndexCoverage::incomplete(result.rows.len(), 0, reason)
+    crate::model::IndexCoverage::incomplete(result.rows.len(), 0, reason)
 }
 
-fn structured_id(predicate: &str, values: &[Value]) -> String {
-    let payload = Value::sequence(values.to_vec());
+fn structured_id(predicate: &str, values: &[mneme_core::Value]) -> String {
+    let payload = mneme_core::Value::sequence(values.to_vec());
     format!(
         "structured:{predicate}:{}",
-        ContentDigest::of_payload(&payload).to_hex()
+        mneme_core::ContentDigest::of_payload(&payload).to_hex()
     )
 }

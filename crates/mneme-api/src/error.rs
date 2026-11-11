@@ -1,12 +1,5 @@
 //! Structured API failures. Transport adapters add framing only.
 
-use mneme_core::Diagnostic;
-use mneme_memory::MemoryError;
-use mneme_recall::RecallError;
-use mneme_retention::RetentionError;
-use mneme_store::StoreError;
-use thiserror::Error;
-
 /// Stable API error classes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiErrorCode {
@@ -36,12 +29,12 @@ impl ApiErrorCode {
 }
 
 /// One API error with a safe public detail and optional field diagnostics.
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 #[error("{code:?}: {message}")]
 pub struct ApiError {
     pub code: ApiErrorCode,
     pub message: String,
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<mneme_core::Diagnostic>,
 }
 
 impl ApiError {
@@ -64,7 +57,7 @@ impl ApiError {
         )
     }
 
-    pub fn diagnostics(diagnostics: Vec<Diagnostic>) -> Self {
+    pub fn diagnostics(diagnostics: Vec<mneme_core::Diagnostic>) -> Self {
         ApiError {
             code: ApiErrorCode::InvalidInput,
             message: "field-addressed validation failed".to_owned(),
@@ -72,93 +65,105 @@ impl ApiError {
         }
     }
 
-    pub fn from_diagnostic(diagnostic: Diagnostic) -> Self {
+    pub fn from_diagnostic(diagnostic: mneme_core::Diagnostic) -> Self {
         Self::diagnostics(vec![diagnostic])
     }
 
-    pub fn from_store(error: StoreError) -> Self {
-        if let StoreError::Validation(diagnostics) = &error {
+    pub fn from_store(error: mneme_store::StoreError) -> Self {
+        if let mneme_store::StoreError::Validation(diagnostics) = &error {
             return Self::diagnostics(diagnostics.clone());
         }
         let code = match &error {
-            StoreError::StaleBase { .. }
-            | StoreError::IdempotencyConflict { .. }
-            | StoreError::BindingConflict(_) => ApiErrorCode::Conflict,
-            StoreError::Validation(_)
-            | StoreError::InvalidCommand(_)
-            | StoreError::UnsupportedLayout(_)
-            | StoreError::ScopeMismatch { .. }
-            | StoreError::MissingSource { .. }
-            | StoreError::SourceLengthMismatch { .. }
-            | StoreError::PathEscapes(_)
-            | StoreError::InvalidCandidate { .. }
-            | StoreError::ValueOutOfRange(_) => ApiErrorCode::InvalidInput,
-            StoreError::RetentionSuppressed { .. }
-            | StoreError::MissingRetentionState { .. }
-            | StoreError::MissingRetentionParticipant { .. } => ApiErrorCode::Denied,
-            StoreError::BarrierAdvanced { .. } => ApiErrorCode::Conflict,
-            StoreError::Io { .. }
-            | StoreError::Sqlite(_)
-            | StoreError::Integrity { .. }
-            | StoreError::MissingBlob { .. }
-            | StoreError::CorruptBlob { .. }
-            | StoreError::InjectedFault(_)
-            | StoreError::Random(_) => ApiErrorCode::Failed,
+            mneme_store::StoreError::StaleBase { .. }
+            | mneme_store::StoreError::IdempotencyConflict { .. }
+            | mneme_store::StoreError::BindingConflict(_) => ApiErrorCode::Conflict,
+            mneme_store::StoreError::Validation(_)
+            | mneme_store::StoreError::InvalidCommand(_)
+            | mneme_store::StoreError::UnsupportedLayout(_)
+            | mneme_store::StoreError::ScopeMismatch { .. }
+            | mneme_store::StoreError::MissingSource { .. }
+            | mneme_store::StoreError::SourceLengthMismatch { .. }
+            | mneme_store::StoreError::PathEscapes(_)
+            | mneme_store::StoreError::InvalidCandidate { .. }
+            | mneme_store::StoreError::ValueOutOfRange(_) => ApiErrorCode::InvalidInput,
+            mneme_store::StoreError::RetentionSuppressed { .. }
+            | mneme_store::StoreError::MissingRetentionState { .. }
+            | mneme_store::StoreError::MissingRetentionParticipant { .. } => ApiErrorCode::Denied,
+            mneme_store::StoreError::BarrierAdvanced { .. } => ApiErrorCode::Conflict,
+            mneme_store::StoreError::Io { .. }
+            | mneme_store::StoreError::Sqlite(_)
+            | mneme_store::StoreError::Integrity { .. }
+            | mneme_store::StoreError::MissingBlob { .. }
+            | mneme_store::StoreError::CorruptBlob { .. }
+            | mneme_store::StoreError::InjectedFault(_)
+            | mneme_store::StoreError::Random(_) => ApiErrorCode::Failed,
         };
         Self::new(code, error.to_string())
     }
 
-    pub fn from_memory(error: MemoryError) -> Self {
+    pub fn from_memory(error: mneme_memory::MemoryError) -> Self {
         match error {
-            MemoryError::Store(error) => Self::from_store(error),
-            MemoryError::Validation(diagnostics) => Self::diagnostics(diagnostics),
-            MemoryError::Missing { .. } => {
+            mneme_memory::MemoryError::Store(error) => Self::from_store(error),
+            mneme_memory::MemoryError::Validation(diagnostics) => Self::diagnostics(diagnostics),
+            mneme_memory::MemoryError::Missing { .. } => {
                 Self::new(ApiErrorCode::Unavailable, "requested record is unavailable")
             }
-            MemoryError::Policy(message) | MemoryError::Invalid(message) => {
+            mneme_memory::MemoryError::Policy(message)
+            | mneme_memory::MemoryError::Invalid(message) => {
                 Self::new(ApiErrorCode::InvalidInput, message)
             }
-            MemoryError::InvalidRecord { .. } => {
+            mneme_memory::MemoryError::InvalidRecord { .. } => {
                 Self::new(ApiErrorCode::InvalidInput, error.to_string())
             }
-            MemoryError::Truncated => Self::new(ApiErrorCode::Limit, "explanation is truncated"),
+            mneme_memory::MemoryError::Truncated => {
+                Self::new(ApiErrorCode::Limit, "explanation is truncated")
+            }
         }
     }
 
-    pub fn from_recall(error: RecallError) -> Self {
+    pub fn from_recall(error: mneme_recall::RecallError) -> Self {
         match error {
-            RecallError::InvalidRequest(message) => Self::new(ApiErrorCode::InvalidInput, message),
-            RecallError::StaleRevision { requested, current } => Self::new(
+            mneme_recall::RecallError::InvalidRequest(message) => {
+                Self::new(ApiErrorCode::InvalidInput, message)
+            }
+            mneme_recall::RecallError::StaleRevision { requested, current } => Self::new(
                 ApiErrorCode::Conflict,
                 format!("requested revision {requested} is not current {current}"),
             ),
-            RecallError::BarrierAdvanced { pinned, current } => Self::new(
+            mneme_recall::RecallError::BarrierAdvanced { pinned, current } => Self::new(
                 ApiErrorCode::Conflict,
                 format!("eligibility generation advanced from {pinned} to {current}"),
             ),
-            RecallError::ModeUnavailable { mode, reason } => Self::new(
+            mneme_recall::RecallError::ModeUnavailable { mode, reason } => Self::new(
                 ApiErrorCode::Unavailable,
                 format!("requested mode {mode} is unavailable: {reason}"),
             ),
-            RecallError::Store(error) => Self::from_store(error),
-            RecallError::Memory(error) => Self::from_memory(error),
-            RecallError::Datalog(error) => Self::new(ApiErrorCode::Failed, error.to_string()),
+            mneme_recall::RecallError::Store(error) => Self::from_store(error),
+            mneme_recall::RecallError::Memory(error) => Self::from_memory(error),
+            mneme_recall::RecallError::Datalog(error) => {
+                Self::new(ApiErrorCode::Failed, error.to_string())
+            }
         }
     }
 
-    pub fn from_retention(error: RetentionError) -> Self {
+    pub fn from_retention(error: mneme_retention::RetentionError) -> Self {
         match error {
-            RetentionError::Unauthorized => Self::denied(),
-            RetentionError::Conflict(message) => Self::new(ApiErrorCode::Conflict, message),
-            RetentionError::Invalid(message) | RetentionError::Policy(message) => {
+            mneme_retention::RetentionError::Unauthorized => Self::denied(),
+            mneme_retention::RetentionError::Conflict(message) => {
+                Self::new(ApiErrorCode::Conflict, message)
+            }
+            mneme_retention::RetentionError::Invalid(message)
+            | mneme_retention::RetentionError::Policy(message) => {
                 Self::new(ApiErrorCode::InvalidInput, message)
             }
-            RetentionError::NotFound => {
+            mneme_retention::RetentionError::NotFound => {
                 Self::new(ApiErrorCode::Unavailable, "retention target is unavailable")
             }
-            RetentionError::Cleanup(message) => Self::new(ApiErrorCode::Limit, message),
-            RetentionError::Store(error) => Self::from_store(error),
-            RetentionError::Memory(error) => Self::from_memory(error),
+            mneme_retention::RetentionError::Cleanup(message) => {
+                Self::new(ApiErrorCode::Limit, message)
+            }
+            mneme_retention::RetentionError::Store(error) => Self::from_store(error),
+            mneme_retention::RetentionError::Memory(error) => Self::from_memory(error),
         }
     }
 }

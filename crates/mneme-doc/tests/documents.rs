@@ -3,22 +3,12 @@
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
-use mneme_core::{RecordId, RevisionId, ScopeClass, ScopeId, Timestamp, Value};
-use mneme_doc::{
-    BindingRequest, DocumentError, DocumentPolicy, Documents, ImportRequest, MoveRequest,
-    RenderConfig,
-};
-use mneme_store::{
-    CommitCommand, FaultAt, FaultPoint, FixedClock, NoFaults, Workspace, WorkspaceConfig, blob,
-};
-use tempfile::TempDir;
-
-fn scope() -> ScopeId {
-    ScopeId::new(ScopeClass::Project, "cedar").expect("scope")
+fn scope() -> mneme_core::ScopeId {
+    mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar").expect("scope")
 }
 
-fn rev(byte: u8) -> RevisionId {
-    RevisionId::from_bytes([byte; 16])
+fn rev(byte: u8) -> mneme_core::RevisionId {
+    mneme_core::RevisionId::from_bytes([byte; 16])
 }
 
 fn entity_draft() -> mneme_store::RecordDraft {
@@ -33,33 +23,35 @@ fn entity_draft() -> mneme_store::RecordDraft {
     }
 }
 
-fn entity_source_id() -> RecordId {
+fn entity_source_id() -> mneme_core::RecordId {
     mneme_core::fixtures::entity_id()
 }
 
 struct Harness {
-    temp: TempDir,
-    workspace: Workspace,
+    temp: tempfile::TempDir,
+    workspace: mneme_store::Workspace,
 }
 
 impl Harness {
     fn new() -> Self {
-        Self::with_faults(Box::new(NoFaults))
+        Self::with_faults(Box::new(mneme_store::NoFaults))
     }
 
     fn with_faults(faults: Box<dyn mneme_store::FaultInjector>) -> Self {
         let temp = tempfile::tempdir().expect("temp");
-        let mut workspace = Workspace::create(
+        let mut workspace = mneme_store::Workspace::create(
             temp.path(),
-            WorkspaceConfig {
-                clock: Box::new(FixedClock::new(Timestamp::from_nanos(1_000))),
+            mneme_store::WorkspaceConfig {
+                clock: Box::new(mneme_store::FixedClock::new(
+                    mneme_core::Timestamp::from_nanos(1_000),
+                )),
                 faults,
             },
         )
         .expect("create");
         let base = workspace.current_revision().expect("base");
         workspace
-            .commit(CommitCommand {
+            .commit(mneme_store::CommitCommand {
                 base,
                 actor: "doc-test".to_owned(),
                 scope: scope(),
@@ -75,10 +67,12 @@ impl Harness {
     }
 
     fn reopen_with(&mut self, faults: Box<dyn mneme_store::FaultInjector>) {
-        self.workspace = Workspace::open(
+        self.workspace = mneme_store::Workspace::open(
             self.temp.path(),
-            WorkspaceConfig {
-                clock: Box::new(FixedClock::new(Timestamp::from_nanos(2_000))),
+            mneme_store::WorkspaceConfig {
+                clock: Box::new(mneme_store::FixedClock::new(
+                    mneme_core::Timestamp::from_nanos(2_000),
+                )),
                 faults,
             },
         )
@@ -86,17 +80,18 @@ impl Harness {
     }
 
     fn write_file(&self, path: &str, bytes: &[u8]) {
-        blob::publish_working_file(self.temp.path(), path, bytes).expect("working file");
+        mneme_store::blob::publish_working_file(self.temp.path(), path, bytes)
+            .expect("working file");
     }
 
     fn request(
         &self,
         key: &str,
-        document_id: Option<RecordId>,
+        document_id: Option<mneme_core::RecordId>,
         path: &str,
         title: Option<&str>,
-    ) -> ImportRequest {
-        ImportRequest {
+    ) -> mneme_doc::ImportRequest {
+        mneme_doc::ImportRequest {
             actor: "doc-author".to_owned(),
             scope: scope(),
             base_revision: self.workspace.current_revision().expect("base"),
@@ -104,13 +99,13 @@ impl Harness {
             document_id,
             path: path.to_owned(),
             title: title.map(str::to_owned),
-            policy: DocumentPolicy::default(),
-            render_config: RenderConfig::default(),
+            policy: mneme_doc::DocumentPolicy::default(),
+            render_config: mneme_doc::RenderConfig::default(),
         }
     }
 
-    fn import(&mut self, request: ImportRequest) -> mneme_doc::DocumentRevision {
-        let mut documents = Documents::new(&mut self.workspace);
+    fn import(&mut self, request: mneme_doc::ImportRequest) -> mneme_doc::DocumentRevision {
+        let mut documents = mneme_doc::Documents::new(&mut self.workspace);
         documents.import_working_file(request).expect("import")
     }
 }
@@ -132,12 +127,12 @@ fn import_move_and_property_edit_preserve_identity_and_source_bytes() {
     assert_eq!(imported.entity, Some(entity_source_id()));
     assert!(!imported.anchors.is_empty());
     assert_eq!(
-        Documents::new(&mut harness.workspace)
+        mneme_doc::Documents::new(&mut harness.workspace)
             .source_bytes(imported.document_id)
             .expect("source"),
         source.as_bytes()
     );
-    let anchors = Documents::new(&mut harness.workspace)
+    let anchors = mneme_doc::Documents::new(&mut harness.workspace)
         .anchors(imported.document_id)
         .expect("anchors");
     assert_eq!(anchors.len(), 1);
@@ -150,9 +145,9 @@ fn import_move_and_property_edit_preserve_identity_and_source_bytes() {
 
     let move_base = harness.workspace.current_revision().expect("base");
     let moved = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
-            .move_document(MoveRequest {
+            .move_document(mneme_doc::MoveRequest {
                 actor: "doc-author".to_owned(),
                 scope: scope(),
                 base_revision: move_base,
@@ -176,7 +171,7 @@ fn import_move_and_property_edit_preserve_identity_and_source_bytes() {
         .find(|record| record.record_id == entity_source_id())
         .expect("entity");
     let property_base = harness.workspace.current_revision().expect("base");
-    Documents::new(&mut harness.workspace)
+    mneme_doc::Documents::new(&mut harness.workspace)
         .edit_entity_property(
             "doc-author",
             &scope(),
@@ -184,7 +179,7 @@ fn import_move_and_property_edit_preserve_identity_and_source_bytes() {
             "property",
             entity_source_id(),
             "status",
-            Some(Value::string("reviewed")),
+            Some(mneme_core::Value::string("reviewed")),
         )
         .expect("property edit");
     let entity_after = harness
@@ -197,7 +192,7 @@ fn import_move_and_property_edit_preserve_identity_and_source_bytes() {
         .expect("entity");
     assert_ne!(entity_before.revision_id, entity_after.revision_id);
     assert_eq!(
-        Documents::new(&mut harness.workspace)
+        mneme_doc::Documents::new(&mut harness.workspace)
             .source_bytes(imported.document_id)
             .expect("source"),
         source.as_bytes()
@@ -211,17 +206,17 @@ fn conflicting_and_conditional_bindings_are_rejected_without_commit() {
     let conflicting = format!(
         "= Cedar\n:entity-id: {}\n:entity-id: {}\n\nBody.\n",
         entity_source_id().to_hex(),
-        RecordId::from_bytes([0x99; 16]).to_hex()
+        mneme_core::RecordId::from_bytes([0x99; 16]).to_hex()
     );
     harness.write_file("docs/conflict.adoc", conflicting.as_bytes());
     let conflict_request = harness.request("conflict", None, "docs/conflict.adoc", None);
     let error = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .import_working_file(conflict_request)
             .expect_err("conflict")
     };
-    assert!(matches!(error, DocumentError::Diagnostics(_)));
+    assert!(matches!(error, mneme_doc::DocumentError::Diagnostics(_)));
     assert!(
         harness
             .workspace
@@ -239,7 +234,7 @@ fn conflicting_and_conditional_bindings_are_rejected_without_commit() {
     harness.write_file("docs/conditional.adoc", conditional.as_bytes());
     let conditional_request = harness.request("conditional", None, "docs/conditional.adoc", None);
     let validation = {
-        let documents = Documents::new(&mut harness.workspace);
+        let documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .validate_working_file(conditional_request)
             .expect("validation")
@@ -269,14 +264,14 @@ fn invalid_external_edit_leaves_prior_revision_authoritative() {
         None,
     );
     let error = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .import_working_file(bad_edit_request)
             .expect_err("invalid edit")
     };
-    assert!(matches!(error, DocumentError::Diagnostics(_)));
+    assert!(matches!(error, mneme_doc::DocumentError::Diagnostics(_)));
     assert_eq!(
-        Documents::new(&mut harness.workspace)
+        mneme_doc::Documents::new(&mut harness.workspace)
             .source_bytes(imported.document_id)
             .expect("prior source"),
         bound_source("Exact retained prose.\r\n").as_bytes()
@@ -290,7 +285,7 @@ fn draft_validation_reports_candidate_without_mutating() {
     let before = harness.workspace.current_revision().expect("before");
     let draft_request = harness.request("draft", None, "docs/draft.adoc", None);
     let draft = {
-        let documents = Documents::new(&mut harness.workspace);
+        let documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .validate_working_file(draft_request)
             .expect("draft")
@@ -318,17 +313,17 @@ fn stale_candidate_conflicts_and_preserves_newer_document() {
         harness.request("stale", Some(first.document_id), "docs/stable.adoc", None);
     stale_request.base_revision = stale_base;
     let error = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .import_working_file(stale_request)
             .expect_err("stale")
     };
     assert!(matches!(
         error,
-        DocumentError::Store(mneme_store::StoreError::StaleBase { .. })
+        mneme_doc::DocumentError::Store(mneme_store::StoreError::StaleBase { .. })
     ));
     assert_eq!(
-        Documents::new(&mut harness.workspace)
+        mneme_doc::Documents::new(&mut harness.workspace)
             .source_bytes(first.document_id)
             .expect("source"),
         b"= Stable\n\nsecond\n"
@@ -350,9 +345,9 @@ fn includes_pin_dependencies_and_historical_preview_uses_the_old_closure() {
     assert_eq!(root.includes[0].path, "docs/part.adoc");
     let old_root_revision = root.workspace_revision;
     {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         let preview = documents
-            .preview(root.document_id, None, RenderConfig::default())
+            .preview(root.document_id, None, mneme_doc::RenderConfig::default())
             .expect("preview");
         assert!(preview.source_available);
         assert!(preview.html.contains("old included sentence"));
@@ -366,12 +361,12 @@ fn includes_pin_dependencies_and_historical_preview_uses_the_old_closure() {
         harness.import(harness.request("part-2", Some(part.document_id), "docs/part.adoc", None));
     assert_ne!(new_part.source.revision, part.source.revision);
     {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         let historical = documents
             .preview(
                 root.document_id,
                 Some(old_root_revision),
-                RenderConfig::default(),
+                mneme_doc::RenderConfig::default(),
             )
             .expect("historical preview");
         assert!(historical.html.contains("old included sentence"));
@@ -382,9 +377,9 @@ fn includes_pin_dependencies_and_historical_preview_uses_the_old_closure() {
         harness.import(harness.request("root-2", Some(root.document_id), "docs/root.adoc", None));
     assert_eq!(new_root.includes[0].pin, new_part.source);
     {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         let current = documents
-            .preview(root.document_id, None, RenderConfig::default())
+            .preview(root.document_id, None, mneme_doc::RenderConfig::default())
             .expect("current preview");
         assert!(current.html.contains("new included sentence"));
         assert!(!current.html.contains("old included sentence"));
@@ -406,7 +401,7 @@ fn include_traversal_remote_cycle_and_limits_fail_closed() {
         harness.write_file("bad.adoc", body.as_bytes());
         let request = harness.request(key, None, "bad.adoc", None);
         let validation = {
-            let documents = Documents::new(&mut harness.workspace);
+            let documents = mneme_doc::Documents::new(&mut harness.workspace);
             documents
                 .validate_working_file(request)
                 .expect("diagnostic draft")
@@ -423,19 +418,19 @@ fn include_traversal_remote_cycle_and_limits_fail_closed() {
     harness.write_file("docs/required.adoc", b"= Root\n\ninclude::missing.adoc[]\n");
     let required_request = harness.request("required", None, "docs/required.adoc", None);
     let required = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .import_working_file(required_request)
             .expect_err("missing include")
     };
-    assert!(matches!(required, DocumentError::Diagnostics(_)));
+    assert!(matches!(required, mneme_doc::DocumentError::Diagnostics(_)));
     harness.write_file(
         "docs/optional.adoc",
         b"= Root\n\ninclude::missing.adoc[opts=optional]\n",
     );
     let optional_request = harness.request("optional", None, "docs/optional.adoc", None);
     let optional = {
-        let documents = Documents::new(&mut harness.workspace);
+        let documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .validate_working_file(optional_request)
             .expect("optional import")
@@ -449,9 +444,9 @@ fn include_traversal_remote_cycle_and_limits_fail_closed() {
     );
 
     // Two inputs exceed a one-input policy.
-    let policy = DocumentPolicy {
+    let policy = mneme_doc::DocumentPolicy {
         max_inputs: 1,
-        ..DocumentPolicy::default()
+        ..mneme_doc::DocumentPolicy::default()
     };
     harness.write_file("docs/other.adoc", b"= Other\n\nother\n");
     harness.import(harness.request("other", None, "docs/other.adoc", None));
@@ -462,12 +457,12 @@ fn include_traversal_remote_cycle_and_limits_fail_closed() {
     let mut request = harness.request("two", None, "docs/two.adoc", None);
     request.policy = policy;
     let error = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .import_working_file(request)
             .expect_err("input limit")
     };
-    assert!(matches!(error, DocumentError::Diagnostics(_)));
+    assert!(matches!(error, mneme_doc::DocumentError::Diagnostics(_)));
 }
 
 #[test]
@@ -481,12 +476,12 @@ fn include_cycles_are_rejected() {
     harness.write_file("docs/b.adoc", b"= B\n\ninclude::a.adoc[]\n");
     let cycle_request = harness.request("b-cycle", None, "docs/b.adoc", None);
     let error = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .import_working_file(cycle_request)
             .expect_err("cycle")
     };
-    assert!(matches!(error, DocumentError::Diagnostics(_)));
+    assert!(matches!(error, mneme_doc::DocumentError::Diagnostics(_)));
 }
 
 #[test]
@@ -498,9 +493,13 @@ fn preview_escapes_active_content_and_unregistered_constructs() {
     );
     harness.write_file("docs/unsafe.adoc", body.as_bytes());
     let imported = harness.import(harness.request("unsafe", None, "docs/unsafe.adoc", None));
-    let mut documents = Documents::new(&mut harness.workspace);
+    let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
     let preview = documents
-        .preview(imported.document_id, None, RenderConfig::default())
+        .preview(
+            imported.document_id,
+            None,
+            mneme_doc::RenderConfig::default(),
+        )
         .expect("preview");
     assert!(!preview.html.contains("<script"));
     assert!(!preview.html.contains("<img"));
@@ -533,7 +532,7 @@ fn repeated_includes_share_extraction_provenance() {
     );
     let root = harness.import(harness.request("root", None, "docs/root.adoc", None));
     let candidates = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .extract_proposals(root.document_id)
             .expect("extract")
@@ -560,10 +559,10 @@ fn binding_patch_changes_only_the_header_attribute() {
     let imported = harness.import(harness.request("binding", None, "docs/binding.adoc", None));
     let base = harness.workspace.current_revision().expect("base");
     let patched = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
-            .patch_binding(BindingRequest {
-                import: ImportRequest {
+            .patch_binding(mneme_doc::BindingRequest {
+                import: mneme_doc::ImportRequest {
                     actor: "doc-author".to_owned(),
                     scope: scope(),
                     base_revision: base,
@@ -571,8 +570,8 @@ fn binding_patch_changes_only_the_header_attribute() {
                     document_id: Some(imported.document_id),
                     path: "docs/binding.adoc".to_owned(),
                     title: None,
-                    policy: DocumentPolicy::default(),
-                    render_config: RenderConfig::default(),
+                    policy: mneme_doc::DocumentPolicy::default(),
+                    render_config: mneme_doc::RenderConfig::default(),
                 },
                 entity: Some(entity_source_id()),
                 publish: false,
@@ -580,7 +579,7 @@ fn binding_patch_changes_only_the_header_attribute() {
             .expect("bind")
     };
     assert_eq!(patched.entity, Some(entity_source_id()));
-    let bytes = Documents::new(&mut harness.workspace)
+    let bytes = mneme_doc::Documents::new(&mut harness.workspace)
         .source_bytes(imported.document_id)
         .expect("source");
     let expected = format!(
@@ -593,19 +592,21 @@ fn binding_patch_changes_only_the_header_attribute() {
 #[test]
 fn publication_recovery_does_not_overwrite_an_external_edit() {
     let mut harness = Harness::new();
-    harness.reopen_with(Box::new(FaultAt(FaultPoint::AfterCommit)));
+    harness.reopen_with(Box::new(mneme_store::FaultAt(
+        mneme_store::FaultPoint::AfterCommit,
+    )));
     let request = harness.request("publish", None, "docs/publish.adoc", None);
     let error = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .save_source(request, b"= Publish\n\ncommitted source\n")
             .expect_err("fault after commit")
     };
     assert!(matches!(
         error,
-        DocumentError::Store(mneme_store::StoreError::InjectedFault(_))
+        mneme_doc::DocumentError::Store(mneme_store::StoreError::InjectedFault(_))
     ));
-    harness.reopen_with(Box::new(NoFaults));
+    harness.reopen_with(Box::new(mneme_store::NoFaults));
     let committed = harness
         .workspace
         .snapshot()
@@ -628,7 +629,8 @@ fn publication_recovery_does_not_overwrite_an_external_edit() {
         mneme_store::PublicationState::Diverged
     );
     assert_eq!(
-        blob::read_working_file(harness.temp.path(), "docs/publish.adoc").expect("file"),
+        mneme_store::blob::read_working_file(harness.temp.path(), "docs/publish.adoc")
+            .expect("file"),
         Some(external.to_vec())
     );
     let _ = committed;
@@ -637,20 +639,19 @@ fn publication_recovery_does_not_overwrite_an_external_edit() {
 #[cfg(unix)]
 #[test]
 fn symlinked_working_file_cannot_escape_the_workspace() {
-    use std::os::unix::fs::symlink;
     let mut harness = Harness::new();
     let outside = harness.temp.path().join("outside.adoc");
     std::fs::write(&outside, b"= Outside\n\nsecret\n").expect("outside");
     let link = harness.temp.path().join("working/link.adoc");
-    symlink(&outside, &link).expect("symlink");
+    std::os::unix::fs::symlink(&outside, &link).expect("symlink");
     let request = harness.request("link", None, "link.adoc", None);
     let error = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .import_working_file(request)
             .expect_err("symlink escape")
     };
-    assert!(matches!(error, DocumentError::Store(_)));
+    assert!(matches!(error, mneme_doc::DocumentError::Store(_)));
 }
 
 #[test]
@@ -659,9 +660,13 @@ fn preview_cache_keys_cover_configuration_processor_dependencies_and_generation(
     harness.write_file("docs/cache.adoc", b"= Cache\n\ncached\n");
     let imported = harness.import(harness.request("cache", None, "docs/cache.adoc", None));
     let artifact = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
-            .preview(imported.document_id, None, RenderConfig::default())
+            .preview(
+                imported.document_id,
+                None,
+                mneme_doc::RenderConfig::default(),
+            )
             .expect("preview")
     };
     let key = artifact.key();
@@ -686,8 +691,8 @@ fn preview_cache_keys_cover_configuration_processor_dependencies_and_generation(
     assert!(cache.get(&key).is_none());
 }
 
-fn rid(byte: u8) -> RecordId {
-    RecordId::from_bytes([byte; 16])
+fn rid(byte: u8) -> mneme_core::RecordId {
+    mneme_core::RecordId::from_bytes([byte; 16])
 }
 
 #[test]
@@ -697,12 +702,12 @@ fn unavailable_root_and_include_sources_are_reported_without_substitution() {
     let part = harness.import(harness.request("part", None, "docs/part.adoc", None));
     harness.write_file("docs/root.adoc", b"= Root\n\ninclude::part.adoc[]\n");
     let root = harness.import(harness.request("root", None, "docs/root.adoc", None));
-    let part_view = Documents::new(&mut harness.workspace)
+    let part_view = mneme_doc::Documents::new(&mut harness.workspace)
         .document_by_path("docs/part.adoc")
         .expect("lookup")
         .expect("part");
     let digest = mneme_core::ContentDigest::of_source_bytes(b"= Part\n\nincluded text\n");
-    assert!(blob::blob_path(harness.temp.path(), digest).exists());
+    assert!(mneme_store::blob::blob_path(harness.temp.path(), digest).exists());
     // Mark the included source unavailable while the root remains committed.
     let mut unavailable = mneme_memory::build_unavailable_source_with_digest(
         part_view.source.source,
@@ -718,7 +723,7 @@ fn unavailable_root_and_include_sources_are_reported_without_substitution() {
     let base = harness.workspace.current_revision().expect("base");
     harness
         .workspace
-        .commit(CommitCommand {
+        .commit(mneme_store::CommitCommand {
             base,
             actor: "doc-test".to_owned(),
             scope: scope(),
@@ -731,9 +736,9 @@ fn unavailable_root_and_include_sources_are_reported_without_substitution() {
         })
         .expect("unavailable source");
     let preview = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
-            .preview(root.document_id, None, RenderConfig::default())
+            .preview(root.document_id, None, mneme_doc::RenderConfig::default())
             .expect("preview")
     };
     assert!(preview.source_available);
@@ -754,27 +759,27 @@ fn include_policy_depth_byte_roots_and_time_limits_fail_closed() {
     harness.import(harness.request("part", None, "docs/part.adoc", None));
     harness.write_file("docs/root.adoc", b"= Root\n\ninclude::part.adoc[]\n");
     for policy in [
-        DocumentPolicy {
+        mneme_doc::DocumentPolicy {
             max_depth: 0,
-            ..DocumentPolicy::default()
+            ..mneme_doc::DocumentPolicy::default()
         },
-        DocumentPolicy {
+        mneme_doc::DocumentPolicy {
             max_total_source_bytes: 10,
-            ..DocumentPolicy::default()
+            ..mneme_doc::DocumentPolicy::default()
         },
-        DocumentPolicy {
+        mneme_doc::DocumentPolicy {
             max_time_ms: 0,
-            ..DocumentPolicy::default()
+            ..mneme_doc::DocumentPolicy::default()
         },
-        DocumentPolicy {
+        mneme_doc::DocumentPolicy {
             allowed_roots: vec!["other".to_owned()],
-            ..DocumentPolicy::default()
+            ..mneme_doc::DocumentPolicy::default()
         },
     ] {
         let mut request = harness.request("limits", None, "docs/root.adoc", None);
         request.policy = policy;
         let validation = {
-            let documents = Documents::new(&mut harness.workspace);
+            let documents = mneme_doc::Documents::new(&mut harness.workspace);
             documents
                 .validate_working_file(request)
                 .expect("diagnostic draft")
@@ -791,16 +796,13 @@ fn include_policy_depth_byte_roots_and_time_limits_fail_closed() {
 
 #[test]
 fn evidence_keeps_a_pinned_document_span_after_the_document_changes() {
-    use mneme_core::{Origin, SourceSpan};
-    use mneme_memory::{Memory, MemoryBatch, Stance, build_evidence, build_proposed_assertion};
-
     let mut harness = Harness::new();
     let first_source = b"= Evidence\n\nOriginal cited sentence.\n";
     harness.write_file("docs/evidence.adoc", first_source);
     let imported =
         harness.import(harness.request("evidence-doc", None, "docs/evidence.adoc", None));
-    let span = SourceSpan::new(12, 35).expect("span");
-    let evidence = build_evidence(
+    let span = mneme_core::SourceSpan::new(12, 35).expect("span");
+    let evidence = mneme_memory::build_evidence(
         rid(0x40),
         rev(0x41),
         &scope(),
@@ -810,18 +812,18 @@ fn evidence_keeps_a_pinned_document_span_after_the_document_changes() {
         Some(span),
         Some("evidence"),
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
+        mneme_core::Origin::AuthoredStatement,
         &[],
     );
-    let assertion = build_proposed_assertion(
+    let assertion = mneme_memory::build_proposed_assertion(
         rid(0x42),
         rev(0x43),
         &scope(),
         entity_source_id(),
         "citation",
-        Value::string("original"),
-        Stance::Affirm,
-        Origin::AuthoredStatement,
+        mneme_core::Value::string("original"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::Origin::AuthoredStatement,
         "author",
         mneme_core::ValidTime::always(),
         &[mneme_core::Reference::local(
@@ -831,8 +833,8 @@ fn evidence_keeps_a_pinned_document_span_after_the_document_changes() {
         None,
         None,
     );
-    Memory::new(&mut harness.workspace)
-        .commit(MemoryBatch {
+    mneme_memory::Memory::new(&mut harness.workspace)
+        .commit(mneme_memory::MemoryBatch {
             actor: "doc-author".to_owned(),
             scope: scope(),
             idempotency_key: "evidence".to_owned(),
@@ -849,7 +851,7 @@ fn evidence_keeps_a_pinned_document_span_after_the_document_changes() {
         "docs/evidence.adoc",
         None,
     ));
-    let memory = Memory::new(&mut harness.workspace);
+    let memory = mneme_memory::Memory::new(&mut harness.workspace);
     let view = memory.view().expect("view");
     let old_source = view
         .source_at(imported.source.source, imported.source.revision)
@@ -883,7 +885,7 @@ fn substituted_binding_and_invalid_utf8_are_rejected() {
         b"= Substitute\n:entity-id: {entity}\n\nbody\n",
     );
     let substituted_request = harness.request("substituted", None, "docs/substituted.adoc", None);
-    let substituted = Documents::new(&mut harness.workspace)
+    let substituted = mneme_doc::Documents::new(&mut harness.workspace)
         .validate_working_file(substituted_request)
         .expect("diagnostic draft");
     assert!(!substituted.valid);
@@ -896,7 +898,7 @@ fn substituted_binding_and_invalid_utf8_are_rejected() {
 
     harness.write_file("docs/utf8.adoc", &[0xff, 0xfe, b'r', b'o', b'o', b't']);
     let utf8_request = harness.request("utf8", None, "docs/utf8.adoc", None);
-    let invalid = Documents::new(&mut harness.workspace)
+    let invalid = mneme_doc::Documents::new(&mut harness.workspace)
         .validate_working_file(utf8_request)
         .expect("diagnostic draft");
     assert!(!invalid.valid);
@@ -913,7 +915,7 @@ fn repeated_save_with_the_same_key_returns_the_same_revision() {
     let mut harness = Harness::new();
     let request = harness.request("save", None, "docs/save.adoc", None);
     let first = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .save_source(request.clone(), b"= Save\n\nsaved body\n")
             .expect("first save")
@@ -925,7 +927,7 @@ fn repeated_save_with_the_same_key_returns_the_same_revision() {
         .records
         .len();
     let second = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
             .save_source(request, b"= Save\n\nsaved body\n")
             .expect("retry save")
@@ -949,7 +951,7 @@ fn anchors_are_scoped_to_the_current_document_source_revision() {
     harness.write_file("docs/anchor-v1.adoc", b"= A\n\n[[first]]\nbody\n");
     let first = harness.import(harness.request("a1", None, "docs/anchor-v1.adoc", None));
     assert_eq!(
-        Documents::new(&mut harness.workspace)
+        mneme_doc::Documents::new(&mut harness.workspace)
             .anchors(first.document_id)
             .expect("anchors")
             .len(),
@@ -957,7 +959,7 @@ fn anchors_are_scoped_to_the_current_document_source_revision() {
     );
     harness.write_file("docs/anchor-v1.adoc", b"= A\n\n[[second]]\nnew body\n");
     harness.import(harness.request("a2", Some(first.document_id), "docs/anchor-v1.adoc", None));
-    let anchors = Documents::new(&mut harness.workspace)
+    let anchors = mneme_doc::Documents::new(&mut harness.workspace)
         .anchors(first.document_id)
         .expect("anchors");
     assert_eq!(anchors.len(), 1);
@@ -976,14 +978,15 @@ fn document_listing_is_deterministic_and_carries_scope() {
         harness.import(harness.request(key, None, path, Some(title)));
     }
     let mut request = harness.request("birch", None, "notes/birch.adoc", Some("Birch"));
-    request.scope = ScopeId::new(ScopeClass::Project, "birch").expect("scope");
+    request.scope =
+        mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "birch").expect("scope");
     harness.write_file("notes/birch.adoc", b"= Birch\n\nother scope\n");
     harness.import(request);
 
-    let first = Documents::new(&mut harness.workspace)
+    let first = mneme_doc::Documents::new(&mut harness.workspace)
         .list_documents()
         .expect("list");
-    let second = Documents::new(&mut harness.workspace)
+    let second = mneme_doc::Documents::new(&mut harness.workspace)
         .list_documents()
         .expect("list");
     assert_eq!(first, second);
@@ -1018,9 +1021,9 @@ fn move_can_rename_title_without_changing_identity_or_source() {
     ));
     let base = harness.workspace.current_revision().expect("base");
     let moved = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
-            .move_document(MoveRequest {
+            .move_document(mneme_doc::MoveRequest {
                 actor: "doc-author".to_owned(),
                 scope: scope(),
                 base_revision: base,
@@ -1034,7 +1037,7 @@ fn move_can_rename_title_without_changing_identity_or_source() {
     assert_eq!(moved.document_id, imported.document_id);
     assert_eq!(moved.source, imported.source);
     assert_eq!(moved.path, "docs/renamed.adoc");
-    let documents = Documents::new(&mut harness.workspace);
+    let documents = mneme_doc::Documents::new(&mut harness.workspace);
     let view = documents.document(moved.document_id).expect("document");
     assert_eq!(view.title, "Renamed");
     assert_eq!(
@@ -1052,9 +1055,9 @@ fn move_refuses_an_empty_title_without_a_commit() {
     let imported = harness.import(harness.request("keep", None, "docs/keep.adoc", Some("Keep")));
     let revision = harness.workspace.current_revision().expect("revision");
     let error = {
-        let mut documents = Documents::new(&mut harness.workspace);
+        let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
-            .move_document(MoveRequest {
+            .move_document(mneme_doc::MoveRequest {
                 actor: "doc-author".to_owned(),
                 scope: scope(),
                 base_revision: revision,
@@ -1065,7 +1068,7 @@ fn move_refuses_an_empty_title_without_a_commit() {
             })
             .expect_err("empty title")
     };
-    assert!(matches!(error, DocumentError::Invalid(_)));
+    assert!(matches!(error, mneme_doc::DocumentError::Invalid(_)));
     assert_eq!(
         harness.workspace.current_revision().expect("revision"),
         revision

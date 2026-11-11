@@ -6,13 +6,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use mneme_core::{RecordId, RevisionId, ScopeId, Value, WorkspaceRevisionId};
-use mneme_memory::MemoryView;
-use mneme_store::{ProjectionRegistration, RetentionParticipant, StoreError, Workspace};
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 /// The supported rule-profile version.
 pub const PROFILE_VERSION: &str = "mneme-datalog-profile/v1";
 /// The projection index version for full recomputation.
@@ -22,7 +15,7 @@ pub const INDEX_VERSION: &str = "full-rebuild-v1";
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Term {
     Variable(String),
-    Constant(Value),
+    Constant(mneme_core::Value),
 }
 
 impl Term {
@@ -32,7 +25,7 @@ impl Term {
     }
 
     /// Construct a constant term.
-    pub fn constant(value: Value) -> Self {
+    pub fn constant(value: mneme_core::Value) -> Self {
         Term::Constant(value)
     }
 }
@@ -124,10 +117,10 @@ pub struct RuleBundle {
     pub id: String,
     pub version: String,
     pub schema_version: u32,
-    pub base_predicates: BTreeMap<String, usize>,
+    pub base_predicates: std::collections::BTreeMap<String, usize>,
     /// Predicates that may be used under negation or absence-sensitive
     /// aggregation only after their declared extent completes.
-    pub complete_predicates: BTreeSet<String>,
+    pub complete_predicates: std::collections::BTreeSet<String>,
     pub rules: Vec<Rule>,
 }
 
@@ -138,8 +131,8 @@ impl RuleBundle {
         id: impl Into<String>,
         version: impl Into<String>,
         schema_version: u32,
-        base_predicates: BTreeMap<String, usize>,
-        complete_predicates: BTreeSet<String>,
+        base_predicates: std::collections::BTreeMap<String, usize>,
+        complete_predicates: std::collections::BTreeSet<String>,
         rules: Vec<Rule>,
     ) -> Self {
         RuleBundle {
@@ -166,9 +159,9 @@ pub struct RuleDiagnostic {
 pub struct RuleProgram {
     pub bundle: RuleBundle,
     /// Predicate arities for base and derived predicates.
-    pub arities: BTreeMap<String, usize>,
+    pub arities: std::collections::BTreeMap<String, usize>,
     /// Predicate strata.
-    pub strata: BTreeMap<String, usize>,
+    pub strata: std::collections::BTreeMap<String, usize>,
 }
 
 /// Failure to register or build a projection.
@@ -177,7 +170,7 @@ pub enum DatalogError {
     #[error("rule bundle is invalid")]
     InvalidBundle(Vec<RuleDiagnostic>),
     #[error(transparent)]
-    Store(#[from] StoreError),
+    Store(#[from] mneme_store::StoreError),
     #[error(transparent)]
     Memory(#[from] mneme_memory::MemoryError),
     #[error("unknown predicate {0}")]
@@ -188,8 +181,8 @@ pub enum DatalogError {
         "datalog projection is stale: requested revision {requested}, served revision {served}"
     )]
     Stale {
-        requested: WorkspaceRevisionId,
-        served: WorkspaceRevisionId,
+        requested: mneme_core::WorkspaceRevisionId,
+        served: mneme_core::WorkspaceRevisionId,
     },
     #[error("datalog evaluation was cancelled")]
     Cancelled,
@@ -252,9 +245,9 @@ pub struct Coverage {
 /// The immutable evaluation context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildContext {
-    pub requested_revision: WorkspaceRevisionId,
-    pub served_revision: WorkspaceRevisionId,
-    pub scope: ScopeId,
+    pub requested_revision: mneme_core::WorkspaceRevisionId,
+    pub served_revision: mneme_core::WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
     pub schema_version: u32,
     pub rule_bundle_id: String,
     pub rule_bundle_version: String,
@@ -288,26 +281,26 @@ impl Default for Limits {
 #[derive(Clone, Debug)]
 pub struct BuildRequest {
     pub actor: String,
-    pub scope: ScopeId,
-    pub revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub revision: mneme_core::WorkspaceRevisionId,
     pub bundle: RuleBundle,
     pub limits: Limits,
     pub publish: bool,
     /// Explicitly incomplete source extents, such as a top-k input.
-    pub incomplete_extents: BTreeSet<String>,
-    pub cancellation: Option<Arc<AtomicBool>>,
+    pub incomplete_extents: std::collections::BTreeSet<String>,
+    pub cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// A canonical source/revision root used in support.
-pub type SourceKey = (RecordId, RevisionId);
+pub type SourceKey = (mneme_core::RecordId, mneme_core::RevisionId);
 
 /// One premise of a conditional derivation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Premise {
     pub predicate: String,
-    pub terms: Vec<Value>,
-    pub canonical: Option<RecordId>,
-    pub sources: BTreeSet<SourceKey>,
+    pub terms: Vec<mneme_core::Value>,
+    pub canonical: Option<mneme_core::RecordId>,
+    pub sources: std::collections::BTreeSet<SourceKey>,
     pub source_availability: Option<String>,
 }
 
@@ -317,10 +310,10 @@ pub struct Derivation {
     pub rule_id: String,
     pub rule_version: String,
     pub premises: Vec<Premise>,
-    pub sources: BTreeSet<SourceKey>,
+    pub sources: std::collections::BTreeSet<SourceKey>,
     pub temporal_parameters: Vec<String>,
-    pub revision: WorkspaceRevisionId,
-    pub scope: ScopeId,
+    pub revision: mneme_core::WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
     pub truncated: bool,
 }
 
@@ -333,8 +326,11 @@ pub struct DatalogBuild {
     pub limits: Limits,
     pub work: u64,
     pub support_truncated: bool,
-    facts: BTreeMap<String, BTreeMap<Vec<Value>, FactData>>,
-    arities: BTreeMap<String, usize>,
+    facts: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<Vec<mneme_core::Value>, FactData>,
+    >,
+    arities: std::collections::BTreeMap<String, usize>,
     bundle: RuleBundle,
 }
 
@@ -342,14 +338,16 @@ impl DatalogBuild {
     /// Number of materialized rows in one predicate.
     #[allow(unknown_lints, usize_in_public_api)] // row counts mirror collection lengths
     pub fn row_count(&self, predicate: &str) -> usize {
-        self.facts.get(predicate).map_or(0, BTreeMap::len)
+        self.facts
+            .get(predicate)
+            .map_or(0, std::collections::BTreeMap::len)
     }
 }
 
 #[derive(Clone, Debug)]
 struct FactData {
     supports: Vec<Derivation>,
-    sources: BTreeSet<SourceKey>,
+    sources: std::collections::BTreeSet<SourceKey>,
     truncated: bool,
 }
 
@@ -358,12 +356,12 @@ struct FactData {
 pub struct Query {
     pub predicate: String,
     /// `None` leaves the position free; `Some` requires an exact value.
-    pub constants: Vec<Option<Value>>,
+    pub constants: Vec<Option<mneme_core::Value>>,
     #[allow(unknown_lints, usize_in_public_api)] // query limit mirrors collection lengths
     pub limit: usize,
     /// Allow an older served revision when the caller explicitly requests it.
     pub allow_stale: bool,
-    pub cancellation: Option<Arc<AtomicBool>>,
+    pub cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Query {
@@ -383,7 +381,7 @@ impl Query {
 /// One query row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryRow {
-    pub values: Vec<Value>,
+    pub values: Vec<mneme_core::Value>,
     pub supports: Vec<Derivation>,
     pub support_truncated: bool,
 }
@@ -399,8 +397,8 @@ pub struct QueryResult {
     pub truncated: bool,
     pub absence_established: bool,
     pub reason: Option<String>,
-    pub requested_revision: WorkspaceRevisionId,
-    pub served_revision: WorkspaceRevisionId,
+    pub requested_revision: mneme_core::WorkspaceRevisionId,
+    pub served_revision: mneme_core::WorkspaceRevisionId,
     pub work: u64,
 }
 
@@ -410,40 +408,43 @@ impl QueryResult {
     /// Rows and derivations are intentionally omitted; their canonical values
     /// are transported separately. The summary keeps status, coverage,
     /// exhaustiveness, absence, and truncation distinguishable.
-    pub fn summary_value(&self) -> Value {
-        let coverage = Value::sequence(
+    pub fn summary_value(&self) -> mneme_core::Value {
+        let coverage = mneme_core::Value::sequence(
             self.coverage
                 .iter()
                 .map(|coverage| {
                     let mut entries = vec![
                         (
                             mneme_core::Symbol::from("predicate"),
-                            Value::string(coverage.predicate.clone()),
+                            mneme_core::Value::string(coverage.predicate.clone()),
                         ),
                         (
                             mneme_core::Symbol::from("status"),
-                            Value::symbol(coverage.status.name()),
+                            mneme_core::Value::symbol(coverage.status.name()),
                         ),
                     ];
                     if let Some(reason) = &coverage.reason {
                         entries.push((
                             mneme_core::Symbol::from("reason"),
-                            Value::string(reason.clone()),
+                            mneme_core::Value::string(reason.clone()),
                         ));
                     }
-                    Value::symbol_dictionary(entries)
+                    mneme_core::Value::symbol_dictionary(entries)
                 })
                 .collect(),
         );
         let mut entries = vec![
             (
                 mneme_core::Symbol::from("format"),
-                Value::symbol("mneme.datalog.query-result"),
+                mneme_core::Value::symbol("mneme.datalog.query-result"),
             ),
-            (mneme_core::Symbol::from("version"), Value::integer(1)),
+            (
+                mneme_core::Symbol::from("version"),
+                mneme_core::Value::integer(1),
+            ),
             (
                 mneme_core::Symbol::from("status"),
-                Value::symbol(self.status.name()),
+                mneme_core::Value::symbol(self.status.name()),
             ),
             (
                 mneme_core::Symbol::from("requested-revision"),
@@ -459,67 +460,70 @@ impl QueryResult {
             ),
             (
                 mneme_core::Symbol::from("schema-version"),
-                Value::integer(self.context.schema_version),
+                mneme_core::Value::integer(self.context.schema_version),
             ),
             (
                 mneme_core::Symbol::from("rule-bundle-id"),
-                Value::string(self.context.rule_bundle_id.clone()),
+                mneme_core::Value::string(self.context.rule_bundle_id.clone()),
             ),
             (
                 mneme_core::Symbol::from("rule-bundle-version"),
-                Value::string(self.context.rule_bundle_version.clone()),
+                mneme_core::Value::string(self.context.rule_bundle_version.clone()),
             ),
             (
                 mneme_core::Symbol::from("projection-build-id"),
-                Value::string(self.context.projection_build_id.clone()),
+                mneme_core::Value::string(self.context.projection_build_id.clone()),
             ),
             (
                 mneme_core::Symbol::from("eligibility-generation"),
-                Value::integer(self.context.eligibility_generation),
+                mneme_core::Value::integer(self.context.eligibility_generation),
             ),
             (mneme_core::Symbol::from("coverage"), coverage),
             (
                 mneme_core::Symbol::from("row-count"),
-                Value::integer(self.rows.len() as i64),
+                mneme_core::Value::integer(self.rows.len() as i64),
             ),
             (
                 mneme_core::Symbol::from("exhaustive"),
-                Value::Boolean(self.exhaustive),
+                mneme_core::Value::Boolean(self.exhaustive),
             ),
             (
                 mneme_core::Symbol::from("truncated"),
-                Value::Boolean(self.truncated),
+                mneme_core::Value::Boolean(self.truncated),
             ),
             (
                 mneme_core::Symbol::from("absence-established"),
-                Value::Boolean(self.absence_established),
+                mneme_core::Value::Boolean(self.absence_established),
             ),
-            (mneme_core::Symbol::from("work"), Value::integer(self.work)),
+            (
+                mneme_core::Symbol::from("work"),
+                mneme_core::Value::integer(self.work),
+            ),
         ];
         if let Some(reason) = &self.reason {
             entries.push((
                 mneme_core::Symbol::from("reason"),
-                Value::string(reason.clone()),
+                mneme_core::Value::string(reason.clone()),
             ));
         }
-        Value::symbol_dictionary(entries)
+        mneme_core::Value::symbol_dictionary(entries)
     }
 }
 
 /// A bounded projection service over one mutable workspace.
 pub struct DatalogService<'w> {
-    workspace: &'w mut Workspace,
-    builds: BTreeMap<String, DatalogBuild>,
-    query_cache: BTreeMap<QueryCacheKey, QueryResult>,
-    participants: BTreeSet<String>,
+    workspace: &'w mut mneme_store::Workspace,
+    builds: std::collections::BTreeMap<String, DatalogBuild>,
+    query_cache: std::collections::BTreeMap<QueryCacheKey, QueryResult>,
+    participants: std::collections::BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct QueryCacheKey {
     build_id: String,
-    requested_revision: WorkspaceRevisionId,
+    requested_revision: mneme_core::WorkspaceRevisionId,
     predicate: String,
-    constants: Vec<Option<Value>>,
+    constants: Vec<Option<mneme_core::Value>>,
     limit: usize,
     allow_stale: bool,
 }
@@ -536,12 +540,12 @@ impl RuleBundle {
 
 impl<'w> DatalogService<'w> {
     /// Wrap a workspace.
-    pub fn new(workspace: &'w mut Workspace) -> Self {
+    pub fn new(workspace: &'w mut mneme_store::Workspace) -> Self {
         DatalogService {
             workspace,
-            builds: BTreeMap::new(),
-            query_cache: BTreeMap::new(),
-            participants: BTreeSet::new(),
+            builds: std::collections::BTreeMap::new(),
+            query_cache: std::collections::BTreeMap::new(),
+            participants: std::collections::BTreeSet::new(),
         }
     }
 
@@ -564,7 +568,7 @@ impl<'w> DatalogService<'w> {
         let is_cancellation_requested = request
             .cancellation
             .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::Relaxed));
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
         if let Some(existing) = self.builds.get(&build_id).cloned()
             && !is_cancellation_requested
             && !matches!(
@@ -579,7 +583,7 @@ impl<'w> DatalogService<'w> {
         }
         let snapshot = self.workspace.snapshot_at(request.revision, None)?;
         let history = {
-            let mut history = BTreeMap::new();
+            let mut history = std::collections::BTreeMap::new();
             for record in &snapshot.records {
                 for revision in self.workspace.record_revisions(record.record_id)? {
                     history.insert((revision.record_id, revision.revision_id), revision);
@@ -589,7 +593,7 @@ impl<'w> DatalogService<'w> {
         };
         let sequences = self.workspace.revision_sequences()?;
         let suppressions = self.workspace.active_suppressions()?;
-        let view = MemoryView::with_retention(
+        let view = mneme_memory::MemoryView::with_retention(
             snapshot.clone(),
             self.workspace.root(),
             history,
@@ -652,7 +656,7 @@ impl<'w> DatalogService<'w> {
     fn publish(&mut self, build: &DatalogBuild) -> Result<(), DatalogError> {
         let generation = self.workspace.eligibility_generation()?;
         if generation != build.context.eligibility_generation {
-            return Err(StoreError::BarrierAdvanced {
+            return Err(mneme_store::StoreError::BarrierAdvanced {
                 pinned: build.context.eligibility_generation,
                 current: generation,
             }
@@ -662,7 +666,7 @@ impl<'w> DatalogService<'w> {
         let participant = projection_name.clone();
         if !self.participants.contains(&participant) {
             self.workspace
-                .register_retention_participant(RetentionParticipant {
+                .register_retention_participant(mneme_store::RetentionParticipant {
                     name: participant.clone(),
                     storage_role: "datalog-projection".to_owned(),
                     supports_invalidation: true,
@@ -672,14 +676,15 @@ impl<'w> DatalogService<'w> {
                 })?;
             self.participants.insert(participant);
         }
-        self.workspace.register_projection(ProjectionRegistration {
-            name: projection_name,
-            revision: build.context.served_revision,
-            schema_version: build.context.schema_version,
-            rule_version: build.context.rule_bundle_version.clone(),
-            index_version: INDEX_VERSION.to_owned(),
-            scope: build.context.scope.to_string(),
-        })?;
+        self.workspace
+            .register_projection(mneme_store::ProjectionRegistration {
+                name: projection_name,
+                revision: build.context.served_revision,
+                schema_version: build.context.schema_version,
+                rule_version: build.context.rule_bundle_version.clone(),
+                index_version: INDEX_VERSION.to_owned(),
+                scope: build.context.scope.to_string(),
+            })?;
         Ok(())
     }
 
@@ -710,7 +715,7 @@ impl<'w> DatalogService<'w> {
     ) -> Result<QueryResult, DatalogError> {
         let current_generation = self.workspace.eligibility_generation()?;
         if current_generation != build.context.eligibility_generation {
-            return Err(StoreError::BarrierAdvanced {
+            return Err(mneme_store::StoreError::BarrierAdvanced {
                 pinned: build.context.eligibility_generation,
                 current: current_generation,
             }
@@ -727,7 +732,7 @@ impl<'w> DatalogService<'w> {
         if query
             .cancellation
             .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
         {
             return Ok(QueryResult {
                 context: build.context.clone(),

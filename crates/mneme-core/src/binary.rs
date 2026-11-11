@@ -11,13 +11,7 @@
 //! Mneme profile. A decoder is therefore value-preserving for every
 //! authoritative field while never letting annotation content influence one.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use num_bigint::BigInt;
 use num_traits::Zero;
-
-use crate::error::{Diagnostic, ErrorCode, Path, Stage};
-use crate::value::{ByteString, Double, Record, SignedInteger, Symbol, Value};
 
 const TAG_FALSE: u8 = 0x80;
 const TAG_TRUE: u8 = 0x81;
@@ -40,43 +34,43 @@ pub const MAX_DEPTH: usize = 256;
 pub const MAX_ANNOTATIONS: usize = 10_000;
 
 /// Encode a value in canonical Preserves binary form.
-pub fn encode(value: &Value) -> Vec<u8> {
+pub fn encode(value: &crate::value::Value) -> Vec<u8> {
     let mut output = Vec::new();
     encode_into(value, &mut output);
     output
 }
 
-fn encode_into(value: &Value, output: &mut Vec<u8>) {
+fn encode_into(value: &crate::value::Value, output: &mut Vec<u8>) {
     match value {
-        Value::Boolean(false) => output.push(TAG_FALSE),
-        Value::Boolean(true) => output.push(TAG_TRUE),
-        Value::Double(double) => {
+        crate::value::Value::Boolean(false) => output.push(TAG_FALSE),
+        crate::value::Value::Boolean(true) => output.push(TAG_TRUE),
+        crate::value::Value::Double(double) => {
             output.push(TAG_DOUBLE);
             output.push(0x08);
             output.extend_from_slice(&double.bits().to_be_bytes());
         }
-        Value::SignedInteger(integer) => {
+        crate::value::Value::SignedInteger(integer) => {
             output.push(TAG_INTEGER);
             let bytes = minimal_signed_bytes(integer.as_bigint());
             write_varint(output, bytes.len() as u64);
             output.extend_from_slice(&bytes);
         }
-        Value::String(text) => {
+        crate::value::Value::String(text) => {
             output.push(TAG_STRING);
             write_varint(output, text.len() as u64);
             output.extend_from_slice(text.as_bytes());
         }
-        Value::ByteString(bytes) => {
+        crate::value::Value::ByteString(bytes) => {
             output.push(TAG_BYTESTRING);
             write_varint(output, bytes.as_slice().len() as u64);
             output.extend_from_slice(bytes.as_slice());
         }
-        Value::Symbol(symbol) => {
+        crate::value::Value::Symbol(symbol) => {
             output.push(TAG_SYMBOL);
             write_varint(output, symbol.as_str().len() as u64);
             output.extend_from_slice(symbol.as_str().as_bytes());
         }
-        Value::Record(record) => {
+        crate::value::Value::Record(record) => {
             output.push(TAG_RECORD);
             encode_into(record.label(), output);
             for field in record.fields() {
@@ -84,14 +78,14 @@ fn encode_into(value: &Value, output: &mut Vec<u8>) {
             }
             output.push(TAG_END);
         }
-        Value::Sequence(items) => {
+        crate::value::Value::Sequence(items) => {
             output.push(TAG_SEQUENCE);
             for item in items {
                 encode_into(item, output);
             }
             output.push(TAG_END);
         }
-        Value::Set(items) => {
+        crate::value::Value::Set(items) => {
             output.push(TAG_SET);
             let mut encoded: Vec<Vec<u8>> = items.iter().map(encode).collect();
             encoded.sort();
@@ -100,7 +94,7 @@ fn encode_into(value: &Value, output: &mut Vec<u8>) {
             }
             output.push(TAG_END);
         }
-        Value::Dictionary(entries) => {
+        crate::value::Value::Dictionary(entries) => {
             output.push(TAG_DICTIONARY);
             let mut encoded: Vec<(Vec<u8>, Vec<u8>)> = entries
                 .iter()
@@ -113,7 +107,7 @@ fn encode_into(value: &Value, output: &mut Vec<u8>) {
             }
             output.push(TAG_END);
         }
-        Value::Embedded(inner) => {
+        crate::value::Value::Embedded(inner) => {
             output.push(TAG_EMBEDDED);
             encode_into(inner, output);
         }
@@ -121,18 +115,18 @@ fn encode_into(value: &Value, output: &mut Vec<u8>) {
 }
 
 /// Decode one complete value and reject trailing bytes.
-pub fn decode(bytes: &[u8]) -> Result<Value, Diagnostic> {
+pub fn decode(bytes: &[u8]) -> Result<crate::value::Value, crate::error::Diagnostic> {
     let mut decoder = Decoder {
         bytes,
         position: 0,
         annotations: 0,
     };
-    let value = decoder.value(&Path::root(), 0)?;
+    let value = decoder.value(&crate::error::Path::root(), 0)?;
     if decoder.position != bytes.len() {
-        return Err(Diagnostic::new(
-            Stage::Syntax,
-            ErrorCode::TrailingBytes,
-            Path::root(),
+        return Err(crate::error::Diagnostic::new(
+            crate::error::Stage::Syntax,
+            crate::error::ErrorCode::TrailingBytes,
+            crate::error::Path::root(),
             format!(
                 "{} trailing byte(s) after the top-level value",
                 bytes.len() - decoder.position
@@ -143,13 +137,13 @@ pub fn decode(bytes: &[u8]) -> Result<Value, Diagnostic> {
 }
 
 /// Decode and verify that the input is the canonical encoding of its value.
-pub fn decode_canonical(bytes: &[u8]) -> Result<Value, Diagnostic> {
+pub fn decode_canonical(bytes: &[u8]) -> Result<crate::value::Value, crate::error::Diagnostic> {
     let value = decode(bytes)?;
     if encode(&value) != bytes {
-        return Err(Diagnostic::new(
-            Stage::Syntax,
-            ErrorCode::NonCanonicalEncoding,
-            Path::root(),
+        return Err(crate::error::Diagnostic::new(
+            crate::error::Stage::Syntax,
+            crate::error::ErrorCode::NonCanonicalEncoding,
+            crate::error::Path::root(),
             "input is not the canonical encoding of its value",
         ));
     }
@@ -168,7 +162,7 @@ fn write_varint(output: &mut Vec<u8>, mut value: u64) {
     }
 }
 
-fn minimal_signed_bytes(value: &BigInt) -> Vec<u8> {
+fn minimal_signed_bytes(value: &num_bigint::BigInt) -> Vec<u8> {
     if value.is_zero() {
         return Vec::new();
     }
@@ -198,34 +192,38 @@ impl Decoder<'_> {
         self.bytes.get(self.position).copied()
     }
 
-    fn next_byte(&mut self, path: &Path) -> Result<u8, Diagnostic> {
+    fn next_byte(&mut self, path: &crate::error::Path) -> Result<u8, crate::error::Diagnostic> {
         match self.bytes.get(self.position) {
             Some(byte) => {
                 self.position += 1;
                 Ok(*byte)
             }
-            None => Err(Diagnostic::new(
-                Stage::Syntax,
-                ErrorCode::MalformedEncoding,
+            None => Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::MalformedEncoding,
                 path.clone(),
                 "unexpected end of input",
             )),
         }
     }
 
-    fn take(&mut self, length: usize, path: &Path) -> Result<&[u8], Diagnostic> {
+    fn take(
+        &mut self,
+        length: usize,
+        path: &crate::error::Path,
+    ) -> Result<&[u8], crate::error::Diagnostic> {
         let end = self.position.checked_add(length).ok_or_else(|| {
-            Diagnostic::new(
-                Stage::Syntax,
-                ErrorCode::MalformedEncoding,
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::MalformedEncoding,
                 path.clone(),
                 "length overflows the address space",
             )
         })?;
         if end > self.bytes.len() {
-            return Err(Diagnostic::new(
-                Stage::Syntax,
-                ErrorCode::MalformedEncoding,
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::MalformedEncoding,
                 path.clone(),
                 format!(
                     "declared length {length} exceeds the {} remaining byte(s)",
@@ -238,16 +236,16 @@ impl Decoder<'_> {
         Ok(slice)
     }
 
-    fn varint(&mut self, path: &Path) -> Result<u64, Diagnostic> {
+    fn varint(&mut self, path: &crate::error::Path) -> Result<u64, crate::error::Diagnostic> {
         let mut result: u64 = 0;
         for index in 0..10 {
             let byte = self.next_byte(path)?;
             if index == 9 {
                 // Only the low bit of the tenth group fits in a u64.
                 if byte & 0x80 != 0 || byte > 1 {
-                    return Err(Diagnostic::new(
-                        Stage::Syntax,
-                        ErrorCode::MalformedEncoding,
+                    return Err(crate::error::Diagnostic::new(
+                        crate::error::Stage::Syntax,
+                        crate::error::ErrorCode::MalformedEncoding,
                         path.clone(),
                         "length varint exceeds the supported range",
                     ));
@@ -256,9 +254,9 @@ impl Decoder<'_> {
             result |= u64::from(byte & 0x7F) << (index * 7);
             if byte & 0x80 == 0 {
                 if index > 0 && byte == 0 {
-                    return Err(Diagnostic::new(
-                        Stage::Syntax,
-                        ErrorCode::NonCanonicalEncoding,
+                    return Err(crate::error::Diagnostic::new(
+                        crate::error::Stage::Syntax,
+                        crate::error::ErrorCode::NonCanonicalEncoding,
                         path.clone(),
                         "length varint is not minimally encoded",
                     ));
@@ -266,19 +264,23 @@ impl Decoder<'_> {
                 return Ok(result);
             }
         }
-        Err(Diagnostic::new(
-            Stage::Syntax,
-            ErrorCode::MalformedEncoding,
+        Err(crate::error::Diagnostic::new(
+            crate::error::Stage::Syntax,
+            crate::error::ErrorCode::MalformedEncoding,
             path.clone(),
             "length varint is unterminated",
         ))
     }
 
-    fn value(&mut self, path: &Path, depth: usize) -> Result<Value, Diagnostic> {
+    fn value(
+        &mut self,
+        path: &crate::error::Path,
+        depth: usize,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
         if depth > MAX_DEPTH {
-            return Err(Diagnostic::new(
-                Stage::Syntax,
-                ErrorCode::DepthLimitExceeded,
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::DepthLimitExceeded,
                 path.clone(),
                 format!("compound nesting exceeds {MAX_DEPTH} levels"),
             ));
@@ -289,9 +291,9 @@ impl Decoder<'_> {
                     self.position += 1;
                     self.annotations += 1;
                     if self.annotations > MAX_ANNOTATIONS {
-                        return Err(Diagnostic::new(
-                            Stage::Syntax,
-                            ErrorCode::AnnotationLimitExceeded,
+                        return Err(crate::error::Diagnostic::new(
+                            crate::error::Stage::Syntax,
+                            crate::error::ErrorCode::AnnotationLimitExceeded,
                             path.clone(),
                             format!("more than {MAX_ANNOTATIONS} annotations around one value"),
                         ));
@@ -302,9 +304,9 @@ impl Decoder<'_> {
                 }
                 Some(_) => break,
                 None => {
-                    return Err(Diagnostic::new(
-                        Stage::Syntax,
-                        ErrorCode::MalformedEncoding,
+                    return Err(crate::error::Diagnostic::new(
+                        crate::error::Stage::Syntax,
+                        crate::error::ErrorCode::MalformedEncoding,
                         path.clone(),
                         "unexpected end of input while reading a value",
                     ));
@@ -313,14 +315,14 @@ impl Decoder<'_> {
         }
         let tag = self.next_byte(path)?;
         match tag {
-            TAG_FALSE => Ok(Value::Boolean(false)),
-            TAG_TRUE => Ok(Value::Boolean(true)),
+            TAG_FALSE => Ok(crate::value::Value::Boolean(false)),
+            TAG_TRUE => Ok(crate::value::Value::Boolean(true)),
             TAG_DOUBLE => {
                 let length = self.next_byte(path)?;
                 if length != 8 {
-                    return Err(Diagnostic::new(
-                        Stage::Syntax,
-                        ErrorCode::MalformedEncoding,
+                    return Err(crate::error::Diagnostic::new(
+                        crate::error::Stage::Syntax,
+                        crate::error::ErrorCode::MalformedEncoding,
                         path.clone(),
                         format!("double length must be 8, found {length}"),
                     ));
@@ -328,64 +330,68 @@ impl Decoder<'_> {
                 let bytes = self.take(8, path)?;
                 let mut bits = [0_u8; 8];
                 bits.copy_from_slice(bytes);
-                Ok(Value::Double(Double::from_bits(u64::from_be_bytes(bits))))
+                Ok(crate::value::Value::Double(
+                    crate::value::Double::from_bits(u64::from_be_bytes(bits)),
+                ))
             }
             TAG_INTEGER => {
                 let length = usize::try_from(self.varint(path)?).map_err(|_| {
-                    Diagnostic::new(
-                        Stage::Syntax,
-                        ErrorCode::MalformedEncoding,
+                    crate::error::Diagnostic::new(
+                        crate::error::Stage::Syntax,
+                        crate::error::ErrorCode::MalformedEncoding,
                         path.clone(),
                         "integer length exceeds the address space",
                     )
                 })?;
                 let bytes = self.take(length, path)?;
                 let integer = if bytes.is_empty() {
-                    BigInt::from(0)
+                    num_bigint::BigInt::from(0)
                 } else {
-                    BigInt::from_signed_bytes_be(bytes)
+                    num_bigint::BigInt::from_signed_bytes_be(bytes)
                 };
                 if minimal_signed_bytes(&integer) != bytes {
-                    return Err(Diagnostic::new(
-                        Stage::Syntax,
-                        ErrorCode::NonCanonicalEncoding,
+                    return Err(crate::error::Diagnostic::new(
+                        crate::error::Stage::Syntax,
+                        crate::error::ErrorCode::NonCanonicalEncoding,
                         path.clone(),
                         "integer bytes are not a minimal two's-complement encoding",
                     ));
                 }
-                Ok(Value::SignedInteger(SignedInteger::new(integer)))
+                Ok(crate::value::Value::SignedInteger(
+                    crate::value::SignedInteger::new(integer),
+                ))
             }
             TAG_STRING => {
                 let length = self.length(path)?;
                 let bytes = self.take(length, path)?;
                 let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
-                    Diagnostic::new(
-                        Stage::Syntax,
-                        ErrorCode::MalformedEncoding,
+                    crate::error::Diagnostic::new(
+                        crate::error::Stage::Syntax,
+                        crate::error::ErrorCode::MalformedEncoding,
                         path.clone(),
                         "string bytes are not valid UTF-8",
                     )
                 })?;
-                Ok(Value::String(text))
+                Ok(crate::value::Value::String(text))
             }
             TAG_BYTESTRING => {
                 let length = self.length(path)?;
-                Ok(Value::ByteString(ByteString::new(
-                    self.take(length, path)?.to_vec(),
-                )))
+                Ok(crate::value::Value::ByteString(
+                    crate::value::ByteString::new(self.take(length, path)?.to_vec()),
+                ))
             }
             TAG_SYMBOL => {
                 let length = self.length(path)?;
                 let bytes = self.take(length, path)?;
                 let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
-                    Diagnostic::new(
-                        Stage::Syntax,
-                        ErrorCode::MalformedEncoding,
+                    crate::error::Diagnostic::new(
+                        crate::error::Stage::Syntax,
+                        crate::error::ErrorCode::MalformedEncoding,
                         path.clone(),
                         "symbol bytes are not valid UTF-8",
                     )
                 })?;
-                Ok(Value::Symbol(Symbol::new(text)))
+                Ok(crate::value::Value::Symbol(crate::value::Symbol::new(text)))
             }
             TAG_RECORD => self.record(path, depth),
             TAG_SEQUENCE => self.sequence(path, depth),
@@ -393,35 +399,39 @@ impl Decoder<'_> {
             TAG_DICTIONARY => self.dictionary(path, depth),
             TAG_EMBEDDED => {
                 let inner = self.value(&path.field("embedded"), depth + 1)?;
-                Ok(Value::embedded(inner))
+                Ok(crate::value::Value::embedded(inner))
             }
-            TAG_END => Err(Diagnostic::new(
-                Stage::Syntax,
-                ErrorCode::MalformedEncoding,
+            TAG_END => Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::MalformedEncoding,
                 path.clone(),
                 "unexpected end marker",
             )),
-            other => Err(Diagnostic::new(
-                Stage::Syntax,
-                ErrorCode::UnsupportedTag,
+            other => Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::UnsupportedTag,
                 path.clone(),
                 format!("unsupported or reserved tag 0x{other:02x}"),
             )),
         }
     }
 
-    fn length(&mut self, path: &Path) -> Result<usize, Diagnostic> {
+    fn length(&mut self, path: &crate::error::Path) -> Result<usize, crate::error::Diagnostic> {
         usize::try_from(self.varint(path)?).map_err(|_| {
-            Diagnostic::new(
-                Stage::Syntax,
-                ErrorCode::MalformedEncoding,
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::MalformedEncoding,
                 path.clone(),
                 "length exceeds the address space",
             )
         })
     }
 
-    fn record(&mut self, path: &Path, depth: usize) -> Result<Value, Diagnostic> {
+    fn record(
+        &mut self,
+        path: &crate::error::Path,
+        depth: usize,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
         let label = self.value(&path.field("label"), depth + 1)?;
         let mut fields = Vec::new();
         loop {
@@ -437,10 +447,16 @@ impl Decoder<'_> {
                 None => return Err(unterminated(path, "record")),
             }
         }
-        Ok(Value::Record(Record::new(label, fields)))
+        Ok(crate::value::Value::Record(crate::value::Record::new(
+            label, fields,
+        )))
     }
 
-    fn sequence(&mut self, path: &Path, depth: usize) -> Result<Value, Diagnostic> {
+    fn sequence(
+        &mut self,
+        path: &crate::error::Path,
+        depth: usize,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
         let mut items = Vec::new();
         loop {
             match self.peek() {
@@ -452,11 +468,15 @@ impl Decoder<'_> {
                 None => return Err(unterminated(path, "sequence")),
             }
         }
-        Ok(Value::Sequence(items))
+        Ok(crate::value::Value::Sequence(items))
     }
 
-    fn set(&mut self, path: &Path, depth: usize) -> Result<Value, Diagnostic> {
-        let mut items = BTreeSet::new();
+    fn set(
+        &mut self,
+        path: &crate::error::Path,
+        depth: usize,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
+        let mut items = std::collections::BTreeSet::new();
         loop {
             match self.peek() {
                 Some(TAG_END) => {
@@ -466,9 +486,9 @@ impl Decoder<'_> {
                 Some(_) => {
                     let item = self.value(&path.index(items.len()), depth + 1)?;
                     if !items.insert(item) {
-                        return Err(Diagnostic::new(
-                            Stage::Syntax,
-                            ErrorCode::DuplicateSetElement,
+                        return Err(crate::error::Diagnostic::new(
+                            crate::error::Stage::Syntax,
+                            crate::error::ErrorCode::DuplicateSetElement,
                             path.clone(),
                             "set contains a duplicate element",
                         ));
@@ -477,11 +497,15 @@ impl Decoder<'_> {
                 None => return Err(unterminated(path, "set")),
             }
         }
-        Ok(Value::Set(items))
+        Ok(crate::value::Value::Set(items))
     }
 
-    fn dictionary(&mut self, path: &Path, depth: usize) -> Result<Value, Diagnostic> {
-        let mut entries = BTreeMap::new();
+    fn dictionary(
+        &mut self,
+        path: &crate::error::Path,
+        depth: usize,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
+        let mut entries = std::collections::BTreeMap::new();
         loop {
             match self.peek() {
                 Some(TAG_END) => {
@@ -492,9 +516,9 @@ impl Decoder<'_> {
                     let key = self.value(&path.index(entries.len()), depth + 1)?;
                     let value = self.value(&path.index(entries.len()).field("value"), depth + 1)?;
                     if entries.insert(key, value).is_some() {
-                        return Err(Diagnostic::new(
-                            Stage::Syntax,
-                            ErrorCode::DuplicateDictionaryKey,
+                        return Err(crate::error::Diagnostic::new(
+                            crate::error::Stage::Syntax,
+                            crate::error::ErrorCode::DuplicateDictionaryKey,
                             path.clone(),
                             "dictionary contains a duplicate key",
                         ));
@@ -503,14 +527,14 @@ impl Decoder<'_> {
                 None => return Err(unterminated(path, "dictionary")),
             }
         }
-        Ok(Value::Dictionary(entries))
+        Ok(crate::value::Value::Dictionary(entries))
     }
 }
 
-fn unterminated(path: &Path, compound: &'static str) -> Diagnostic {
-    Diagnostic::new(
-        Stage::Syntax,
-        ErrorCode::MalformedEncoding,
+fn unterminated(path: &crate::error::Path, compound: &'static str) -> crate::error::Diagnostic {
+    crate::error::Diagnostic::new(
+        crate::error::Stage::Syntax,
+        crate::error::ErrorCode::MalformedEncoding,
         path.clone(),
         format!("unterminated {compound}"),
     )
@@ -526,28 +550,43 @@ mod tests {
 
     #[test]
     fn encodes_specification_examples() {
-        assert_eq!(hex(&encode(&Value::integer(-257_i64))), "b002feff");
-        assert_eq!(hex(&encode(&Value::integer(-1_i64))), "b001ff");
-        assert_eq!(hex(&encode(&Value::integer(0_i64))), "b000");
-        assert_eq!(hex(&encode(&Value::integer(255_i64))), "b00200ff");
-        assert_eq!(hex(&encode(&Value::string("hello"))), "b10568656c6c6f");
         assert_eq!(
-            hex(&encode(&Value::sequence(vec![
-                Value::integer(1_i64),
-                Value::integer(2_i64),
-                Value::integer(3_i64),
-                Value::integer(4_i64)
+            hex(&encode(&crate::value::Value::integer(-257_i64))),
+            "b002feff"
+        );
+        assert_eq!(
+            hex(&encode(&crate::value::Value::integer(-1_i64))),
+            "b001ff"
+        );
+        assert_eq!(hex(&encode(&crate::value::Value::integer(0_i64))), "b000");
+        assert_eq!(
+            hex(&encode(&crate::value::Value::integer(255_i64))),
+            "b00200ff"
+        );
+        assert_eq!(
+            hex(&encode(&crate::value::Value::string("hello"))),
+            "b10568656c6c6f"
+        );
+        assert_eq!(
+            hex(&encode(&crate::value::Value::sequence(vec![
+                crate::value::Value::integer(1_i64),
+                crate::value::Value::integer(2_i64),
+                crate::value::Value::integer(3_i64),
+                crate::value::Value::integer(4_i64)
             ]))),
             "b5b00101b00102b00103b0010484"
         );
-        assert_eq!(hex(&encode(&Value::double(1.0))), "87083ff0000000000000");
+        assert_eq!(
+            hex(&encode(&crate::value::Value::double(1.0))),
+            "87083ff0000000000000"
+        );
     }
 
     #[test]
     fn encodes_large_integer_example() {
-        let value = Value::integer(
+        let value = crate::value::Value::integer(
             "87112285931760246646623899502532662132736"
-                .parse::<BigInt>()
+                .parse::<num_bigint::BigInt>()
                 .expect("valid integer"),
         );
         // B0 12 followed by 18 bytes: 01 and seventeen zero bytes.
@@ -559,21 +598,33 @@ mod tests {
     #[test]
     fn roundtrips_every_kind() {
         let values = vec![
-            Value::Boolean(true),
-            Value::Boolean(false),
-            Value::double(-1.202e300),
-            Value::double(f64::NEG_INFINITY),
-            Value::integer(0_i64),
-            Value::string("z水𝄞"),
-            Value::symbol("sym"),
-            Value::bytes([0_u8, 255, 1]),
-            Value::record_named("capture", vec![Value::sequence(vec![])]),
-            Value::set([Value::integer(3_i64), Value::integer(1_i64)]),
-            Value::dictionary([
-                (Value::string("key"), Value::integer(1_i64)),
-                (Value::integer(2_i64), Value::string("non-string key")),
+            crate::value::Value::Boolean(true),
+            crate::value::Value::Boolean(false),
+            crate::value::Value::double(-1.202e300),
+            crate::value::Value::double(f64::NEG_INFINITY),
+            crate::value::Value::integer(0_i64),
+            crate::value::Value::string("z水𝄞"),
+            crate::value::Value::symbol("sym"),
+            crate::value::Value::bytes([0_u8, 255, 1]),
+            crate::value::Value::record_named(
+                "capture",
+                vec![crate::value::Value::sequence(vec![])],
+            ),
+            crate::value::Value::set([
+                crate::value::Value::integer(3_i64),
+                crate::value::Value::integer(1_i64),
             ]),
-            Value::embedded(Value::symbol("live")),
+            crate::value::Value::dictionary([
+                (
+                    crate::value::Value::string("key"),
+                    crate::value::Value::integer(1_i64),
+                ),
+                (
+                    crate::value::Value::integer(2_i64),
+                    crate::value::Value::string("non-string key"),
+                ),
+            ]),
+            crate::value::Value::embedded(crate::value::Value::symbol("live")),
         ];
         for value in values {
             let encoded = encode(&value);
@@ -584,18 +635,36 @@ mod tests {
 
     #[test]
     fn set_and_dictionary_encoding_is_order_independent() {
-        let ordered = Value::dictionary([
-            (Value::symbol("a"), Value::integer(1_i64)),
-            (Value::symbol("b"), Value::integer(2_i64)),
+        let ordered = crate::value::Value::dictionary([
+            (
+                crate::value::Value::symbol("a"),
+                crate::value::Value::integer(1_i64),
+            ),
+            (
+                crate::value::Value::symbol("b"),
+                crate::value::Value::integer(2_i64),
+            ),
         ]);
-        let shuffled = Value::dictionary([
-            (Value::symbol("b"), Value::integer(2_i64)),
-            (Value::symbol("a"), Value::integer(1_i64)),
+        let shuffled = crate::value::Value::dictionary([
+            (
+                crate::value::Value::symbol("b"),
+                crate::value::Value::integer(2_i64),
+            ),
+            (
+                crate::value::Value::symbol("a"),
+                crate::value::Value::integer(1_i64),
+            ),
         ]);
         assert_eq!(encode(&ordered), encode(&shuffled));
         assert_eq!(
-            encode(&Value::set([Value::integer(1_i64), Value::integer(2_i64)])),
-            encode(&Value::set([Value::integer(2_i64), Value::integer(1_i64)]))
+            encode(&crate::value::Value::set([
+                crate::value::Value::integer(1_i64),
+                crate::value::Value::integer(2_i64)
+            ])),
+            encode(&crate::value::Value::set([
+                crate::value::Value::integer(2_i64),
+                crate::value::Value::integer(1_i64)
+            ]))
         );
     }
 
@@ -605,10 +674,10 @@ mod tests {
         let bytes = [0x85, 0xB3, 0x01, b'a', 0xB5, 0x84];
         assert_eq!(
             decode(&bytes).expect("annotated sequence"),
-            Value::sequence(vec![])
+            crate::value::Value::sequence(vec![])
         );
         let mut output = Vec::new();
-        encode_into(&Value::sequence(vec![]), &mut output);
+        encode_into(&crate::value::Value::sequence(vec![]), &mut output);
         assert!(!output.contains(&TAG_ANNOTATION));
     }
 
@@ -636,24 +705,24 @@ mod tests {
     fn rejects_trailing_bytes_and_reserved_tags() {
         assert_eq!(
             decode(&[0x80, 0x80]).expect_err("trailing").code,
-            ErrorCode::TrailingBytes
+            crate::error::ErrorCode::TrailingBytes
         );
         assert_eq!(
             decode(&[0x82]).expect_err("reserved tag").code,
-            ErrorCode::UnsupportedTag
+            crate::error::ErrorCode::UnsupportedTag
         );
     }
 
     #[test]
     fn rejects_excessive_nesting() {
-        let mut value = Value::sequence(vec![]);
+        let mut value = crate::value::Value::sequence(vec![]);
         for _ in 0..(MAX_DEPTH + 2) {
-            value = Value::sequence(vec![value]);
+            value = crate::value::Value::sequence(vec![value]);
         }
         let encoded = encode(&value);
         assert_eq!(
             decode(&encoded).expect_err("too deep").code,
-            ErrorCode::DepthLimitExceeded
+            crate::error::ErrorCode::DepthLimitExceeded
         );
     }
 
@@ -661,13 +730,13 @@ mod tests {
     fn decode_canonical_rejects_noncanonical_set_order() {
         // Set with two elements encoded in descending byte order.
         let mut bytes = vec![TAG_SET];
-        bytes.extend_from_slice(&encode(&Value::integer(2_i64)));
-        bytes.extend_from_slice(&encode(&Value::integer(1_i64)));
+        bytes.extend_from_slice(&encode(&crate::value::Value::integer(2_i64)));
+        bytes.extend_from_slice(&encode(&crate::value::Value::integer(1_i64)));
         bytes.push(TAG_END);
         assert!(decode(&bytes).is_ok());
         assert_eq!(
             decode_canonical(&bytes).expect_err("noncanonical").code,
-            ErrorCode::NonCanonicalEncoding
+            crate::error::ErrorCode::NonCanonicalEncoding
         );
     }
 }

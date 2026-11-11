@@ -11,11 +11,6 @@ pub mod image;
 pub mod plan;
 pub mod worker;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
-
-use mneme_core::{RecordId, RevisionId, ScopeId, SourceSpan, WorkspaceRevisionId};
-
 /// Required feature names for a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Feature {
@@ -40,8 +35,8 @@ impl Feature {
     }
 }
 
-impl fmt::Display for Feature {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Feature {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.name())
     }
 }
@@ -134,8 +129,8 @@ pub struct CapabilityMetadata {
     pub profile: String,
     pub engine: Option<EngineIdentity>,
     pub state: CapabilityState,
-    pub features: BTreeSet<Feature>,
-    pub allowed_predicates: BTreeSet<String>,
+    pub features: std::collections::BTreeSet<Feature>,
+    pub allowed_predicates: std::collections::BTreeSet<String>,
     pub limits: ProfileLimits,
     pub terms: TermProfile,
 }
@@ -150,8 +145,8 @@ impl CapabilityMetadata {
             state: CapabilityState::Disabled {
                 reason: reason.into(),
             },
-            features: BTreeSet::new(),
-            allowed_predicates: BTreeSet::new(),
+            features: std::collections::BTreeSet::new(),
+            allowed_predicates: std::collections::BTreeSet::new(),
             limits: ProfileLimits {
                 max_time_ms: 0,
                 max_solutions: 0,
@@ -347,8 +342,8 @@ pub enum Term {
     Symbol(String),
     Variable(String),
     Reference {
-        record_id: RecordId,
-        revision_id: Option<RevisionId>,
+        record_id: mneme_core::RecordId,
+        revision_id: Option<mneme_core::RevisionId>,
     },
     List(Vec<Term>),
     Compound {
@@ -471,14 +466,14 @@ pub struct RequestLimits {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrologRequest {
     pub actor: String,
-    pub scope: ScopeId,
-    pub revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub revision: mneme_core::WorkspaceRevisionId,
     pub eligibility_generation: u64,
     pub image_digest: String,
     pub goal: Atom,
     pub rules: Vec<PrologRule>,
     pub assumptions: Vec<Assumption>,
-    pub features: BTreeSet<Feature>,
+    pub features: std::collections::BTreeSet<Feature>,
     pub limits: RequestLimits,
 }
 
@@ -549,12 +544,12 @@ pub struct InputCoverage {
 /// The exact context a result came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchContext {
-    pub revision: WorkspaceRevisionId,
-    pub scope: ScopeId,
+    pub revision: mneme_core::WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
     pub eligibility_generation: u64,
     pub image_digest: String,
     pub profile: String,
-    pub rule_versions: BTreeMap<String, String>,
+    pub rule_versions: std::collections::BTreeMap<String, String>,
 }
 
 /// Source availability for one premise.
@@ -567,11 +562,11 @@ pub enum PremiseAvailability {
 /// One canonical or derived premise.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Premise {
-    pub record_id: RecordId,
-    pub revision_id: RevisionId,
-    pub span: Option<SourceSpan>,
-    pub derivation: Option<RecordId>,
-    pub ancestry_roots: BTreeSet<(RecordId, RevisionId)>,
+    pub record_id: mneme_core::RecordId,
+    pub revision_id: mneme_core::RevisionId,
+    pub span: Option<mneme_core::SourceSpan>,
+    pub derivation: Option<mneme_core::RecordId>,
+    pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
     pub availability: PremiseAvailability,
 }
 
@@ -585,9 +580,9 @@ pub enum Certification {
 /// One binding and its conditional support.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Solution {
-    pub bindings: BTreeMap<String, Term>,
+    pub bindings: std::collections::BTreeMap<String, Term>,
     pub premises: Vec<Premise>,
-    pub assumptions: BTreeSet<String>,
+    pub assumptions: std::collections::BTreeSet<String>,
     pub certification: Certification,
 }
 
@@ -603,7 +598,7 @@ pub struct ConsumedLimits {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanAction {
     pub action: String,
-    pub parameters: BTreeMap<String, Term>,
+    pub parameters: std::collections::BTreeMap<String, Term>,
 }
 
 /// A plan precondition, optionally tied to an atom/evidence.
@@ -618,11 +613,11 @@ pub struct Precondition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanProposal {
     pub id: String,
-    pub base_revision: WorkspaceRevisionId,
-    pub scope: ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
     pub actions: Vec<PlanAction>,
     pub preconditions: Vec<Precondition>,
-    pub assumptions: BTreeSet<String>,
+    pub assumptions: std::collections::BTreeSet<String>,
     pub evidence: Vec<Premise>,
     pub expected_effects: Vec<String>,
 }
@@ -631,12 +626,12 @@ pub struct PlanProposal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FactChangeProposal {
     pub id: String,
-    pub base_revision: WorkspaceRevisionId,
-    pub scope: ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
     pub operation: String,
-    pub target: Option<RecordId>,
+    pub target: Option<mneme_core::RecordId>,
     pub evidence: Vec<Premise>,
-    pub assumptions: BTreeSet<String>,
+    pub assumptions: std::collections::BTreeSet<String>,
 }
 
 /// A reviewable output from search.
@@ -778,7 +773,7 @@ fn encode_term_inner(term: &Term) -> String {
         } => format!(
             "ref({},{})",
             record_id.to_hex(),
-            revision_id.map_or_else(|| "current".to_owned(), RevisionId::to_hex)
+            revision_id.map_or_else(|| "current".to_owned(), mneme_core::RevisionId::to_hex)
         ),
         Term::List(items) => format!(
             "[{}]",
@@ -815,7 +810,7 @@ impl Solution {
         self.premises
             .iter()
             .flat_map(|premise| premise.ancestry_roots.iter().copied())
-            .collect::<BTreeSet<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
             .len()
     }
 
@@ -829,7 +824,10 @@ impl Solution {
     }
 
     /// Validate support and hypothetical-assumption provenance.
-    pub fn validate(&self, declared_assumptions: &BTreeSet<String>) -> Result<(), CapabilityError> {
+    pub fn validate(
+        &self,
+        declared_assumptions: &std::collections::BTreeSet<String>,
+    ) -> Result<(), CapabilityError> {
         for premise in &self.premises {
             if matches!(premise.availability, PremiseAvailability::Pruned { .. })
                 && premise.span.is_some()
@@ -895,7 +893,7 @@ impl PrologResult {
             .assumptions
             .iter()
             .map(|assumption| assumption.id.clone())
-            .collect::<BTreeSet<_>>();
+            .collect::<std::collections::BTreeSet<_>>();
         for solution in &self.solutions {
             solution.validate(&declared)?;
         }
@@ -906,17 +904,16 @@ impl PrologResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mneme_core::ScopeClass;
 
-    fn scope() -> ScopeId {
-        ScopeId::new(ScopeClass::Project, "cedar").expect("scope")
+    fn scope() -> mneme_core::ScopeId {
+        mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar").expect("scope")
     }
 
-    fn revision() -> WorkspaceRevisionId {
-        WorkspaceRevisionId::from_bytes([0xb0; 16])
+    fn revision() -> mneme_core::WorkspaceRevisionId {
+        mneme_core::WorkspaceRevisionId::from_bytes([0xb0; 16])
     }
 
-    fn request(features: BTreeSet<Feature>) -> PrologRequest {
+    fn request(features: std::collections::BTreeSet<Feature>) -> PrologRequest {
         PrologRequest {
             actor: "agent".to_owned(),
             scope: scope(),
@@ -938,7 +935,7 @@ mod tests {
         }
     }
 
-    fn enabled(features: BTreeSet<Feature>) -> CapabilityMetadata {
+    fn enabled(features: std::collections::BTreeSet<Feature>) -> CapabilityMetadata {
         CapabilityMetadata {
             adapter_version: "1".to_owned(),
             profile: "positive-minimal/v1".to_owned(),
@@ -949,7 +946,10 @@ mod tests {
             }),
             state: CapabilityState::Enabled,
             features,
-            allowed_predicates: BTreeSet::from(["path".to_owned(), "member".to_owned()]),
+            allowed_predicates: std::collections::BTreeSet::from([
+                "path".to_owned(),
+                "member".to_owned(),
+            ]),
             limits: ProfileLimits {
                 max_time_ms: 100,
                 max_solutions: 8,
@@ -970,25 +970,25 @@ mod tests {
         let metadata = CapabilityMetadata::disabled("engine not enabled");
         metadata.validate().expect("disabled metadata");
         assert!(matches!(
-            metadata.ensure_request(&request(BTreeSet::new())),
+            metadata.ensure_request(&request(std::collections::BTreeSet::new())),
             Err(CapabilityError::Unavailable { .. })
         ));
     }
 
     #[test]
     fn enabled_metadata_requires_engine_and_limits() {
-        let mut metadata = enabled(BTreeSet::from([Feature::PositiveQuery]));
+        let mut metadata = enabled(std::collections::BTreeSet::from([Feature::PositiveQuery]));
         metadata.engine = None;
         assert!(metadata.validate().is_err());
-        let mut metadata = enabled(BTreeSet::from([Feature::PositiveQuery]));
+        let mut metadata = enabled(std::collections::BTreeSet::from([Feature::PositiveQuery]));
         metadata.limits.max_solutions = 0;
         assert!(metadata.validate().is_err());
     }
 
     #[test]
     fn unadvertised_features_are_refused() {
-        let metadata = enabled(BTreeSet::from([Feature::PositiveQuery]));
-        let mut request = request(BTreeSet::from([Feature::PositiveQuery]));
+        let metadata = enabled(std::collections::BTreeSet::from([Feature::PositiveQuery]));
+        let mut request = request(std::collections::BTreeSet::from([Feature::PositiveQuery]));
         assert!(metadata.ensure_request(&request).is_ok());
         request.features.insert(Feature::Plans);
         assert_eq!(
@@ -999,8 +999,8 @@ mod tests {
 
     #[test]
     fn finite_terms_reject_depth_violations() {
-        let metadata = enabled(BTreeSet::from([Feature::PositiveQuery]));
-        let mut request = request(BTreeSet::from([Feature::PositiveQuery]));
+        let metadata = enabled(std::collections::BTreeSet::from([Feature::PositiveQuery]));
+        let mut request = request(std::collections::BTreeSet::from([Feature::PositiveQuery]));
         request.goal.terms = vec![Term::List(vec![Term::List(vec![Term::List(vec![
             Term::List(vec![Term::Integer(1)]),
         ])])])];
@@ -1018,7 +1018,7 @@ mod tests {
             eligibility_generation: 1,
             image_digest: "sha256:image".to_owned(),
             profile: "positive-minimal/v1".to_owned(),
-            rule_versions: BTreeMap::new(),
+            rule_versions: std::collections::BTreeMap::new(),
         };
         let mut result = PrologResult::disabled("disabled", context);
         assert!(!result.exhaustive);
@@ -1030,13 +1030,17 @@ mod tests {
 
     #[test]
     fn disabled_capability_leaves_baseline_workspace_usable() {
-        use mneme_store::{Workspace, WorkspaceConfig};
         let temp = tempfile::tempdir().expect("tempdir");
         let workspace =
-            Workspace::create(temp.path(), WorkspaceConfig::default()).expect("workspace");
+            mneme_store::Workspace::create(temp.path(), mneme_store::WorkspaceConfig::default())
+                .expect("workspace");
         let before = workspace.status().expect("baseline status");
         let metadata = CapabilityMetadata::disabled("Prolog disabled");
-        assert!(metadata.ensure_request(&request(BTreeSet::new())).is_err());
+        assert!(
+            metadata
+                .ensure_request(&request(std::collections::BTreeSet::new()))
+                .is_err()
+        );
         let after = workspace
             .status()
             .expect("baseline status after Prolog refusal");
@@ -1046,8 +1050,8 @@ mod tests {
 
     #[test]
     fn effectful_and_unadvertised_predicates_are_refused() {
-        let metadata = enabled(BTreeSet::from([Feature::PositiveQuery]));
-        let mut request = request(BTreeSet::from([Feature::PositiveQuery]));
+        let metadata = enabled(std::collections::BTreeSet::from([Feature::PositiveQuery]));
+        let mut request = request(std::collections::BTreeSet::from([Feature::PositiveQuery]));
         request.goal.predicate = "open".to_owned();
         assert_eq!(
             metadata.ensure_request(&request),
@@ -1090,9 +1094,9 @@ mod tests {
             Err(CapabilityError::LimitExceeded(_))
         ));
         let solution = Solution {
-            bindings: BTreeMap::from([("X".to_owned(), Term::Integer(42))]),
+            bindings: std::collections::BTreeMap::from([("X".to_owned(), Term::Integer(42))]),
             premises: Vec::new(),
-            assumptions: BTreeSet::new(),
+            assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Uncertified {
                 reason: "no proof certificate".to_owned(),
             },
@@ -1107,11 +1111,14 @@ mod tests {
         ));
     }
 
-    fn premise(roots: BTreeSet<(RecordId, RevisionId)>, quoted: bool) -> Premise {
+    fn premise(
+        roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+        quoted: bool,
+    ) -> Premise {
         Premise {
-            record_id: RecordId::from_bytes([0x40; 16]),
-            revision_id: RevisionId::from_bytes([0x41; 16]),
-            span: quoted.then(|| SourceSpan::new(0, 0).expect("span")),
+            record_id: mneme_core::RecordId::from_bytes([0x40; 16]),
+            revision_id: mneme_core::RevisionId::from_bytes([0x41; 16]),
+            span: quoted.then(|| mneme_core::SourceSpan::new(0, 0).expect("span")),
             derivation: None,
             ancestry_roots: roots,
             availability: PremiseAvailability::Retained,
@@ -1121,61 +1128,67 @@ mod tests {
     #[test]
     fn copied_premises_share_one_independent_root() {
         let root = (
-            RecordId::from_bytes([0x20; 16]),
-            RevisionId::from_bytes([0x21; 16]),
+            mneme_core::RecordId::from_bytes([0x20; 16]),
+            mneme_core::RevisionId::from_bytes([0x21; 16]),
         );
         let solution = Solution {
-            bindings: BTreeMap::new(),
+            bindings: std::collections::BTreeMap::new(),
             premises: vec![
-                premise(BTreeSet::from([root]), true),
-                premise(BTreeSet::from([root]), false),
+                premise(std::collections::BTreeSet::from([root]), true),
+                premise(std::collections::BTreeSet::from([root]), false),
             ],
-            assumptions: BTreeSet::new(),
+            assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Certified,
         };
         assert_eq!(solution.independent_support_count(), 1);
         solution
-            .validate(&BTreeSet::new())
+            .validate(&std::collections::BTreeSet::new())
             .expect("shared ancestry");
     }
 
     #[test]
     fn certified_solution_needs_a_complete_premise_chain() {
         let empty = Solution {
-            bindings: BTreeMap::new(),
+            bindings: std::collections::BTreeMap::new(),
             premises: Vec::new(),
-            assumptions: BTreeSet::new(),
+            assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Certified,
         };
-        assert!(empty.validate(&BTreeSet::new()).is_err());
+        assert!(empty.validate(&std::collections::BTreeSet::new()).is_err());
         let root = (
-            RecordId::from_bytes([0x20; 16]),
-            RevisionId::from_bytes([0x21; 16]),
+            mneme_core::RecordId::from_bytes([0x20; 16]),
+            mneme_core::RevisionId::from_bytes([0x21; 16]),
         );
         let complete = Solution {
-            bindings: BTreeMap::new(),
-            premises: vec![premise(BTreeSet::from([root]), false)],
-            assumptions: BTreeSet::new(),
+            bindings: std::collections::BTreeMap::new(),
+            premises: vec![premise(std::collections::BTreeSet::from([root]), false)],
+            assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Certified,
         };
-        assert!(complete.validate(&BTreeSet::new()).is_ok());
+        assert!(
+            complete
+                .validate(&std::collections::BTreeSet::new())
+                .is_ok()
+        );
     }
 
     #[test]
     fn hypothetical_assumptions_remain_uncertified_and_must_be_declared() {
         let root = (
-            RecordId::from_bytes([0x20; 16]),
-            RevisionId::from_bytes([0x21; 16]),
+            mneme_core::RecordId::from_bytes([0x20; 16]),
+            mneme_core::RevisionId::from_bytes([0x21; 16]),
         );
         let mut solution = Solution {
-            bindings: BTreeMap::new(),
-            premises: vec![premise(BTreeSet::from([root]), false)],
-            assumptions: BTreeSet::from(["assumption-1".to_owned()]),
+            bindings: std::collections::BTreeMap::new(),
+            premises: vec![premise(std::collections::BTreeSet::from([root]), false)],
+            assumptions: std::collections::BTreeSet::from(["assumption-1".to_owned()]),
             certification: Certification::Certified,
         };
         assert!(
             solution
-                .validate(&BTreeSet::from(["assumption-1".to_owned()]))
+                .validate(&std::collections::BTreeSet::from([
+                    "assumption-1".to_owned()
+                ]))
                 .is_err()
         );
         solution.certification = Certification::Uncertified {
@@ -1183,62 +1196,81 @@ mod tests {
         };
         assert!(
             solution
-                .validate(&BTreeSet::from(["assumption-1".to_owned()]))
+                .validate(&std::collections::BTreeSet::from([
+                    "assumption-1".to_owned()
+                ]))
                 .is_ok()
         );
-        assert!(solution.validate(&BTreeSet::new()).is_err());
+        assert!(
+            solution
+                .validate(&std::collections::BTreeSet::new())
+                .is_err()
+        );
     }
 
     #[test]
     fn pruned_premises_disclose_unavailable_bytes_without_quotes() {
         let root = (
-            RecordId::from_bytes([0x20; 16]),
-            RevisionId::from_bytes([0x21; 16]),
+            mneme_core::RecordId::from_bytes([0x20; 16]),
+            mneme_core::RevisionId::from_bytes([0x21; 16]),
         );
-        let mut pruned = premise(BTreeSet::from([root]), false);
+        let mut pruned = premise(std::collections::BTreeSet::from([root]), false);
         pruned.availability = PremiseAvailability::Pruned {
             reason: "source bytes pruned".to_owned(),
         };
         let solution = Solution {
-            bindings: BTreeMap::new(),
+            bindings: std::collections::BTreeMap::new(),
             premises: vec![pruned],
-            assumptions: BTreeSet::new(),
+            assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Certified,
         };
         assert_eq!(solution.unavailable_premises().len(), 1);
-        assert!(solution.validate(&BTreeSet::new()).is_ok());
+        assert!(
+            solution
+                .validate(&std::collections::BTreeSet::new())
+                .is_ok()
+        );
         let mut quoted = solution;
-        quoted.premises[0].span = Some(SourceSpan::new(0, 0).expect("span"));
-        assert!(quoted.validate(&BTreeSet::new()).is_err());
+        quoted.premises[0].span = Some(mneme_core::SourceSpan::new(0, 0).expect("span"));
+        assert!(quoted.validate(&std::collections::BTreeSet::new()).is_err());
     }
 
     #[test]
     fn uncertified_fallback_requires_a_reason() {
         let solution = Solution {
-            bindings: BTreeMap::new(),
+            bindings: std::collections::BTreeMap::new(),
             premises: Vec::new(),
-            assumptions: BTreeSet::new(),
+            assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Uncertified {
                 reason: "engine did not provide proof".to_owned(),
             },
         };
-        assert!(solution.validate(&BTreeSet::new()).is_ok());
+        assert!(
+            solution
+                .validate(&std::collections::BTreeSet::new())
+                .is_ok()
+        );
         let mut missing = solution;
         missing.certification = Certification::Uncertified {
             reason: String::new(),
         };
-        assert!(missing.validate(&BTreeSet::new()).is_err());
+        assert!(
+            missing
+                .validate(&std::collections::BTreeSet::new())
+                .is_err()
+        );
     }
 
     #[test]
     fn guarded_negation_and_aggregation_are_disabled() {
-        let mut metadata = enabled(BTreeSet::from([Feature::PositiveQuery]));
+        let mut metadata = enabled(std::collections::BTreeSet::from([Feature::PositiveQuery]));
         metadata.features.insert(Feature::GuardedNegation);
         assert!(metadata.validate().is_err());
-        let mut request = request(BTreeSet::from([Feature::PositiveQuery]));
+        let mut request = request(std::collections::BTreeSet::from([Feature::PositiveQuery]));
         request.features.insert(Feature::Aggregation);
         assert_eq!(
-            enabled(BTreeSet::from([Feature::PositiveQuery])).ensure_request(&request),
+            enabled(std::collections::BTreeSet::from([Feature::PositiveQuery]))
+                .ensure_request(&request),
             Err(CapabilityError::UnsupportedFeature(Feature::Aggregation))
         );
     }

@@ -6,11 +6,6 @@
 //! type system's vocabulary, rather than treating a matching scope string as
 //! permission, prevents disclosure by coincidence.
 
-use std::fmt;
-
-use crate::error::{Diagnostic, ErrorCode, Path, Stage};
-use crate::value::Value;
-
 /// The declared class of a scope identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScopeClass {
@@ -49,8 +44,8 @@ impl ScopeClass {
     }
 }
 
-impl fmt::Display for ScopeClass {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for ScopeClass {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.symbol())
     }
 }
@@ -81,53 +76,56 @@ impl ScopeId {
     }
 
     /// Encode as `<scope class "local">`.
-    pub fn to_value(&self) -> Value {
-        Value::record_named(
+    pub fn to_value(&self) -> crate::value::Value {
+        crate::value::Value::record_named(
             "scope",
             vec![
-                Value::symbol(self.class.symbol()),
-                Value::string(self.local.clone()),
+                crate::value::Value::symbol(self.class.symbol()),
+                crate::value::Value::string(self.local.clone()),
             ],
         )
     }
 
     /// Decode `<scope class "local">`.
-    pub fn from_value(value: &Value, path: &Path) -> Result<Self, Diagnostic> {
+    pub fn from_value(
+        value: &crate::value::Value,
+        path: &crate::error::Path,
+    ) -> Result<Self, crate::error::Diagnostic> {
         let type_error = || {
-            Diagnostic::new(
-                Stage::Envelope,
-                ErrorCode::TypeMismatch,
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Envelope,
+                crate::error::ErrorCode::TypeMismatch,
                 path.clone(),
                 "expected <scope class \"local\">",
             )
         };
         let record = value.as_record().ok_or_else(type_error)?;
-        if record.label() != &Value::symbol("scope") || record.fields().len() != 2 {
+        if record.label() != &crate::value::Value::symbol("scope") || record.fields().len() != 2 {
             return Err(type_error());
         }
         let class = record.fields()[0]
             .as_symbol()
             .and_then(|symbol| ScopeClass::parse(symbol.as_str()))
             .ok_or_else(|| {
-                Diagnostic::new(
-                    Stage::Envelope,
-                    ErrorCode::InvalidScope,
+                crate::error::Diagnostic::new(
+                    crate::error::Stage::Envelope,
+                    crate::error::ErrorCode::InvalidScope,
                     path.clone(),
                     "scope class must be user, workspace, project, agent, task, or hypothesis",
                 )
             })?;
         let local = record.fields()[1].as_string().ok_or_else(|| {
-            Diagnostic::new(
-                Stage::Envelope,
-                ErrorCode::InvalidScope,
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Envelope,
+                crate::error::ErrorCode::InvalidScope,
                 path.clone(),
                 "scope local name must be a string",
             )
         })?;
         Self::new(class, local.to_owned()).map_err(|message| {
-            Diagnostic::new(
-                Stage::Envelope,
-                ErrorCode::InvalidScope,
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Envelope,
+                crate::error::ErrorCode::InvalidScope,
                 path.clone(),
                 message,
             )
@@ -135,8 +133,8 @@ impl ScopeId {
     }
 }
 
-impl fmt::Display for ScopeId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for ScopeId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}:{}", self.class, self.local)
     }
 }
@@ -170,7 +168,7 @@ mod tests {
         let scope = ScopeId::new(ScopeClass::Project, "cedar-notes").expect("valid scope");
         assert_eq!(scope.to_string(), "project:cedar-notes");
         assert_eq!(
-            ScopeId::from_value(&scope.to_value(), &Path::root()).expect("decode"),
+            ScopeId::from_value(&scope.to_value(), &crate::error::Path::root()).expect("decode"),
             scope
         );
     }
@@ -192,11 +190,15 @@ mod tests {
 
     #[test]
     fn unknown_scope_class_is_refused() {
-        let value = Value::record_named(
+        let value = crate::value::Value::record_named(
             "scope",
-            vec![Value::symbol("tenant"), Value::string("cedar")],
+            vec![
+                crate::value::Value::symbol("tenant"),
+                crate::value::Value::string("cedar"),
+            ],
         );
-        let error = ScopeId::from_value(&value, &Path::root()).expect_err("unknown class");
-        assert_eq!(error.code, ErrorCode::InvalidScope);
+        let error =
+            ScopeId::from_value(&value, &crate::error::Path::root()).expect_err("unknown class");
+        assert_eq!(error.code, crate::error::ErrorCode::InvalidScope);
     }
 }

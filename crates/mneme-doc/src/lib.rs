@@ -7,20 +7,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
-use std::time::Instant;
-
-use mneme_core::{
-    ContentDigest, RecordEnvelope, RecordId, RecordKind, Reference, RevisionId, ScopeId,
-    SourceSpan, Symbol, Value, WorkspaceRevisionId,
-};
-use mneme_memory::{MemoryError, MemoryView, SourceStatus, SourceView, build_source};
-use mneme_store::{
-    CommitCommand, CommitOutcome, ImportCandidateDraft, PublicationDraft, RecordDraft,
-    SourceBlobDraft, StoreError, Workspace, blob,
-};
-
 pub mod asciidoc;
 
 pub use asciidoc::{AnchorSpec, Diagnostic, Header, IncludeDirective};
@@ -80,22 +66,22 @@ impl Default for RenderConfig {
 /// A pinned source record and exact revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SourcePin {
-    pub source: RecordId,
-    pub revision: RevisionId,
+    pub source: mneme_core::RecordId,
+    pub revision: mneme_core::RevisionId,
 }
 
 /// A parsed current or historical Document record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentView {
-    pub record: RecordEnvelope,
+    pub record: mneme_core::RecordEnvelope,
     pub title: String,
-    pub entity: Option<RecordId>,
+    pub entity: Option<mneme_core::RecordId>,
     pub source: SourcePin,
     /// Version-one documents may use a snapshot-local source reference.
     pub source_is_pinned: bool,
     pub path: Option<String>,
-    pub binding: Option<RecordId>,
-    pub includes: BTreeMap<String, SourcePin>,
+    pub binding: Option<mneme_core::RecordId>,
+    pub includes: std::collections::BTreeMap<String, SourcePin>,
     pub render_config: String,
 }
 
@@ -106,12 +92,12 @@ pub struct DocumentView {
 /// title or path again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentSummary {
-    pub document_id: RecordId,
-    pub revision: RevisionId,
-    pub scope: ScopeId,
+    pub document_id: mneme_core::RecordId,
+    pub revision: mneme_core::RevisionId,
+    pub scope: mneme_core::ScopeId,
     pub title: String,
     pub path: Option<String>,
-    pub entity: Option<RecordId>,
+    pub entity: Option<mneme_core::RecordId>,
 }
 
 /// The retained current source of one document.
@@ -120,8 +106,8 @@ pub struct DocumentSummary {
 /// that scans notes must treat that as a skipped note, not as empty content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentSource {
-    pub document_id: RecordId,
-    pub scope: ScopeId,
+    pub document_id: mneme_core::RecordId,
+    pub scope: mneme_core::ScopeId,
     pub title: String,
     pub path: Option<String>,
     pub source: Option<Vec<u8>>,
@@ -132,7 +118,7 @@ pub struct DocumentSource {
 pub struct IncludeOccurrence {
     pub including_path: String,
     pub target_path: String,
-    pub directive_span: SourceSpan,
+    pub directive_span: mneme_core::SourceSpan,
     pub source: SourcePin,
 }
 
@@ -141,21 +127,21 @@ pub struct IncludeOccurrence {
 pub struct IncludedSource {
     pub path: String,
     pub pin: SourcePin,
-    pub digest: Option<ContentDigest>,
+    pub digest: Option<mneme_core::ContentDigest>,
 }
 
 /// A bounded preview artifact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreviewArtifact {
-    pub document: RecordId,
-    pub document_revision: RevisionId,
-    pub workspace_revision: WorkspaceRevisionId,
+    pub document: mneme_core::RecordId,
+    pub document_revision: mneme_core::RevisionId,
+    pub workspace_revision: mneme_core::WorkspaceRevisionId,
     pub generation: u64,
     pub path: String,
     pub title: String,
-    pub entity: Option<RecordId>,
+    pub entity: Option<mneme_core::RecordId>,
     pub source: SourcePin,
-    pub source_digest: Option<ContentDigest>,
+    pub source_digest: Option<mneme_core::ContentDigest>,
     pub config_version: String,
     pub config_fingerprint: String,
     pub processor_version: String,
@@ -169,13 +155,13 @@ pub struct PreviewArtifact {
 /// The identity of a preview in a bounded cache.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PreviewKey {
-    pub document: RecordId,
-    pub document_revision: RevisionId,
+    pub document: mneme_core::RecordId,
+    pub document_revision: mneme_core::RevisionId,
     pub generation: u64,
     pub config_version: String,
     pub config_fingerprint: String,
     pub processor_version: String,
-    pub includes: Vec<(String, RecordId, RevisionId)>,
+    pub includes: Vec<(String, mneme_core::RecordId, mneme_core::RevisionId)>,
 }
 
 impl PreviewArtifact {
@@ -208,7 +194,7 @@ impl PreviewArtifact {
 /// A bounded preview cache. Entries are reusable only under an exact key.
 #[derive(Clone, Debug, Default)]
 pub struct PreviewCache {
-    entries: BTreeMap<PreviewKey, PreviewArtifact>,
+    entries: std::collections::BTreeMap<PreviewKey, PreviewArtifact>,
 }
 
 impl PreviewCache {
@@ -230,7 +216,7 @@ impl PreviewCache {
     }
 
     /// Drop every cached artifact for one document.
-    pub fn invalidate_document(&mut self, document: RecordId) {
+    pub fn invalidate_document(&mut self, document: mneme_core::RecordId) {
         self.entries.retain(|key, _| key.document != document);
     }
 }
@@ -239,12 +225,12 @@ impl PreviewCache {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedDocument {
     pub candidate_id: String,
-    pub base_revision: WorkspaceRevisionId,
-    pub document_id: Option<RecordId>,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
+    pub document_id: Option<mneme_core::RecordId>,
     pub path: String,
     pub title: String,
-    pub entity: Option<RecordId>,
-    pub source_digest: ContentDigest,
+    pub entity: Option<mneme_core::RecordId>,
+    pub source_digest: mneme_core::ContentDigest,
     pub anchors: Vec<AnchorSpec>,
     pub includes: Vec<IncludedSource>,
     pub diagnostics: Vec<Diagnostic>,
@@ -256,15 +242,15 @@ pub struct ValidatedDocument {
 /// A committed document revision and its separately observed publication result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentRevision {
-    pub document_id: RecordId,
-    pub document_revision: RevisionId,
+    pub document_id: mneme_core::RecordId,
+    pub document_revision: mneme_core::RevisionId,
     pub source: SourcePin,
-    pub source_digest: ContentDigest,
-    pub workspace_revision: WorkspaceRevisionId,
+    pub source_digest: mneme_core::ContentDigest,
+    pub workspace_revision: mneme_core::WorkspaceRevisionId,
     pub sequence: u64,
     pub path: String,
-    pub entity: Option<RecordId>,
-    pub anchors: Vec<RecordId>,
+    pub entity: Option<mneme_core::RecordId>,
+    pub anchors: Vec<mneme_core::RecordId>,
     pub includes: Vec<IncludedSource>,
     pub publications: Vec<mneme_store::PublicationOutcome>,
 }
@@ -272,10 +258,10 @@ pub struct DocumentRevision {
 /// A revision-bound extraction candidate. It is not an accepted assertion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtractionCandidate {
-    pub document: RecordId,
+    pub document: mneme_core::RecordId,
     pub origin_path: String,
     pub source: SourcePin,
-    pub span: SourceSpan,
+    pub span: mneme_core::SourceSpan,
     pub text: String,
     pub occurrences: Vec<IncludeOccurrence>,
 }
@@ -284,11 +270,11 @@ pub struct ExtractionCandidate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportRequest {
     pub actor: String,
-    pub scope: ScopeId,
-    pub base_revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
     pub idempotency_key: String,
     /// Existing identity for an update; omitted for a new document.
-    pub document_id: Option<RecordId>,
+    pub document_id: Option<mneme_core::RecordId>,
     pub path: String,
     pub title: Option<String>,
     pub policy: DocumentPolicy,
@@ -299,7 +285,7 @@ pub struct ImportRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BindingRequest {
     pub import: ImportRequest,
-    pub entity: Option<RecordId>,
+    pub entity: Option<mneme_core::RecordId>,
     pub publish: bool,
 }
 
@@ -307,10 +293,10 @@ pub struct BindingRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MoveRequest {
     pub actor: String,
-    pub scope: ScopeId,
-    pub base_revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
     pub idempotency_key: String,
-    pub document_id: RecordId,
+    pub document_id: mneme_core::RecordId,
     pub path: String,
     /// Optional new title committed in the same revision as the path.
     pub title: Option<String>,
@@ -320,15 +306,15 @@ pub struct MoveRequest {
 #[derive(Debug, thiserror::Error)]
 pub enum DocumentError {
     #[error(transparent)]
-    Store(#[from] StoreError),
+    Store(#[from] mneme_store::StoreError),
     #[error(transparent)]
-    Memory(#[from] MemoryError),
+    Memory(#[from] mneme_memory::MemoryError),
     #[error("document validation failed")]
     Diagnostics(Vec<Diagnostic>),
     #[error("invalid document request: {0}")]
     Invalid(&'static str),
     #[error("document {0} is missing")]
-    Missing(RecordId),
+    Missing(mneme_core::RecordId),
     #[error("operation conflicts with committed document state: {0}")]
     Conflict(&'static str),
     #[error("document I/O failed: {0}")]
@@ -339,18 +325,21 @@ pub enum DocumentError {
 pub type Result<T, E = DocumentError> = std::result::Result<T, E>;
 
 struct DocumentContext {
-    view: MemoryView,
-    documents: BTreeMap<RecordId, DocumentView>,
-    paths: BTreeMap<String, RecordId>,
-    entities: BTreeMap<RecordId, RecordEnvelope>,
+    view: mneme_memory::MemoryView,
+    documents: std::collections::BTreeMap<mneme_core::RecordId, DocumentView>,
+    paths: std::collections::BTreeMap<String, mneme_core::RecordId>,
+    entities: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
     generation: u64,
 }
 
 impl DocumentContext {
-    fn load(workspace: &Workspace, revision: Option<WorkspaceRevisionId>) -> Result<Self> {
+    fn load(
+        workspace: &mneme_store::Workspace,
+        revision: Option<mneme_core::WorkspaceRevisionId>,
+    ) -> Result<Self> {
         let revision = revision.unwrap_or(workspace.current_revision()?);
         let snapshot = workspace.snapshot_at(revision, None)?;
-        let mut history = BTreeMap::new();
+        let mut history = std::collections::BTreeMap::new();
         for record in &snapshot.records {
             for retained in workspace.record_revisions(record.record_id)? {
                 history.insert((retained.record_id, retained.revision_id), retained);
@@ -358,19 +347,19 @@ impl DocumentContext {
         }
         let sequences = workspace.revision_sequences()?;
         let suppressions = workspace.active_suppressions()?;
-        let view = MemoryView::with_retention(
+        let view = mneme_memory::MemoryView::with_retention(
             snapshot.clone(),
             workspace.root(),
             history,
             sequences,
             suppressions,
         );
-        let mut documents = BTreeMap::new();
-        let mut paths = BTreeMap::new();
-        let mut entities = BTreeMap::new();
+        let mut documents = std::collections::BTreeMap::new();
+        let mut paths = std::collections::BTreeMap::new();
+        let mut entities = std::collections::BTreeMap::new();
         for record in &snapshot.records {
             match record.kind {
-                RecordKind::Document => {
+                mneme_core::RecordKind::Document => {
                     let mut document = DocumentView::parse(record.clone())?;
                     if !document.source_is_pinned {
                         let source = snapshot
@@ -378,7 +367,7 @@ impl DocumentContext {
                             .iter()
                             .find(|candidate| {
                                 candidate.record_id == document.source.source
-                                    && candidate.kind == RecordKind::SourceRevision
+                                    && candidate.kind == mneme_core::RecordKind::SourceRevision
                             })
                             .ok_or(DocumentError::Missing(document.source.source))?;
                         document.source.revision = source.revision_id;
@@ -394,7 +383,7 @@ impl DocumentContext {
                     }
                     documents.insert(record.record_id, document);
                 }
-                RecordKind::Entity => {
+                mneme_core::RecordKind::Entity => {
                     entities.insert(record.record_id, record.clone());
                 }
                 _ => {}
@@ -409,22 +398,25 @@ impl DocumentContext {
         })
     }
 
-    fn source(&self, pin: SourcePin) -> Result<SourceView> {
+    fn source(&self, pin: SourcePin) -> Result<mneme_memory::SourceView> {
         Ok(self.view.source_at(pin.source, pin.revision)?)
     }
 
     fn source_bytes(&self, pin: SourcePin) -> Result<Option<Vec<u8>>> {
         let source = self.source(pin)?;
         match self.view.source_status_for(&source)? {
-            SourceStatus::Retained(bytes) => Ok(Some(bytes)),
+            mneme_memory::SourceStatus::Retained(bytes) => Ok(Some(bytes)),
             _ => Ok(None),
         }
     }
 
-    fn require_retained_source(&self, pin: SourcePin) -> Result<(SourceView, Vec<u8>)> {
+    fn require_retained_source(
+        &self,
+        pin: SourcePin,
+    ) -> Result<(mneme_memory::SourceView, Vec<u8>)> {
         let source = self.source(pin)?;
         match self.view.source_status_for(&source)? {
-            SourceStatus::Retained(bytes) => Ok((source, bytes)),
+            mneme_memory::SourceStatus::Retained(bytes) => Ok((source, bytes)),
             status => Err(DocumentError::Diagnostics(vec![Diagnostic {
                 code: "source-unavailable",
                 message: format!("document source is {}", status.availability().name()),
@@ -439,21 +431,23 @@ impl DocumentContext {
 
 impl DocumentView {
     /// Parse a Document record.
-    pub fn parse(record: RecordEnvelope) -> Result<Self> {
-        if record.kind != RecordKind::Document {
+    pub fn parse(record: mneme_core::RecordEnvelope) -> Result<Self> {
+        if record.kind != mneme_core::RecordKind::Document {
             return Err(DocumentError::Invalid("record is not a document"));
         }
         let title = required_text(&record, "title")?;
-        let source_reference = Reference::from_value(
+        let source_reference = mneme_core::Reference::from_value(
             required(&record, "source-revision")?,
             &mneme_core::Path::root().field("source-revision"),
         )
         .map_err(|diagnostic| DocumentError::Io(diagnostic.to_string()))?;
         let (source, revision, source_is_pinned) = match source_reference {
-            Reference::Pinned {
+            mneme_core::Reference::Pinned {
                 target, revision, ..
             } => (target, revision, true),
-            Reference::Local { target, .. } => (target, RevisionId::from_bytes([0; 16]), false),
+            mneme_core::Reference::Local { target, .. } => {
+                (target, mneme_core::RevisionId::from_bytes([0; 16]), false)
+            }
             _ => {
                 return Err(DocumentError::Invalid(
                     "document source-revision must be local or pinned",
@@ -465,12 +459,12 @@ impl DocumentView {
         let path = record
             .payload
             .get("path")
-            .and_then(Value::as_string)
+            .and_then(mneme_core::Value::as_string)
             .map(str::to_owned);
         let render_config = record
             .payload
             .get("render-config")
-            .and_then(Value::as_string)
+            .and_then(mneme_core::Value::as_string)
             .unwrap_or(RENDER_CONFIG_VERSION)
             .to_owned();
         let includes = parse_include_map(&record)?;
@@ -488,22 +482,26 @@ impl DocumentView {
     }
 }
 
-fn parse_include_map(record: &RecordEnvelope) -> Result<BTreeMap<String, SourcePin>> {
+fn parse_include_map(
+    record: &mneme_core::RecordEnvelope,
+) -> Result<std::collections::BTreeMap<String, SourcePin>> {
     let Some(value) = record.payload.get("includes") else {
-        return Ok(BTreeMap::new());
+        return Ok(std::collections::BTreeMap::new());
     };
     let dictionary = value
         .as_dictionary()
         .ok_or(DocumentError::Invalid("includes must be a dictionary"))?;
-    let mut includes = BTreeMap::new();
+    let mut includes = std::collections::BTreeMap::new();
     for (path, reference_value) in dictionary {
         let Some(path) = path.as_string() else {
             return Err(DocumentError::Invalid("include path must be text"));
         };
-        let reference =
-            Reference::from_value(reference_value, &mneme_core::Path::root().field("includes"))
-                .map_err(|diagnostic| DocumentError::Io(diagnostic.to_string()))?;
-        let Reference::Pinned {
+        let reference = mneme_core::Reference::from_value(
+            reference_value,
+            &mneme_core::Path::root().field("includes"),
+        )
+        .map_err(|diagnostic| DocumentError::Io(diagnostic.to_string()))?;
+        let mneme_core::Reference::Pinned {
             target, revision, ..
         } = reference
         else {
@@ -522,13 +520,16 @@ fn parse_include_map(record: &RecordEnvelope) -> Result<BTreeMap<String, SourceP
     Ok(includes)
 }
 
-fn required<'a>(record: &'a RecordEnvelope, name: &str) -> Result<&'a Value> {
+fn required<'a>(
+    record: &'a mneme_core::RecordEnvelope,
+    name: &str,
+) -> Result<&'a mneme_core::Value> {
     record.payload.get(name).ok_or(DocumentError::Invalid(
         "document record is missing a required field",
     ))
 }
 
-fn required_text(record: &RecordEnvelope, name: &str) -> Result<String> {
+fn required_text(record: &mneme_core::RecordEnvelope, name: &str) -> Result<String> {
     required(record, name)?
         .as_string()
         .map(str::to_owned)
@@ -537,11 +538,14 @@ fn required_text(record: &RecordEnvelope, name: &str) -> Result<String> {
         ))
 }
 
-fn optional_reference_target(record: &RecordEnvelope, name: &str) -> Option<RecordId> {
+fn optional_reference_target(
+    record: &mneme_core::RecordEnvelope,
+    name: &str,
+) -> Option<mneme_core::RecordId> {
     record
         .payload
         .get(name)
-        .and_then(|value| Reference::from_value(value, &mneme_core::Path::root()).ok())
+        .and_then(|value| mneme_core::Reference::from_value(value, &mneme_core::Path::root()).ok())
         .and_then(|reference| reference.target())
 }
 
@@ -552,15 +556,15 @@ fn normalized_listing_key(text: &str) -> String {
         .to_lowercase()
 }
 
-fn reference_is_pinned_to(record: &RecordEnvelope, name: &str, pin: SourcePin) -> bool {
+fn reference_is_pinned_to(record: &mneme_core::RecordEnvelope, name: &str, pin: SourcePin) -> bool {
     record
         .payload
         .get(name)
-        .and_then(|value| Reference::from_value(value, &mneme_core::Path::root()).ok())
+        .and_then(|value| mneme_core::Reference::from_value(value, &mneme_core::Path::root()).ok())
         .is_some_and(|reference| {
             matches!(
                 reference,
-                Reference::Pinned {
+                mneme_core::Reference::Pinned {
                     target,
                     revision,
                     ..
@@ -569,42 +573,46 @@ fn reference_is_pinned_to(record: &RecordEnvelope, name: &str, pin: SourcePin) -
         })
 }
 
-fn fresh_id() -> Result<RecordId> {
-    Ok(RecordId::from_bytes(blob::random_bytes()?))
+fn fresh_id() -> Result<mneme_core::RecordId> {
+    Ok(mneme_core::RecordId::from_bytes(
+        mneme_store::blob::random_bytes()?,
+    ))
 }
 
-fn fresh_revision() -> Result<RevisionId> {
-    Ok(RevisionId::from_bytes(blob::random_bytes()?))
+fn fresh_revision() -> Result<mneme_core::RevisionId> {
+    Ok(mneme_core::RevisionId::from_bytes(
+        mneme_store::blob::random_bytes()?,
+    ))
 }
 
-fn source_pin(source: RecordId, revision: RevisionId) -> SourcePin {
+fn source_pin(source: mneme_core::RecordId, revision: mneme_core::RevisionId) -> SourcePin {
     SourcePin { source, revision }
 }
 
 mod preview;
 
 struct ResolvedIncludes {
-    closure: BTreeMap<String, SourcePin>,
-    sources: BTreeMap<String, preview::RenderSource>,
+    closure: std::collections::BTreeMap<String, SourcePin>,
+    sources: std::collections::BTreeMap<String, preview::RenderSource>,
     diagnostics: Vec<Diagnostic>,
     total_bytes: usize,
 }
 
 fn resolve_import_includes(
     context: &DocumentContext,
-    scope: &ScopeId,
+    scope: &mneme_core::ScopeId,
     root_path: &str,
     root_bytes: &[u8],
     policy: &DocumentPolicy,
-    deadline: Instant,
+    deadline: std::time::Instant,
 ) -> Result<ResolvedIncludes> {
     let mut resolved = ResolvedIncludes {
-        closure: BTreeMap::new(),
-        sources: BTreeMap::new(),
+        closure: std::collections::BTreeMap::new(),
+        sources: std::collections::BTreeMap::new(),
         diagnostics: Vec::new(),
         total_bytes: root_bytes.len(),
     };
-    let mut stack = BTreeSet::new();
+    let mut stack = std::collections::BTreeSet::new();
     stack.insert(root_path.to_owned());
     resolve_include_bytes(
         context,
@@ -624,13 +632,13 @@ fn resolve_import_includes(
 #[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
 fn resolve_include_bytes(
     context: &DocumentContext,
-    scope: &ScopeId,
+    scope: &mneme_core::ScopeId,
     origin_path: &str,
     bytes: &[u8],
     policy: &DocumentPolicy,
-    deadline: Instant,
+    deadline: std::time::Instant,
     depth: usize,
-    stack: &mut BTreeSet<String>,
+    stack: &mut std::collections::BTreeSet<String>,
     resolved: &mut ResolvedIncludes,
 ) -> Result<()> {
     if depth > policy.max_depth {
@@ -642,7 +650,7 @@ fn resolve_include_bytes(
             None,
         )]));
     }
-    if Instant::now() > deadline {
+    if std::time::Instant::now() > deadline {
         return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
             "include-time-limit",
             "include resolution exceeded the configured time limit",
@@ -808,14 +816,14 @@ fn resolve_include_bytes(
 
 struct PreparedDocument {
     validated: ValidatedDocument,
-    records: Vec<RecordDraft>,
-    source_blob: SourceBlobDraft,
-    document_id: RecordId,
+    records: Vec<mneme_store::RecordDraft>,
+    source_blob: mneme_store::SourceBlobDraft,
+    document_id: mneme_core::RecordId,
 }
 
 /// A source-first document service over one mutable workspace.
 pub struct Documents<'w> {
-    workspace: &'w mut Workspace,
+    workspace: &'w mut mneme_store::Workspace,
 }
 
 #[derive(Clone, Copy)]
@@ -826,13 +834,13 @@ struct PreparationOptions {
 
 impl<'w> Documents<'w> {
     /// Wrap a workspace.
-    pub fn new(workspace: &'w mut Workspace) -> Self {
+    pub fn new(workspace: &'w mut mneme_store::Workspace) -> Self {
         Documents { workspace }
     }
 
     /// Validate the current managed working file as an import candidate.
     pub fn validate_working_file(&self, request: ImportRequest) -> Result<ValidatedDocument> {
-        let bytes = blob::read_working_file(self.workspace.root(), &request.path)?
+        let bytes = mneme_store::blob::read_working_file(self.workspace.root(), &request.path)?
             .ok_or_else(|| DocumentError::Io("working file does not exist".to_owned()))?;
         self.prepare_source(&request, &bytes)
             .map(|prepared| prepared.validated)
@@ -857,7 +865,7 @@ impl<'w> Documents<'w> {
         )? {
             return self.revision_from_outcome(&request.scope, None, &request.path, outcome);
         }
-        let bytes = blob::read_working_file(self.workspace.root(), &request.path)?
+        let bytes = mneme_store::blob::read_working_file(self.workspace.root(), &request.path)?
             .ok_or_else(|| DocumentError::Io("working file does not exist".to_owned()))?;
         let prepared = self.prepare_source(&request, &bytes)?;
         self.require_valid(&prepared)?;
@@ -919,7 +927,7 @@ impl<'w> Documents<'w> {
         if document.record.scope != request.scope {
             return Err(DocumentError::Invalid("document scope is not authorized"));
         }
-        blob::validate_relative_path(&request.path)
+        mneme_store::blob::validate_relative_path(&request.path)
             .map_err(|error| DocumentError::Io(error.to_string()))?;
         if request.path.contains('\\') {
             return Err(DocumentError::Invalid(
@@ -944,13 +952,19 @@ impl<'w> Documents<'w> {
             None => None,
         };
         let mut payload = document.record.payload.clone();
-        payload.insert(Symbol::from("path"), Value::string(request.path.clone()));
+        payload.insert(
+            mneme_core::Symbol::from("path"),
+            mneme_core::Value::string(request.path.clone()),
+        );
         if let Some(title) = title {
-            payload.insert(Symbol::from("title"), Value::string(title));
+            payload.insert(
+                mneme_core::Symbol::from("title"),
+                mneme_core::Value::string(title),
+            );
         }
-        let draft = RecordDraft {
+        let draft = mneme_store::RecordDraft {
             schema_version: DOCUMENT_SCHEMA_VERSION,
-            kind: RecordKind::Document,
+            kind: mneme_core::RecordKind::Document,
             record_id: document.record.record_id,
             revision_id: fresh_revision()?,
             predecessor: Some(document.record.revision_id),
@@ -958,7 +972,7 @@ impl<'w> Documents<'w> {
             payload,
         };
         let scope = request.scope.clone();
-        let outcome = self.workspace.commit(CommitCommand {
+        let outcome = self.workspace.commit(mneme_store::CommitCommand {
             base: request.base_revision,
             actor: request.actor,
             scope: scope.clone(),
@@ -1010,13 +1024,13 @@ impl<'w> Documents<'w> {
     pub fn edit_entity_property(
         &mut self,
         actor: &str,
-        scope: &ScopeId,
-        base: WorkspaceRevisionId,
+        scope: &mneme_core::ScopeId,
+        base: mneme_core::WorkspaceRevisionId,
         idempotency_key: &str,
-        entity_id: RecordId,
+        entity_id: mneme_core::RecordId,
         property: &str,
-        value: Option<Value>,
-    ) -> Result<WorkspaceRevisionId> {
+        value: Option<mneme_core::Value>,
+    ) -> Result<mneme_core::WorkspaceRevisionId> {
         let context = DocumentContext::load(self.workspace, Some(base))?;
         let entity = context
             .entities
@@ -1029,10 +1043,10 @@ impl<'w> Documents<'w> {
         let mut properties = entity
             .payload
             .get("properties")
-            .and_then(Value::as_dictionary)
+            .and_then(mneme_core::Value::as_dictionary)
             .cloned()
             .unwrap_or_default();
-        let key = Value::symbol(property.to_owned());
+        let key = mneme_core::Value::symbol(property.to_owned());
         match value {
             Some(value) => {
                 properties.insert(key, value);
@@ -1042,17 +1056,20 @@ impl<'w> Documents<'w> {
             }
         }
         let mut payload = entity.payload.clone();
-        payload.insert(Symbol::from("properties"), Value::Dictionary(properties));
-        let draft = RecordDraft {
+        payload.insert(
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::Dictionary(properties),
+        );
+        let draft = mneme_store::RecordDraft {
             schema_version: entity.schema_version,
-            kind: RecordKind::Entity,
+            kind: mneme_core::RecordKind::Entity,
             record_id: entity.record_id,
             revision_id: fresh_revision()?,
             predecessor: Some(entity.revision_id),
             scope: entity.scope.clone(),
             payload,
         };
-        let outcome = self.workspace.commit(CommitCommand {
+        let outcome = self.workspace.commit(mneme_store::CommitCommand {
             base,
             actor: actor.to_owned(),
             scope: scope.clone(),
@@ -1073,7 +1090,7 @@ impl<'w> Documents<'w> {
                 "actor and idempotency key are required",
             ));
         }
-        blob::validate_relative_path(&request.path)
+        mneme_store::blob::validate_relative_path(&request.path)
             .map_err(|error| DocumentError::Io(error.to_string()))?;
         if request.path.contains('\\') {
             return Err(DocumentError::Invalid(
@@ -1128,7 +1145,7 @@ impl<'w> Documents<'w> {
         let source_revision = fresh_revision()?;
         let document_revision = fresh_revision()?;
         let source = source_pin(source_id, source_revision);
-        let digest = ContentDigest::of_source_bytes(bytes);
+        let digest = mneme_core::ContentDigest::of_source_bytes(bytes);
         let candidate_id = digest.to_hex();
         let text = match std::str::from_utf8(bytes) {
             Ok(text) => text,
@@ -1156,9 +1173,9 @@ impl<'w> Documents<'w> {
                         preview_html: String::new(),
                     },
                     records: Vec::new(),
-                    source_blob: SourceBlobDraft {
+                    source_blob: mneme_store::SourceBlobDraft {
                         bytes: bytes.to_vec(),
-                        media_type: Symbol::from("text/asciidoc"),
+                        media_type: mneme_core::Symbol::from("text/asciidoc"),
                     },
                     document_id,
                 });
@@ -1177,7 +1194,7 @@ impl<'w> Documents<'w> {
             .clone()
             .or(header.title.clone())
             .unwrap_or_else(|| {
-                Path::new(&request.path)
+                std::path::Path::new(&request.path)
                     .file_stem()
                     .and_then(|stem| stem.to_str())
                     .unwrap_or("Untitled")
@@ -1209,7 +1226,7 @@ impl<'w> Documents<'w> {
                 Some(_) => {}
             }
         }
-        let include_start = Instant::now();
+        let include_start = std::time::Instant::now();
         let max_time_ms = u64::try_from(request.policy.max_time_ms)
             .map_err(|_| DocumentError::Invalid("include time budget exceeds u64 milliseconds"))?;
         let deadline = include_start + std::time::Duration::from_millis(max_time_ms);
@@ -1225,8 +1242,8 @@ impl<'w> Documents<'w> {
             Err(DocumentError::Diagnostics(errors)) => {
                 diagnostics.extend(errors);
                 ResolvedIncludes {
-                    closure: BTreeMap::new(),
-                    sources: BTreeMap::new(),
+                    closure: std::collections::BTreeMap::new(),
+                    sources: std::collections::BTreeMap::new(),
                     diagnostics: Vec::new(),
                     total_bytes: bytes.len(),
                 }
@@ -1235,7 +1252,7 @@ impl<'w> Documents<'w> {
         };
         diagnostics.extend(resolved.diagnostics.clone());
         let mut anchors = asciidoc::scan_anchors(text);
-        let mut seen_anchors = BTreeSet::new();
+        let mut seen_anchors = std::collections::BTreeSet::new();
         anchors.retain(|anchor| {
             if seen_anchors.insert(anchor.anchor.clone()) {
                 true
@@ -1279,7 +1296,7 @@ impl<'w> Documents<'w> {
                 resolved.sources.get(path).map(|source| IncludedSource {
                     path: path.clone(),
                     pin: *pin,
-                    digest: Some(ContentDigest::of_source_bytes(&source.bytes)),
+                    digest: Some(mneme_core::ContentDigest::of_source_bytes(&source.bytes)),
                 })
             })
             .collect::<Vec<_>>();
@@ -1301,7 +1318,7 @@ impl<'w> Documents<'w> {
         let mut records = Vec::new();
         let mut binding = None;
         if is_valid {
-            let mut source_draft = build_source(
+            let mut source_draft = mneme_memory::build_source(
                 source_id,
                 source_revision,
                 &request.scope,
@@ -1318,9 +1335,9 @@ impl<'w> Documents<'w> {
             if let Some(entity_id) = entity {
                 let binding_id = fresh_id()?;
                 let binding_revision = fresh_revision()?;
-                records.push(RecordDraft {
+                records.push(mneme_store::RecordDraft {
                     schema_version: DOCUMENT_SCHEMA_VERSION,
-                    kind: RecordKind::DocumentBinding,
+                    kind: mneme_core::RecordKind::DocumentBinding,
                     record_id: binding_id,
                     revision_id: binding_revision,
                     predecessor: None,
@@ -1329,48 +1346,67 @@ impl<'w> Documents<'w> {
                 });
                 binding = Some(binding_id);
             }
-            let mut includes_dictionary = BTreeMap::new();
+            let mut includes_dictionary = std::collections::BTreeMap::new();
             for (path, pin) in &resolved.closure {
                 includes_dictionary.insert(
-                    Value::string(path.clone()),
-                    Reference::pinned(pin.source, pin.revision, RecordKind::SourceRevision)
-                        .to_value(),
+                    mneme_core::Value::string(path.clone()),
+                    mneme_core::Reference::pinned(
+                        pin.source,
+                        pin.revision,
+                        mneme_core::RecordKind::SourceRevision,
+                    )
+                    .to_value(),
                 );
             }
             let mut document_payload = vec![
-                (Symbol::from("title"), Value::string(title)),
                 (
-                    Symbol::from("source-revision"),
-                    Reference::pinned(source_id, source_revision, RecordKind::SourceRevision)
-                        .to_value(),
+                    mneme_core::Symbol::from("title"),
+                    mneme_core::Value::string(title),
                 ),
-                (Symbol::from("path"), Value::string(request.path.clone())),
                 (
-                    Symbol::from("render-config"),
-                    Value::string(request.render_config.version.clone()),
+                    mneme_core::Symbol::from("source-revision"),
+                    mneme_core::Reference::pinned(
+                        source_id,
+                        source_revision,
+                        mneme_core::RecordKind::SourceRevision,
+                    )
+                    .to_value(),
+                ),
+                (
+                    mneme_core::Symbol::from("path"),
+                    mneme_core::Value::string(request.path.clone()),
+                ),
+                (
+                    mneme_core::Symbol::from("render-config"),
+                    mneme_core::Value::string(request.render_config.version.clone()),
                 ),
             ];
             if let Some(entity_id) = entity {
                 document_payload.push((
-                    Symbol::from("entity"),
-                    Reference::local(entity_id, RecordKind::Entity).to_value(),
+                    mneme_core::Symbol::from("entity"),
+                    mneme_core::Reference::local(entity_id, mneme_core::RecordKind::Entity)
+                        .to_value(),
                 ));
             }
             if let Some(binding_id) = binding {
                 document_payload.push((
-                    Symbol::from("binding"),
-                    Reference::local(binding_id, RecordKind::DocumentBinding).to_value(),
+                    mneme_core::Symbol::from("binding"),
+                    mneme_core::Reference::local(
+                        binding_id,
+                        mneme_core::RecordKind::DocumentBinding,
+                    )
+                    .to_value(),
                 ));
             }
             if !includes_dictionary.is_empty() {
                 document_payload.push((
-                    Symbol::from("includes"),
-                    Value::Dictionary(includes_dictionary),
+                    mneme_core::Symbol::from("includes"),
+                    mneme_core::Value::Dictionary(includes_dictionary),
                 ));
             }
-            records.push(RecordDraft {
+            records.push(mneme_store::RecordDraft {
                 schema_version: DOCUMENT_SCHEMA_VERSION,
-                kind: RecordKind::Document,
+                kind: mneme_core::RecordKind::Document,
                 record_id: document_id,
                 revision_id: document_revision,
                 predecessor: existing
@@ -1382,9 +1418,9 @@ impl<'w> Documents<'w> {
             for anchor in &anchors {
                 let anchor_id = fresh_id()?;
                 let anchor_revision = fresh_revision()?;
-                records.push(RecordDraft {
+                records.push(mneme_store::RecordDraft {
                     schema_version: DOCUMENT_SCHEMA_VERSION,
-                    kind: RecordKind::DocumentAnchor,
+                    kind: mneme_core::RecordKind::DocumentAnchor,
                     record_id: anchor_id,
                     revision_id: anchor_revision,
                     predecessor: None,
@@ -1396,7 +1432,7 @@ impl<'w> Documents<'w> {
         Ok(PreparedDocument {
             validated,
             records,
-            source_blob: build_source(
+            source_blob: mneme_memory::build_source(
                 source_id,
                 source_revision,
                 &request.scope,
@@ -1412,58 +1448,78 @@ impl<'w> Documents<'w> {
 }
 
 fn document_binding_payload(
-    document: RecordId,
-    entity: RecordId,
+    document: mneme_core::RecordId,
+    entity: mneme_core::RecordId,
     source: SourcePin,
 ) -> Result<mneme_core::Payload> {
     Ok(mneme_core::Payload::new([
         (
-            Symbol::from("document"),
-            Reference::local(document, RecordKind::Document).to_value(),
+            mneme_core::Symbol::from("document"),
+            mneme_core::Reference::local(document, mneme_core::RecordKind::Document).to_value(),
         ),
         (
-            Symbol::from("entity"),
-            Reference::local(entity, RecordKind::Entity).to_value(),
+            mneme_core::Symbol::from("entity"),
+            mneme_core::Reference::local(entity, mneme_core::RecordKind::Entity).to_value(),
         ),
-        (Symbol::from("status"), Value::symbol("bound")),
-        (Symbol::from("basis"), Value::string("source-header")),
         (
-            Symbol::from("source-revision"),
-            Reference::pinned(source.source, source.revision, RecordKind::SourceRevision)
-                .to_value(),
+            mneme_core::Symbol::from("status"),
+            mneme_core::Value::symbol("bound"),
+        ),
+        (
+            mneme_core::Symbol::from("basis"),
+            mneme_core::Value::string("source-header"),
+        ),
+        (
+            mneme_core::Symbol::from("source-revision"),
+            mneme_core::Reference::pinned(
+                source.source,
+                source.revision,
+                mneme_core::RecordKind::SourceRevision,
+            )
+            .to_value(),
         ),
     ]))
 }
 
 #[allow(unknown_lints, fallible_int_fallback, sentinel_fallback)] // positions are bounded by source length
 fn document_anchor_payload(
-    document: RecordId,
+    document: mneme_core::RecordId,
     source: SourcePin,
     anchor: &AnchorSpec,
 ) -> mneme_core::Payload {
     let mut entries = vec![
         (
-            Symbol::from("document"),
-            Reference::local(document, RecordKind::Document).to_value(),
+            mneme_core::Symbol::from("document"),
+            mneme_core::Reference::local(document, mneme_core::RecordKind::Document).to_value(),
         ),
         (
-            Symbol::from("source-revision"),
-            Reference::pinned(source.source, source.revision, RecordKind::SourceRevision)
-                .to_value(),
+            mneme_core::Symbol::from("source-revision"),
+            mneme_core::Reference::pinned(
+                source.source,
+                source.revision,
+                mneme_core::RecordKind::SourceRevision,
+            )
+            .to_value(),
         ),
-        (Symbol::from("span"), anchor.span.to_value()),
-        (Symbol::from("anchor"), Value::string(anchor.anchor.clone())),
+        (mneme_core::Symbol::from("span"), anchor.span.to_value()),
+        (
+            mneme_core::Symbol::from("anchor"),
+            mneme_core::Value::string(anchor.anchor.clone()),
+        ),
     ];
     if let Some(label) = &anchor.label {
-        entries.push((Symbol::from("label"), Value::string(label.clone())));
+        entries.push((
+            mneme_core::Symbol::from("label"),
+            mneme_core::Value::string(label.clone()),
+        ));
     }
     entries.push((
-        Symbol::from("line"),
-        Value::integer(i64::try_from(anchor.line).unwrap_or(i64::MAX)),
+        mneme_core::Symbol::from("line"),
+        mneme_core::Value::integer(i64::try_from(anchor.line).unwrap_or(i64::MAX)),
     ));
     entries.push((
-        Symbol::from("column"),
-        Value::integer(i64::try_from(anchor.column).unwrap_or(i64::MAX)),
+        mneme_core::Symbol::from("column"),
+        mneme_core::Value::integer(i64::try_from(anchor.column).unwrap_or(i64::MAX)),
     ));
     mneme_core::Payload::new(entries)
 }
@@ -1481,8 +1537,8 @@ impl Documents<'_> {
 
     fn current_document_source(
         &self,
-        document_id: RecordId,
-        scope: &ScopeId,
+        document_id: mneme_core::RecordId,
+        scope: &mneme_core::ScopeId,
     ) -> Result<(DocumentContext, Vec<u8>)> {
         let context = DocumentContext::load(self.workspace, None)?;
         let document = context
@@ -1518,9 +1574,10 @@ impl Documents<'_> {
             );
         }
         let publications = if options.publish {
-            let expected_previous = blob::read_working_file(self.workspace.root(), &request.path)?
-                .map(|bytes| ContentDigest::of_source_bytes(&bytes));
-            vec![PublicationDraft {
+            let expected_previous =
+                mneme_store::blob::read_working_file(self.workspace.root(), &request.path)?
+                    .map(|bytes| mneme_core::ContentDigest::of_source_bytes(&bytes));
+            vec![mneme_store::PublicationDraft {
                 path: request.path.clone(),
                 expected_previous,
                 bytes: prepared.source_blob.bytes.clone(),
@@ -1529,14 +1586,14 @@ impl Documents<'_> {
             Vec::new()
         };
         let import_candidates = if options.external_import {
-            vec![ImportCandidateDraft {
+            vec![mneme_store::ImportCandidateDraft {
                 path: request.path.clone(),
                 bytes: prepared.source_blob.bytes.clone(),
             }]
         } else {
             Vec::new()
         };
-        let outcome = self.workspace.commit(CommitCommand {
+        let outcome = self.workspace.commit(mneme_store::CommitCommand {
             base: request.base_revision,
             actor: request.actor,
             scope: request.scope.clone(),
@@ -1557,10 +1614,10 @@ impl Documents<'_> {
 
     fn revision_from_outcome(
         &self,
-        scope: &ScopeId,
-        document_id: Option<RecordId>,
+        scope: &mneme_core::ScopeId,
+        document_id: Option<mneme_core::RecordId>,
         path: &str,
-        outcome: CommitOutcome,
+        outcome: mneme_store::CommitOutcome,
     ) -> Result<DocumentRevision> {
         let context = DocumentContext::load(self.workspace, None)?;
         let document = if let Some(document_id) = document_id {
@@ -1604,7 +1661,7 @@ impl Documents<'_> {
         }
         let mut anchors = Vec::new();
         for record in &context.view.snapshot().records {
-            if record.kind == RecordKind::DocumentAnchor
+            if record.kind == mneme_core::RecordKind::DocumentAnchor
                 && optional_reference_target(record, "document") == Some(document.record.record_id)
                 && reference_is_pinned_to(record, "source-revision", document.source)
             {
@@ -1627,7 +1684,7 @@ impl Documents<'_> {
     }
 
     /// Read the exact latest source bytes for a document.
-    pub fn source_bytes(&self, document_id: RecordId) -> Result<Vec<u8>> {
+    pub fn source_bytes(&self, document_id: mneme_core::RecordId) -> Result<Vec<u8>> {
         let context = DocumentContext::load(self.workspace, None)?;
         let document = context
             .documents
@@ -1647,7 +1704,7 @@ impl Documents<'_> {
     }
 
     /// Read the current document with one stable identity.
-    pub fn document(&self, document_id: RecordId) -> Result<DocumentView> {
+    pub fn document(&self, document_id: mneme_core::RecordId) -> Result<DocumentView> {
         let context = DocumentContext::load(self.workspace, None)?;
         context
             .documents
@@ -1720,7 +1777,7 @@ impl Documents<'_> {
     }
 
     /// List explicit anchors for the current document revision.
-    pub fn anchors(&self, document_id: RecordId) -> Result<Vec<AnchorRecord>> {
+    pub fn anchors(&self, document_id: mneme_core::RecordId) -> Result<Vec<AnchorRecord>> {
         let context = DocumentContext::load(self.workspace, None)?;
         let document = context
             .documents
@@ -1728,26 +1785,25 @@ impl Documents<'_> {
             .ok_or(DocumentError::Missing(document_id))?;
         let mut anchors = Vec::new();
         for record in &context.view.snapshot().records {
-            if record.kind != RecordKind::DocumentAnchor
+            if record.kind != mneme_core::RecordKind::DocumentAnchor
                 || optional_reference_target(record, "document") != Some(document_id)
                 || !reference_is_pinned_to(record, "source-revision", document.source)
             {
                 continue;
             }
-            let span = record
-                .payload
-                .get("span")
-                .and_then(|value| SourceSpan::from_value(value, &mneme_core::Path::root()).ok());
+            let span = record.payload.get("span").and_then(|value| {
+                mneme_core::SourceSpan::from_value(value, &mneme_core::Path::root()).ok()
+            });
             let anchor = record
                 .payload
                 .get("anchor")
-                .and_then(Value::as_string)
+                .and_then(mneme_core::Value::as_string)
                 .unwrap_or_default()
                 .to_owned();
             let label = record
                 .payload
                 .get("label")
-                .and_then(Value::as_string)
+                .and_then(mneme_core::Value::as_string)
                 .map(str::to_owned);
             anchors.push(AnchorRecord {
                 record_id: record.record_id,
@@ -1764,8 +1820,8 @@ impl Documents<'_> {
     #[allow(unknown_lints, ambient_clock)] // preview deadline is the render shell
     pub fn preview(
         &mut self,
-        document_id: RecordId,
-        revision: Option<WorkspaceRevisionId>,
+        document_id: mneme_core::RecordId,
+        revision: Option<mneme_core::WorkspaceRevisionId>,
         config: RenderConfig,
     ) -> Result<PreviewArtifact> {
         let context = DocumentContext::load(self.workspace, revision)?;
@@ -1801,7 +1857,7 @@ impl Documents<'_> {
                 ));
             }
         }
-        let mut sources = BTreeMap::new();
+        let mut sources = std::collections::BTreeMap::new();
         let mut included = Vec::new();
         for (path, pin) in &document.includes {
             let source = context.source(*pin).ok();
@@ -1838,7 +1894,7 @@ impl Documents<'_> {
             .and_then(|entity| context.entities.get(&entity));
         let max_time_ms = u64::try_from(config.max_time_ms)
             .map_err(|_| DocumentError::Invalid("preview time budget exceeds u64 milliseconds"))?;
-        let deadline = Instant::now() + std::time::Duration::from_millis(max_time_ms);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_time_ms);
         let rendered = root_source
             .as_ref()
             .map(|root| preview::render(root, &sources, metadata, &config, Some(deadline)));
@@ -1873,7 +1929,10 @@ impl Documents<'_> {
     }
 
     /// Extract revision-bound authored paragraphs without accepting assertions.
-    pub fn extract_proposals(&mut self, document_id: RecordId) -> Result<Vec<ExtractionCandidate>> {
+    pub fn extract_proposals(
+        &mut self,
+        document_id: mneme_core::RecordId,
+    ) -> Result<Vec<ExtractionCandidate>> {
         let context = DocumentContext::load(self.workspace, None)?;
         let document = context
             .documents
@@ -1881,7 +1940,7 @@ impl Documents<'_> {
             .cloned()
             .ok_or(DocumentError::Missing(document_id))?;
         let root_bytes = context.require_retained_source(document.source)?.1;
-        let mut sources = BTreeMap::new();
+        let mut sources = std::collections::BTreeMap::new();
         let root_path = document
             .path
             .clone()
@@ -1905,7 +1964,8 @@ impl Documents<'_> {
                 },
             );
         }
-        let mut occurrences_by_path: BTreeMap<String, Vec<IncludeOccurrence>> = BTreeMap::new();
+        let mut occurrences_by_path: std::collections::BTreeMap<String, Vec<IncludeOccurrence>> =
+            std::collections::BTreeMap::new();
         for source in sources.values() {
             let text = std::str::from_utf8(&source.bytes)
                 .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
@@ -1926,8 +1986,10 @@ impl Documents<'_> {
                     });
             }
         }
-        let mut candidates: BTreeMap<(RecordId, RevisionId, u64, u64), ExtractionCandidate> =
-            BTreeMap::new();
+        let mut candidates: std::collections::BTreeMap<
+            (mneme_core::RecordId, mneme_core::RevisionId, u64, u64),
+            ExtractionCandidate,
+        > = std::collections::BTreeMap::new();
         for source in sources.values() {
             let text = std::str::from_utf8(&source.bytes)
                 .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
@@ -1969,14 +2031,14 @@ impl Documents<'_> {
 /// One committed explicit anchor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorRecord {
-    pub record_id: RecordId,
+    pub record_id: mneme_core::RecordId,
     pub source: SourcePin,
-    pub span: Option<SourceSpan>,
+    pub span: Option<mneme_core::SourceSpan>,
     pub anchor: String,
     pub label: Option<String>,
 }
 
-fn patch_entity_header(bytes: &[u8], entity: Option<RecordId>) -> Result<Vec<u8>> {
+fn patch_entity_header(bytes: &[u8], entity: Option<mneme_core::RecordId>) -> Result<Vec<u8>> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
     let header_end = text.find("\n\n").unwrap_or(text.len());

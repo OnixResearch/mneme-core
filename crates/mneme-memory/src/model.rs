@@ -3,16 +3,6 @@
 //! Parsing is strict about the fields this capability owns. Unknown extension
 //! fields remain ordinary retained data; they are not interpreted here.
 
-use std::collections::BTreeSet;
-
-use mneme_core::{
-    ContentDigest, Lifecycle, Origin, Payload, RecordEnvelope, RecordId, RecordKind, RecordedTime,
-    Reference, RevisionId, SourceContent, SourceSpan, Symbol, ValidTime, Value,
-    WorkspaceRevisionId,
-};
-
-use crate::error::{MemoryError, Result};
-
 /// Whether exact source bytes are inspectable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceAvailability {
@@ -41,31 +31,35 @@ impl SourceAvailability {
 /// A retained or explicitly unavailable source revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceView {
-    pub record: RecordEnvelope,
-    pub content: SourceContent,
+    pub record: mneme_core::RecordEnvelope,
+    pub content: mneme_core::SourceContent,
     pub availability: SourceAvailability,
     pub path_hint: Option<String>,
-    pub entity: Option<RecordId>,
-    pub media_type: Option<Symbol>,
+    pub entity: Option<mneme_core::RecordId>,
+    pub media_type: Option<mneme_core::Symbol>,
     /// Identity of bytes removed by an authorized pruning/erasure step.
-    pub prior_digest: Option<ContentDigest>,
+    pub prior_digest: Option<mneme_core::ContentDigest>,
 }
 
 impl SourceView {
     /// Parse a source-revision envelope.
-    pub fn parse(record: RecordEnvelope) -> Result<Self> {
-        expect_kind(&record, RecordKind::SourceRevision)?;
-        let content = SourceContent::from_value(
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+        expect_kind(&record, mneme_core::RecordKind::SourceRevision)?;
+        let content = mneme_core::SourceContent::from_value(
             required(&record, "content")?,
             &mneme_core::Path::root().field("content"),
         )
         .map_err(|diagnostic| {
-            MemoryError::invalid(record.record_id, "source-revision", diagnostic.to_string())
+            crate::error::MemoryError::invalid(
+                record.record_id,
+                "source-revision",
+                diagnostic.to_string(),
+            )
         })?;
         let availability = match record
             .payload
             .get("availability")
-            .and_then(Value::as_symbol)
+            .and_then(mneme_core::Value::as_symbol)
         {
             Some(symbol) => match symbol.as_str() {
                 "retained" => SourceAvailability::Retained,
@@ -77,24 +71,27 @@ impl SourceView {
                 },
             },
             None => match &content {
-                SourceContent::Retained(_) => SourceAvailability::Retained,
-                SourceContent::Unavailable { reason } => classify_unavailable(reason),
+                mneme_core::SourceContent::Retained(_) => SourceAvailability::Retained,
+                mneme_core::SourceContent::Unavailable { reason } => classify_unavailable(reason),
             },
         };
         let media_type = match &content {
-            SourceContent::Retained(retained) => Some(retained.media_type().clone()),
-            SourceContent::Unavailable { .. } => None,
+            mneme_core::SourceContent::Retained(retained) => Some(retained.media_type().clone()),
+            mneme_core::SourceContent::Unavailable { .. } => None,
         };
         let prior_digest = match record.payload.get("content-digest") {
             Some(value) => Some(
-                ContentDigest::from_value(value, &mneme_core::Path::root().field("content-digest"))
-                    .map_err(|diagnostic| {
-                        MemoryError::invalid(
-                            record.record_id,
-                            "source-revision",
-                            diagnostic.to_string(),
-                        )
-                    })?,
+                mneme_core::ContentDigest::from_value(
+                    value,
+                    &mneme_core::Path::root().field("content-digest"),
+                )
+                .map_err(|diagnostic| {
+                    crate::error::MemoryError::invalid(
+                        record.record_id,
+                        "source-revision",
+                        diagnostic.to_string(),
+                    )
+                })?,
             ),
             None => None,
         };
@@ -112,16 +109,16 @@ impl SourceView {
     /// The exact raw source digest when retained.
     pub fn digest(&self) -> Option<mneme_core::ContentDigest> {
         match &self.content {
-            SourceContent::Retained(retained) => Some(retained.digest()),
-            SourceContent::Unavailable { .. } => None,
+            mneme_core::SourceContent::Retained(retained) => Some(retained.digest()),
+            mneme_core::SourceContent::Unavailable { .. } => None,
         }
     }
 
     /// The declared byte length when retained.
     pub fn byte_length(&self) -> Option<u64> {
         match &self.content {
-            SourceContent::Retained(retained) => Some(retained.byte_length()),
-            SourceContent::Unavailable { .. } => None,
+            mneme_core::SourceContent::Retained(retained) => Some(retained.byte_length()),
+            mneme_core::SourceContent::Unavailable { .. } => None,
         }
     }
 }
@@ -180,19 +177,19 @@ impl EpisodeType {
 /// A recorded interaction, observation, attempt, or outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EpisodeView {
-    pub record: RecordEnvelope,
+    pub record: mneme_core::RecordEnvelope,
     pub actor: String,
     pub episode_type: EpisodeType,
-    pub occurred: ValidTime,
+    pub occurred: mneme_core::ValidTime,
     pub summary: String,
-    pub source: Option<RecordId>,
-    pub related: BTreeSet<RecordId>,
+    pub source: Option<mneme_core::RecordId>,
+    pub related: std::collections::BTreeSet<mneme_core::RecordId>,
 }
 
 impl EpisodeView {
     /// Parse an episode envelope.
-    pub fn parse(record: RecordEnvelope) -> Result<Self> {
-        expect_kind(&record, RecordKind::Episode)?;
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+        expect_kind(&record, mneme_core::RecordKind::Episode)?;
         Ok(EpisodeView {
             actor: required_text(&record, "actor")?,
             episode_type: EpisodeType::parse(
@@ -217,54 +214,63 @@ pub enum SupportRelation {
 /// Evidence for one assertion, anchored to an exact source revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvidenceView {
-    pub record: RecordEnvelope,
-    pub assertion: RecordId,
-    pub source: RecordId,
-    pub source_reference: Reference,
-    pub span: Option<SourceSpan>,
+    pub record: mneme_core::RecordEnvelope,
+    pub assertion: mneme_core::RecordId,
+    pub source: mneme_core::RecordId,
+    pub source_reference: mneme_core::Reference,
+    pub span: Option<mneme_core::SourceSpan>,
     pub anchor: Option<String>,
     pub relation: SupportRelation,
-    pub origin: Origin,
-    pub ancestry: BTreeSet<RecordId>,
+    pub origin: mneme_core::Origin,
+    pub ancestry: std::collections::BTreeSet<mneme_core::RecordId>,
 }
 
 impl EvidenceView {
     /// Parse an evidence envelope.
-    pub fn parse(record: RecordEnvelope) -> Result<Self> {
-        expect_kind(&record, RecordKind::Evidence)?;
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+        expect_kind(&record, mneme_core::RecordKind::Evidence)?;
         let relation = match required_symbol_text(&record, "relation")?.as_str() {
             "supports" => SupportRelation::Supports,
             "challenges" => SupportRelation::Challenges,
             other => {
-                return Err(MemoryError::invalid(
+                return Err(crate::error::MemoryError::invalid(
                     record.record_id,
                     "evidence",
                     format!("unknown support relation {other}"),
                 ));
             }
         };
-        let origin = Origin::parse(&required_symbol_text(&record, "origin")?)
-            .ok_or_else(|| MemoryError::invalid(record.record_id, "evidence", "unknown origin"))?;
+        let origin = mneme_core::Origin::parse(&required_symbol_text(&record, "origin")?)
+            .ok_or_else(|| {
+                crate::error::MemoryError::invalid(record.record_id, "evidence", "unknown origin")
+            })?;
         Ok(EvidenceView {
             assertion: required_reference_target(&record, "assertion")?,
             source: required_reference_target(&record, "source")?,
-            source_reference: Reference::from_value(
+            source_reference: mneme_core::Reference::from_value(
                 required(&record, "source")?,
                 &mneme_core::Path::root().field("source"),
             )
             .map_err(|diagnostic| {
-                MemoryError::invalid(record.record_id, "evidence", diagnostic.to_string())
+                crate::error::MemoryError::invalid(
+                    record.record_id,
+                    "evidence",
+                    diagnostic.to_string(),
+                )
             })?,
             span: match record.payload.get("span") {
                 Some(value) => Some(
-                    SourceSpan::from_value(value, &mneme_core::Path::root().field("span"))
-                        .map_err(|diagnostic| {
-                            MemoryError::invalid(
-                                record.record_id,
-                                "evidence",
-                                diagnostic.to_string(),
-                            )
-                        })?,
+                    mneme_core::SourceSpan::from_value(
+                        value,
+                        &mneme_core::Path::root().field("span"),
+                    )
+                    .map_err(|diagnostic| {
+                        crate::error::MemoryError::invalid(
+                            record.record_id,
+                            "evidence",
+                            diagnostic.to_string(),
+                        )
+                    })?,
                 ),
                 None => None,
             },
@@ -295,32 +301,32 @@ pub struct Extraction {
 /// A claim with origin, lifecycle, scope, and evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssertionView {
-    pub record: RecordEnvelope,
-    pub subject: RecordId,
+    pub record: mneme_core::RecordEnvelope,
+    pub subject: mneme_core::RecordId,
     pub predicate: String,
-    pub value: Value,
+    pub value: mneme_core::Value,
     pub stance: Stance,
-    pub lifecycle: Lifecycle,
-    pub origin: Origin,
+    pub lifecycle: mneme_core::Lifecycle,
+    pub origin: mneme_core::Origin,
     pub asserted_by: String,
-    pub valid_time: ValidTime,
-    pub evidence: BTreeSet<RecordId>,
-    pub confidence: Option<Value>,
-    pub superseded_by: Option<RecordId>,
-    pub decision: Option<RecordId>,
+    pub valid_time: mneme_core::ValidTime,
+    pub evidence: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub confidence: Option<mneme_core::Value>,
+    pub superseded_by: Option<mneme_core::RecordId>,
+    pub decision: Option<mneme_core::RecordId>,
     pub extraction: Option<Extraction>,
 }
 
 impl AssertionView {
     /// Parse an assertion envelope.
-    pub fn parse(record: RecordEnvelope) -> Result<Self> {
-        expect_kind(&record, RecordKind::Assertion)?;
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+        expect_kind(&record, mneme_core::RecordKind::Assertion)?;
         let stance = match required_symbol_text(&record, "stance")?.as_str() {
             "affirm" => Stance::Affirm,
             "deny" => Stance::Deny,
             "hypothesis" => Stance::Hypothesis,
             other => {
-                return Err(MemoryError::invalid(
+                return Err(crate::error::MemoryError::invalid(
                     record.record_id,
                     "assertion",
                     format!("unknown stance {other}"),
@@ -328,10 +334,12 @@ impl AssertionView {
             }
         };
         let lifecycle = record.assertion_lifecycle().ok_or_else(|| {
-            MemoryError::invalid(record.record_id, "assertion", "missing lifecycle")
+            crate::error::MemoryError::invalid(record.record_id, "assertion", "missing lifecycle")
         })?;
-        let origin = Origin::parse(&required_symbol_text(&record, "origin")?)
-            .ok_or_else(|| MemoryError::invalid(record.record_id, "assertion", "unknown origin"))?;
+        let origin = mneme_core::Origin::parse(&required_symbol_text(&record, "origin")?)
+            .ok_or_else(|| {
+                crate::error::MemoryError::invalid(record.record_id, "assertion", "unknown origin")
+            })?;
         Ok(AssertionView {
             subject: required_reference_target(&record, "subject")?,
             predicate: required_symbol_text(&record, "predicate")?,
@@ -351,34 +359,38 @@ impl AssertionView {
     }
 
     /// The record identity.
-    pub fn record_id(&self) -> RecordId {
+    pub fn record_id(&self) -> mneme_core::RecordId {
         self.record.record_id
     }
 }
 
-fn parse_extraction(record: &RecordEnvelope) -> Result<Option<Extraction>> {
+fn parse_extraction(
+    record: &mneme_core::RecordEnvelope,
+) -> crate::error::Result<Option<Extraction>> {
     let Some(value) = record.payload.get("extraction") else {
         return Ok(None);
     };
     let Some(extraction) = value.as_record() else {
-        return Err(MemoryError::invalid(
+        return Err(crate::error::MemoryError::invalid(
             record.record_id,
             "assertion",
             "extraction must be a record",
         ));
     };
-    if extraction.label() != &Value::symbol("extraction") || extraction.fields().len() != 2 {
-        return Err(MemoryError::invalid(
+    if extraction.label() != &mneme_core::Value::symbol("extraction")
+        || extraction.fields().len() != 2
+    {
+        return Err(crate::error::MemoryError::invalid(
             record.record_id,
             "assertion",
             "expected <extraction model prompt>",
         ));
     }
-    let model = extraction.fields()[0]
-        .as_string()
-        .ok_or_else(|| MemoryError::invalid(record.record_id, "assertion", "model must be text"))?;
+    let model = extraction.fields()[0].as_string().ok_or_else(|| {
+        crate::error::MemoryError::invalid(record.record_id, "assertion", "model must be text")
+    })?;
     let prompt = extraction.fields()[1].as_string().ok_or_else(|| {
-        MemoryError::invalid(record.record_id, "assertion", "prompt must be text")
+        crate::error::MemoryError::invalid(record.record_id, "assertion", "prompt must be text")
     })?;
     Ok(Some(Extraction {
         model: model.to_owned(),
@@ -389,26 +401,30 @@ fn parse_extraction(record: &RecordEnvelope) -> Result<Option<Extraction>> {
 /// A complete justification with its own required premises.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DerivationView {
-    pub record: RecordEnvelope,
-    pub conclusion: RecordId,
-    pub premises: BTreeSet<RecordId>,
+    pub record: mneme_core::RecordEnvelope,
+    pub conclusion: mneme_core::RecordId,
+    pub premises: std::collections::BTreeSet<mneme_core::RecordId>,
     pub rule_id: String,
     pub rule_version: i64,
-    pub evaluation_revision: WorkspaceRevisionId,
+    pub evaluation_revision: mneme_core::WorkspaceRevisionId,
     pub completeness: String,
 }
 
 impl DerivationView {
     /// Parse a derivation envelope.
-    pub fn parse(record: RecordEnvelope) -> Result<Self> {
-        expect_kind(&record, RecordKind::Derivation)?;
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+        expect_kind(&record, mneme_core::RecordKind::Derivation)?;
         let rule_version = required_integer(&record, "rule-version")?;
-        let evaluation_revision = WorkspaceRevisionId::from_value(
+        let evaluation_revision = mneme_core::WorkspaceRevisionId::from_value(
             required(&record, "evaluation-revision")?,
             &mneme_core::Path::root().field("evaluation-revision"),
         )
         .map_err(|diagnostic| {
-            MemoryError::invalid(record.record_id, "derivation", diagnostic.to_string())
+            crate::error::MemoryError::invalid(
+                record.record_id,
+                "derivation",
+                diagnostic.to_string(),
+            )
         })?;
         Ok(DerivationView {
             conclusion: required_reference_target(&record, "conclusion")?,
@@ -458,28 +474,28 @@ impl DecisionKind {
 /// An explicit attributed lifecycle or conflict decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionView {
-    pub record: RecordEnvelope,
+    pub record: mneme_core::RecordEnvelope,
     pub decision_kind: DecisionKind,
-    pub target: RecordId,
+    pub target: mneme_core::RecordId,
     pub actor: String,
     pub policy: String,
-    pub input_revision: WorkspaceRevisionId,
+    pub input_revision: mneme_core::WorkspaceRevisionId,
     pub outcome: String,
     pub rationale: String,
-    pub evidence: BTreeSet<RecordId>,
-    pub related: BTreeSet<RecordId>,
+    pub evidence: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub related: std::collections::BTreeSet<mneme_core::RecordId>,
 }
 
 impl DecisionView {
     /// Parse a decision envelope.
-    pub fn parse(record: RecordEnvelope) -> Result<Self> {
-        expect_kind(&record, RecordKind::Decision)?;
-        let input_revision = WorkspaceRevisionId::from_value(
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+        expect_kind(&record, mneme_core::RecordKind::Decision)?;
+        let input_revision = mneme_core::WorkspaceRevisionId::from_value(
             required(&record, "input-revision")?,
             &mneme_core::Path::root().field("input-revision"),
         )
         .map_err(|diagnostic| {
-            MemoryError::invalid(record.record_id, "decision", diagnostic.to_string())
+            crate::error::MemoryError::invalid(record.record_id, "decision", diagnostic.to_string())
         })?;
         Ok(DecisionView {
             decision_kind: DecisionKind::parse(&required_symbol_text(&record, "decision-kind")?),
@@ -496,11 +512,14 @@ impl DecisionView {
     }
 }
 
-fn expect_kind(record: &RecordEnvelope, kind: RecordKind) -> Result<()> {
+fn expect_kind(
+    record: &mneme_core::RecordEnvelope,
+    kind: mneme_core::RecordKind,
+) -> crate::error::Result<()> {
     if record.kind == kind {
         Ok(())
     } else {
-        Err(MemoryError::invalid(
+        Err(crate::error::MemoryError::invalid(
             record.record_id,
             kind.symbol(),
             format!("found kind {}", record.kind.symbol()),
@@ -508,9 +527,12 @@ fn expect_kind(record: &RecordEnvelope, kind: RecordKind) -> Result<()> {
     }
 }
 
-pub(crate) fn required<'a>(record: &'a RecordEnvelope, name: &str) -> Result<&'a Value> {
+pub(crate) fn required<'a>(
+    record: &'a mneme_core::RecordEnvelope,
+    name: &str,
+) -> crate::error::Result<&'a mneme_core::Value> {
     record.payload.get(name).ok_or_else(|| {
-        MemoryError::invalid(
+        crate::error::MemoryError::invalid(
             record.record_id,
             record.kind.symbol(),
             format!("missing field {name}"),
@@ -518,12 +540,15 @@ pub(crate) fn required<'a>(record: &'a RecordEnvelope, name: &str) -> Result<&'a
     })
 }
 
-pub(crate) fn required_text(record: &RecordEnvelope, name: &str) -> Result<String> {
+pub(crate) fn required_text(
+    record: &mneme_core::RecordEnvelope,
+    name: &str,
+) -> crate::error::Result<String> {
     required(record, name)?
         .as_string()
         .map(str::to_owned)
         .ok_or_else(|| {
-            MemoryError::invalid(
+            crate::error::MemoryError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 format!("{name} must be text"),
@@ -531,12 +556,15 @@ pub(crate) fn required_text(record: &RecordEnvelope, name: &str) -> Result<Strin
         })
 }
 
-pub(crate) fn required_symbol_text(record: &RecordEnvelope, name: &str) -> Result<String> {
+pub(crate) fn required_symbol_text(
+    record: &mneme_core::RecordEnvelope,
+    name: &str,
+) -> crate::error::Result<String> {
     required(record, name)?
         .as_symbol()
         .map(|symbol| symbol.as_str().to_owned())
         .ok_or_else(|| {
-            MemoryError::invalid(
+            crate::error::MemoryError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 format!("{name} must be a symbol"),
@@ -544,12 +572,15 @@ pub(crate) fn required_symbol_text(record: &RecordEnvelope, name: &str) -> Resul
         })
 }
 
-pub(crate) fn required_integer(record: &RecordEnvelope, name: &str) -> Result<i64> {
+pub(crate) fn required_integer(
+    record: &mneme_core::RecordEnvelope,
+    name: &str,
+) -> crate::error::Result<i64> {
     required(record, name)?
         .as_integer()
         .and_then(|integer| integer.to_i64())
         .ok_or_else(|| {
-            MemoryError::invalid(
+            crate::error::MemoryError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 format!("{name} must be an integer"),
@@ -557,13 +588,16 @@ pub(crate) fn required_integer(record: &RecordEnvelope, name: &str) -> Result<i6
         })
 }
 
-pub(crate) fn required_valid_time(record: &RecordEnvelope, name: &str) -> Result<ValidTime> {
-    ValidTime::from_value(
+pub(crate) fn required_valid_time(
+    record: &mneme_core::RecordEnvelope,
+    name: &str,
+) -> crate::error::Result<mneme_core::ValidTime> {
+    mneme_core::ValidTime::from_value(
         required(record, name)?,
         &mneme_core::Path::root().field("valid-time"),
     )
     .map_err(|diagnostic| {
-        MemoryError::invalid(
+        crate::error::MemoryError::invalid(
             record.record_id,
             record.kind.symbol(),
             diagnostic.to_string(),
@@ -571,10 +605,13 @@ pub(crate) fn required_valid_time(record: &RecordEnvelope, name: &str) -> Result
     })
 }
 
-pub(crate) fn required_reference_target(record: &RecordEnvelope, name: &str) -> Result<RecordId> {
+pub(crate) fn required_reference_target(
+    record: &mneme_core::RecordEnvelope,
+    name: &str,
+) -> crate::error::Result<mneme_core::RecordId> {
     reference_target(record, required(record, name)?).and_then(|target| {
         target.ok_or_else(|| {
-            MemoryError::invalid(
+            crate::error::MemoryError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 format!("{name} must name a local record"),
@@ -584,9 +621,9 @@ pub(crate) fn required_reference_target(record: &RecordEnvelope, name: &str) -> 
 }
 
 pub(crate) fn optional_reference_target(
-    record: &RecordEnvelope,
+    record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> Result<Option<RecordId>> {
+) -> crate::error::Result<Option<mneme_core::RecordId>> {
     match record.payload.get(name) {
         Some(value) => reference_target(record, value),
         None => Ok(None),
@@ -594,18 +631,18 @@ pub(crate) fn optional_reference_target(
 }
 
 pub(crate) fn required_reference_set(
-    record: &RecordEnvelope,
+    record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> Result<BTreeSet<RecordId>> {
+) -> crate::error::Result<std::collections::BTreeSet<mneme_core::RecordId>> {
     let values = required(record, name)?;
     let set = values.as_set().ok_or_else(|| {
-        MemoryError::invalid(
+        crate::error::MemoryError::invalid(
             record.record_id,
             record.kind.symbol(),
             format!("{name} must be a set of references"),
         )
     })?;
-    let mut targets = BTreeSet::new();
+    let mut targets = std::collections::BTreeSet::new();
     for value in set {
         if let Some(target) = reference_target(record, value)? {
             targets.insert(target);
@@ -615,32 +652,36 @@ pub(crate) fn required_reference_set(
 }
 
 pub(crate) fn optional_reference_set(
-    record: &RecordEnvelope,
+    record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> Result<BTreeSet<RecordId>> {
+) -> crate::error::Result<std::collections::BTreeSet<mneme_core::RecordId>> {
     if record.payload.get(name).is_some() {
         required_reference_set(record, name)
     } else {
-        Ok(BTreeSet::new())
+        Ok(std::collections::BTreeSet::new())
     }
 }
 
-fn reference_target(record: &RecordEnvelope, value: &Value) -> Result<Option<RecordId>> {
-    let reference =
-        Reference::from_value(value, &mneme_core::Path::root()).map_err(|diagnostic| {
-            MemoryError::invalid(
+fn reference_target(
+    record: &mneme_core::RecordEnvelope,
+    value: &mneme_core::Value,
+) -> crate::error::Result<Option<mneme_core::RecordId>> {
+    let reference = mneme_core::Reference::from_value(value, &mneme_core::Path::root()).map_err(
+        |diagnostic| {
+            crate::error::MemoryError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 diagnostic.to_string(),
             )
-        })?;
+        },
+    )?;
     match &reference {
-        Reference::External { .. } => Err(MemoryError::invalid(
+        mneme_core::Reference::External { .. } => Err(crate::error::MemoryError::invalid(
             record.record_id,
             record.kind.symbol(),
             "memory references cannot be external",
         )),
-        Reference::Unresolved { .. } => Err(MemoryError::invalid(
+        mneme_core::Reference::Unresolved { .. } => Err(crate::error::MemoryError::invalid(
             record.record_id,
             record.kind.symbol(),
             "memory references cannot be unresolved",
@@ -649,25 +690,25 @@ fn reference_target(record: &RecordEnvelope, value: &Value) -> Result<Option<Rec
     }
 }
 
-pub(crate) fn optional_text(record: &RecordEnvelope, name: &str) -> Option<String> {
+pub(crate) fn optional_text(record: &mneme_core::RecordEnvelope, name: &str) -> Option<String> {
     record
         .payload
         .get(name)
-        .and_then(Value::as_string)
+        .and_then(mneme_core::Value::as_string)
         .map(str::to_owned)
 }
 
 /// Re-exported for callers constructing views from a payload.
-pub fn payload_of(record: &RecordEnvelope) -> &Payload {
+pub fn payload_of(record: &mneme_core::RecordEnvelope) -> &mneme_core::Payload {
     &record.payload
 }
 
 /// Parse a decision or assertion revision identity from a record.
-pub fn revision_of(record: &RecordEnvelope) -> RevisionId {
+pub fn revision_of(record: &mneme_core::RecordEnvelope) -> mneme_core::RevisionId {
     record.revision_id
 }
 
 /// The recorded time assigned by the coordinator.
-pub fn recorded_of(record: &RecordEnvelope) -> RecordedTime {
+pub fn recorded_of(record: &mneme_core::RecordEnvelope) -> mneme_core::RecordedTime {
     record.recorded
 }

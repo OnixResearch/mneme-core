@@ -3,8 +3,6 @@
 //! The scanner never treats an AST as authoritative: callers retain exact
 //! source bytes and use byte spans from this module.
 
-use mneme_core::{RecordId, SourceSpan};
-
 /// A source-local diagnostic with a stable code and display position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -12,7 +10,7 @@ pub struct Diagnostic {
     pub message: String,
     pub line: usize,
     pub column: usize,
-    pub span: Option<SourceSpan>,
+    pub span: Option<mneme_core::SourceSpan>,
     /// Fatal diagnostics reject an import; warnings are preview-only.
     pub fatal: bool,
 }
@@ -24,7 +22,7 @@ impl Diagnostic {
         message: impl Into<String>,
         line: usize,
         column: usize,
-        span: Option<SourceSpan>,
+        span: Option<mneme_core::SourceSpan>,
     ) -> Self {
         Diagnostic {
             code,
@@ -43,7 +41,7 @@ impl Diagnostic {
         message: impl Into<String>,
         line: usize,
         column: usize,
-        span: Option<SourceSpan>,
+        span: Option<mneme_core::SourceSpan>,
     ) -> Self {
         let mut diagnostic = Diagnostic::new(code, message, line, column, span);
         diagnostic.fatal = false;
@@ -55,7 +53,7 @@ impl Diagnostic {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Header {
     pub title: Option<String>,
-    pub entity_id: Option<RecordId>,
+    pub entity_id: Option<mneme_core::RecordId>,
 }
 
 /// One include directive.
@@ -63,7 +61,7 @@ pub struct Header {
 pub struct IncludeDirective {
     pub target: String,
     pub optional: bool,
-    pub span: SourceSpan,
+    pub span: mneme_core::SourceSpan,
     pub line: usize,
     pub column: usize,
 }
@@ -73,7 +71,7 @@ pub struct IncludeDirective {
 pub struct AnchorSpec {
     pub anchor: String,
     pub label: Option<String>,
-    pub span: SourceSpan,
+    pub span: mneme_core::SourceSpan,
     pub line: usize,
     pub column: usize,
 }
@@ -87,11 +85,11 @@ struct Line<'a> {
 }
 
 impl Line<'_> {
-    fn span(&self) -> Option<SourceSpan> {
+    fn span(&self) -> Option<mneme_core::SourceSpan> {
         if self.text.is_empty() {
             return None;
         }
-        SourceSpan::new(self.start as u64, (self.end - 1) as u64).ok()
+        mneme_core::SourceSpan::new(self.start as u64, (self.end - 1) as u64).ok()
     }
 }
 
@@ -207,7 +205,7 @@ pub fn parse_header(text: &str) -> Result<Header, Vec<Diagnostic>> {
                 ));
                 continue;
             }
-            match RecordId::from_hex(value) {
+            match mneme_core::RecordId::from_hex(value) {
                 Ok(id) => header.entity_id = Some(id),
                 Err(_) => diagnostics.push(Diagnostic::new(
                     "binding-invalid",
@@ -382,7 +380,7 @@ pub fn allowed_path(path: &str, roots: &[String]) -> bool {
 /// A paragraph-like authored block with an exact source span.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Paragraph {
-    pub span: SourceSpan,
+    pub span: mneme_core::SourceSpan,
     pub line: usize,
     pub column: usize,
 }
@@ -462,7 +460,7 @@ fn flush_paragraph(
 ) {
     if let Some((start, end, line, column)) = current.take()
         && end > start
-        && let Ok(span) = SourceSpan::new(start as u64, (end - 1) as u64)
+        && let Ok(span) = mneme_core::SourceSpan::new(start as u64, (end - 1) as u64)
     {
         paragraphs.push(Paragraph { span, line, column });
     }

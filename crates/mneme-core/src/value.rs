@@ -10,14 +10,7 @@
 //! them before building a value, and its encoder never emits them; no
 //! authoritative field may depend on annotation content.
 
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
-
-use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
-
-use crate::text;
 
 /// A Preserves symbol: a sequence of Unicode scalar values denoting an
 /// identifier. Distinguishable from a [`Value::String`] with equal text.
@@ -53,9 +46,9 @@ impl From<String> for Symbol {
     }
 }
 
-impl fmt::Display for Symbol {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        text::write_symbol(formatter, &self.0)
+impl std::fmt::Display for Symbol {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        crate::text::write_symbol(formatter, &self.0)
     }
 }
 
@@ -82,16 +75,16 @@ impl ByteString {
 
 /// A Preserves arbitrarily large signed integer.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SignedInteger(BigInt);
+pub struct SignedInteger(num_bigint::BigInt);
 
 impl SignedInteger {
     /// Construct from a big integer.
-    pub fn new(value: BigInt) -> Self {
+    pub fn new(value: num_bigint::BigInt) -> Self {
         SignedInteger(value)
     }
 
     /// The underlying big integer.
-    pub fn as_bigint(&self) -> &BigInt {
+    pub fn as_bigint(&self) -> &num_bigint::BigInt {
         &self.0
     }
 
@@ -108,24 +101,24 @@ impl SignedInteger {
 
 impl From<i64> for SignedInteger {
     fn from(value: i64) -> Self {
-        SignedInteger(BigInt::from(value))
+        SignedInteger(num_bigint::BigInt::from(value))
     }
 }
 
 impl From<i32> for SignedInteger {
     fn from(value: i32) -> Self {
-        SignedInteger(BigInt::from(value))
+        SignedInteger(num_bigint::BigInt::from(value))
     }
 }
 
 impl From<u64> for SignedInteger {
     fn from(value: u64) -> Self {
-        SignedInteger(BigInt::from(value))
+        SignedInteger(num_bigint::BigInt::from(value))
     }
 }
 
-impl fmt::Display for SignedInteger {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for SignedInteger {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}", self.0)
     }
 }
@@ -167,26 +160,26 @@ impl From<f64> for Double {
 
 impl PartialEq for Double {
     fn eq(&self, other: &Self) -> bool {
-        self.0.total_cmp(&other.0) == Ordering::Equal
+        self.0.total_cmp(&other.0) == std::cmp::Ordering::Equal
     }
 }
 
 impl Eq for Double {}
 
 impl PartialOrd for Double {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Double {
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.total_cmp(&other.0)
     }
 }
 
-impl fmt::Debug for Double {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Debug for Double {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "Double({:016x})", self.bits())
     }
 }
@@ -229,8 +222,8 @@ pub enum Value {
     Symbol(Symbol),
     Record(Record),
     Sequence(Vec<Value>),
-    Set(BTreeSet<Value>),
-    Dictionary(BTreeMap<Value, Value>),
+    Set(std::collections::BTreeSet<Value>),
+    Dictionary(std::collections::BTreeMap<Value, Value>),
     /// An embedded value marks a live, domain-specific object. Mneme decodes
     /// and transports this marker, but refuses it in durable records.
     Embedded(Box<Value>),
@@ -257,7 +250,7 @@ impl Value {
     // The rank comparison establishes that both operands have the same kind,
     // so the wildcard arm is unreachable in a well-formed model. It keeps the
     // implementation total without panicking.
-    fn cmp_same_kind(&self, other: &Self) -> Ordering {
+    fn cmp_same_kind(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
             (Value::Boolean(left), Value::Boolean(right)) => left.cmp(right),
             (Value::Double(left), Value::Double(right)) => left.cmp(right),
@@ -270,7 +263,7 @@ impl Value {
             (Value::Set(left), Value::Set(right)) => iter_cmp(left.iter(), right.iter()),
             (Value::Dictionary(left), Value::Dictionary(right)) => dict_cmp(left, right),
             (Value::Embedded(left), Value::Embedded(right)) => left.cmp(right),
-            _ => Ordering::Equal,
+            _ => std::cmp::Ordering::Equal,
         }
     }
 
@@ -290,7 +283,7 @@ impl Value {
     }
 
     /// A Preserves arbitrary-precision integer value.
-    pub fn integer(value: impl Into<BigInt>) -> Self {
+    pub fn integer(value: impl Into<num_bigint::BigInt>) -> Self {
         Value::SignedInteger(SignedInteger::new(value.into()))
     }
 
@@ -340,7 +333,7 @@ impl Value {
 
     /// Human-readable Preserves text syntax, for diagnostics only.
     pub fn to_text(&self) -> String {
-        text::render(self)
+        crate::text::render(self)
     }
 
     /// Access a record, if this is one.
@@ -360,7 +353,7 @@ impl Value {
     }
 
     /// Access a set, if this is one.
-    pub fn as_set(&self) -> Option<&BTreeSet<Value>> {
+    pub fn as_set(&self) -> Option<&std::collections::BTreeSet<Value>> {
         let Value::Set(items) = self else {
             return None;
         };
@@ -368,7 +361,7 @@ impl Value {
     }
 
     /// Access a dictionary, if this is one.
-    pub fn as_dictionary(&self) -> Option<&BTreeMap<Value, Value>> {
+    pub fn as_dictionary(&self) -> Option<&std::collections::BTreeMap<Value, Value>> {
         let Value::Dictionary(entries) = self else {
             return None;
         };
@@ -464,9 +457,9 @@ impl Value {
 }
 
 impl Ord for Value {
-    fn cmp(&self, other: &Self) -> Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let rank_order = self.rank().cmp(&other.rank());
-        if rank_order != Ordering::Equal {
+        if rank_order != std::cmp::Ordering::Equal {
             return rank_order;
         }
         self.cmp_same_kind(other)
@@ -474,16 +467,16 @@ impl Ord for Value {
 }
 
 impl PartialOrd for Value {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-fn seq_cmp(left: &[Value], right: &[Value]) -> Ordering {
+fn seq_cmp(left: &[Value], right: &[Value]) -> std::cmp::Ordering {
     iter_cmp(left.iter(), right.iter())
 }
 
-fn iter_cmp<'a, L, R>(left: L, right: R) -> Ordering
+fn iter_cmp<'a, L, R>(left: L, right: R) -> std::cmp::Ordering
 where
     L: Iterator<Item = &'a Value>,
     R: Iterator<Item = &'a Value>,
@@ -494,18 +487,21 @@ where
         match (left.next(), right.next()) {
             (Some(left_value), Some(right_value)) => {
                 let order = left_value.cmp(right_value);
-                if order != Ordering::Equal {
+                if order != std::cmp::Ordering::Equal {
                     return order;
                 }
             }
-            (Some(_), None) => return Ordering::Greater,
-            (None, Some(_)) => return Ordering::Less,
-            (None, None) => return Ordering::Equal,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (None, None) => return std::cmp::Ordering::Equal,
         }
     }
 }
 
-fn dict_cmp(left: &BTreeMap<Value, Value>, right: &BTreeMap<Value, Value>) -> Ordering {
+fn dict_cmp(
+    left: &std::collections::BTreeMap<Value, Value>,
+    right: &std::collections::BTreeMap<Value, Value>,
+) -> std::cmp::Ordering {
     let mut left = left.iter();
     let mut right = right.iter();
     loop {
@@ -514,13 +510,13 @@ fn dict_cmp(left: &BTreeMap<Value, Value>, right: &BTreeMap<Value, Value>) -> Or
                 let order = left_key
                     .cmp(right_key)
                     .then_with(|| left_value.cmp(right_value));
-                if order != Ordering::Equal {
+                if order != std::cmp::Ordering::Equal {
                     return order;
                 }
             }
-            (Some(_), None) => return Ordering::Greater,
-            (None, Some(_)) => return Ordering::Less,
-            (None, None) => return Ordering::Equal,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (None, None) => return std::cmp::Ordering::Equal,
         }
     }
 }
@@ -563,7 +559,10 @@ mod tests {
             (Value::symbol("b"), Value::integer(2_i64)),
         ]);
         assert_eq!(left, right);
-        assert_eq!(left.as_dictionary().map(BTreeMap::len), Some(2));
+        assert_eq!(
+            left.as_dictionary().map(std::collections::BTreeMap::len),
+            Some(2)
+        );
     }
 
     #[test]
@@ -580,7 +579,9 @@ mod tests {
     #[test]
     fn large_integers_are_arbitrary_precision() {
         let decimal = "87112285931760246646623899502532662132736";
-        let parsed = decimal.parse::<BigInt>().expect("valid decimal integer");
+        let parsed = decimal
+            .parse::<num_bigint::BigInt>()
+            .expect("valid decimal integer");
         let value = Value::integer(parsed);
         assert_eq!(
             value.as_integer().map(ToString::to_string),

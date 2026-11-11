@@ -5,22 +5,12 @@
 //! generated proposals begin with an unsupported-hypothesis support review and
 //! require a separate attributed review before acceptance.
 
-use std::collections::BTreeSet;
-
-use mneme_core::{RecordId, SourceSpan, Value};
-
-use crate::{
-    AssertionProposal, ConsolidationJob, ConsolidationProposal, InputBatch, InputKey,
-    ProposalAuthority, ProposalDisposition, ProposalOperation, ProposalPremise, ProposalStance,
-    SummaryProposal, SupportOutcome, SupportReview, ValidTime,
-};
-
 /// Exact text associated with one reviewed input unit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneratorInput {
-    pub key: InputKey,
+    pub key: crate::InputKey,
     pub text: String,
-    pub span: Option<SourceSpan>,
+    pub span: Option<mneme_core::SourceSpan>,
 }
 
 /// One extractor output. It remains untrusted until mechanically checked and
@@ -28,10 +18,10 @@ pub struct GeneratorInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtractedClaim {
     pub claim_id: String,
-    pub subject: RecordId,
+    pub subject: mneme_core::RecordId,
     pub predicate: String,
-    pub value: Value,
-    pub span: SourceSpan,
+    pub value: mneme_core::Value,
+    pub span: mneme_core::SourceSpan,
     pub quote: String,
 }
 
@@ -47,10 +37,10 @@ impl DeterministicGenerator {
     /// Generate one source-linked summary proposal per reviewed input.
     pub fn generate(
         &self,
-        job: &ConsolidationJob,
-        batch: &InputBatch,
+        job: &crate::ConsolidationJob,
+        batch: &crate::InputBatch,
         inputs: &[GeneratorInput],
-    ) -> Result<Vec<ConsolidationProposal>, String> {
+    ) -> Result<Vec<crate::ConsolidationProposal>, String> {
         if job.batch != *batch {
             return Err("generator batch does not belong to the job".to_owned());
         }
@@ -60,27 +50,27 @@ impl DeterministicGenerator {
             if input.text.trim().is_empty() {
                 return Err(format!("input {} has no text", input.key.record_id));
             }
-            proposals.push(ConsolidationProposal {
+            proposals.push(crate::ConsolidationProposal {
                 proposal_id: format!("{}-summary-{}", job.job_id, input.key.record_id.to_hex()),
                 job_id: job.job_id.clone(),
                 recorded_at: job.recorded_at,
                 base_revision: job.base_revision,
                 scope: job.scope.clone(),
-                operation: ProposalOperation::Summary(SummaryProposal {
+                operation: crate::ProposalOperation::Summary(crate::SummaryProposal {
                     text: input.text.clone(),
                 }),
-                premises: vec![ProposalPremise {
+                premises: vec![crate::ProposalPremise {
                     record_id: input.key.record_id,
                     revision_id: input.key.revision_id,
                     span: input.span,
                     derivation: None,
-                    ancestry_roots: BTreeSet::from([input.key]),
-                    authority: ProposalAuthority::Observed,
+                    ancestry_roots: std::collections::BTreeSet::from([input.key]),
+                    authority: crate::ProposalAuthority::Observed,
                 }],
                 rationale: "deterministic extractive summary; semantic support needs review"
                     .to_owned(),
                 support: pending_support(),
-                disposition: ProposalDisposition::Pending,
+                disposition: crate::ProposalDisposition::Pending,
             });
         }
         Ok(proposals)
@@ -89,11 +79,11 @@ impl DeterministicGenerator {
 
 /// Generate assertion proposals from an optional extractor.
 pub fn generate_extracted(
-    job: &ConsolidationJob,
-    batch: &InputBatch,
+    job: &crate::ConsolidationJob,
+    batch: &crate::InputBatch,
     inputs: &[GeneratorInput],
     extractor: &dyn Extractor,
-) -> Result<Vec<ConsolidationProposal>, String> {
+) -> Result<Vec<crate::ConsolidationProposal>, String> {
     if job.batch != *batch {
         return Err("generator batch does not belong to the job".to_owned());
     }
@@ -111,32 +101,32 @@ pub fn generate_extracted(
                     claim.claim_id
                 ));
             }
-            proposals.push(ConsolidationProposal {
+            proposals.push(crate::ConsolidationProposal {
                 proposal_id: format!("{}-{}", job.job_id, claim.claim_id),
                 job_id: job.job_id.clone(),
                 recorded_at: job.recorded_at,
                 base_revision: job.base_revision,
                 scope: job.scope.clone(),
-                operation: ProposalOperation::Assertion(AssertionProposal {
+                operation: crate::ProposalOperation::Assertion(crate::AssertionProposal {
                     subject: claim.subject,
                     predicate: claim.predicate,
                     value: claim.value,
-                    stance: ProposalStance::Affirm,
-                    valid_time: ValidTime::Unknown,
+                    stance: crate::ProposalStance::Affirm,
+                    valid_time: crate::ValidTime::Unknown,
                 }),
-                premises: vec![ProposalPremise {
+                premises: vec![crate::ProposalPremise {
                     record_id: input.key.record_id,
                     revision_id: input.key.revision_id,
                     span: Some(claim.span),
                     derivation: None,
-                    ancestry_roots: BTreeSet::from([input.key]),
-                    authority: ProposalAuthority::ModelExtracted,
+                    ancestry_roots: std::collections::BTreeSet::from([input.key]),
+                    authority: crate::ProposalAuthority::ModelExtracted,
                 }],
                 rationale:
                     "extractor candidate; mechanical citation check does not prove semantic support"
                         .to_owned(),
                 support: pending_support(),
-                disposition: ProposalDisposition::Pending,
+                disposition: crate::ProposalDisposition::Pending,
             });
         }
     }
@@ -145,13 +135,13 @@ pub fn generate_extracted(
 
 /// Record a separate attributed semantic-support review.
 pub fn record_support_review(
-    proposal: &mut ConsolidationProposal,
-    review: SupportReview,
+    proposal: &mut crate::ConsolidationProposal,
+    review: crate::SupportReview,
 ) -> Result<(), String> {
     review.validate()?;
     if matches!(
         proposal.disposition,
-        ProposalDisposition::Accepted { .. } | ProposalDisposition::Rejected { .. }
+        crate::ProposalDisposition::Accepted { .. } | crate::ProposalDisposition::Rejected { .. }
     ) {
         return Err("cannot change support review after a terminal disposition".to_owned());
     }
@@ -159,16 +149,16 @@ pub fn record_support_review(
     Ok(())
 }
 
-fn pending_support() -> SupportReview {
-    SupportReview {
+fn pending_support() -> crate::SupportReview {
+    crate::SupportReview {
         actor: "deterministic-generator".to_owned(),
         policy: "semantic-review/pending".to_owned(),
-        outcome: SupportOutcome::UnsupportedHypothesis,
+        outcome: crate::SupportOutcome::UnsupportedHypothesis,
         detail: "mechanical source/span check only; semantic support review required".to_owned(),
     }
 }
 
-fn validate_inputs(batch: &InputBatch, inputs: &[GeneratorInput]) -> Result<(), String> {
+fn validate_inputs(batch: &crate::InputBatch, inputs: &[GeneratorInput]) -> Result<(), String> {
     let mut seen = std::collections::BTreeSet::new();
     for input in inputs {
         if !seen.insert(input.key) {
@@ -198,7 +188,7 @@ fn validate_inputs(batch: &InputBatch, inputs: &[GeneratorInput]) -> Result<(), 
     Ok(())
 }
 
-fn validate_span(text: &str, span: SourceSpan, label: &str) -> Result<(), String> {
+fn validate_span(text: &str, span: mneme_core::SourceSpan, label: &str) -> Result<(), String> {
     let end = usize::try_from(span.end())
         .ok()
         .and_then(|end| end.checked_add(1))
@@ -212,7 +202,7 @@ fn validate_span(text: &str, span: SourceSpan, label: &str) -> Result<(), String
     Ok(())
 }
 
-fn quote_matches(text: &str, span: SourceSpan, quote: &str) -> bool {
+fn quote_matches(text: &str, span: mneme_core::SourceSpan, quote: &str) -> bool {
     let Some(start) = usize::try_from(span.start()).ok() else {
         return false;
     };
@@ -229,8 +219,6 @@ fn quote_matches(text: &str, span: SourceSpan, quote: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{fixture, validate_proposal_against_batch};
-    use mneme_core::RevisionId;
 
     struct TestExtractor {
         claim: ExtractedClaim,
@@ -242,15 +230,15 @@ mod tests {
         }
     }
 
-    fn input_and_job() -> (GeneratorInput, ConsolidationJob, InputBatch) {
-        let fixture = fixture().expect("fixture");
+    fn input_and_job() -> (GeneratorInput, crate::ConsolidationJob, crate::InputBatch) {
+        let fixture = crate::fixture().expect("fixture");
         let input = GeneratorInput {
-            key: InputKey {
-                record_id: RecordId::from_bytes([0x20; 16]),
-                revision_id: RevisionId::from_bytes([0x21; 16]),
+            key: crate::InputKey {
+                record_id: mneme_core::RecordId::from_bytes([0x20; 16]),
+                revision_id: mneme_core::RevisionId::from_bytes([0x21; 16]),
             },
             text: "The Cedar project uses SQLite.".to_owned(),
-            span: SourceSpan::new(0, 29).ok(),
+            span: mneme_core::SourceSpan::new(0, 29).ok(),
         };
         (input, fixture.job.clone(), fixture.job.batch.clone())
     }
@@ -258,10 +246,10 @@ mod tests {
     fn valid_claim() -> ExtractedClaim {
         ExtractedClaim {
             claim_id: "storage".to_owned(),
-            subject: RecordId::from_bytes([0x10; 16]),
+            subject: mneme_core::RecordId::from_bytes([0x10; 16]),
             predicate: "storage-engine".to_owned(),
-            value: Value::string("SQLite"),
-            span: SourceSpan::new(23, 28).expect("span"),
+            value: mneme_core::Value::string("SQLite"),
+            span: mneme_core::SourceSpan::new(23, 28).expect("span"),
             quote: "SQLite".to_owned(),
         }
     }
@@ -275,17 +263,17 @@ mod tests {
         assert_eq!(proposals.len(), 1);
         assert!(matches!(
             proposals[0].operation,
-            ProposalOperation::Summary(_)
+            crate::ProposalOperation::Summary(_)
         ));
         assert_eq!(
             proposals[0].support.outcome,
-            SupportOutcome::UnsupportedHypothesis
+            crate::SupportOutcome::UnsupportedHypothesis
         );
         assert!(matches!(
             proposals[0].disposition,
-            ProposalDisposition::Pending
+            crate::ProposalDisposition::Pending
         ));
-        validate_proposal_against_batch(&proposals[0], &batch).expect("batch-compatible");
+        crate::validate_proposal_against_batch(&proposals[0], &batch).expect("batch-compatible");
     }
 
     #[test]
@@ -299,7 +287,7 @@ mod tests {
         assert_eq!(proposals.len(), 1);
         assert_eq!(
             proposals[0].support.outcome,
-            SupportOutcome::UnsupportedHypothesis
+            crate::SupportOutcome::UnsupportedHypothesis
         );
         let mut invalid = valid_claim();
         invalid.quote = "WAL".to_owned();
@@ -312,7 +300,7 @@ mod tests {
     fn valid_citation_does_not_certify_unsupported_detail() {
         let (input, job, batch) = input_and_job();
         let mut claim = valid_claim();
-        claim.value = Value::string("PostgreSQL");
+        claim.value = mneme_core::Value::string("PostgreSQL");
         let mut proposal = generate_extracted(
             &job,
             &batch,
@@ -325,20 +313,20 @@ mod tests {
         .remove(0);
         record_support_review(
             &mut proposal,
-            SupportReview {
+            crate::SupportReview {
                 actor: "reviewer".to_owned(),
                 policy: "semantic-support/v1".to_owned(),
-                outcome: SupportOutcome::Rejected,
+                outcome: crate::SupportOutcome::Rejected,
                 detail: "the cited span says SQLite, not PostgreSQL".to_owned(),
             },
         )
         .expect("review");
         assert!(!matches!(
             proposal.disposition,
-            ProposalDisposition::Accepted { .. }
+            crate::ProposalDisposition::Accepted { .. }
         ));
-        proposal.disposition = ProposalDisposition::Accepted {
-            decision: RecordId::from_bytes([0x50; 16]),
+        proposal.disposition = crate::ProposalDisposition::Accepted {
+            decision: mneme_core::RecordId::from_bytes([0x50; 16]),
         };
         assert!(proposal.validate().is_err());
     }
@@ -364,7 +352,7 @@ mod tests {
             reason: "source pruned".to_owned(),
         };
         job.batch = fixture.job.batch.clone();
-        input.span = Some(SourceSpan::new(0, 6).expect("span"));
+        input.span = Some(mneme_core::SourceSpan::new(0, 6).expect("span"));
         assert!(
             generator
                 .generate(&job, &fixture.job.batch, std::slice::from_ref(&input))

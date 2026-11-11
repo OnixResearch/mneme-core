@@ -5,18 +5,12 @@
 //! bases, idempotency conflicts, validation refusals, publication divergence,
 //! and injected faults are separate variants so callers can react truthfully.
 
-use std::path::PathBuf;
-
-use mneme_core::{Diagnostic, WorkspaceRevisionId};
-
-use crate::faults::FaultPoint;
-
 /// A workspace operation failure.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("I/O error at {path}: {source}")]
     Io {
-        path: PathBuf,
+        path: std::path::PathBuf,
         #[source]
         source: std::io::Error,
     },
@@ -32,19 +26,19 @@ pub enum StoreError {
 
     #[error("stale base revision: requested {base}, current {current}")]
     StaleBase {
-        base: WorkspaceRevisionId,
-        current: WorkspaceRevisionId,
+        base: mneme_core::WorkspaceRevisionId,
+        current: mneme_core::WorkspaceRevisionId,
     },
 
     #[error("idempotency key {key:?} was reused with different command content")]
     IdempotencyConflict { key: String },
 
     #[error("record validation failed")]
-    Validation(Vec<Diagnostic>),
+    Validation(Vec<mneme_core::Diagnostic>),
 
     #[error("integrity failure for revision {revision}: {reason}")]
     Integrity {
-        revision: WorkspaceRevisionId,
+        revision: mneme_core::WorkspaceRevisionId,
         reason: String,
     },
 
@@ -83,7 +77,7 @@ pub enum StoreError {
     InvalidCandidate { path: String },
 
     #[error("fault injected at {0:?}")]
-    InjectedFault(FaultPoint),
+    InjectedFault(crate::faults::FaultPoint),
 
     #[error("eligibility generation advanced from {pinned} to {current}")]
     BarrierAdvanced { pinned: u64, current: u64 },
@@ -103,7 +97,7 @@ pub enum StoreError {
 
 impl StoreError {
     /// Wrap an I/O error with its path.
-    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+    pub fn io(path: impl Into<std::path::PathBuf>, source: std::io::Error) -> Self {
         StoreError::Io {
             path: path.into(),
             source,

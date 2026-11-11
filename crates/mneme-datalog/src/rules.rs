@@ -1,16 +1,9 @@
 //! Restricted rule validation and stratification.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use mneme_core::{ContentDigest, ScopeId, Value, WorkspaceRevisionId};
-
-use crate::{
-    AggregateFunction, Atom, Limits, Literal, PROFILE_VERSION, RuleBundle, RuleDiagnostic,
-    RuleProgram, Term,
-};
-
 /// Validate a rule bundle before any evaluation or publication.
-pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>> {
+pub fn validate(
+    bundle: &crate::RuleBundle,
+) -> Result<crate::RuleProgram, Vec<crate::RuleDiagnostic>> {
     let mut diagnostics = Vec::new();
     if bundle.id.trim().is_empty() {
         diagnostics.push(diag("bundle-id", None, "rule bundle id is empty"));
@@ -25,7 +18,7 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
             "rule bundle schema version is zero",
         ));
     }
-    let mut arities = BTreeMap::new();
+    let mut arities = std::collections::BTreeMap::new();
     for (predicate, arity) in &bundle.base_predicates {
         if !valid_name(predicate) {
             diagnostics.push(diag(
@@ -43,7 +36,7 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
         }
         arities.insert(predicate.clone(), *arity);
     }
-    let mut heads = BTreeMap::new();
+    let mut heads = std::collections::BTreeMap::new();
     // Predeclare every rule head so a body may reference a rule defined later.
     for rule in &bundle.rules {
         if rule.id.trim().is_empty() {
@@ -80,14 +73,14 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
         }
     }
     for rule in &bundle.rules {
-        let mut positive_vars = BTreeSet::new();
-        let mut negative_vars = BTreeSet::new();
-        let mut compare_vars = BTreeSet::new();
+        let mut positive_vars = std::collections::BTreeSet::new();
+        let mut negative_vars = std::collections::BTreeSet::new();
+        let mut compare_vars = std::collections::BTreeSet::new();
         let mut aggregate = None;
         let mut is_seen_forbidden = false;
         for (index, literal) in rule.body.iter().enumerate() {
             match literal {
-                Literal::Forbidden(name) => {
+                crate::Literal::Forbidden(name) => {
                     is_seen_forbidden = true;
                     diagnostics.push(diag(
                         "forbidden-builtin",
@@ -95,7 +88,7 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
                         format!("forbidden operation {name:?}"),
                     ));
                 }
-                Literal::Positive(atom) | Literal::Negative(atom) => {
+                crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
                     validate_atom(
                         atom,
                         &arities,
@@ -105,10 +98,10 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
                         &mut diagnostics,
                     );
                     match literal {
-                        Literal::Positive(_) => {
+                        crate::Literal::Positive(_) => {
                             positive_vars.extend(atom.terms.iter().filter_map(term_var));
                         }
-                        Literal::Negative(_) => {
+                        crate::Literal::Negative(_) => {
                             negative_vars.extend(atom.terms.iter().filter_map(term_var));
                             if !bundle.complete_predicates.contains(&atom.predicate) {
                                 diagnostics.push(diag(
@@ -124,11 +117,11 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
                         _ => {}
                     }
                 }
-                Literal::Compare { left, right, .. } => {
+                crate::Literal::Compare { left, right, .. } => {
                     compare_vars.extend(term_var(left));
                     compare_vars.extend(term_var(right));
                 }
-                Literal::Aggregate { input, output, .. } => {
+                crate::Literal::Aggregate { input, output, .. } => {
                     if aggregate.is_some() {
                         diagnostics.push(diag(
                             "aggregate-count",
@@ -162,7 +155,7 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
                         rule.body.iter().any(|literal| {
                             matches!(
                                 literal,
-                                Literal::Positive(atom) if &atom.predicate == predicate
+                                crate::Literal::Positive(atom) if &atom.predicate == predicate
                             )
                         })
                     }) {
@@ -179,7 +172,7 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
         if aggregate.is_some() {
             let mut is_all_positive_complete = true;
             for literal in &rule.body {
-                if let Literal::Positive(atom) = literal
+                if let crate::Literal::Positive(atom) = literal
                     && !bundle.complete_predicates.contains(&atom.predicate)
                 {
                     is_all_positive_complete = false;
@@ -244,7 +237,7 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
             arities.insert(predicate.clone(), *arity);
         }
         match strata(bundle, &arities) {
-            Ok(strata) => Ok(RuleProgram {
+            Ok(strata) => Ok(crate::RuleProgram {
                 bundle: bundle.clone(),
                 arities,
                 strata,
@@ -260,12 +253,12 @@ pub fn validate(bundle: &RuleBundle) -> Result<RuleProgram, Vec<RuleDiagnostic>>
 }
 
 fn validate_atom(
-    atom: &Atom,
-    arities: &BTreeMap<String, usize>,
-    heads: &BTreeMap<String, usize>,
+    atom: &crate::Atom,
+    arities: &std::collections::BTreeMap<String, usize>,
+    heads: &std::collections::BTreeMap<String, usize>,
     _rules: &[crate::Rule],
     rule: &str,
-    diagnostics: &mut Vec<RuleDiagnostic>,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
 ) {
     let Some(expected) = arities
         .get(&atom.predicate)
@@ -292,13 +285,13 @@ fn validate_atom(
 }
 
 fn strata(
-    bundle: &RuleBundle,
-    arities: &BTreeMap<String, usize>,
-) -> Result<BTreeMap<String, usize>, Vec<RuleDiagnostic>> {
+    bundle: &crate::RuleBundle,
+    arities: &std::collections::BTreeMap<String, usize>,
+) -> Result<std::collections::BTreeMap<String, usize>, Vec<crate::RuleDiagnostic>> {
     let mut strata = arities
         .keys()
         .map(|predicate| (predicate.clone(), 0_usize))
-        .collect::<BTreeMap<_, _>>();
+        .collect::<std::collections::BTreeMap<_, _>>();
     let limit = arities.len() + bundle.rules.len() + 2;
     for _ in 0..limit {
         let mut is_changed = false;
@@ -307,14 +300,14 @@ fn strata(
             let mut is_nonmonotone = false;
             for literal in &rule.body {
                 match literal {
-                    Literal::Positive(atom) => {
+                    crate::Literal::Positive(atom) => {
                         base = base.max(*strata.get(&atom.predicate).unwrap_or(&0));
                     }
-                    Literal::Negative(atom) => {
+                    crate::Literal::Negative(atom) => {
                         base = base.max(*strata.get(&atom.predicate).unwrap_or(&0));
                         is_nonmonotone = true;
                     }
-                    Literal::Aggregate { .. } => is_nonmonotone = true,
+                    crate::Literal::Aggregate { .. } => is_nonmonotone = true,
                     _ => {}
                 }
             }
@@ -336,14 +329,14 @@ fn strata(
     )])
 }
 
-fn head_vars(atom: &Atom) -> Vec<String> {
+fn head_vars(atom: &crate::Atom) -> Vec<String> {
     atom.terms.iter().filter_map(term_var).collect()
 }
 
-fn term_var(term: &Term) -> Option<String> {
+fn term_var(term: &crate::Term) -> Option<String> {
     match term {
-        Term::Variable(name) => Some(name.clone()),
-        Term::Constant(_) => None,
+        crate::Term::Variable(name) => Some(name.clone()),
+        crate::Term::Constant(_) => None,
     }
 }
 
@@ -356,8 +349,12 @@ fn valid_name(name: &str) -> bool {
         && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
 }
 
-fn diag(code: &'static str, rule: Option<String>, message: impl Into<String>) -> RuleDiagnostic {
-    RuleDiagnostic {
+fn diag(
+    code: &'static str,
+    rule: Option<String>,
+    message: impl Into<String>,
+) -> crate::RuleDiagnostic {
+    crate::RuleDiagnostic {
         code,
         rule,
         message: message.into(),
@@ -366,131 +363,144 @@ fn diag(code: &'static str, rule: Option<String>, message: impl Into<String>) ->
 
 /// Stable build identity from context and rules.
 pub(crate) fn build_id(
-    revision: WorkspaceRevisionId,
-    scope: &ScopeId,
+    revision: mneme_core::WorkspaceRevisionId,
+    scope: &mneme_core::ScopeId,
     generation: u64,
-    bundle: &RuleBundle,
-    limits: &Limits,
-    incomplete_extents: &BTreeSet<String>,
+    bundle: &crate::RuleBundle,
+    limits: &crate::Limits,
+    incomplete_extents: &std::collections::BTreeSet<String>,
 ) -> String {
     let incomplete = incomplete_extents
         .iter()
         .cloned()
-        .map(Value::string)
-        .collect::<BTreeSet<_>>();
-    let value = Value::record_named(
+        .map(mneme_core::Value::string)
+        .collect::<std::collections::BTreeSet<_>>();
+    let value = mneme_core::Value::record_named(
         "datalog-build-context",
         vec![
             revision.to_value(),
             scope.to_value(),
-            Value::integer(generation as i64),
-            Value::string(PROFILE_VERSION.to_owned()),
+            mneme_core::Value::integer(generation as i64),
+            mneme_core::Value::string(crate::PROFILE_VERSION.to_owned()),
             bundle_value(bundle),
-            Value::record_named(
+            mneme_core::Value::record_named(
                 "datalog-limits",
                 vec![
-                    Value::integer(limits.max_work),
-                    Value::string(limits.max_time_ms.to_string()),
-                    Value::integer(limits.max_result_rows),
-                    Value::integer(limits.max_supports_per_fact),
-                    Value::integer(limits.max_recursion_depth),
+                    mneme_core::Value::integer(limits.max_work),
+                    mneme_core::Value::string(limits.max_time_ms.to_string()),
+                    mneme_core::Value::integer(limits.max_result_rows),
+                    mneme_core::Value::integer(limits.max_supports_per_fact),
+                    mneme_core::Value::integer(limits.max_recursion_depth),
                 ],
             ),
-            Value::set(incomplete),
+            mneme_core::Value::set(incomplete),
         ],
     );
-    ContentDigest::of_payload(&value).to_hex()
+    mneme_core::ContentDigest::of_payload(&value).to_hex()
 }
 
-fn bundle_value(bundle: &RuleBundle) -> Value {
+fn bundle_value(bundle: &crate::RuleBundle) -> mneme_core::Value {
     let base = bundle
         .base_predicates
         .iter()
-        .map(|(name, arity)| (Value::string(name.clone()), Value::integer(*arity as i64)))
-        .collect::<BTreeMap<_, _>>();
+        .map(|(name, arity)| {
+            (
+                mneme_core::Value::string(name.clone()),
+                mneme_core::Value::integer(*arity as i64),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
     let complete = bundle
         .complete_predicates
         .iter()
         .cloned()
-        .map(Value::string)
-        .collect::<BTreeSet<_>>();
+        .map(mneme_core::Value::string)
+        .collect::<std::collections::BTreeSet<_>>();
     let rules = bundle
         .rules
         .iter()
         .map(|rule| {
-            Value::record_named(
+            mneme_core::Value::record_named(
                 "datalog-rule",
                 vec![
-                    Value::string(rule.id.clone()),
+                    mneme_core::Value::string(rule.id.clone()),
                     atom_value(&rule.head),
-                    Value::sequence(rule.body.iter().map(literal_value).collect()),
+                    mneme_core::Value::sequence(rule.body.iter().map(literal_value).collect()),
                 ],
             )
         })
-        .collect::<BTreeSet<_>>();
-    Value::record_named(
+        .collect::<std::collections::BTreeSet<_>>();
+    mneme_core::Value::record_named(
         "datalog-bundle",
         vec![
-            Value::string(bundle.id.clone()),
-            Value::string(bundle.version.clone()),
-            Value::integer(i64::from(bundle.schema_version)),
-            Value::Dictionary(base),
-            Value::set(complete),
-            Value::set(rules),
+            mneme_core::Value::string(bundle.id.clone()),
+            mneme_core::Value::string(bundle.version.clone()),
+            mneme_core::Value::integer(i64::from(bundle.schema_version)),
+            mneme_core::Value::Dictionary(base),
+            mneme_core::Value::set(complete),
+            mneme_core::Value::set(rules),
         ],
     )
 }
 
-fn atom_value(atom: &Atom) -> Value {
-    Value::record_named(
+fn atom_value(atom: &crate::Atom) -> mneme_core::Value {
+    mneme_core::Value::record_named(
         "datalog-atom",
         vec![
-            Value::string(atom.predicate.clone()),
-            Value::sequence(atom.terms.iter().map(term_value).collect()),
+            mneme_core::Value::string(atom.predicate.clone()),
+            mneme_core::Value::sequence(atom.terms.iter().map(term_value).collect()),
         ],
     )
 }
 
-fn term_value(term: &Term) -> Value {
+fn term_value(term: &crate::Term) -> mneme_core::Value {
     match term {
-        Term::Variable(name) => {
-            Value::record_named("datalog-var", vec![Value::string(name.clone())])
+        crate::Term::Variable(name) => mneme_core::Value::record_named(
+            "datalog-var",
+            vec![mneme_core::Value::string(name.clone())],
+        ),
+        crate::Term::Constant(value) => {
+            mneme_core::Value::record_named("datalog-const", vec![value.clone()])
         }
-        Term::Constant(value) => Value::record_named("datalog-const", vec![value.clone()]),
     }
 }
 
-fn literal_value(literal: &Literal) -> Value {
+fn literal_value(literal: &crate::Literal) -> mneme_core::Value {
     match literal {
-        Literal::Positive(atom) => Value::record_named("positive", vec![atom_value(atom)]),
-        Literal::Negative(atom) => Value::record_named("negative", vec![atom_value(atom)]),
-        Literal::Compare { op, left, right } => Value::record_named(
+        crate::Literal::Positive(atom) => {
+            mneme_core::Value::record_named("positive", vec![atom_value(atom)])
+        }
+        crate::Literal::Negative(atom) => {
+            mneme_core::Value::record_named("negative", vec![atom_value(atom)])
+        }
+        crate::Literal::Compare { op, left, right } => mneme_core::Value::record_named(
             "compare",
             vec![
-                Value::symbol(format!("{op:?}").to_lowercase()),
+                mneme_core::Value::symbol(format!("{op:?}").to_lowercase()),
                 term_value(left),
                 term_value(right),
             ],
         ),
-        Literal::Aggregate {
+        crate::Literal::Aggregate {
             function,
             input,
             output,
-        } => Value::record_named(
+        } => mneme_core::Value::record_named(
             "aggregate",
             vec![
-                Value::symbol(match function {
-                    AggregateFunction::Count => "count".to_owned(),
-                    AggregateFunction::Sum => "sum".to_owned(),
-                    AggregateFunction::Min => "min".to_owned(),
-                    AggregateFunction::Max => "max".to_owned(),
+                mneme_core::Value::symbol(match function {
+                    crate::AggregateFunction::Count => "count".to_owned(),
+                    crate::AggregateFunction::Sum => "sum".to_owned(),
+                    crate::AggregateFunction::Min => "min".to_owned(),
+                    crate::AggregateFunction::Max => "max".to_owned(),
                 }),
                 term_value(input),
-                Value::string(output.clone()),
+                mneme_core::Value::string(output.clone()),
             ],
         ),
-        Literal::Forbidden(name) => {
-            Value::record_named("forbidden", vec![Value::string(name.clone())])
-        }
+        crate::Literal::Forbidden(name) => mneme_core::Value::record_named(
+            "forbidden",
+            vec![mneme_core::Value::string(name.clone())],
+        ),
     }
 }

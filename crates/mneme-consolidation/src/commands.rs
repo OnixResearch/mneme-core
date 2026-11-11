@@ -5,24 +5,17 @@
 //! with the same idempotency key returns its prior outcome; a different key
 //! after a terminal decision is an explicit conflict.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use mneme_core::{RecordId, RevisionId, ScopeId, WorkspaceRevisionId};
-
-use crate::procedure::{ProcedureValidator, WorkerPrivileges, validate_procedure};
-use crate::{
-    ConsolidationProposal, InputKey, ProposalDisposition, ProposalOperation, SupportOutcome,
-};
+use crate::procedure::ProcedureValidator;
 
 /// Current workspace state used by acceptance preconditions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcceptanceState {
-    pub scope: ScopeId,
-    pub base_revision: WorkspaceRevisionId,
+    pub scope: mneme_core::ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
     pub eligibility_generation: u64,
-    pub forgotten: BTreeSet<RecordId>,
-    pub targets: BTreeMap<RecordId, RevisionId>,
-    pub sources: BTreeMap<InputKey, SourceState>,
+    pub forgotten: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub targets: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RevisionId>,
+    pub sources: std::collections::BTreeMap<crate::InputKey, SourceState>,
 }
 
 /// Availability and exact digest of one source premise.
@@ -46,7 +39,7 @@ impl SourceState {
 /// A registered proposal plus the state it was reviewed against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegisteredProposal {
-    pub proposal: ConsolidationProposal,
+    pub proposal: crate::ConsolidationProposal,
     pub proposal_revision: u64,
     pub expected: AcceptanceState,
 }
@@ -54,7 +47,7 @@ pub struct RegisteredProposal {
 /// Read-only proposal inspection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalInspection {
-    pub proposal: ConsolidationProposal,
+    pub proposal: crate::ConsolidationProposal,
     pub proposal_revision: u64,
     pub expected: AcceptanceState,
     pub current: AcceptanceState,
@@ -67,7 +60,7 @@ pub struct AcceptanceCommand {
     pub proposal_id: String,
     pub proposal_revision: u64,
     pub expected: AcceptanceState,
-    pub decision: RecordId,
+    pub decision: mneme_core::RecordId,
 }
 
 /// A separate rejection command.
@@ -85,7 +78,7 @@ pub struct ProcedureAcceptanceCommand {
     pub idempotency_key: String,
     pub proposal_id: String,
     pub proposal_revision: u64,
-    pub decision: RecordId,
+    pub decision: mneme_core::RecordId,
 }
 
 /// Why acceptance or rejection did not apply.
@@ -111,7 +104,7 @@ pub enum ConflictKind {
 pub enum CommandOutcome {
     Accepted {
         proposal_id: String,
-        decision: RecordId,
+        decision: mneme_core::RecordId,
         proposal_revision: u64,
     },
     Rejected {
@@ -134,26 +127,27 @@ pub enum CommandOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalRegistry {
     pub current: AcceptanceState,
-    proposals: BTreeMap<String, RegisteredProposal>,
-    acceptances: BTreeMap<String, (AcceptanceCommand, CommandOutcome)>,
-    rejections: BTreeMap<String, (RejectionCommand, CommandOutcome)>,
-    procedure_acceptances: BTreeMap<String, (ProcedureAcceptanceCommand, CommandOutcome)>,
+    proposals: std::collections::BTreeMap<String, RegisteredProposal>,
+    acceptances: std::collections::BTreeMap<String, (AcceptanceCommand, CommandOutcome)>,
+    rejections: std::collections::BTreeMap<String, (RejectionCommand, CommandOutcome)>,
+    procedure_acceptances:
+        std::collections::BTreeMap<String, (ProcedureAcceptanceCommand, CommandOutcome)>,
 }
 
 impl ProposalRegistry {
     pub fn new(current: AcceptanceState) -> Self {
         ProposalRegistry {
             current,
-            proposals: BTreeMap::new(),
-            acceptances: BTreeMap::new(),
-            rejections: BTreeMap::new(),
-            procedure_acceptances: BTreeMap::new(),
+            proposals: std::collections::BTreeMap::new(),
+            acceptances: std::collections::BTreeMap::new(),
+            rejections: std::collections::BTreeMap::new(),
+            procedure_acceptances: std::collections::BTreeMap::new(),
         }
     }
 
     pub fn register(
         &mut self,
-        proposal: ConsolidationProposal,
+        proposal: crate::ConsolidationProposal,
         proposal_revision: u64,
         expected: AcceptanceState,
     ) -> Result<(), String> {
@@ -212,7 +206,7 @@ impl ProposalRegistry {
         };
         if !matches!(
             registered.proposal.disposition,
-            ProposalDisposition::Pending
+            crate::ProposalDisposition::Pending
         ) {
             return CommandOutcome::Conflict {
                 kind: ConflictKind::AlreadyDecided,
@@ -227,7 +221,7 @@ impl ProposalRegistry {
         }
         if matches!(
             registered.proposal.operation,
-            ProposalOperation::Procedure(_)
+            crate::ProposalOperation::Procedure(_)
         ) {
             return self.conflict(
                 ConflictKind::ProcedureRequiresValidator,
@@ -236,7 +230,7 @@ impl ProposalRegistry {
         }
         if !matches!(
             registered.proposal.support.outcome,
-            SupportOutcome::Supported
+            crate::SupportOutcome::Supported
         ) {
             return self.conflict(
                 ConflictKind::UnsupportedAcceptance,
@@ -278,13 +272,13 @@ impl ProposalRegistry {
                     "proposal depends on explicitly forgotten evidence",
                 );
             }
-            let Some(current_source) = self.current.sources.get(&InputKey {
+            let Some(current_source) = self.current.sources.get(&crate::InputKey {
                 record_id: premise.record_id,
                 revision_id: premise.revision_id,
             }) else {
                 return self.conflict(ConflictKind::AlteredSource, "source is no longer present");
             };
-            let expected_source = registered.expected.sources.get(&InputKey {
+            let expected_source = registered.expected.sources.get(&crate::InputKey {
                 record_id: premise.record_id,
                 revision_id: premise.revision_id,
             });
@@ -316,7 +310,7 @@ impl ProposalRegistry {
                 detail: "proposal disappeared".to_owned(),
             };
         };
-        registered.proposal.disposition = ProposalDisposition::Accepted {
+        registered.proposal.disposition = crate::ProposalDisposition::Accepted {
             decision: command.decision,
         };
         registered.proposal_revision = registered.proposal_revision.saturating_add(1);
@@ -359,7 +353,7 @@ impl ProposalRegistry {
         };
         if !matches!(
             registered.proposal.disposition,
-            ProposalDisposition::Pending
+            crate::ProposalDisposition::Pending
         ) {
             return CommandOutcome::Conflict {
                 kind: ConflictKind::AlreadyDecided,
@@ -378,7 +372,7 @@ impl ProposalRegistry {
                 detail: "proposal disappeared".to_owned(),
             };
         };
-        registered.proposal.disposition = ProposalDisposition::Rejected {
+        registered.proposal.disposition = crate::ProposalDisposition::Rejected {
             reason: command.reason.clone(),
         };
         registered.proposal_revision = registered.proposal_revision.saturating_add(1);
@@ -399,7 +393,7 @@ impl ProposalRegistry {
         &mut self,
         command: ProcedureAcceptanceCommand,
         validator: &dyn ProcedureValidator,
-        privileges: &WorkerPrivileges,
+        privileges: &crate::procedure::WorkerPrivileges,
     ) -> CommandOutcome {
         if let Some((stored, _)) = self.procedure_acceptances.get(&command.idempotency_key) {
             return if stored == &command {
@@ -423,7 +417,7 @@ impl ProposalRegistry {
         };
         if !matches!(
             registered.proposal.disposition,
-            ProposalDisposition::Pending
+            crate::ProposalDisposition::Pending
         ) {
             return CommandOutcome::Conflict {
                 kind: ConflictKind::AlreadyDecided,
@@ -450,12 +444,14 @@ impl ProposalRegistry {
                 "eligibility generation changed",
             );
         }
-        let validation = match validate_procedure(&registered.proposal, validator, privileges) {
-            Ok(validation) => validation,
-            Err(error) => {
-                return self.conflict(ConflictKind::UnsupportedAcceptance, &error);
-            }
-        };
+        let validation =
+            match crate::procedure::validate_procedure(&registered.proposal, validator, privileges)
+            {
+                Ok(validation) => validation,
+                Err(error) => {
+                    return self.conflict(ConflictKind::UnsupportedAcceptance, &error);
+                }
+            };
         if !validation.approved {
             return self.conflict(
                 ConflictKind::UnsupportedAcceptance,
@@ -468,7 +464,7 @@ impl ProposalRegistry {
                 detail: "proposal disappeared".to_owned(),
             };
         };
-        registered.proposal.disposition = ProposalDisposition::Accepted {
+        registered.proposal.disposition = crate::ProposalDisposition::Accepted {
             decision: command.decision,
         };
         registered.proposal_revision = registered.proposal_revision.saturating_add(1);
@@ -493,22 +489,21 @@ impl ProposalRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixture;
 
     fn command() -> (AcceptanceCommand, AcceptanceState) {
-        let fixture = fixture().expect("fixture");
+        let fixture = crate::fixture().expect("fixture");
         let proposal = fixture.proposals[0].clone();
-        let source = InputKey {
-            record_id: RecordId::from_bytes([0x20; 16]),
-            revision_id: RevisionId::from_bytes([0x21; 16]),
+        let source = crate::InputKey {
+            record_id: mneme_core::RecordId::from_bytes([0x20; 16]),
+            revision_id: mneme_core::RevisionId::from_bytes([0x21; 16]),
         };
         let state = AcceptanceState {
             scope: fixture.job.scope.clone(),
             base_revision: fixture.job.base_revision,
             eligibility_generation: fixture.job.batch.eligibility_generation,
-            forgotten: BTreeSet::new(),
-            targets: BTreeMap::new(),
-            sources: BTreeMap::from([(
+            forgotten: std::collections::BTreeSet::new(),
+            targets: std::collections::BTreeMap::new(),
+            sources: std::collections::BTreeMap::from([(
                 source,
                 SourceState::Retained {
                     digest: "sha256:source".to_owned(),
@@ -521,14 +516,14 @@ mod tests {
                 proposal_id: proposal.proposal_id.clone(),
                 proposal_revision: 1,
                 expected: state.clone(),
-                decision: RecordId::from_bytes([0x50; 16]),
+                decision: mneme_core::RecordId::from_bytes([0x50; 16]),
             },
             state,
         )
     }
 
     fn registry() -> ProposalRegistry {
-        let fixture = fixture().expect("fixture");
+        let fixture = crate::fixture().expect("fixture");
         let (command, state) = command();
         let mut registry = ProposalRegistry::new(state.clone());
         registry
@@ -545,7 +540,7 @@ mod tests {
         let inspection = registry.inspect("proposal-summary").expect("inspect");
         assert!(matches!(
             inspection.proposal.disposition,
-            ProposalDisposition::Pending
+            crate::ProposalDisposition::Pending
         ));
         assert_eq!(registry, before);
     }
@@ -559,17 +554,18 @@ mod tests {
         ] {
             let mut registry = registry();
             if kind == ConflictKind::StaleBase {
-                registry.current.base_revision = WorkspaceRevisionId::from_bytes([0x99; 16]);
+                registry.current.base_revision =
+                    mneme_core::WorkspaceRevisionId::from_bytes([0x99; 16]);
             } else if kind == ConflictKind::ChangedTarget {
                 registry.current.targets.insert(
-                    RecordId::from_bytes([0x40; 16]),
-                    RevisionId::from_bytes([0x99; 16]),
+                    mneme_core::RecordId::from_bytes([0x40; 16]),
+                    mneme_core::RevisionId::from_bytes([0x99; 16]),
                 );
             } else {
                 registry.current.sources.insert(
-                    InputKey {
-                        record_id: RecordId::from_bytes([0x20; 16]),
-                        revision_id: RevisionId::from_bytes([0x21; 16]),
+                    crate::InputKey {
+                        record_id: mneme_core::RecordId::from_bytes([0x20; 16]),
+                        revision_id: mneme_core::RevisionId::from_bytes([0x21; 16]),
                     },
                     SourceState::Retained {
                         digest: "sha256:altered".to_owned(),
@@ -588,7 +584,7 @@ mod tests {
                     .expect("inspect")
                     .proposal
                     .disposition
-                    == ProposalDisposition::Pending
+                    == crate::ProposalDisposition::Pending
             );
         }
     }
@@ -667,7 +663,7 @@ mod tests {
         registry
             .current
             .forgotten
-            .insert(RecordId::from_bytes([0x20; 16]));
+            .insert(mneme_core::RecordId::from_bytes([0x20; 16]));
         let (command, _) = command();
         let first = registry.accept(command.clone());
         assert!(matches!(
@@ -691,9 +687,9 @@ mod tests {
     fn pruned_bytes_block_quotation_but_allow_claim_envelope() {
         let mut quoted = registry();
         let (quoted_command, _) = command();
-        let source = InputKey {
-            record_id: RecordId::from_bytes([0x20; 16]),
-            revision_id: RevisionId::from_bytes([0x21; 16]),
+        let source = crate::InputKey {
+            record_id: mneme_core::RecordId::from_bytes([0x20; 16]),
+            revision_id: mneme_core::RevisionId::from_bytes([0x21; 16]),
         };
         quoted.current.sources.insert(
             source,
@@ -776,7 +772,7 @@ mod tests {
         fn validate(
             &self,
             _procedure: &crate::ProcedureProposal,
-            _privileges: &WorkerPrivileges,
+            _privileges: &crate::procedure::WorkerPrivileges,
         ) -> Result<crate::procedure::ProcedureValidation, String> {
             Ok(crate::procedure::ProcedureValidation {
                 validator: self.identity().to_owned(),
@@ -789,9 +785,9 @@ mod tests {
     }
 
     fn procedure_registry() -> ProposalRegistry {
-        let fixture = fixture().expect("fixture");
+        let fixture = crate::fixture().expect("fixture");
         let mut proposal = fixture.proposals[2].clone();
-        proposal.disposition = ProposalDisposition::Pending;
+        proposal.disposition = crate::ProposalDisposition::Pending;
         let (_, state) = command();
         let mut registry = ProposalRegistry::new(state.clone());
         registry
@@ -805,7 +801,7 @@ mod tests {
             idempotency_key: "procedure-1".to_owned(),
             proposal_id: "proposal-procedure".to_owned(),
             proposal_revision: 1,
-            decision: RecordId::from_bytes([0x60; 16]),
+            decision: mneme_core::RecordId::from_bytes([0x60; 16]),
         }
     }
 
@@ -831,8 +827,8 @@ mod tests {
             executed: false,
             effects: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
-        let privileges = WorkerPrivileges {
-            allowed_tools: BTreeSet::from(["recall".to_owned()]),
+        let privileges = crate::procedure::WorkerPrivileges {
+            allowed_tools: std::collections::BTreeSet::from(["recall".to_owned()]),
             may_install_procedures: false,
         };
         let before = privileges.clone();
@@ -841,7 +837,7 @@ mod tests {
             .expect("inspect")
             .proposal;
         let content_before = match &content.operation {
-            ProposalOperation::Procedure(procedure) => procedure.content.clone(),
+            crate::ProposalOperation::Procedure(procedure) => procedure.content.clone(),
             _ => return,
         };
         assert!(matches!(
@@ -858,7 +854,7 @@ mod tests {
             .expect("inspect")
             .proposal;
         let content_after = match &after.operation {
-            ProposalOperation::Procedure(procedure) => procedure.content.clone(),
+            crate::ProposalOperation::Procedure(procedure) => procedure.content.clone(),
             _ => return,
         };
         assert_eq!(content_before, content_after);
@@ -867,8 +863,8 @@ mod tests {
     #[test]
     fn rejected_or_executing_validators_cannot_accept_procedure() {
         let mut rejected = procedure_registry();
-        let privileges = WorkerPrivileges {
-            allowed_tools: BTreeSet::new(),
+        let privileges = crate::procedure::WorkerPrivileges {
+            allowed_tools: std::collections::BTreeSet::new(),
             may_install_procedures: false,
         };
         let validator = TestValidator {
@@ -889,7 +885,7 @@ mod tests {
                 .expect("inspect")
                 .proposal
                 .disposition,
-            ProposalDisposition::Pending
+            crate::ProposalDisposition::Pending
         ));
 
         let mut executing = procedure_registry();

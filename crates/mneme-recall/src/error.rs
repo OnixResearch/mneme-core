@@ -1,12 +1,7 @@
 //! Recall failures that prevent constructing a qualified response.
 
-use mneme_datalog::DatalogError;
-use mneme_memory::MemoryError;
-use mneme_store::StoreError;
-use thiserror::Error;
-
 /// A recall infrastructure or request failure.
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum RecallError {
     #[error("invalid recall request: {0}")]
     InvalidRequest(String),
@@ -20,11 +15,11 @@ pub enum RecallError {
     #[error("requested mode {mode} is unavailable and fallback is disabled: {reason}")]
     ModeUnavailable { mode: String, reason: String },
     #[error("workspace: {0}")]
-    Store(#[from] StoreError),
+    Store(#[from] mneme_store::StoreError),
     #[error("memory: {0}")]
-    Memory(#[from] MemoryError),
+    Memory(#[from] mneme_memory::MemoryError),
     #[error("datalog: {0}")]
-    Datalog(#[from] DatalogError),
+    Datalog(#[from] mneme_datalog::DatalogError),
 }
 
 /// Recall result type.

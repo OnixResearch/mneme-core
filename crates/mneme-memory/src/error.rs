@@ -1,29 +1,26 @@
 //! Evidence-policy failures.
 
-use mneme_core::{Diagnostic, RecordId};
-use mneme_store::StoreError;
-
 /// A memory-layer failure.
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryError {
     #[error(transparent)]
-    Store(#[from] StoreError),
+    Store(#[from] mneme_store::StoreError),
 
     #[error("record {record} has an invalid {kind} payload: {message}")]
     InvalidRecord {
-        record: RecordId,
+        record: mneme_core::RecordId,
         kind: &'static str,
         message: String,
     },
 
     #[error("record {record} is missing")]
-    Missing { record: RecordId },
+    Missing { record: mneme_core::RecordId },
 
     #[error("policy refusal: {0}")]
     Policy(String),
 
     #[error("evidence validation failed")]
-    Validation(Vec<Diagnostic>),
+    Validation(Vec<mneme_core::Diagnostic>),
 
     #[error("field-addressed validation failed: {0}")]
     Invalid(String),
@@ -34,7 +31,11 @@ pub enum MemoryError {
 
 impl MemoryError {
     /// A typed payload failure.
-    pub fn invalid(record: RecordId, kind: &'static str, message: impl Into<String>) -> Self {
+    pub fn invalid(
+        record: mneme_core::RecordId,
+        kind: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
         MemoryError::InvalidRecord {
             record,
             kind,

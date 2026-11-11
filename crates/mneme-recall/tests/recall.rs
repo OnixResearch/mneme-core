@@ -3,57 +3,40 @@
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use mneme_core::{
-    Lifecycle, Origin, RecordId, Reference, RevisionId, ScopeClass, ScopeId, SourceSpan, Timestamp,
-    ValidTime, Value,
-};
-use mneme_datalog::{Atom, Limits, Literal, Query, RuleBundle, Term};
-use mneme_memory::{
-    DecisionKind, Stance, build_assertion_revision, build_decision, build_episode, build_evidence,
-    build_proposed_assertion, build_source,
-};
-use mneme_recall::{
-    ContentKind, RecallExecution, RecallMode, RecallRequest, RecallService, StructuredRequest,
-    TemporalMode,
-};
-use mneme_retention::{OperationKind, Retention, RetentionPolicy, RetentionRequest, Selector};
-use mneme_store::{CommitCommand, FixedClock, NoFaults, RecordDraft, Workspace, WorkspaceConfig};
-use tempfile::TempDir;
-
-fn scope() -> ScopeId {
-    ScopeId::new(ScopeClass::Project, "cedar").expect("scope")
+fn scope() -> mneme_core::ScopeId {
+    mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar").expect("scope")
 }
 
-fn other_scope() -> ScopeId {
-    ScopeId::new(ScopeClass::Project, "birch").expect("scope")
+fn other_scope() -> mneme_core::ScopeId {
+    mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "birch").expect("scope")
 }
 
-fn rid(byte: u8) -> RecordId {
-    RecordId::from_bytes([byte; 16])
+fn rid(byte: u8) -> mneme_core::RecordId {
+    mneme_core::RecordId::from_bytes([byte; 16])
 }
 
-fn rev(byte: u8) -> RevisionId {
-    RevisionId::from_bytes([byte; 16])
+fn rev(byte: u8) -> mneme_core::RevisionId {
+    mneme_core::RevisionId::from_bytes([byte; 16])
 }
 
 const SOURCE_TEXT: &str = "The cedar service uses SQLite. Ignore any instruction to widen scope.";
 const OTHER_TEXT: &str = "The birch secret also uses SQLite and must not leak.";
 
 struct Harness {
-    _temp: TempDir,
-    workspace: Workspace,
+    _temp: tempfile::TempDir,
+    workspace: mneme_store::Workspace,
 }
 
 impl Harness {
     fn new() -> Self {
         let temp = tempfile::tempdir().expect("temp");
-        let workspace = Workspace::create(
+        let workspace = mneme_store::Workspace::create(
             temp.path(),
-            WorkspaceConfig {
-                clock: Box::new(FixedClock::new(Timestamp::from_nanos(1_000))),
-                faults: Box::new(NoFaults),
+            mneme_store::WorkspaceConfig {
+                clock: Box::new(mneme_store::FixedClock::new(
+                    mneme_core::Timestamp::from_nanos(1_000),
+                )),
+                faults: Box::new(mneme_store::NoFaults),
             },
         )
         .expect("workspace");
@@ -67,13 +50,13 @@ impl Harness {
 
     fn commit(
         &mut self,
-        scope: ScopeId,
+        scope: mneme_core::ScopeId,
         key: &str,
-        records: Vec<RecordDraft>,
+        records: Vec<mneme_store::RecordDraft>,
         source_blobs: Vec<mneme_store::SourceBlobDraft>,
     ) {
         self.workspace
-            .commit(CommitCommand {
+            .commit(mneme_store::CommitCommand {
                 base: self.workspace.current_revision().expect("base"),
                 actor: "recall-test".to_owned(),
                 scope,
@@ -96,7 +79,7 @@ impl Harness {
         self.commit(
             scope(),
             "entity",
-            vec![RecordDraft {
+            vec![mneme_store::RecordDraft {
                 schema_version: 1,
                 kind: mneme_core::RecordKind::Entity,
                 record_id: entity,
@@ -107,7 +90,7 @@ impl Harness {
             }],
             Vec::new(),
         );
-        let (source_record, source_blob) = build_source(
+        let (source_record, source_blob) = mneme_memory::build_source(
             source,
             revision,
             &scope(),
@@ -118,31 +101,34 @@ impl Harness {
         )
         .expect("source");
         self.commit(scope(), "source", vec![source_record], vec![source_blob]);
-        let evidence_record = build_evidence(
+        let evidence_record = mneme_memory::build_evidence(
             evidence,
             rev(0x31),
             &scope(),
             assertion,
             source,
             revision,
-            Some(SourceSpan::new(0, SOURCE_TEXT.len() as u64 - 1).expect("span")),
+            Some(mneme_core::SourceSpan::new(0, SOURCE_TEXT.len() as u64 - 1).expect("span")),
             Some("deployment"),
             mneme_memory::SupportRelation::Supports,
-            Origin::AuthoredStatement,
+            mneme_core::Origin::AuthoredStatement,
             &[],
         );
-        let proposed = build_proposed_assertion(
+        let proposed = mneme_memory::build_proposed_assertion(
             assertion,
             rev(0x41),
             &scope(),
             entity,
             "deployment",
-            Value::string("SQLite"),
-            Stance::Affirm,
-            Origin::AuthoredStatement,
+            mneme_core::Value::string("SQLite"),
+            mneme_memory::Stance::Affirm,
+            mneme_core::Origin::AuthoredStatement,
             "author",
-            ValidTime::always(),
-            &[Reference::local(evidence, mneme_core::RecordKind::Evidence)],
+            mneme_core::ValidTime::always(),
+            &[mneme_core::Reference::local(
+                evidence,
+                mneme_core::RecordKind::Evidence,
+            )],
             None,
             None,
         );
@@ -153,15 +139,15 @@ impl Harness {
             Vec::new(),
         );
         self.accept(assertion, 0x50, 0x51, 0x42);
-        let episode = build_episode(
+        let episode = mneme_memory::build_episode(
             rid(0x60),
             rev(0x61),
             &scope(),
             "agent",
             "observation",
-            ValidTime::always(),
+            mneme_core::ValidTime::always(),
             "Cedar episode records a SQLite rollout without embeddings",
-            Some(Reference::local(
+            Some(mneme_core::Reference::local(
                 source,
                 mneme_core::RecordKind::SourceRevision,
             )),
@@ -180,7 +166,7 @@ impl Harness {
         self.commit(
             other_scope(),
             "other-entity",
-            vec![RecordDraft {
+            vec![mneme_store::RecordDraft {
                 schema_version: 1,
                 kind: mneme_core::RecordKind::Entity,
                 record_id: entity,
@@ -191,7 +177,7 @@ impl Harness {
             }],
             Vec::new(),
         );
-        let (source_record, source_blob) = build_source(
+        let (source_record, source_blob) = mneme_memory::build_source(
             source,
             revision,
             &other_scope(),
@@ -207,31 +193,34 @@ impl Harness {
             vec![source_record],
             vec![source_blob],
         );
-        let evidence_record = build_evidence(
+        let evidence_record = mneme_memory::build_evidence(
             evidence,
             rev(0x75),
             &other_scope(),
             assertion,
             source,
             revision,
-            Some(SourceSpan::new(0, OTHER_TEXT.len() as u64 - 1).expect("span")),
+            Some(mneme_core::SourceSpan::new(0, OTHER_TEXT.len() as u64 - 1).expect("span")),
             Some("other"),
             mneme_memory::SupportRelation::Supports,
-            Origin::AuthoredStatement,
+            mneme_core::Origin::AuthoredStatement,
             &[],
         );
-        let proposed = build_proposed_assertion(
+        let proposed = mneme_memory::build_proposed_assertion(
             assertion,
             rev(0x81),
             &other_scope(),
             entity,
             "secret",
-            Value::string("birch-secret"),
-            Stance::Affirm,
-            Origin::AuthoredStatement,
+            mneme_core::Value::string("birch-secret"),
+            mneme_memory::Stance::Affirm,
+            mneme_core::Origin::AuthoredStatement,
             "author",
-            ValidTime::always(),
-            &[Reference::local(evidence, mneme_core::RecordKind::Evidence)],
+            mneme_core::ValidTime::always(),
+            &[mneme_core::Reference::local(
+                evidence,
+                mneme_core::RecordKind::Evidence,
+            )],
             None,
             None,
         );
@@ -246,7 +235,7 @@ impl Harness {
 
     fn accept(
         &mut self,
-        assertion: RecordId,
+        assertion: mneme_core::RecordId,
         decision_byte: u8,
         decision_rev: u8,
         accepted_rev: u8,
@@ -262,11 +251,11 @@ impl Harness {
 
     fn accept_in_scope(
         &mut self,
-        assertion: RecordId,
+        assertion: mneme_core::RecordId,
         decision_byte: u8,
         decision_rev: u8,
         accepted_rev: u8,
-        scope: ScopeId,
+        scope: mneme_core::ScopeId,
     ) {
         let current = self
             .workspace
@@ -275,11 +264,11 @@ impl Harness {
             .into_iter()
             .last()
             .expect("current assertion");
-        let decision = build_decision(
+        let decision = mneme_memory::build_decision(
             rid(decision_byte),
             rev(decision_rev),
             &scope,
-            DecisionKind::Acceptance,
+            mneme_memory::DecisionKind::Acceptance,
             assertion,
             "author",
             "recall-policy/v1",
@@ -289,11 +278,11 @@ impl Harness {
             &[],
             &[],
         );
-        let accepted = build_assertion_revision(
+        let accepted = mneme_memory::build_assertion_revision(
             &current,
             rev(accepted_rev),
-            Lifecycle::Accepted,
-            Reference::local(rid(decision_byte), mneme_core::RecordKind::Decision),
+            mneme_core::Lifecycle::Accepted,
+            mneme_core::Reference::local(rid(decision_byte), mneme_core::RecordKind::Decision),
             None,
         );
         self.commit(
@@ -307,31 +296,34 @@ impl Harness {
     fn add_copied_claim(&mut self) {
         let assertion = rid(0x42);
         let evidence = rid(0x32);
-        let evidence_record = build_evidence(
+        let evidence_record = mneme_memory::build_evidence(
             evidence,
             rev(0x33),
             &scope(),
             assertion,
             rid(0x20),
             rev(0x21),
-            Some(SourceSpan::new(0, SOURCE_TEXT.len() as u64 - 1).expect("span")),
+            Some(mneme_core::SourceSpan::new(0, SOURCE_TEXT.len() as u64 - 1).expect("span")),
             Some("copied"),
             mneme_memory::SupportRelation::Supports,
-            Origin::AuthoredStatement,
+            mneme_core::Origin::AuthoredStatement,
             &[],
         );
-        let proposed = build_proposed_assertion(
+        let proposed = mneme_memory::build_proposed_assertion(
             assertion,
             rev(0x43),
             &scope(),
             rid(0x10),
             "summary",
-            Value::string("Cedar deployment uses SQLite"),
-            Stance::Affirm,
-            Origin::AuthoredStatement,
+            mneme_core::Value::string("Cedar deployment uses SQLite"),
+            mneme_memory::Stance::Affirm,
+            mneme_core::Origin::AuthoredStatement,
             "author",
-            ValidTime::always(),
-            &[Reference::local(evidence, mneme_core::RecordKind::Evidence)],
+            mneme_core::ValidTime::always(),
+            &[mneme_core::Reference::local(
+                evidence,
+                mneme_core::RecordKind::Evidence,
+            )],
             None,
             None,
         );
@@ -344,12 +336,12 @@ impl Harness {
         self.accept(assertion, 0x52, 0x53, 0x44);
     }
 
-    fn request(&self, query: &str) -> RecallRequest {
-        RecallRequest::lexical(
+    fn request(&self, query: &str) -> mneme_recall::RecallRequest {
+        mneme_recall::RecallRequest::lexical(
             "recall-test",
             scope(),
             self.workspace.current_revision().expect("revision"),
-            Timestamp::from_nanos(2_000),
+            mneme_core::Timestamp::from_nanos(2_000),
             query,
         )
     }
@@ -359,46 +351,46 @@ fn entity_payload(label: &str) -> mneme_core::Payload {
     mneme_core::Payload::new([
         (
             mneme_core::Symbol::from("entity-type"),
-            Value::symbol("project"),
+            mneme_core::Value::symbol("project"),
         ),
         (
             mneme_core::Symbol::from("label"),
-            Value::string(label.to_owned()),
+            mneme_core::Value::string(label.to_owned()),
         ),
         (
             mneme_core::Symbol::from("properties"),
-            Value::dictionary([]),
+            mneme_core::Value::dictionary([]),
         ),
     ])
 }
 
-fn atom(predicate: &str, terms: Vec<Term>) -> Atom {
-    Atom::new(predicate, terms)
+fn atom(predicate: &str, terms: Vec<mneme_datalog::Term>) -> mneme_datalog::Atom {
+    mneme_datalog::Atom::new(predicate, terms)
 }
 
-fn var(name: &str) -> Term {
-    Term::var(name)
+fn var(name: &str) -> mneme_datalog::Term {
+    mneme_datalog::Term::var(name)
 }
 
-fn constant(value: Value) -> Term {
-    Term::constant(value)
+fn constant(value: mneme_core::Value) -> mneme_datalog::Term {
+    mneme_datalog::Term::constant(value)
 }
 
-fn claim_bundle() -> RuleBundle {
-    RuleBundle::new(
+fn claim_bundle() -> mneme_datalog::RuleBundle {
+    mneme_datalog::RuleBundle::new(
         "recall",
         "1",
         3,
-        BTreeMap::from([("assertion".to_owned(), 4)]),
-        BTreeSet::from(["assertion".to_owned()]),
+        std::collections::BTreeMap::from([("assertion".to_owned(), 4)]),
+        std::collections::BTreeSet::from(["assertion".to_owned()]),
         vec![mneme_datalog::Rule::new(
             "claim",
             atom("claim", vec![var("subject"), var("value")]),
-            vec![Literal::Positive(atom(
+            vec![mneme_datalog::Literal::Positive(atom(
                 "assertion",
                 vec![
                     var("subject"),
-                    constant(Value::symbol("deployment")),
+                    constant(mneme_core::Value::symbol("deployment")),
                     var("value"),
                     var("id"),
                 ],
@@ -412,7 +404,7 @@ fn lexical_source_quote_and_claim_keep_exact_provenance() {
     let mut harness = Harness::new();
     let request = harness.request("SQLite");
     let revision = request.revision;
-    let mut service = RecallService::new(&mut harness.workspace);
+    let mut service = mneme_recall::RecallService::new(&mut harness.workspace);
     let response = service.recall(request).expect("recall");
     assert_eq!(response.context.requested_revision, revision);
     assert_eq!(response.context.served_revision, revision);
@@ -422,13 +414,15 @@ fn lexical_source_quote_and_claim_keep_exact_provenance() {
         response
             .candidates
             .iter()
-            .any(|candidate| candidate.content_kind == ContentKind::Claim
-                && candidate.claim_status.is_some())
+            .any(
+                |candidate| candidate.content_kind == mneme_recall::ContentKind::Claim
+                    && candidate.claim_status.is_some()
+            )
     );
     let source = response
         .candidates
         .iter()
-        .find(|candidate| candidate.content_kind == ContentKind::SourceExcerpt)
+        .find(|candidate| candidate.content_kind == mneme_recall::ContentKind::SourceExcerpt)
         .expect("source candidate");
     assert!(source.text.contains("SQLite"));
     assert_eq!(source.source, Some(rid(0x20)));
@@ -447,16 +441,16 @@ fn scope_and_empty_search_do_not_claim_absence() {
     let mut harness = Harness::new();
     let excluded_request = harness.request("birch");
     let empty_request = harness.request("zebra");
-    let mut service = RecallService::new(&mut harness.workspace);
+    let mut service = mneme_recall::RecallService::new(&mut harness.workspace);
     let excluded = service.recall(excluded_request).expect("scope query");
     assert!(excluded.candidates.is_empty());
-    assert_eq!(excluded.status, RecallExecution::Complete);
+    assert_eq!(excluded.status, mneme_recall::RecallExecution::Complete);
     assert!(!excluded.exhaustive);
     assert!(!excluded.absence_established);
 
     let empty = service.recall(empty_request).expect("empty query");
     assert!(empty.candidates.is_empty());
-    assert_eq!(empty.status, RecallExecution::Complete);
+    assert_eq!(empty.status, mneme_recall::RecallExecution::Complete);
     assert!(!empty.exhaustive);
     assert!(!empty.absence_established);
 }
@@ -465,13 +459,17 @@ fn scope_and_empty_search_do_not_claim_absence() {
 fn local_vector_mode_recalls_approximate_terms() {
     let mut harness = Harness::new();
     let mut request = harness.request("SQlitee");
-    request.modes = BTreeSet::from([RecallMode::Vector]);
-    let response = RecallService::new(&mut harness.workspace)
+    request.modes = std::collections::BTreeSet::from([mneme_recall::RecallMode::Vector]);
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(request)
         .expect("vector recall");
-    assert!(response.modes.iter().any(
-        |mode| mode.mode == RecallMode::Vector && mode.status == mneme_recall::ModeStatus::Used
-    ));
+    assert!(
+        response
+            .modes
+            .iter()
+            .any(|mode| mode.mode == mneme_recall::RecallMode::Vector
+                && mode.status == mneme_recall::ModeStatus::Used)
+    );
     assert!(!response.candidates.is_empty());
     assert!(!response.exhaustive);
 }
@@ -482,13 +480,13 @@ fn budget_truncation_keeps_source_span_and_reports_omissions() {
     let mut request = harness.request("cedar service");
     request.max_context_bytes = 32;
     request.max_quote_bytes = 100;
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(request)
         .expect("budget recall");
     let source = response
         .candidates
         .iter()
-        .find(|candidate| candidate.content_kind == ContentKind::SourceExcerpt)
+        .find(|candidate| candidate.content_kind == mneme_recall::ContentKind::SourceExcerpt)
         .expect("truncated source");
     assert!(source.text_truncated);
     assert_eq!(
@@ -501,7 +499,7 @@ fn budget_truncation_keeps_source_span_and_reports_omissions() {
 
     let mut item_limited = harness.request("SQLite");
     item_limited.max_items = 1;
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(item_limited)
         .expect("item recall");
     assert_eq!(response.candidates.len(), 1);
@@ -513,13 +511,13 @@ fn shared_ancestry_is_not_counted_as_independent_claims() {
     let mut harness = Harness::new();
     harness.add_copied_claim();
     let request = harness.request("SQLite");
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(request)
         .expect("ancestry recall");
     let claims = response
         .candidates
         .iter()
-        .filter(|candidate| candidate.content_kind == ContentKind::Claim)
+        .filter(|candidate| candidate.content_kind == mneme_recall::ContentKind::Claim)
         .collect::<Vec<_>>();
     assert!(claims.len() >= 2);
     assert_eq!(
@@ -535,26 +533,29 @@ fn shared_ancestry_is_not_counted_as_independent_claims() {
 fn structured_candidates_keep_datalog_coverage_and_derivations() {
     let mut harness = Harness::new();
     let mut request = harness.request("SQLite");
-    request.modes = BTreeSet::from([RecallMode::Lexical, RecallMode::Structured]);
-    request.structured = Some(StructuredRequest {
+    request.modes = std::collections::BTreeSet::from([
+        mneme_recall::RecallMode::Lexical,
+        mneme_recall::RecallMode::Structured,
+    ]);
+    request.structured = Some(mneme_recall::StructuredRequest {
         bundle: claim_bundle(),
-        query: Query::all("claim", 10),
-        limits: Limits::default(),
-        incomplete_extents: BTreeSet::new(),
+        query: mneme_datalog::Query::all("claim", 10),
+        limits: mneme_datalog::Limits::default(),
+        incomplete_extents: std::collections::BTreeSet::new(),
     });
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(request)
         .expect("structured recall");
     let structured = response
         .candidates
         .iter()
-        .find(|candidate| candidate.content_kind == ContentKind::StructuredRow)
+        .find(|candidate| candidate.content_kind == mneme_recall::ContentKind::StructuredRow)
         .expect("structured candidate");
     assert!(!structured.derivations.is_empty());
     let mode = response
         .modes
         .iter()
-        .find(|mode| mode.mode == RecallMode::Structured)
+        .find(|mode| mode.mode == mneme_recall::RecallMode::Structured)
         .expect("structured mode");
     assert_eq!(mode.relation_exhaustive, Some(true));
     assert!(mode.coverage.complete);
@@ -567,7 +568,7 @@ fn stale_revision_disclosure_is_explicit() {
     harness.commit(
         scope(),
         "later-entity",
-        vec![RecordDraft {
+        vec![mneme_store::RecordDraft {
             schema_version: 1,
             kind: mneme_core::RecordKind::Entity,
             record_id: rid(0xa0),
@@ -582,11 +583,11 @@ fn stale_revision_disclosure_is_explicit() {
     request.revision = old;
     request.allow_stale = false;
     assert!(matches!(
-        RecallService::new(&mut harness.workspace).recall(request.clone()),
+        mneme_recall::RecallService::new(&mut harness.workspace).recall(request.clone()),
         Err(mneme_recall::RecallError::StaleRevision { .. })
     ));
     request.allow_stale = true;
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(request)
         .expect("stale recall");
     assert_eq!(response.context.requested_revision, old);
@@ -601,25 +602,25 @@ fn stale_revision_disclosure_is_explicit() {
 fn forget_invalidates_warm_index_and_removes_source_candidates() {
     let mut harness = Harness::new();
     let warm_request = harness.request("widen scope");
-    let first = RecallService::new(&mut harness.workspace)
+    let first = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(warm_request)
         .expect("warm recall");
     assert!(!first.candidates.is_empty());
-    let request = RetentionRequest {
+    let request = mneme_retention::RetentionRequest {
         actor: "recall-test".to_owned(),
         scope: scope(),
         base_revision: harness.workspace.current_revision().expect("base"),
         idempotency_key: "forget-recall-source".to_owned(),
-        operation: OperationKind::Forget,
-        selector: Selector::Source(rid(0x20)),
+        operation: mneme_retention::OperationKind::Forget,
+        selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: RetentionPolicy::default(),
+        policy: mneme_retention::RetentionPolicy::default(),
     };
-    Retention::new(&mut harness.workspace)
+    mneme_retention::Retention::new(&mut harness.workspace)
         .execute(request)
         .expect("forget");
     let after_request = harness.request("widen scope");
-    let after = RecallService::new(&mut harness.workspace)
+    let after = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(after_request)
         .expect("post-forget recall");
     assert!(after.candidates.is_empty());
@@ -636,31 +637,34 @@ fn historical_inspection_preserves_superseded_unknown_time() {
     let mut harness = Harness::new();
     let assertion = rid(0x46);
     let evidence = rid(0x36);
-    let evidence_record = build_evidence(
+    let evidence_record = mneme_memory::build_evidence(
         evidence,
         rev(0x37),
         &scope(),
         assertion,
         rid(0x20),
         rev(0x21),
-        Some(SourceSpan::new(0, 10).expect("span")),
+        Some(mneme_core::SourceSpan::new(0, 10).expect("span")),
         Some("historical"),
         mneme_memory::SupportRelation::Supports,
-        Origin::AuthoredStatement,
+        mneme_core::Origin::AuthoredStatement,
         &[],
     );
-    let proposed = build_proposed_assertion(
+    let proposed = mneme_memory::build_proposed_assertion(
         assertion,
         rev(0x47),
         &scope(),
         rid(0x10),
         "legacy",
-        Value::string("legacy-value"),
-        Stance::Affirm,
-        Origin::AuthoredStatement,
+        mneme_core::Value::string("legacy-value"),
+        mneme_memory::Stance::Affirm,
+        mneme_core::Origin::AuthoredStatement,
         "author",
-        ValidTime::Unknown,
-        &[Reference::local(evidence, mneme_core::RecordKind::Evidence)],
+        mneme_core::ValidTime::Unknown,
+        &[mneme_core::Reference::local(
+            evidence,
+            mneme_core::RecordKind::Evidence,
+        )],
         None,
         None,
     );
@@ -677,11 +681,11 @@ fn historical_inspection_preserves_superseded_unknown_time() {
         .into_iter()
         .last()
         .expect("current");
-    let decision = build_decision(
+    let decision = mneme_memory::build_decision(
         rid(0x56),
         rev(0x57),
         &scope(),
-        DecisionKind::Supersession,
+        mneme_memory::DecisionKind::Supersession,
         assertion,
         "author",
         "recall-policy/v1",
@@ -691,20 +695,20 @@ fn historical_inspection_preserves_superseded_unknown_time() {
         &[],
         &[],
     );
-    let superseded = build_assertion_revision(
+    let superseded = mneme_memory::build_assertion_revision(
         &current,
         rev(0x48),
-        Lifecycle::Superseded,
-        Reference::local(rid(0x56), mneme_core::RecordKind::Decision),
-        Some(Reference::local(
+        mneme_core::Lifecycle::Superseded,
+        mneme_core::Reference::local(rid(0x56), mneme_core::RecordKind::Decision),
+        Some(mneme_core::Reference::local(
             rid(0x40),
             mneme_core::RecordKind::Assertion,
         )),
     );
     harness.commit(scope(), "supersede", vec![decision, superseded], Vec::new());
     let mut request = harness.request("legacy-value");
-    request.temporal = TemporalMode::Historical;
-    let response = RecallService::new(&mut harness.workspace)
+    request.temporal = mneme_recall::TemporalMode::Historical;
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(request)
         .expect("historical recall");
     let candidate = response
@@ -714,7 +718,7 @@ fn historical_inspection_preserves_superseded_unknown_time() {
         .expect("superseded candidate");
     let status = candidate.claim_status.as_ref().expect("status");
     assert_eq!(status.lifecycle, "superseded");
-    assert_eq!(status.valid_time, ValidTime::Unknown);
+    assert_eq!(status.valid_time, mneme_core::ValidTime::Unknown);
 }
 
 #[test]
@@ -724,24 +728,24 @@ fn cancellation_and_time_budget_never_look_successful() {
     cancelled.cancellation = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
         true,
     )));
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(cancelled)
         .expect("cancelled response");
-    assert_eq!(response.status, RecallExecution::Cancelled);
+    assert_eq!(response.status, mneme_recall::RecallExecution::Cancelled);
     assert!(response.candidates.is_empty());
     assert!(!response.absence_established);
 
     let mut timed = harness.request("SQLite");
     timed.max_time_ms = 0;
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(timed)
         .expect("timeout response");
     assert!(matches!(
         response.status,
-        RecallExecution::Timeout | RecallExecution::Complete
+        mneme_recall::RecallExecution::Timeout | mneme_recall::RecallExecution::Complete
     ));
     assert!(!response.absence_established);
-    if response.status == RecallExecution::Timeout {
+    if response.status == mneme_recall::RecallExecution::Timeout {
         assert!(response.candidates.is_empty());
     }
 }
@@ -749,21 +753,21 @@ fn cancellation_and_time_budget_never_look_successful() {
 #[test]
 fn source_pruning_keeps_claim_envelope_without_a_quote() {
     let mut harness = Harness::new();
-    let request = RetentionRequest {
+    let request = mneme_retention::RetentionRequest {
         actor: "recall-test".to_owned(),
         scope: scope(),
         base_revision: harness.workspace.current_revision().expect("base"),
         idempotency_key: "prune-recall-source".to_owned(),
-        operation: OperationKind::SourcePruning,
-        selector: Selector::Source(rid(0x20)),
+        operation: mneme_retention::OperationKind::SourcePruning,
+        selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: RetentionPolicy::default(),
+        policy: mneme_retention::RetentionPolicy::default(),
     };
-    Retention::new(&mut harness.workspace)
+    mneme_retention::Retention::new(&mut harness.workspace)
         .execute(request)
         .expect("prune");
     let pruned_request = harness.request("SQLite");
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(pruned_request)
         .expect("pruned recall");
     let claim = response
@@ -781,7 +785,7 @@ fn source_pruning_keeps_claim_envelope_without_a_quote() {
         response
             .candidates
             .iter()
-            .all(|candidate| candidate.content_kind != ContentKind::SourceExcerpt)
+            .all(|candidate| candidate.content_kind != mneme_recall::ContentKind::SourceExcerpt)
     );
     assert!(!response.exhaustive);
 }
@@ -790,15 +794,15 @@ fn source_pruning_keeps_claim_envelope_without_a_quote() {
 fn structured_unavailable_uses_declared_lexical_fallback() {
     let mut harness = Harness::new();
     let mut request = harness.request("SQLite");
-    request.modes = BTreeSet::from([RecallMode::Structured]);
+    request.modes = std::collections::BTreeSet::from([mneme_recall::RecallMode::Structured]);
     request.allow_fallback = true;
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(request)
         .expect("fallback recall");
-    assert_eq!(response.status, RecallExecution::Partial);
+    assert_eq!(response.status, mneme_recall::RecallExecution::Partial);
     assert!(!response.candidates.is_empty());
     assert!(response.modes.iter().any(|mode| {
-        mode.mode == RecallMode::Lexical
+        mode.mode == mneme_recall::RecallMode::Lexical
             && mode.status == mneme_recall::ModeStatus::Used
             && mode
                 .reason
@@ -806,7 +810,8 @@ fn structured_unavailable_uses_declared_lexical_fallback() {
                 .is_some_and(|reason| reason.contains("fallback"))
     }));
     assert!(response.modes.iter().any(|mode| {
-        mode.mode == RecallMode::Structured && mode.status == mneme_recall::ModeStatus::Unavailable
+        mode.mode == mneme_recall::RecallMode::Structured
+            && mode.status == mneme_recall::ModeStatus::Unavailable
     }));
 }
 
@@ -816,7 +821,7 @@ fn independent_contradiction_survives_copied_descendants() {
     harness.add_copied_claim();
     harness.add_independent_contradiction();
     let request = harness.request("SQLite");
-    let response = RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::RecallService::new(&mut harness.workspace)
         .recall(request)
         .expect("contradiction recall");
     let independent = response
@@ -828,7 +833,7 @@ fn independent_contradiction_survives_copied_descendants() {
     let claims = response
         .candidates
         .iter()
-        .filter(|candidate| candidate.content_kind == ContentKind::Claim)
+        .filter(|candidate| candidate.content_kind == mneme_recall::ContentKind::Claim)
         .collect::<Vec<_>>();
     assert!(claims.len() >= 3);
     assert!(
@@ -847,7 +852,7 @@ impl Harness {
         let evidence = rid(0x34);
         let assertion = rid(0x49);
         let text = b"Independent report: deployment may be PostgreSQL, not only SQLite.";
-        let (source_record, source_blob) = build_source(
+        let (source_record, source_blob) = mneme_memory::build_source(
             source,
             revision,
             &scope(),
@@ -863,31 +868,34 @@ impl Harness {
             vec![source_record],
             vec![source_blob],
         );
-        let evidence_record = build_evidence(
+        let evidence_record = mneme_memory::build_evidence(
             evidence,
             rev(0x35),
             &scope(),
             assertion,
             source,
             revision,
-            Some(SourceSpan::new(0, text.len() as u64 - 1).expect("span")),
+            Some(mneme_core::SourceSpan::new(0, text.len() as u64 - 1).expect("span")),
             Some("independent"),
             mneme_memory::SupportRelation::Supports,
-            Origin::AuthoredStatement,
+            mneme_core::Origin::AuthoredStatement,
             &[],
         );
-        let proposed = build_proposed_assertion(
+        let proposed = mneme_memory::build_proposed_assertion(
             assertion,
             rev(0x4a),
             &scope(),
             rid(0x10),
             "deployment",
-            Value::string("PostgreSQL, not only SQLite"),
-            Stance::Deny,
-            Origin::AuthoredStatement,
+            mneme_core::Value::string("PostgreSQL, not only SQLite"),
+            mneme_memory::Stance::Deny,
+            mneme_core::Origin::AuthoredStatement,
             "reviewer",
-            ValidTime::always(),
-            &[Reference::local(evidence, mneme_core::RecordKind::Evidence)],
+            mneme_core::ValidTime::always(),
+            &[mneme_core::Reference::local(
+                evidence,
+                mneme_core::RecordKind::Evidence,
+            )],
             None,
             None,
         );

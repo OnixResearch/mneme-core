@@ -4,14 +4,10 @@
 //! supply a fixed clock and explicit fault points; production uses the system
 //! clock and no injected faults.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use mneme_core::Timestamp;
-
 /// A source of wall-clock instants for recorded time.
 pub trait Clock: Send + Sync {
     /// The current instant.
-    fn now(&self) -> Timestamp;
+    fn now(&self) -> mneme_core::Timestamp;
 }
 
 /// The system clock, truncated to the supported nanosecond range.
@@ -21,31 +17,31 @@ pub struct SystemClock;
 impl Clock for SystemClock {
     // This is the one explicit system-clock adapter; core code receives `Clock`.
     #[allow(unknown_lints, ambient_clock)]
-    fn now(&self) -> Timestamp {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+    fn now(&self) -> mneme_core::Timestamp {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
             .ok()
             .and_then(|duration| i64::try_from(duration.as_nanos()).ok())
             .unwrap_or(0);
-        Timestamp::from_nanos(nanos)
+        mneme_core::Timestamp::from_nanos(nanos)
     }
 }
 
 /// A clock returning one fixed instant.
 #[derive(Clone, Copy, Debug)]
 pub struct FixedClock {
-    at: Timestamp,
+    at: mneme_core::Timestamp,
 }
 
 impl FixedClock {
     /// Construct a fixed clock.
-    pub const fn new(at: Timestamp) -> Self {
+    pub const fn new(at: mneme_core::Timestamp) -> Self {
         FixedClock { at }
     }
 }
 
 impl Clock for FixedClock {
-    fn now(&self) -> Timestamp {
+    fn now(&self) -> mneme_core::Timestamp {
         self.at
     }
 }

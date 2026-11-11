@@ -1,26 +1,9 @@
 //! Shared execution of validated agent-memory commands.
 
-use mneme_core::{
-    Lifecycle, RecordId, RecordKind, Reference, RevisionId, ScopeId, SourceSpan, Value,
-    WorkspaceRevisionId,
-};
-use mneme_memory::{
-    AssertionView, DecisionKind, EpisodeView, Explanation, Memory, MemoryBatch, Policy, Stance,
-    build_assertion_revision, build_decision,
-};
-use mneme_recall::{RecallCandidate, RecallEvidence, RecallMode, RecallRequest, RecallService};
-use mneme_retention::{
-    OperationKind, Retention, RetentionPolicy, RetentionRequest, RetentionResult,
-};
-use mneme_store::{CommitOutcome, PublicationOutcome, Workspace, WorkspaceConfig};
-
-use crate::command::{ApiCommand, ReviseAction, record_draft};
-use crate::error::{ApiError, ApiErrorCode, ApiResult};
-
 /// A transport-neutral response. `value` is a versioned tagged JSON document.
 #[derive(Clone, Debug)]
 pub struct ApiResponse {
-    pub value: Value,
+    pub value: mneme_core::Value,
     pub ok: bool,
 }
 
@@ -40,7 +23,7 @@ impl ApiService {
     }
 
     /// Execute one command and always return a structured transport document.
-    pub fn execute(&self, command: &ApiCommand) -> ApiResponse {
+    pub fn execute(&self, command: &crate::command::ApiCommand) -> ApiResponse {
         if let Some(scope) = command.scope()
             && let Err(error) = self.session.authorize(scope)
         {
@@ -55,10 +38,13 @@ impl ApiService {
         }
     }
 
-    fn dispatch(&self, command: &ApiCommand) -> ApiResult<(Value, Option<Context>)> {
+    fn dispatch(
+        &self,
+        command: &crate::command::ApiCommand,
+    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
         match command {
-            ApiCommand::Capabilities { .. } => Ok((capabilities_value(), None)),
-            ApiCommand::Record {
+            crate::command::ApiCommand::Capabilities { .. } => Ok((capabilities_value(), None)),
+            crate::command::ApiCommand::Record {
                 scope,
                 base,
                 key,
@@ -68,30 +54,30 @@ impl ApiService {
             } => {
                 for record in records {
                     if &record.scope != scope {
-                        return Err(ApiError::invalid(
+                        return Err(crate::error::ApiError::invalid(
                             "record scope does not match command scope",
                         ));
                     }
                 }
                 let mut workspace = self.open()?;
-                let batch = MemoryBatch {
+                let batch = mneme_memory::MemoryBatch {
                     actor: self.session.principal.clone(),
                     scope: scope.clone(),
                     idempotency_key: key.clone(),
                     records: records
                         .iter()
                         .cloned()
-                        .map(record_draft)
+                        .map(crate::command::record_draft)
                         .collect::<Vec<_>>(),
                     source_blobs: sources.clone(),
                     publications: Vec::new(),
                 };
-                let outcome = Memory::new(&mut workspace)
+                let outcome = mneme_memory::Memory::new(&mut workspace)
                     .commit_at_base(batch, *base)
-                    .map_err(ApiError::from_memory)?;
+                    .map_err(crate::error::ApiError::from_memory)?;
                 Ok((commit_value(&outcome), Some(self.context(scope, &outcome))))
             }
-            ApiCommand::Accept {
+            crate::command::ApiCommand::Accept {
                 scope,
                 base,
                 key,
@@ -105,11 +91,11 @@ impl ApiService {
             } => {
                 let mut workspace = self.open()?;
                 let current = current_assertion(&workspace, *assertion, scope)?;
-                let decision_draft = build_decision(
+                let decision_draft = mneme_memory::build_decision(
                     *decision,
                     *decision_revision,
                     scope,
-                    DecisionKind::Acceptance,
+                    mneme_memory::DecisionKind::Acceptance,
                     *assertion,
                     &self.session.principal,
                     policy,
@@ -119,14 +105,14 @@ impl ApiService {
                     &[],
                     &[],
                 );
-                let accepted = build_assertion_revision(
+                let accepted = mneme_memory::build_assertion_revision(
                     &current,
                     *accepted_revision,
-                    Lifecycle::Accepted,
-                    Reference::local(*decision, RecordKind::Decision),
+                    mneme_core::Lifecycle::Accepted,
+                    mneme_core::Reference::local(*decision, mneme_core::RecordKind::Decision),
                     None,
                 );
-                let batch = MemoryBatch {
+                let batch = mneme_memory::MemoryBatch {
                     actor: self.session.principal.clone(),
                     scope: scope.clone(),
                     idempotency_key: key.clone(),
@@ -134,12 +120,12 @@ impl ApiService {
                     source_blobs: Vec::new(),
                     publications: Vec::new(),
                 };
-                let outcome = Memory::new(&mut workspace)
+                let outcome = mneme_memory::Memory::new(&mut workspace)
                     .commit_at_base(batch, *base)
-                    .map_err(ApiError::from_memory)?;
+                    .map_err(crate::error::ApiError::from_memory)?;
                 Ok((commit_value(&outcome), Some(self.context(scope, &outcome))))
             }
-            ApiCommand::Recall {
+            crate::command::ApiCommand::Recall {
                 scope,
                 revision,
                 query,
@@ -158,9 +144,12 @@ impl ApiService {
                 ..
             } => {
                 let mut workspace = self.open()?;
-                let revision =
-                    revision.unwrap_or(workspace.current_revision().map_err(ApiError::from_store)?);
-                let request = RecallRequest {
+                let revision = revision.unwrap_or(
+                    workspace
+                        .current_revision()
+                        .map_err(crate::error::ApiError::from_store)?,
+                );
+                let request = mneme_recall::RecallRequest {
                     actor: self.session.principal.clone(),
                     scope: scope.clone(),
                     revision,
@@ -180,9 +169,9 @@ impl ApiService {
                     max_time_ms: *max_time_ms,
                     cancellation: None,
                 };
-                let response = RecallService::new(&mut workspace)
+                let response = mneme_recall::RecallService::new(&mut workspace)
                     .recall(request)
-                    .map_err(ApiError::from_recall)?;
+                    .map_err(crate::error::ApiError::from_recall)?;
                 let context = Context {
                     revision: response.context.served_revision,
                     scope: scope.clone(),
@@ -190,7 +179,7 @@ impl ApiService {
                 };
                 Ok((recall_value(&response), Some(context)))
             }
-            ApiCommand::Explain {
+            crate::command::ApiCommand::Explain {
                 scope,
                 assertion,
                 max_nodes,
@@ -201,27 +190,29 @@ impl ApiService {
                 for attempt in 0..2 {
                     let generation = workspace
                         .eligibility_generation()
-                        .map_err(ApiError::from_store)?;
+                        .map_err(crate::error::ApiError::from_store)?;
                     let explanation = {
-                        let memory = Memory::new(&mut workspace);
-                        let view = memory.view().map_err(ApiError::from_memory)?;
-                        let record = view.record(*assertion).map_err(ApiError::from_memory)?;
+                        let memory = mneme_memory::Memory::new(&mut workspace);
+                        let view = memory.view().map_err(crate::error::ApiError::from_memory)?;
+                        let record = view
+                            .record(*assertion)
+                            .map_err(crate::error::ApiError::from_memory)?;
                         if &record.scope != scope {
-                            return Err(ApiError::denied());
+                            return Err(crate::error::ApiError::denied());
                         }
                         memory
                             .explain(
                                 *assertion,
-                                Policy {
+                                mneme_memory::Policy {
                                     max_explanation_nodes: *max_nodes,
                                     max_excerpt_bytes: *max_excerpt_bytes,
                                 },
                             )
-                            .map_err(ApiError::from_memory)?
+                            .map_err(crate::error::ApiError::from_memory)?
                     };
                     let after = workspace
                         .eligibility_generation()
-                        .map_err(ApiError::from_store)?;
+                        .map_err(crate::error::ApiError::from_store)?;
                     if after == generation {
                         let revision = explanation.workspace_revision;
                         return Ok((
@@ -234,18 +225,18 @@ impl ApiService {
                         ));
                     }
                     if attempt == 1 {
-                        return Err(ApiError::new(
-                            ApiErrorCode::Conflict,
+                        return Err(crate::error::ApiError::new(
+                            crate::error::ApiErrorCode::Conflict,
                             "eligibility barrier advanced during explanation",
                         ));
                     }
                 }
-                Err(ApiError::new(
-                    ApiErrorCode::Failed,
+                Err(crate::error::ApiError::new(
+                    crate::error::ApiErrorCode::Failed,
                     "explanation retry exhausted",
                 ))
             }
-            ApiCommand::Revise {
+            crate::command::ApiCommand::Revise {
                 scope,
                 base,
                 key,
@@ -261,21 +252,23 @@ impl ApiService {
                 let mut workspace = self.open()?;
                 let current = current_assertion(&workspace, *assertion, scope)?;
                 let (kind, lifecycle, outcome) = match action {
-                    ReviseAction::Supersede => (
-                        DecisionKind::Supersession,
-                        Lifecycle::Superseded,
+                    crate::command::ReviseAction::Supersede => (
+                        mneme_memory::DecisionKind::Supersession,
+                        mneme_core::Lifecycle::Superseded,
                         "superseded",
                     ),
-                    ReviseAction::Dispute => (
-                        DecisionKind::ConflictResolution,
-                        Lifecycle::Disputed,
+                    crate::command::ReviseAction::Dispute => (
+                        mneme_memory::DecisionKind::ConflictResolution,
+                        mneme_core::Lifecycle::Disputed,
                         "disputed",
                     ),
-                    ReviseAction::Retract => {
-                        (DecisionKind::Retraction, Lifecycle::Retracted, "retracted")
-                    }
+                    crate::command::ReviseAction::Retract => (
+                        mneme_memory::DecisionKind::Retraction,
+                        mneme_core::Lifecycle::Retracted,
+                        "retracted",
+                    ),
                 };
-                let decision_draft = build_decision(
+                let decision_draft = mneme_memory::build_decision(
                     *decision,
                     *decision_revision,
                     scope,
@@ -289,16 +282,17 @@ impl ApiService {
                     &[],
                     &[],
                 );
-                let superseded =
-                    superseded_by.map(|target| Reference::local(target, RecordKind::Assertion));
-                let revised = build_assertion_revision(
+                let superseded = superseded_by.map(|target| {
+                    mneme_core::Reference::local(target, mneme_core::RecordKind::Assertion)
+                });
+                let revised = mneme_memory::build_assertion_revision(
                     &current,
                     *revised_revision,
                     lifecycle,
-                    Reference::local(*decision, RecordKind::Decision),
+                    mneme_core::Reference::local(*decision, mneme_core::RecordKind::Decision),
                     superseded,
                 );
-                let batch = MemoryBatch {
+                let batch = mneme_memory::MemoryBatch {
                     actor: self.session.principal.clone(),
                     scope: scope.clone(),
                     idempotency_key: key.clone(),
@@ -306,29 +300,31 @@ impl ApiService {
                     source_blobs: Vec::new(),
                     publications: Vec::new(),
                 };
-                let outcome = Memory::new(&mut workspace)
+                let outcome = mneme_memory::Memory::new(&mut workspace)
                     .commit_at_base(batch, *base)
-                    .map_err(ApiError::from_memory)?;
+                    .map_err(crate::error::ApiError::from_memory)?;
                 Ok((commit_value(&outcome), Some(self.context(scope, &outcome))))
             }
-            ApiCommand::Resume {
+            crate::command::ApiCommand::Resume {
                 scope, checkpoint, ..
             } => {
                 let mut workspace = self.open()?;
                 let generation = workspace
                     .eligibility_generation()
-                    .map_err(ApiError::from_store)?;
+                    .map_err(crate::error::ApiError::from_store)?;
                 let value = resume_value(&mut workspace, *checkpoint, scope)?;
                 let after = workspace
                     .eligibility_generation()
-                    .map_err(ApiError::from_store)?;
+                    .map_err(crate::error::ApiError::from_store)?;
                 if after != generation {
-                    return Err(ApiError::new(
-                        ApiErrorCode::Conflict,
+                    return Err(crate::error::ApiError::new(
+                        crate::error::ApiErrorCode::Conflict,
                         "eligibility barrier advanced during resume",
                     ));
                 }
-                let revision = workspace.current_revision().map_err(ApiError::from_store)?;
+                let revision = workspace
+                    .current_revision()
+                    .map_err(crate::error::ApiError::from_store)?;
                 Ok((
                     value,
                     Some(Context {
@@ -338,7 +334,7 @@ impl ApiService {
                     }),
                 ))
             }
-            ApiCommand::Forget {
+            crate::command::ApiCommand::Forget {
                 scope,
                 base,
                 key,
@@ -347,21 +343,23 @@ impl ApiService {
                 ..
             } => {
                 let mut workspace = self.open()?;
-                let request = RetentionRequest {
+                let request = mneme_retention::RetentionRequest {
                     actor: self.session.principal.clone(),
                     scope: scope.clone(),
                     base_revision: *base,
                     idempotency_key: key.clone(),
-                    operation: OperationKind::Forget,
+                    operation: mneme_retention::OperationKind::Forget,
                     selector: selector.clone(),
                     effective: *effective,
-                    policy: RetentionPolicy::default(),
+                    policy: mneme_retention::RetentionPolicy::default(),
                 };
-                let result = Retention::new(&mut workspace)
+                let result = mneme_retention::Retention::new(&mut workspace)
                     .execute(request)
-                    .map_err(ApiError::from_retention)?;
+                    .map_err(crate::error::ApiError::from_retention)?;
                 let generation = result.generation;
-                let revision = workspace.current_revision().map_err(ApiError::from_store)?;
+                let revision = workspace
+                    .current_revision()
+                    .map_err(crate::error::ApiError::from_store)?;
                 Ok((
                     forget_value(&result),
                     Some(Context {
@@ -371,17 +369,21 @@ impl ApiService {
                     }),
                 ))
             }
-            ApiCommand::ProposalInspect {
+            crate::command::ApiCommand::ProposalInspect {
                 scope, assertion, ..
             } => {
                 let mut workspace = self.open()?;
-                let memory = Memory::new(&mut workspace);
-                let view = memory.view().map_err(ApiError::from_memory)?;
-                let record = view.record(*assertion).map_err(ApiError::from_memory)?;
+                let memory = mneme_memory::Memory::new(&mut workspace);
+                let view = memory.view().map_err(crate::error::ApiError::from_memory)?;
+                let record = view
+                    .record(*assertion)
+                    .map_err(crate::error::ApiError::from_memory)?;
                 if &record.scope != scope {
-                    return Err(ApiError::denied());
+                    return Err(crate::error::ApiError::denied());
                 }
-                let assertion = view.assertion(*assertion).map_err(ApiError::from_memory)?;
+                let assertion = view
+                    .assertion(*assertion)
+                    .map_err(crate::error::ApiError::from_memory)?;
                 let generation = view.snapshot().eligibility_generation;
                 let revision = view.revision();
                 Ok((
@@ -396,12 +398,19 @@ impl ApiService {
         }
     }
 
-    fn open(&self) -> ApiResult<Workspace> {
-        Workspace::open(&self.session.workspace_root, WorkspaceConfig::default())
-            .map_err(ApiError::from_store)
+    fn open(&self) -> crate::error::ApiResult<mneme_store::Workspace> {
+        mneme_store::Workspace::open(
+            &self.session.workspace_root,
+            mneme_store::WorkspaceConfig::default(),
+        )
+        .map_err(crate::error::ApiError::from_store)
     }
 
-    fn context(&self, scope: &ScopeId, outcome: &CommitOutcome) -> Context {
+    fn context(
+        &self,
+        scope: &mneme_core::ScopeId,
+        outcome: &mneme_store::CommitOutcome,
+    ) -> Context {
         Context {
             revision: outcome.revision,
             scope: scope.clone(),
@@ -412,32 +421,41 @@ impl ApiService {
 
 #[derive(Clone, Debug)]
 struct Context {
-    revision: WorkspaceRevisionId,
-    scope: ScopeId,
+    revision: mneme_core::WorkspaceRevisionId,
+    scope: mneme_core::ScopeId,
     generation: u64,
 }
 
 fn current_assertion(
-    workspace: &Workspace,
-    assertion: RecordId,
-    scope: &ScopeId,
-) -> ApiResult<mneme_core::RecordEnvelope> {
-    let snapshot = workspace.snapshot().map_err(ApiError::from_store)?;
+    workspace: &mneme_store::Workspace,
+    assertion: mneme_core::RecordId,
+    scope: &mneme_core::ScopeId,
+) -> crate::error::ApiResult<mneme_core::RecordEnvelope> {
+    let snapshot = workspace
+        .snapshot()
+        .map_err(crate::error::ApiError::from_store)?;
     let record = snapshot
         .records
         .iter()
-        .find(|record| record.record_id == assertion && record.kind == RecordKind::Assertion)
+        .find(|record| {
+            record.record_id == assertion && record.kind == mneme_core::RecordKind::Assertion
+        })
         .cloned()
-        .ok_or_else(|| ApiError::new(ApiErrorCode::Unavailable, "assertion is unavailable"))?;
+        .ok_or_else(|| {
+            crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Unavailable,
+                "assertion is unavailable",
+            )
+        })?;
     if &record.scope != scope {
-        return Err(ApiError::denied());
+        return Err(crate::error::ApiError::denied());
     }
     Ok(record)
 }
 
 fn response_for_error(
-    command: &ApiCommand,
-    error: ApiError,
+    command: &crate::command::ApiCommand,
+    error: crate::error::ApiError,
     context: Option<&Context>,
 ) -> ApiResponse {
     ApiResponse {
@@ -453,36 +471,39 @@ fn response_for_error(
 }
 
 fn response_envelope(
-    command: &ApiCommand,
+    command: &crate::command::ApiCommand,
     status: &str,
     context: Option<&Context>,
-    data: Value,
-    error: Option<&ApiError>,
-) -> Value {
+    data: mneme_core::Value,
+    error: Option<&crate::error::ApiError>,
+) -> mneme_core::Value {
     let mut entries = vec![
         (
-            Value::symbol("format"),
-            Value::string(crate::command::RESULT_FORMAT),
+            mneme_core::Value::symbol("format"),
+            mneme_core::Value::string(crate::command::RESULT_FORMAT),
         ),
         (
-            Value::symbol("version"),
-            Value::integer(crate::command::RESULT_VERSION),
+            mneme_core::Value::symbol("version"),
+            mneme_core::Value::integer(crate::command::RESULT_VERSION),
         ),
         (
-            Value::symbol("request-id"),
-            Value::string(command.request_id().to_owned()),
+            mneme_core::Value::symbol("request-id"),
+            mneme_core::Value::string(command.request_id().to_owned()),
         ),
         (
-            Value::symbol("operation"),
-            Value::symbol(command.operation()),
+            mneme_core::Value::symbol("operation"),
+            mneme_core::Value::symbol(command.operation()),
         ),
-        (Value::symbol("status"), Value::symbol(status)),
-        (Value::symbol("data"), data),
+        (
+            mneme_core::Value::symbol("status"),
+            mneme_core::Value::symbol(status),
+        ),
+        (mneme_core::Value::symbol("data"), data),
     ];
     if let Some(context) = context {
         entries.push((
-            Value::symbol("context"),
-            Value::symbol_dictionary([
+            mneme_core::Value::symbol("context"),
+            mneme_core::Value::symbol_dictionary([
                 (
                     mneme_core::Symbol::from("workspace-revision"),
                     context.revision.to_value(),
@@ -490,41 +511,41 @@ fn response_envelope(
                 (mneme_core::Symbol::from("scope"), context.scope.to_value()),
                 (
                     mneme_core::Symbol::from("eligibility-generation"),
-                    Value::integer(context.generation),
+                    mneme_core::Value::integer(context.generation),
                 ),
                 (
                     mneme_core::Symbol::from("schema-version"),
-                    Value::integer(1),
+                    mneme_core::Value::integer(1),
                 ),
             ]),
         ));
     }
     if let Some(error) = error {
         entries.push((
-            Value::symbol("error"),
-            Value::symbol_dictionary([
+            mneme_core::Value::symbol("error"),
+            mneme_core::Value::symbol_dictionary([
                 (
                     mneme_core::Symbol::from("code"),
-                    Value::symbol(error.code.as_str()),
+                    mneme_core::Value::symbol(error.code.as_str()),
                 ),
                 (
                     mneme_core::Symbol::from("message"),
-                    Value::string(error.message.clone()),
+                    mneme_core::Value::string(error.message.clone()),
                 ),
                 (
                     mneme_core::Symbol::from("diagnostics"),
-                    Value::sequence(
+                    mneme_core::Value::sequence(
                         error
                             .diagnostics
                             .iter()
-                            .map(|diagnostic| Value::string(diagnostic.to_string()))
+                            .map(|diagnostic| mneme_core::Value::string(diagnostic.to_string()))
                             .collect(),
                     ),
                 ),
             ]),
         ));
     }
-    Value::symbol_dictionary(entries.into_iter().map(|(key, value)| {
+    mneme_core::Value::symbol_dictionary(entries.into_iter().map(|(key, value)| {
         (
             mneme_core::Symbol::from(
                 key.as_symbol()
@@ -536,19 +557,19 @@ fn response_envelope(
     }))
 }
 
-fn commit_value(outcome: &CommitOutcome) -> Value {
-    Value::symbol_dictionary([
+fn commit_value(outcome: &mneme_store::CommitOutcome) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("revision"),
             outcome.revision.to_value(),
         ),
         (
             mneme_core::Symbol::from("sequence"),
-            Value::integer(outcome.sequence),
+            mneme_core::Value::integer(outcome.sequence),
         ),
         (
             mneme_core::Symbol::from("generation"),
-            Value::integer(outcome.eligibility_generation),
+            mneme_core::Value::integer(outcome.eligibility_generation),
         ),
         (
             mneme_core::Symbol::from("manifest-digest"),
@@ -556,38 +577,40 @@ fn commit_value(outcome: &CommitOutcome) -> Value {
         ),
         (
             mneme_core::Symbol::from("publications"),
-            Value::sequence(outcome.publications.iter().map(publication_value).collect()),
+            mneme_core::Value::sequence(
+                outcome.publications.iter().map(publication_value).collect(),
+            ),
         ),
     ])
 }
 
-fn publication_value(publication: &PublicationOutcome) -> Value {
-    Value::symbol_dictionary([
+fn publication_value(publication: &mneme_store::PublicationOutcome) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("intent-id"),
-            Value::string(publication.intent_id.clone()),
+            mneme_core::Value::string(publication.intent_id.clone()),
         ),
         (
             mneme_core::Symbol::from("path"),
-            Value::string(publication.path.clone()),
+            mneme_core::Value::string(publication.path.clone()),
         ),
         (
             mneme_core::Symbol::from("state"),
-            Value::symbol(publication.state.as_str()),
+            mneme_core::Value::symbol(publication.state.as_str()),
         ),
         (
             mneme_core::Symbol::from("detail"),
             publication
                 .detail
                 .as_ref()
-                .map(|detail| Value::string(detail.clone()))
-                .unwrap_or_else(|| Value::string("")),
+                .map(|detail| mneme_core::Value::string(detail.clone()))
+                .unwrap_or_else(|| mneme_core::Value::string("")),
         ),
     ])
 }
 
-fn assertion_value(assertion: &AssertionView) -> Value {
-    Value::symbol_dictionary([
+fn assertion_value(assertion: &mneme_memory::AssertionView) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("record-id"),
             assertion.record.record_id.to_value(),
@@ -598,28 +621,28 @@ fn assertion_value(assertion: &AssertionView) -> Value {
         ),
         (
             mneme_core::Symbol::from("predicate"),
-            Value::string(assertion.predicate.clone()),
+            mneme_core::Value::string(assertion.predicate.clone()),
         ),
         (mneme_core::Symbol::from("value"), assertion.value.clone()),
         (
             mneme_core::Symbol::from("stance"),
-            Value::symbol(match assertion.stance {
-                Stance::Affirm => "affirm",
-                Stance::Deny => "deny",
-                Stance::Hypothesis => "hypothesis",
+            mneme_core::Value::symbol(match assertion.stance {
+                mneme_memory::Stance::Affirm => "affirm",
+                mneme_memory::Stance::Deny => "deny",
+                mneme_memory::Stance::Hypothesis => "hypothesis",
             }),
         ),
         (
             mneme_core::Symbol::from("lifecycle"),
-            Value::symbol(assertion.lifecycle.symbol()),
+            mneme_core::Value::symbol(assertion.lifecycle.symbol()),
         ),
         (
             mneme_core::Symbol::from("origin"),
-            Value::symbol(assertion.origin.symbol()),
+            mneme_core::Value::symbol(assertion.origin.symbol()),
         ),
         (
             mneme_core::Symbol::from("asserted-by"),
-            Value::string(assertion.asserted_by.clone()),
+            mneme_core::Value::string(assertion.asserted_by.clone()),
         ),
         (
             mneme_core::Symbol::from("valid-time"),
@@ -631,7 +654,7 @@ fn assertion_value(assertion: &AssertionView) -> Value {
         ),
         (
             mneme_core::Symbol::from("evidence"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 assertion
                     .evidence
                     .iter()
@@ -643,14 +666,14 @@ fn assertion_value(assertion: &AssertionView) -> Value {
             mneme_core::Symbol::from("superseded-by"),
             assertion
                 .superseded_by
-                .map(RecordId::to_value)
+                .map(mneme_core::RecordId::to_value)
                 .unwrap_or_else(none_value),
         ),
     ])
 }
 
-fn recall_value(response: &mneme_recall::RecallResponse) -> Value {
-    let context = Value::symbol_dictionary([
+fn recall_value(response: &mneme_recall::RecallResponse) -> mneme_core::Value {
+    let context = mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("scope"),
             response.context.scope.to_value(),
@@ -665,69 +688,69 @@ fn recall_value(response: &mneme_recall::RecallResponse) -> Value {
         ),
         (
             mneme_core::Symbol::from("eligibility-generation"),
-            Value::integer(response.context.eligibility_generation),
+            mneme_core::Value::integer(response.context.eligibility_generation),
         ),
         (
             mneme_core::Symbol::from("temporal"),
-            Value::symbol(response.context.temporal.name()),
+            mneme_core::Value::symbol(response.context.temporal.name()),
         ),
         (
             mneme_core::Symbol::from("fusion-policy"),
-            Value::string(response.context.fusion_policy.clone()),
+            mneme_core::Value::string(response.context.fusion_policy.clone()),
         ),
         (
             mneme_core::Symbol::from("index-versions"),
-            Value::symbol_dictionary(response.context.index_versions.iter().map(
+            mneme_core::Value::symbol_dictionary(response.context.index_versions.iter().map(
                 |(mode, version)| {
                     (
                         mneme_core::Symbol::from(mode.as_str()),
-                        Value::string(version.clone()),
+                        mneme_core::Value::string(version.clone()),
                     )
                 },
             )),
         ),
     ]);
-    Value::symbol_dictionary([
+    mneme_core::Value::symbol_dictionary([
         (mneme_core::Symbol::from("context"), context),
         (
             mneme_core::Symbol::from("execution-status"),
-            Value::symbol(response.status.name()),
+            mneme_core::Value::symbol(response.status.name()),
         ),
         (
             mneme_core::Symbol::from("modes"),
-            Value::sequence(response.modes.iter().map(mode_value).collect()),
+            mneme_core::Value::sequence(response.modes.iter().map(mode_value).collect()),
         ),
         (
             mneme_core::Symbol::from("candidates"),
-            Value::sequence(response.candidates.iter().map(candidate_value).collect()),
+            mneme_core::Value::sequence(response.candidates.iter().map(candidate_value).collect()),
         ),
         (
             mneme_core::Symbol::from("exhaustive"),
-            Value::Boolean(response.exhaustive),
+            mneme_core::Value::Boolean(response.exhaustive),
         ),
         (
             mneme_core::Symbol::from("absence-established"),
-            Value::Boolean(response.absence_established),
+            mneme_core::Value::Boolean(response.absence_established),
         ),
         (
             mneme_core::Symbol::from("truncated"),
-            Value::Boolean(response.truncated),
+            mneme_core::Value::Boolean(response.truncated),
         ),
         (
             mneme_core::Symbol::from("omissions"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 response
                     .omissions
                     .iter()
                     .map(|omission| {
-                        Value::symbol_dictionary([
+                        mneme_core::Value::symbol_dictionary([
                             (
                                 mneme_core::Symbol::from("candidate"),
-                                Value::string(omission.candidate.clone()),
+                                mneme_core::Value::string(omission.candidate.clone()),
                             ),
                             (
                                 mneme_core::Symbol::from("reason"),
-                                Value::string(omission.reason.clone()),
+                                mneme_core::Value::string(omission.reason.clone()),
                             ),
                         ])
                     })
@@ -739,46 +762,46 @@ fn recall_value(response: &mneme_recall::RecallResponse) -> Value {
             response
                 .reason
                 .as_ref()
-                .map(|reason| Value::string(reason.clone()))
+                .map(|reason| mneme_core::Value::string(reason.clone()))
                 .unwrap_or_else(none_value),
         ),
         (
             mneme_core::Symbol::from("boundary"),
-            Value::symbol_dictionary([
+            mneme_core::Value::symbol_dictionary([
                 (
                     mneme_core::Symbol::from("kind"),
-                    Value::string(response.boundary.kind.clone()),
+                    mneme_core::Value::string(response.boundary.kind.clone()),
                 ),
                 (
                     mneme_core::Symbol::from("instructions-are-data"),
-                    Value::Boolean(response.boundary.instructions_are_data),
+                    mneme_core::Value::Boolean(response.boundary.instructions_are_data),
                 ),
                 (
                     mneme_core::Symbol::from("may-change-scope"),
-                    Value::Boolean(response.boundary.may_change_scope),
+                    mneme_core::Value::Boolean(response.boundary.may_change_scope),
                 ),
                 (
                     mneme_core::Symbol::from("may-execute-code"),
-                    Value::Boolean(response.boundary.may_execute_code),
+                    mneme_core::Value::Boolean(response.boundary.may_execute_code),
                 ),
                 (
                     mneme_core::Symbol::from("may-register-rules"),
-                    Value::Boolean(response.boundary.may_register_rules),
+                    mneme_core::Value::Boolean(response.boundary.may_register_rules),
                 ),
             ]),
         ),
     ])
 }
 
-fn mode_value(mode: &mneme_recall::ModeReport) -> Value {
-    Value::symbol_dictionary([
+fn mode_value(mode: &mneme_recall::ModeReport) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("mode"),
-            Value::symbol(mode.mode.name()),
+            mneme_core::Value::symbol(mode.mode.name()),
         ),
         (
             mneme_core::Symbol::from("status"),
-            Value::symbol(mode.status.name()),
+            mneme_core::Value::symbol(mode.status.name()),
         ),
         (
             mneme_core::Symbol::from("revision"),
@@ -788,105 +811,105 @@ fn mode_value(mode: &mneme_recall::ModeReport) -> Value {
         ),
         (
             mneme_core::Symbol::from("coverage-complete"),
-            Value::Boolean(mode.coverage.complete),
+            mneme_core::Value::Boolean(mode.coverage.complete),
         ),
         (
             mneme_core::Symbol::from("documents-indexed"),
-            Value::integer(mode.coverage.documents_indexed),
+            mneme_core::Value::integer(mode.coverage.documents_indexed),
         ),
         (
             mneme_core::Symbol::from("documents-skipped"),
-            Value::integer(mode.coverage.documents_skipped),
+            mneme_core::Value::integer(mode.coverage.documents_skipped),
         ),
         (
             mneme_core::Symbol::from("candidates"),
-            Value::integer(mode.candidates),
+            mneme_core::Value::integer(mode.candidates),
         ),
     ])
 }
 
-fn candidate_value(candidate: &RecallCandidate) -> Value {
-    Value::symbol_dictionary([
+fn candidate_value(candidate: &mneme_recall::RecallCandidate) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("id"),
-            Value::string(candidate.id.clone()),
+            mneme_core::Value::string(candidate.id.clone()),
         ),
         (
             mneme_core::Symbol::from("content-kind"),
-            Value::symbol(candidate.content_kind.name()),
+            mneme_core::Value::symbol(candidate.content_kind.name()),
         ),
         (
             mneme_core::Symbol::from("text"),
-            Value::string(candidate.text.clone()),
+            mneme_core::Value::string(candidate.text.clone()),
         ),
         (
             mneme_core::Symbol::from("text-truncated"),
-            Value::Boolean(candidate.text_truncated),
+            mneme_core::Value::Boolean(candidate.text_truncated),
         ),
         (
             mneme_core::Symbol::from("quote"),
-            Value::Boolean(candidate.quote),
+            mneme_core::Value::Boolean(candidate.quote),
         ),
         (
             mneme_core::Symbol::from("source"),
             candidate
                 .source
-                .map(RecordId::to_value)
+                .map(mneme_core::RecordId::to_value)
                 .unwrap_or_else(none_value),
         ),
         (
             mneme_core::Symbol::from("source-revision"),
             candidate
                 .source_revision
-                .map(RevisionId::to_value)
+                .map(mneme_core::RevisionId::to_value)
                 .unwrap_or_else(none_value),
         ),
         (
             mneme_core::Symbol::from("span"),
             candidate
                 .span
-                .map(SourceSpan::to_value)
+                .map(mneme_core::SourceSpan::to_value)
                 .unwrap_or_else(none_value),
         ),
         (
             mneme_core::Symbol::from("field-path"),
-            Value::string(candidate.field_path.clone()),
+            mneme_core::Value::string(candidate.field_path.clone()),
         ),
         (
             mneme_core::Symbol::from("assertion"),
             candidate
                 .assertion
-                .map(RecordId::to_value)
+                .map(mneme_core::RecordId::to_value)
                 .unwrap_or_else(none_value),
         ),
         (
             mneme_core::Symbol::from("episode"),
             candidate
                 .episode
-                .map(RecordId::to_value)
+                .map(mneme_core::RecordId::to_value)
                 .unwrap_or_else(none_value),
         ),
         (
             mneme_core::Symbol::from("independent-support"),
-            Value::Boolean(candidate.independent_support),
+            mneme_core::Value::Boolean(candidate.independent_support),
         ),
         (
             mneme_core::Symbol::from("origins"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 candidate
                     .origins
                     .iter()
-                    .map(|mode| Value::symbol(mode.name()))
+                    .map(|mode| mneme_core::Value::symbol(mode.name()))
                     .collect(),
             ),
         ),
         (
             mneme_core::Symbol::from("score"),
-            Value::double(candidate.score),
+            mneme_core::Value::double(candidate.score),
         ),
         (
             mneme_core::Symbol::from("evidence"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 candidate
                     .evidence
                     .iter()
@@ -896,16 +919,18 @@ fn candidate_value(candidate: &RecallCandidate) -> Value {
         ),
         (
             mneme_core::Symbol::from("derivations"),
-            Value::sequence(candidate.derivations.iter().map(derivation_value).collect()),
+            mneme_core::Value::sequence(
+                candidate.derivations.iter().map(derivation_value).collect(),
+            ),
         ),
         (
             mneme_core::Symbol::from("ancestry-roots"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 candidate
                     .ancestry_roots
                     .iter()
                     .map(|(record, revision)| {
-                        Value::sequence(vec![record.to_value(), revision.to_value()])
+                        mneme_core::Value::sequence(vec![record.to_value(), revision.to_value()])
                     })
                     .collect(),
             ),
@@ -913,8 +938,8 @@ fn candidate_value(candidate: &RecallCandidate) -> Value {
     ])
 }
 
-fn recall_evidence_value(evidence: &RecallEvidence) -> Value {
-    Value::symbol_dictionary([
+fn recall_evidence_value(evidence: &mneme_recall::RecallEvidence) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("evidence"),
             evidence.evidence.to_value(),
@@ -927,32 +952,32 @@ fn recall_evidence_value(evidence: &RecallEvidence) -> Value {
             mneme_core::Symbol::from("source-revision"),
             evidence
                 .source_revision
-                .map(RevisionId::to_value)
+                .map(mneme_core::RevisionId::to_value)
                 .unwrap_or_else(none_value),
         ),
         (
             mneme_core::Symbol::from("availability"),
-            Value::symbol(evidence.availability.name()),
+            mneme_core::Value::symbol(evidence.availability.name()),
         ),
         (
             mneme_core::Symbol::from("span"),
             evidence
                 .span
-                .map(SourceSpan::to_value)
+                .map(mneme_core::SourceSpan::to_value)
                 .unwrap_or_else(none_value),
         ),
     ])
 }
 
-fn derivation_value(derivation: &mneme_datalog::Derivation) -> Value {
-    Value::symbol_dictionary([
+fn derivation_value(derivation: &mneme_datalog::Derivation) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("rule-id"),
-            Value::string(derivation.rule_id.clone()),
+            mneme_core::Value::string(derivation.rule_id.clone()),
         ),
         (
             mneme_core::Symbol::from("rule-version"),
-            Value::string(derivation.rule_version.clone()),
+            mneme_core::Value::string(derivation.rule_version.clone()),
         ),
         (
             mneme_core::Symbol::from("revision"),
@@ -964,29 +989,29 @@ fn derivation_value(derivation: &mneme_datalog::Derivation) -> Value {
         ),
         (
             mneme_core::Symbol::from("truncated"),
-            Value::Boolean(derivation.truncated),
+            mneme_core::Value::Boolean(derivation.truncated),
         ),
         (
             mneme_core::Symbol::from("premises"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 derivation
                     .premises
                     .iter()
                     .map(|premise| {
-                        Value::symbol_dictionary([
+                        mneme_core::Value::symbol_dictionary([
                             (
                                 mneme_core::Symbol::from("predicate"),
-                                Value::string(premise.predicate.clone()),
+                                mneme_core::Value::string(premise.predicate.clone()),
                             ),
                             (
                                 mneme_core::Symbol::from("terms"),
-                                Value::sequence(premise.terms.clone()),
+                                mneme_core::Value::sequence(premise.terms.clone()),
                             ),
                             (
                                 mneme_core::Symbol::from("canonical"),
                                 premise
                                     .canonical
-                                    .map(RecordId::to_value)
+                                    .map(mneme_core::RecordId::to_value)
                                     .unwrap_or_else(none_value),
                             ),
                         ])
@@ -997,8 +1022,8 @@ fn derivation_value(derivation: &mneme_datalog::Derivation) -> Value {
     ])
 }
 
-fn explain_value(explanation: &Explanation) -> Value {
-    Value::symbol_dictionary([
+fn explain_value(explanation: &mneme_memory::Explanation) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("assertion"),
             assertion_value(&explanation.assertion),
@@ -1009,23 +1034,23 @@ fn explain_value(explanation: &Explanation) -> Value {
         ),
         (
             mneme_core::Symbol::from("decisions"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 explanation
                     .decisions
                     .iter()
                     .map(|decision| {
-                        Value::symbol_dictionary([
+                        mneme_core::Value::symbol_dictionary([
                             (
                                 mneme_core::Symbol::from("record-id"),
                                 decision.record.record_id.to_value(),
                             ),
                             (
                                 mneme_core::Symbol::from("kind"),
-                                Value::symbol(decision.decision_kind.name()),
+                                mneme_core::Value::symbol(decision.decision_kind.name()),
                             ),
                             (
                                 mneme_core::Symbol::from("outcome"),
-                                Value::string(decision.outcome.clone()),
+                                mneme_core::Value::string(decision.outcome.clone()),
                             ),
                         ])
                     })
@@ -1034,12 +1059,12 @@ fn explain_value(explanation: &Explanation) -> Value {
         ),
         (
             mneme_core::Symbol::from("evidence"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 explanation
                     .evidence
                     .iter()
                     .map(|evidence| {
-                        Value::symbol_dictionary([
+                        mneme_core::Value::symbol_dictionary([
                             (
                                 mneme_core::Symbol::from("evidence"),
                                 evidence.evidence.to_value(),
@@ -1054,19 +1079,19 @@ fn explain_value(explanation: &Explanation) -> Value {
                             ),
                             (
                                 mneme_core::Symbol::from("availability"),
-                                Value::symbol(evidence.availability.name()),
+                                mneme_core::Value::symbol(evidence.availability.name()),
                             ),
                             (
                                 mneme_core::Symbol::from("excerpt"),
                                 evidence
                                     .excerpt
                                     .as_ref()
-                                    .map(|excerpt| Value::bytes(excerpt.bytes.clone()))
+                                    .map(|excerpt| mneme_core::Value::bytes(excerpt.bytes.clone()))
                                     .unwrap_or_else(none_value),
                             ),
                             (
                                 mneme_core::Symbol::from("eligible"),
-                                Value::Boolean(evidence.eligible),
+                                mneme_core::Value::Boolean(evidence.eligible),
                             ),
                         ])
                     })
@@ -1075,68 +1100,78 @@ fn explain_value(explanation: &Explanation) -> Value {
         ),
         (
             mneme_core::Symbol::from("corroboration"),
-            Value::symbol_dictionary([
+            mneme_core::Value::symbol_dictionary([
                 (
                     mneme_core::Symbol::from("roots"),
-                    Value::sequence(
+                    mneme_core::Value::sequence(
                         explanation
                             .corroboration
                             .roots
                             .iter()
                             .map(|(record, revision)| {
-                                Value::sequence(vec![record.to_value(), revision.to_value()])
+                                mneme_core::Value::sequence(vec![
+                                    record.to_value(),
+                                    revision.to_value(),
+                                ])
                             })
                             .collect(),
                     ),
                 ),
                 (
                     mneme_core::Symbol::from("independent-supports"),
-                    Value::integer(explanation.corroboration.independent_supports),
+                    mneme_core::Value::integer(explanation.corroboration.independent_supports),
                 ),
                 (
                     mneme_core::Symbol::from("shared-ancestry"),
-                    Value::Boolean(explanation.corroboration.shared_ancestry),
+                    mneme_core::Value::Boolean(explanation.corroboration.shared_ancestry),
                 ),
             ]),
         ),
         (
             mneme_core::Symbol::from("truncated"),
-            Value::Boolean(explanation.truncated),
+            mneme_core::Value::Boolean(explanation.truncated),
         ),
     ])
 }
 
 fn resume_value(
-    workspace: &mut Workspace,
-    checkpoint: RecordId,
-    scope: &ScopeId,
-) -> ApiResult<Value> {
-    let memory = Memory::new(workspace);
-    let view = memory.view().map_err(ApiError::from_memory)?;
-    let record = view.record(checkpoint).map_err(ApiError::from_memory)?;
-    if record.kind != RecordKind::Checkpoint || &record.scope != scope {
-        return Err(ApiError::denied());
+    workspace: &mut mneme_store::Workspace,
+    checkpoint: mneme_core::RecordId,
+    scope: &mneme_core::ScopeId,
+) -> crate::error::ApiResult<mneme_core::Value> {
+    let memory = mneme_memory::Memory::new(workspace);
+    let view = memory.view().map_err(crate::error::ApiError::from_memory)?;
+    let record = view
+        .record(checkpoint)
+        .map_err(crate::error::ApiError::from_memory)?;
+    if record.kind != mneme_core::RecordKind::Checkpoint || &record.scope != scope {
+        return Err(crate::error::ApiError::denied());
     }
     let (checkpoint_revision, episode_ids, verified) = view
         .checkpoint_revision(checkpoint)
-        .map_err(ApiError::from_memory)?;
+        .map_err(crate::error::ApiError::from_memory)?;
     let goal = record
         .payload
         .get("goal")
-        .and_then(Value::as_string)
+        .and_then(mneme_core::Value::as_string)
         .unwrap_or("");
     let state = record
         .payload
         .get("state")
-        .and_then(Value::as_symbol)
+        .and_then(mneme_core::Value::as_symbol)
         .map(|symbol| symbol.as_str())
         .unwrap_or("unknown");
-    let note = record.payload.get("note").and_then(Value::as_string);
+    let note = record
+        .payload
+        .get("note")
+        .and_then(mneme_core::Value::as_string);
     let mut episodes = Vec::new();
     let mut attempts = Vec::new();
     let mut observations = Vec::new();
     for episode_id in &episode_ids {
-        let episode = view.episode(*episode_id).map_err(ApiError::from_memory)?;
+        let episode = view
+            .episode(*episode_id)
+            .map_err(crate::error::ApiError::from_memory)?;
         let entry = episode_value(&episode);
         match episode.episode_type {
             mneme_memory::EpisodeType::Attempt => attempts.push(entry.clone()),
@@ -1147,12 +1182,17 @@ fn resume_value(
     }
     let current = view.revision();
     let mut pending = Vec::new();
-    for assertion in view.assertions().map_err(ApiError::from_memory)? {
-        if assertion.lifecycle == Lifecycle::Proposed && &assertion.record.scope == scope {
+    for assertion in view
+        .assertions()
+        .map_err(crate::error::ApiError::from_memory)?
+    {
+        if assertion.lifecycle == mneme_core::Lifecycle::Proposed
+            && &assertion.record.scope == scope
+        {
             pending.push(assertion_value(&assertion));
         }
     }
-    Ok(Value::symbol_dictionary([
+    Ok(mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("checkpoint"),
             checkpoint.to_value(),
@@ -1167,58 +1207,61 @@ fn resume_value(
         ),
         (
             mneme_core::Symbol::from("revision-changed"),
-            Value::Boolean(checkpoint_revision != current),
+            mneme_core::Value::Boolean(checkpoint_revision != current),
         ),
         (
             mneme_core::Symbol::from("goal"),
-            Value::string(goal.to_owned()),
+            mneme_core::Value::string(goal.to_owned()),
         ),
-        (mneme_core::Symbol::from("state"), Value::symbol(state)),
+        (
+            mneme_core::Symbol::from("state"),
+            mneme_core::Value::symbol(state),
+        ),
         (
             mneme_core::Symbol::from("note"),
-            note.map(|note| Value::string(note.to_owned()))
+            note.map(|note| mneme_core::Value::string(note.to_owned()))
                 .unwrap_or_else(none_value),
         ),
         (
             mneme_core::Symbol::from("episodes"),
-            Value::sequence(episodes),
+            mneme_core::Value::sequence(episodes),
         ),
         (
             mneme_core::Symbol::from("attempts"),
-            Value::sequence(attempts),
+            mneme_core::Value::sequence(attempts),
         ),
         (
             mneme_core::Symbol::from("observations"),
-            Value::sequence(observations),
+            mneme_core::Value::sequence(observations),
         ),
         (
             mneme_core::Symbol::from("pending-proposals"),
-            Value::sequence(pending),
+            mneme_core::Value::sequence(pending),
         ),
         (
             mneme_core::Symbol::from("verified-outcomes"),
-            Value::sequence(verified.iter().map(|record| record.to_value()).collect()),
+            mneme_core::Value::sequence(verified.iter().map(|record| record.to_value()).collect()),
         ),
     ]))
 }
 
-fn episode_value(episode: &EpisodeView) -> Value {
-    Value::symbol_dictionary([
+fn episode_value(episode: &mneme_memory::EpisodeView) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("record-id"),
             episode.record.record_id.to_value(),
         ),
         (
             mneme_core::Symbol::from("type"),
-            Value::symbol(episode.episode_type.name()),
+            mneme_core::Value::symbol(episode.episode_type.name()),
         ),
         (
             mneme_core::Symbol::from("actor"),
-            Value::string(episode.actor.clone()),
+            mneme_core::Value::string(episode.actor.clone()),
         ),
         (
             mneme_core::Symbol::from("summary"),
-            Value::string(episode.summary.clone()),
+            mneme_core::Value::string(episode.summary.clone()),
         ),
         (
             mneme_core::Symbol::from("occurred"),
@@ -1227,79 +1270,79 @@ fn episode_value(episode: &EpisodeView) -> Value {
     ])
 }
 
-fn forget_value(result: &RetentionResult) -> Value {
-    Value::symbol_dictionary([
+fn forget_value(result: &mneme_retention::RetentionResult) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("operation-id"),
-            Value::string(result.operation_id.clone()),
+            mneme_core::Value::string(result.operation_id.clone()),
         ),
         (
             mneme_core::Symbol::from("state"),
-            Value::symbol(result.state.as_str()),
+            mneme_core::Value::symbol(result.state.as_str()),
         ),
         (
             mneme_core::Symbol::from("generation"),
-            Value::integer(result.generation),
+            mneme_core::Value::integer(result.generation),
         ),
         (
             mneme_core::Symbol::from("logical-withdrawal"),
-            Value::Boolean(result.logical_withdrawal),
+            mneme_core::Value::Boolean(result.logical_withdrawal),
         ),
         (
             mneme_core::Symbol::from("physical-cleanup-complete"),
-            Value::Boolean(result.physical_cleanup_complete),
+            mneme_core::Value::Boolean(result.physical_cleanup_complete),
         ),
         (
             mneme_core::Symbol::from("cleanup"),
-            Value::symbol_dictionary([
+            mneme_core::Value::symbol_dictionary([
                 (
                     mneme_core::Symbol::from("purged"),
-                    Value::integer(result.cleanup.purged),
+                    mneme_core::Value::integer(result.cleanup.purged),
                 ),
                 (
                     mneme_core::Symbol::from("absent"),
-                    Value::integer(result.cleanup.absent),
+                    mneme_core::Value::integer(result.cleanup.absent),
                 ),
                 (
                     mneme_core::Symbol::from("retained-shared"),
-                    Value::integer(result.cleanup.retained_shared),
+                    mneme_core::Value::integer(result.cleanup.retained_shared),
                 ),
                 (
                     mneme_core::Symbol::from("unavailable"),
-                    Value::integer(result.cleanup.unavailable),
+                    mneme_core::Value::integer(result.cleanup.unavailable),
                 ),
                 (
                     mneme_core::Symbol::from("failed"),
-                    Value::integer(result.cleanup.failed),
+                    mneme_core::Value::integer(result.cleanup.failed),
                 ),
                 (
                     mneme_core::Symbol::from("pending"),
-                    Value::integer(result.cleanup.pending),
+                    mneme_core::Value::integer(result.cleanup.pending),
                 ),
             ]),
         ),
         (
             mneme_core::Symbol::from("limitations"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 result
                     .limitations
                     .iter()
-                    .map(|limitation| Value::string(limitation.clone()))
+                    .map(|limitation| mneme_core::Value::string(limitation.clone()))
                     .collect(),
             ),
         ),
     ])
 }
 
-fn capabilities_value() -> Value {
-    Value::symbol_dictionary([
+fn capabilities_value() -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("api-version"),
-            Value::integer(crate::command::COMMAND_VERSION),
+            mneme_core::Value::integer(crate::command::COMMAND_VERSION),
         ),
         (
             mneme_core::Symbol::from("operations"),
-            Value::sequence(
+            mneme_core::Value::sequence(
                 [
                     "record",
                     "accept",
@@ -1311,80 +1354,86 @@ fn capabilities_value() -> Value {
                     "proposal.inspect",
                 ]
                 .into_iter()
-                .map(Value::symbol)
+                .map(mneme_core::Value::symbol)
                 .collect(),
             ),
         ),
         (
             mneme_core::Symbol::from("recall-modes"),
-            Value::sequence(
-                [RecallMode::Lexical, RecallMode::Vector]
-                    .into_iter()
-                    .map(|mode| Value::symbol(mode.name()))
-                    .collect(),
+            mneme_core::Value::sequence(
+                [
+                    mneme_recall::RecallMode::Lexical,
+                    mneme_recall::RecallMode::Vector,
+                ]
+                .into_iter()
+                .map(|mode| mneme_core::Value::symbol(mode.name()))
+                .collect(),
             ),
         ),
         (
             mneme_core::Symbol::from("unavailable-modes"),
-            Value::sequence(vec![Value::symbol_dictionary([
+            mneme_core::Value::sequence(vec![mneme_core::Value::symbol_dictionary([
                 (
                     mneme_core::Symbol::from("mode"),
-                    Value::symbol("structured"),
+                    mneme_core::Value::symbol("structured"),
                 ),
                 (
                     mneme_core::Symbol::from("reason"),
-                    Value::string("tagged rule-request encoding is not exposed"),
+                    mneme_core::Value::string("tagged rule-request encoding is not exposed"),
                 ),
             ])]),
         ),
     ])
 }
 
-fn none_value() -> Value {
-    Value::symbol("none")
+fn none_value() -> mneme_core::Value {
+    mneme_core::Value::symbol("none")
 }
 
 /// A structured tagged error document for adapter-level parse failures.
-pub fn error_document(code: ApiErrorCode, message: &str) -> Value {
+pub fn error_document(code: crate::error::ApiErrorCode, message: &str) -> mneme_core::Value {
     response_envelope_for_error("unknown", "invalid", code, message)
 }
 
 fn response_envelope_for_error(
     request_id: &str,
     operation: &str,
-    code: ApiErrorCode,
+    code: crate::error::ApiErrorCode,
     message: &str,
-) -> Value {
-    Value::symbol_dictionary([
+) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("format"),
-            Value::string(crate::command::RESULT_FORMAT),
+            mneme_core::Value::string(crate::command::RESULT_FORMAT),
         ),
         (
             mneme_core::Symbol::from("version"),
-            Value::integer(crate::command::RESULT_VERSION),
+            mneme_core::Value::integer(crate::command::RESULT_VERSION),
         ),
         (
             mneme_core::Symbol::from("request-id"),
-            Value::string(request_id),
+            mneme_core::Value::string(request_id),
         ),
         (
             mneme_core::Symbol::from("operation"),
-            Value::symbol(operation),
+            mneme_core::Value::symbol(operation),
         ),
         (
             mneme_core::Symbol::from("status"),
-            Value::symbol(code.as_str()),
+            mneme_core::Value::symbol(code.as_str()),
         ),
         (mneme_core::Symbol::from("data"), none_value()),
         (
             mneme_core::Symbol::from("error"),
-            Value::symbol_dictionary([
+            mneme_core::Value::symbol_dictionary([
                 (
                     mneme_core::Symbol::from("code"),
-                    Value::symbol(code.as_str()),
+                    mneme_core::Value::symbol(code.as_str()),
                 ),
-                (mneme_core::Symbol::from("message"), Value::string(message)),
+                (
+                    mneme_core::Symbol::from("message"),
+                    mneme_core::Value::string(message),
+                ),
             ]),
         ),
     ])

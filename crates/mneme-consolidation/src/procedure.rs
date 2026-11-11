@@ -4,14 +4,10 @@
 //! accept them. Validation must never execute embedded instructions, rules, or
 //! tools, and it cannot mutate worker privileges in this module.
 
-use std::collections::BTreeSet;
-
-use crate::{ConsolidationProposal, ProcedureKind, ProcedureProposal, ProposalOperation};
-
 /// Worker capabilities available while reviewing a procedural suggestion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerPrivileges {
-    pub allowed_tools: BTreeSet<String>,
+    pub allowed_tools: std::collections::BTreeSet<String>,
     pub may_install_procedures: bool,
 }
 
@@ -30,22 +26,22 @@ pub struct ProcedureValidation {
 pub trait ProcedureValidator {
     fn identity(&self) -> &str;
 
-    fn supports(&self, kind: ProcedureKind) -> bool;
+    fn supports(&self, kind: crate::ProcedureKind) -> bool;
 
     fn validate(
         &self,
-        procedure: &ProcedureProposal,
+        procedure: &crate::ProcedureProposal,
         privileges: &WorkerPrivileges,
     ) -> Result<ProcedureValidation, String>;
 }
 
 /// Validate a procedural proposal without installing or executing it.
 pub fn validate_procedure(
-    proposal: &ConsolidationProposal,
+    proposal: &crate::ConsolidationProposal,
     validator: &dyn ProcedureValidator,
     privileges: &WorkerPrivileges,
 ) -> Result<ProcedureValidation, String> {
-    let ProposalOperation::Procedure(procedure) = &proposal.operation else {
+    let crate::ProposalOperation::Procedure(procedure) = &proposal.operation else {
         return Err("proposal is not procedural".to_owned());
     };
     if procedure.validator != validator.identity() {
