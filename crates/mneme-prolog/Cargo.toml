@@ -1,0 +1,17 @@
+[package]
+name = "mneme-prolog"
+description = "Optional engine-neutral bounded Prolog capability contracts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mneme-core.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+mneme-store.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
