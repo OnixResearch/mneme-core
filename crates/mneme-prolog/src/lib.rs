@@ -83,6 +83,7 @@ pub struct CapabilityMetadata {
     pub engine: Option<EngineIdentity>,
     pub state: CapabilityState,
     pub features: BTreeSet<Feature>,
+    pub allowed_predicates: BTreeSet<String>,
     pub limits: ProfileLimits,
     pub terms: TermProfile,
 }
@@ -98,6 +99,7 @@ impl CapabilityMetadata {
                 reason: reason.into(),
             },
             features: BTreeSet::new(),
+            allowed_predicates: BTreeSet::new(),
             limits: ProfileLimits {
                 max_time_ms: 0,
                 max_solutions: 0,
@@ -127,13 +129,18 @@ impl CapabilityMetadata {
                         "disabled capability needs a reason".to_owned(),
                     ));
                 }
-                if !self.features.is_empty() {
+                if !self.features.is_empty() || !self.allowed_predicates.is_empty() {
                     return Err(CapabilityError::InvalidMetadata(
                         "disabled capability must not advertise features".to_owned(),
                     ));
                 }
             }
             CapabilityState::Enabled => {
+                if self.allowed_predicates.is_empty() {
+                    return Err(CapabilityError::InvalidMetadata(
+                        "enabled capability needs an allowed predicate set".to_owned(),
+                    ));
+                }
                 let Some(engine) = &self.engine else {
                     return Err(CapabilityError::InvalidMetadata(
                         "enabled capability needs an engine identity".to_owned(),
@@ -195,8 +202,61 @@ impl CapabilityMetadata {
                 "rule count exceeds the profile".to_owned(),
             ));
         }
+        self.ensure_predicate(&request.goal.predicate)?;
+        for rule in &request.rules {
+            self.ensure_predicate(&rule.head.predicate)?;
+            for literal in &rule.body {
+                match literal {
+                    Literal::Positive(atom) | Literal::Negative(atom) => {
+                        self.ensure_predicate(&atom.predicate)?;
+                    }
+                }
+            }
+        }
         request.validate_terms(self.terms)
     }
+
+    fn ensure_predicate(&self, predicate: &str) -> Result<(), CapabilityError> {
+        if is_forbidden_predicate(predicate) || !self.allowed_predicates.contains(predicate) {
+            return Err(CapabilityError::DisallowedPredicate(predicate.to_owned()));
+        }
+        Ok(())
+    }
+}
+
+/// Predicates that must never enter the bounded positive profile.
+pub fn is_forbidden_predicate(predicate: &str) -> bool {
+    matches!(
+        predicate,
+        "open"
+            | "close"
+            | "read"
+            | "write"
+            | "shell"
+            | "process"
+            | "network"
+            | "socket"
+            | "consult"
+            | "use_module"
+            | "load_files"
+            | "initialization"
+            | "op"
+            | "assert"
+            | "asserta"
+            | "assertz"
+            | "retract"
+            | "retractall"
+            | "abolish"
+            | "call"
+            | "catch"
+            | "throw"
+            | "set_prolog_flag"
+            | "nb_setval"
+            | "b_setval"
+            | "database"
+            | "file"
+            | "import"
+    )
 }
 
 /// Capability or request validation failure.
@@ -206,6 +266,8 @@ pub enum CapabilityError {
     Unavailable { reason: String },
     #[error("feature {0} is not advertised or enabled")]
     UnsupportedFeature(Feature),
+    #[error("predicate {0} is not permitted by the positive profile")]
+    DisallowedPredicate(String),
     #[error("invalid capability metadata: {0}")]
     InvalidMetadata(String),
     #[error("limit exceeded: {0}")]
@@ -568,6 +630,114 @@ impl PrologResult {
     }
 }
 
+/// Encode one finite term into the restricted engine syntax.
+pub fn encode_term(
+    term: &Term,
+    profile: TermProfile,
+    max_bytes: usize,
+) -> Result<String, CapabilityError> {
+    term.check(profile)?;
+    let encoded = encode_term_inner(term);
+    if encoded.len() > max_bytes {
+        return Err(CapabilityError::LimitExceeded(
+            "encoded term exceeds the output budget".to_owned(),
+        ));
+    }
+    Ok(encoded)
+}
+
+/// Encode one atom after finite-term validation.
+pub fn encode_atom(
+    atom: &Atom,
+    profile: TermProfile,
+    max_bytes: usize,
+) -> Result<String, CapabilityError> {
+    atom.check(profile)?;
+    let mut output = atom.predicate.clone();
+    output.push('(');
+    for (index, term) in atom.terms.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str(&encode_term_inner(term));
+    }
+    output.push(')');
+    if output.len() > max_bytes {
+        return Err(CapabilityError::LimitExceeded(
+            "encoded atom exceeds the output budget".to_owned(),
+        ));
+    }
+    Ok(output)
+}
+
+/// Serialize finite solution bindings under an output-byte budget.
+pub fn serialize_solution(
+    solution: &Solution,
+    profile: TermProfile,
+    max_bytes: usize,
+) -> Result<String, CapabilityError> {
+    let mut output = String::new();
+    for (index, (name, term)) in solution.bindings.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        output.push_str(name);
+        output.push('=');
+        output.push_str(&encode_term_inner(term));
+        if output.len() > max_bytes {
+            return Err(CapabilityError::LimitExceeded(
+                "serialized solution exceeds the output budget".to_owned(),
+            ));
+        }
+    }
+    for term in solution.bindings.values() {
+        term.check(profile)?;
+    }
+    Ok(output)
+}
+
+fn encode_term_inner(term: &Term) -> String {
+    match term {
+        Term::Integer(value) => value.to_string(),
+        Term::String(value) => format!("\"{}\"", escape_string(value)),
+        Term::Symbol(value) => value.clone(),
+        Term::Variable(value) => value.clone(),
+        Term::Reference {
+            record_id,
+            revision_id,
+        } => format!(
+            "ref({},{})",
+            record_id.to_hex(),
+            revision_id.map_or_else(|| "current".to_owned(), RevisionId::to_hex)
+        ),
+        Term::List(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(encode_term_inner)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Term::Compound { functor, args } => format!(
+            "{}({})",
+            functor,
+            args.iter()
+                .map(encode_term_inner)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    }
+}
+
+fn escape_string(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,6 +784,7 @@ mod tests {
             }),
             state: CapabilityState::Enabled,
             features,
+            allowed_predicates: BTreeSet::from(["path".to_owned(), "member".to_owned()]),
             limits: ProfileLimits {
                 max_time_ms: 100,
                 max_solutions: 8,
@@ -706,5 +877,68 @@ mod tests {
             .expect("baseline status after Prolog refusal");
         assert_eq!(before.sequence, after.sequence);
         assert!(workspace.snapshot().is_ok());
+    }
+
+    #[test]
+    fn effectful_and_unadvertised_predicates_are_refused() {
+        let metadata = enabled(BTreeSet::from([Feature::PositiveQuery]));
+        let mut request = request(BTreeSet::from([Feature::PositiveQuery]));
+        request.goal.predicate = "open".to_owned();
+        assert_eq!(
+            metadata.ensure_request(&request),
+            Err(CapabilityError::DisallowedPredicate("open".to_owned()))
+        );
+        request.goal.predicate = "assertz".to_owned();
+        assert_eq!(
+            metadata.ensure_request(&request),
+            Err(CapabilityError::DisallowedPredicate("assertz".to_owned()))
+        );
+        request.goal.predicate = "unadvertised".to_owned();
+        assert_eq!(
+            metadata.ensure_request(&request),
+            Err(CapabilityError::DisallowedPredicate(
+                "unadvertised".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn finite_encoding_and_output_budgets_are_enforced() {
+        let profile = TermProfile {
+            max_depth: 4,
+            max_collection: 8,
+            references_allowed: true,
+        };
+        assert_eq!(
+            encode_term(
+                &Term::Compound {
+                    functor: "f".to_owned(),
+                    args: vec![Term::Integer(1)],
+                },
+                profile,
+                64,
+            ),
+            Ok("f(1)".to_owned())
+        );
+        assert!(matches!(
+            encode_term(&Term::String("too long".to_owned()), profile, 4),
+            Err(CapabilityError::LimitExceeded(_))
+        ));
+        let solution = Solution {
+            bindings: BTreeMap::from([("X".to_owned(), Term::Integer(42))]),
+            premises: Vec::new(),
+            assumptions: BTreeSet::new(),
+            certification: Certification::Uncertified {
+                reason: "no proof certificate".to_owned(),
+            },
+        };
+        assert_eq!(
+            serialize_solution(&solution, profile, 64),
+            Ok("X=42".to_owned())
+        );
+        assert!(matches!(
+            serialize_solution(&solution, profile, 2),
+            Err(CapabilityError::LimitExceeded(_))
+        ));
     }
 }
