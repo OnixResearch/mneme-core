@@ -157,6 +157,7 @@ fn import_move_and_property_edit_preserve_identity_and_source_bytes() {
                 base_revision: move_base,
                 idempotency_key: "move".to_owned(),
                 document_id: imported.document_id,
+                title: None,
                 path: "docs/renamed.adoc".to_owned(),
             })
             .expect("move")
@@ -1001,4 +1002,71 @@ fn document_listing_is_deterministic_and_carries_scope() {
     );
     assert!(first.iter().all(|summary| summary.path.is_some()));
     assert!(first.iter().all(|summary| summary.revision != rev(0)));
+}
+
+#[test]
+fn move_can_rename_title_without_changing_identity_or_source() {
+    let mut harness = Harness::new();
+    let source = b"= Original\n\nBody stays exact.\n";
+    harness.write_file("docs/original.adoc", source);
+    let imported = harness.import(harness.request(
+        "rename-import",
+        None,
+        "docs/original.adoc",
+        Some("Original"),
+    ));
+    let base = harness.workspace.current_revision().expect("base");
+    let moved = {
+        let mut documents = Documents::new(&mut harness.workspace);
+        documents
+            .move_document(MoveRequest {
+                actor: "doc-author".to_owned(),
+                scope: scope(),
+                base_revision: base,
+                idempotency_key: "rename".to_owned(),
+                document_id: imported.document_id,
+                path: "docs/renamed.adoc".to_owned(),
+                title: Some("Renamed".to_owned()),
+            })
+            .expect("rename")
+    };
+    assert_eq!(moved.document_id, imported.document_id);
+    assert_eq!(moved.source, imported.source);
+    assert_eq!(moved.path, "docs/renamed.adoc");
+    let documents = Documents::new(&mut harness.workspace);
+    let view = documents.document(moved.document_id).expect("document");
+    assert_eq!(view.title, "Renamed");
+    assert_eq!(
+        documents
+            .source_bytes(moved.document_id)
+            .expect("source bytes"),
+        source
+    );
+}
+
+#[test]
+fn move_refuses_an_empty_title_without_a_commit() {
+    let mut harness = Harness::new();
+    harness.write_file("docs/keep.adoc", b"= Keep\n\nbody\n");
+    let imported = harness.import(harness.request("keep", None, "docs/keep.adoc", Some("Keep")));
+    let revision = harness.workspace.current_revision().expect("revision");
+    let error = {
+        let mut documents = Documents::new(&mut harness.workspace);
+        documents
+            .move_document(MoveRequest {
+                actor: "doc-author".to_owned(),
+                scope: scope(),
+                base_revision: revision,
+                idempotency_key: "empty-title".to_owned(),
+                document_id: imported.document_id,
+                path: "docs/keep.adoc".to_owned(),
+                title: Some("   ".to_owned()),
+            })
+            .expect_err("empty title")
+    };
+    assert!(matches!(error, DocumentError::Invalid(_)));
+    assert_eq!(
+        harness.workspace.current_revision().expect("revision"),
+        revision
+    );
 }

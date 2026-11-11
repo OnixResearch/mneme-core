@@ -312,6 +312,8 @@ pub struct MoveRequest {
     pub idempotency_key: String,
     pub document_id: RecordId,
     pub path: String,
+    /// Optional new title committed in the same revision as the path.
+    pub title: Option<String>,
 }
 
 /// Failure of a document operation.
@@ -910,8 +912,21 @@ impl<'w> Documents<'w> {
                 "destination path is already in use",
             ));
         }
+        let title = match request.title.as_deref() {
+            Some(title) => {
+                let title = title.trim();
+                if title.is_empty() {
+                    return Err(DocumentError::Invalid("document title is required"));
+                }
+                Some(title.to_owned())
+            }
+            None => None,
+        };
         let mut payload = document.record.payload.clone();
         payload.insert(Symbol::from("path"), Value::string(request.path.clone()));
+        if let Some(title) = title {
+            payload.insert(Symbol::from("title"), Value::string(title));
+        }
         let draft = RecordDraft {
             schema_version: DOCUMENT_SCHEMA_VERSION,
             kind: RecordKind::Document,
