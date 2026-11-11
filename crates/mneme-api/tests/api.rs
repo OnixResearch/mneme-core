@@ -1,7 +1,7 @@
 //! Shared API behavior over a real workspace and tagged command documents.
 #![allow(unknown_lints, non_trait_imports, no_unwrap)] // Octet custom lint names and test allowances
 #![allow(clippy::expect_used)]
-use mneme_api::{ApiCommand, ApiService, LocalSession, ReviseAction, decode_command};
+use mneme_api::{ApiCommand, ApiService, LocalSession, ReviseAction, decode};
 use mneme_core::{
     RecordId, RevisionId, ScopeClass, ScopeId, Timestamp, Value, WorkspaceRevisionId, fixtures,
 };
@@ -236,8 +236,8 @@ fn unsupported_versions_fail_before_mutation() {
         ),
         (mneme_core::Symbol::from("payload"), Value::dictionary([])),
     ]);
-    let error = decode_command(&mneme_core::encode_document_string(&value))
-        .expect_err("unsupported version");
+    let error =
+        decode(&mneme_core::encode_document_string(&value)).expect_err("unsupported version");
     assert_eq!(error.code.as_str(), "unsupported-version");
 }
 #[test]

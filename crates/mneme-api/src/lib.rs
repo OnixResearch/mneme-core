@@ -13,7 +13,7 @@ pub mod service;
 
 pub use command::{
     ApiCommand, COMMAND_FORMAT, COMMAND_VERSION, LocalSession, RESULT_FORMAT, RESULT_VERSION,
-    ReviseAction, SessionConfig, decode_command,
+    ReviseAction, SessionConfig, decode,
 };
 pub use error::{ApiError, ApiErrorCode, ApiResult};
 pub use service::{ApiResponse, ApiService, error_document};

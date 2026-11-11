@@ -1,5 +1,4 @@
 //! Versioned tagged-JSON command envelopes and local session authorization.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use serde::Deserialize;
 
@@ -605,7 +604,7 @@ pub fn record_draft(record: mneme_core::RecordEnvelope) -> mneme_store::RecordDr
 }
 
 /// Decode a tagged JSON command document.
-pub fn decode_command(text: &str) -> crate::error::ApiResult<ApiCommand> {
+pub fn decode(text: &str) -> crate::error::ApiResult<ApiCommand> {
     let value =
         mneme_core::decode_document(text).map_err(crate::error::ApiError::from_diagnostic)?;
     ApiCommand::from_value(&value)
