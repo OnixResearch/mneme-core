@@ -5,6 +5,7 @@
     # Pinned Octet checked path: lint runner, Dylint library, and its toolchain.
     # Octet remains a development/CI tool; it is not linked into Mneme.
     octet.url = "git+ssh://git@github.com/OnixResearch/octet?rev=2bdd581980eef7f6ec8363ffa20ab9f3c798c9ee";
+    crane.url = "github:ipetkov/crane";
     # Update these revisions deliberately with the lockfile and verification.
     nixpkgs.url = "github:NixOS/nixpkgs/ac588ef1c914865dad517b337ea0eb9694a4021c";
     rust-overlay = {
@@ -19,6 +20,7 @@
       nixpkgs,
       rust-overlay,
       octet,
+      crane,
       ...
     }:
     let
@@ -218,9 +220,32 @@
             cargoLock = ./Cargo.lock;
             buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
           };
+          craneLib = (crane.mkLib pkgs).overrideToolchain (toolchainFor pkgs);
+          octetVendor = craneLib.vendorCargoDeps { cargoLock = ./Cargo.lock; };
+          octetAll = pkgs.runCommand "mneme-octet-all-check"
+            {
+              nativeBuildInputs = [ pkgs.pkg-config octet.packages.${system}.cargo-octet ];
+              buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
+            }
+            ''
+              cp -R ${octetSrc} source
+              chmod -R u+w source
+              cd source
+              cp dylint-all.toml dylint.toml
+              export HOME="$PWD/home"
+              mkdir -p "$HOME"
+              export CARGO_HOME="$PWD/.cargo-home"
+              mkdir -p "$CARGO_HOME"
+              cp ${octetVendor}/config.toml "$CARGO_HOME/config.toml"
+              ${octet.packages.${system}.cargo-octet}/bin/cargo-octet check \
+                --workspace --baseline octet-baseline.json \
+                -- --all-targets --all-features --ignore-rust-version
+              touch "$out"
+            '';
         in
         {
           octet = octetWorkspace;
+          octet-all = octetAll;
           documentation =
             pkgs.runCommand "mneme-documentation-check" { nativeBuildInputs = [ pkgs.nodejs_22 ]; }
               ''

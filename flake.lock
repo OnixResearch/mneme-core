@@ -169,7 +169,7 @@
     },
     "charon": {
       "inputs": {
-        "crane": "crane",
+        "crane": "crane_2",
         "flake-compat": "flake-compat",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs_2",
@@ -191,11 +191,11 @@
     },
     "crane": {
       "locked": {
-        "lastModified": 1743700120,
-        "narHash": "sha256-8BjG/P0xnuCyVOXlYRwdI1B8nVtyYLf3oDwPSimqREY=",
+        "lastModified": 1793836618,
+        "narHash": "sha256-TREenflwEjxOSq292FYwbc3kEm7TDRtXCZRNWEdjBmg=",
         "owner": "ipetkov",
         "repo": "crane",
-        "rev": "e316f19ee058e6db50075115783be57ac549c389",
+        "rev": "79fd63528501446749c09f08cad486a58c7d173e",
         "type": "github"
       },
       "original": {
@@ -206,11 +206,11 @@
     },
     "crane_2": {
       "locked": {
-        "lastModified": 1773857772,
-        "narHash": "sha256-5xsK26KRHf0WytBtsBnQYC/lTWDhQuT57HJ7SzuqZcM=",
+        "lastModified": 1743700120,
+        "narHash": "sha256-8BjG/P0xnuCyVOXlYRwdI1B8nVtyYLf3oDwPSimqREY=",
         "owner": "ipetkov",
         "repo": "crane",
-        "rev": "b556d7bbae5ff86e378451511873dfd07e4504cd",
+        "rev": "e316f19ee058e6db50075115783be57ac549c389",
         "type": "github"
       },
       "original": {
@@ -280,6 +280,21 @@
       }
     },
     "crane_7": {
+      "locked": {
+        "lastModified": 1773857772,
+        "narHash": "sha256-5xsK26KRHf0WytBtsBnQYC/lTWDhQuT57HJ7SzuqZcM=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "b556d7bbae5ff86e378451511873dfd07e4504cd",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
+    "crane_8": {
       "locked": {
         "lastModified": 1765145449,
         "narHash": "sha256-aBVHGWWRzSpfL++LubA0CwOOQ64WNLegrYHwsVuVN7A=",
@@ -631,7 +646,7 @@
     },
     "nickel-1-17-0": {
       "inputs": {
-        "crane": "crane_7",
+        "crane": "crane_8",
         "flake-utils": "flake-utils_8",
         "nixpkgs": "nixpkgs_8",
         "pre-commit-hooks": "pre-commit-hooks",
@@ -841,7 +856,7 @@
         "aeneas": "aeneas",
         "aeneasCharon": "aeneasCharon",
         "cairn": "cairn",
-        "crane": "crane_6",
+        "crane": "crane_7",
         "dylint-src": "dylint-src_5",
         "flake-utils": "flake-utils_7",
         "lean4-src": "lean4-src",
@@ -893,6 +908,7 @@
     },
     "root": {
       "inputs": {
+        "crane": "crane",
         "nixpkgs": "nixpkgs",
         "octet": "octet",
         "rust-overlay": "rust-overlay_9"
@@ -1112,7 +1128,7 @@
     "slotcar": {
       "inputs": {
         "cairn": "cairn_3",
-        "crane": "crane_3",
+        "crane": "crane_4",
         "dylint-src": "dylint-src_2",
         "flake-utils": "flake-utils_4",
         "nixpkgs": "nixpkgs_5",
@@ -1134,7 +1150,7 @@
     },
     "slotcar_2": {
       "inputs": {
-        "crane": "crane_2",
+        "crane": "crane_3",
         "dylint-src": "dylint-src",
         "flake-utils": "flake-utils_3",
         "nixpkgs": "nixpkgs_4",
@@ -1157,7 +1173,7 @@
     "slotcar_3": {
       "inputs": {
         "cairn": "cairn_4",
-        "crane": "crane_5",
+        "crane": "crane_6",
         "dylint-src": "dylint-src_4",
         "flake-utils": "flake-utils_6",
         "nixpkgs": "nixpkgs_7",
@@ -1179,7 +1195,7 @@
     },
     "slotcar_4": {
       "inputs": {
-        "crane": "crane_4",
+        "crane": "crane_5",
         "dylint-src": "dylint-src_3",
         "flake-utils": "flake-utils_5",
         "nixpkgs": "nixpkgs_6",
