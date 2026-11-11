@@ -297,7 +297,31 @@ mod tests {
         }
     }
 
+    // Executing a freshly written script can fail with ETXTBSY when another
+    // test thread forks while the write descriptor is still open: the forked
+    // child inherits the descriptor until its own exec. Serialize script
+    // writes and worker spawns so no fork can observe an open write descriptor.
+    static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn spawn_guard() -> std::sync::MutexGuard<'static, ()> {
+        SPAWN_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn run_worker(
+        engine: &Path,
+        metadata: &CapabilityMetadata,
+        request: &PrologRequest,
+        control: &WorkerControl,
+        limits: WorkerLimits,
+    ) -> Result<WorkerOutcome, CapabilityError> {
+        let _guard = spawn_guard();
+        super::run_worker(engine, metadata, request, control, limits)
+    }
+
     fn script(body: &str) -> (tempfile::TempDir, PathBuf) {
+        let _guard = spawn_guard();
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("fake-engine");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("script");
