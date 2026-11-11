@@ -81,10 +81,6 @@ disabled_lints = [
   # The transport module path is part of the public API; renaming the file
   # would break it for a style rule.
   "underscore_in_module_filename",
-  # The collection/index APIs mirror std (`len`, `index`) and are used by every
-  # record crate. Converting them to fixed-width integers is a public API
-  # change; re-evaluate with a workspace-wide migration.
-  "usize_in_public_api",
 ]
 
 # Gate semantics: every remaining enabled lint is deny-level. A finding fails
@@ -96,3 +92,5 @@ contradictory_time = "deny"
 unbounded_channel = "deny"
 negated_predicate = "deny"
 raw_bool_parameter = "deny"
+usize_in_public_api = "deny"
+fallible_int_fallback = "deny"

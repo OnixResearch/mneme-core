@@ -62,6 +62,13 @@ pub struct ConflictGroup {
     pub assertions: Vec<AssertionView>,
 }
 
+/// Whether newly cited evidence must still have retained source bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetainedRequirement {
+    Required,
+    Optional,
+}
+
 /// Evidence whose span and source revision were validated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedEvidence {
@@ -458,7 +465,7 @@ impl MemoryView {
     pub fn validate_evidence(
         &self,
         evidence: RecordId,
-        require_retained: bool,
+        requirement: RetainedRequirement,
     ) -> Result<ValidatedEvidence> {
         let evidence = self.evidence(evidence)?;
         let source = self.evidence_source(&evidence)?;
@@ -481,7 +488,9 @@ impl MemoryView {
             return Err(MemoryError::policy("evidence anchor must not be empty"));
         }
         let status = self.source_status_for(&source)?;
-        if require_retained && !matches!(status, SourceStatus::Retained(_)) {
+        if requirement == RetainedRequirement::Required
+            && !matches!(status, SourceStatus::Retained(_))
+        {
             return Err(MemoryError::policy(format!(
                 "evidence source is {} and cannot be newly cited",
                 status.availability().name()

@@ -451,6 +451,7 @@ impl Renderer<'_> {
         }
     }
 
+    #[allow(unknown_lints, ambient_clock)] // render deadline is the preview shell
     fn expired(&mut self) -> bool {
         let Some(deadline) = self.deadline else {
             return false;

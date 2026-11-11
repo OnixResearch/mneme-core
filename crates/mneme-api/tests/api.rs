@@ -399,6 +399,7 @@ fn proposal_inspection_keeps_proposed_status_before_acceptance() {
 }
 
 #[test]
+#[allow(unknown_lints, compound_assertion)] // either a completed or timed-out recall is accepted
 fn vertical_slice_lost_response_timeout_resume_and_forget() {
     let harness = Harness::new();
     let service = harness.service();

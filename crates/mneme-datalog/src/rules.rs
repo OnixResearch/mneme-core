@@ -383,7 +383,7 @@ pub(crate) fn build_id(
         vec![
             revision.to_value(),
             scope.to_value(),
-            Value::integer(i64::try_from(generation).unwrap_or(i64::MAX)),
+            Value::integer(generation as i64),
             Value::string(PROFILE_VERSION.to_owned()),
             bundle_value(bundle),
             Value::record_named(
@@ -406,12 +406,7 @@ fn bundle_value(bundle: &RuleBundle) -> Value {
     let base = bundle
         .base_predicates
         .iter()
-        .map(|(name, arity)| {
-            (
-                Value::string(name.clone()),
-                Value::integer(i64::try_from(*arity).unwrap_or(i64::MAX)),
-            )
-        })
+        .map(|(name, arity)| (Value::string(name.clone()), Value::integer(*arity as i64)))
         .collect::<BTreeMap<_, _>>();
     let complete = bundle
         .complete_predicates

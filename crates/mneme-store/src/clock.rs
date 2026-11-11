@@ -19,6 +19,8 @@ pub trait Clock: Send + Sync {
 pub struct SystemClock;
 
 impl Clock for SystemClock {
+    // This is the one explicit system-clock adapter; core code receives `Clock`.
+    #[allow(unknown_lints, ambient_clock)]
     fn now(&self) -> Timestamp {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

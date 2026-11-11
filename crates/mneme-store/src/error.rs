@@ -54,6 +54,9 @@ pub enum StoreError {
     #[error("corrupt committed blob {digest}: {reason}")]
     CorruptBlob { digest: String, reason: String },
 
+    #[error("database value is out of range for {0}")]
+    ValueOutOfRange(&'static str),
+
     #[error("record scope {record_scope} does not match command scope {command_scope}")]
     ScopeMismatch {
         record_scope: String,

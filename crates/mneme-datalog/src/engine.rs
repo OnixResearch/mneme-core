@@ -54,6 +54,7 @@ impl<'a> Evaluation<'a> {
             .is_some_and(|flag| flag.load(Ordering::Relaxed))
     }
 
+    #[allow(unknown_lints, ambient_clock)] // wall-clock budget is the evaluation shell
     fn charge(&mut self, amount: u64) -> bool {
         if self.cancelled() {
             self.status = ExecutionStatus::Cancelled;
@@ -64,9 +65,8 @@ impl<'a> Evaluation<'a> {
             self.status = ExecutionStatus::Timeout;
             return false;
         }
-        if self.start.elapsed()
-            > Duration::from_millis(u64::try_from(self.limits.max_time_ms).unwrap_or(u64::MAX))
-        {
+        let max_time_ms = self.limits.max_time_ms.min(u128::from(u64::MAX)) as u64;
+        if self.start.elapsed() > Duration::from_millis(max_time_ms) {
             self.status = ExecutionStatus::Timeout;
             return false;
         }
@@ -131,6 +131,7 @@ impl<'a> Evaluation<'a> {
     }
 }
 
+#[allow(unknown_lints, ambient_clock)] // one evaluation start time for the bounded build
 pub(crate) fn build(
     view: &MemoryView,
     request: &BuildRequest,
@@ -479,7 +480,7 @@ fn evaluate_rule(
     let mut bindings = vec![BTreeMap::<String, Value>::new()];
     for literal in &rule.body {
         if let Literal::Positive(atom) = literal {
-            if !evaluation.charge(u64::try_from(bindings.len()).unwrap_or(u64::MAX)) {
+            if !evaluation.charge(bindings.len() as u64) {
                 return Ok(RuleOutcome::Skipped);
             }
             bindings = join(evaluation, &bindings, atom);
@@ -663,6 +664,7 @@ struct AggregateRow {
     binding_indices: Vec<usize>,
 }
 
+#[allow(unknown_lints, fallible_int_fallback)] // row count is bounded by the result-row limit
 fn aggregate_rows(
     head: &Atom,
     output: &str,

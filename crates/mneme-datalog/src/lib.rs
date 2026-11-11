@@ -133,6 +133,7 @@ pub struct RuleBundle {
 
 impl RuleBundle {
     /// Construct a bundle.
+    #[allow(unknown_lints, usize_in_public_api)] // predicate arities mirror slice lengths
     pub fn new(
         id: impl Into<String>,
         version: impl Into<String>,
@@ -339,6 +340,7 @@ pub struct DatalogBuild {
 
 impl DatalogBuild {
     /// Number of materialized rows in one predicate.
+    #[allow(unknown_lints, usize_in_public_api)] // row counts mirror collection lengths
     pub fn row_count(&self, predicate: &str) -> usize {
         self.facts.get(predicate).map_or(0, BTreeMap::len)
     }
@@ -357,6 +359,7 @@ pub struct Query {
     pub predicate: String,
     /// `None` leaves the position free; `Some` requires an exact value.
     pub constants: Vec<Option<Value>>,
+    #[allow(unknown_lints, usize_in_public_api)] // query limit mirrors collection lengths
     pub limit: usize,
     /// Allow an older served revision when the caller explicitly requests it.
     pub allow_stale: bool,
@@ -365,6 +368,7 @@ pub struct Query {
 
 impl Query {
     /// A query with all positions free.
+    #[allow(unknown_lints, usize_in_public_api)] // query limits mirror collection lengths
     pub fn all(predicate: impl Into<String>, limit: usize) -> Self {
         Query {
             predicate: predicate.into(),
@@ -476,7 +480,7 @@ impl QueryResult {
             (mneme_core::Symbol::from("coverage"), coverage),
             (
                 mneme_core::Symbol::from("row-count"),
-                Value::integer(i64::try_from(self.rows.len()).unwrap_or(i64::MAX)),
+                Value::integer(self.rows.len() as i64),
             ),
             (
                 mneme_core::Symbol::from("exhaustive"),

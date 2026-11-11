@@ -59,6 +59,7 @@ impl Payload {
     }
 
     /// The number of fields.
+    #[allow(unknown_lints, usize_in_public_api)] // std-shaped collection length
     pub fn len(&self) -> usize {
         self.fields.len()
     }

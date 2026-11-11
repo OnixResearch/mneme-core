@@ -44,8 +44,8 @@ pub fn random_bytes() -> Result<[u8; 16]> {
 }
 
 /// Random lowercase hexadecimal text of `bytes` bytes.
-pub fn random_hex(bytes: usize) -> Result<String> {
-    let mut output = String::with_capacity(bytes * 2);
+pub fn random_hex(bytes: u32) -> Result<String> {
+    let mut output = String::with_capacity(bytes as usize * 2);
     for _ in 0..bytes {
         let random = random_bytes()?;
         output.push_str(&format!("{:02x}", random[0]));
@@ -207,6 +207,7 @@ pub fn read_working_file(root: &Path, relative: &str) -> Result<Option<Vec<u8>>>
 }
 
 /// Remove staged temporary files and any blob file without a ledger row.
+#[allow(unknown_lints, usize_in_public_api)] // local directory-entry counts
 pub fn cleanup_orphans(root: &Path, known: &BTreeSet<[u8; 32]>) -> Result<(usize, usize)> {
     let mut staged = 0;
     let staging = root.join(STAGING_DIRECTORY);
@@ -238,6 +239,7 @@ pub fn cleanup_orphans(root: &Path, known: &BTreeSet<[u8; 32]>) -> Result<(usize
 }
 
 /// Remove temporary publication files left under `working/`.
+#[allow(unknown_lints, usize_in_public_api)] // local directory-entry count
 pub fn cleanup_working_temporaries(root: &Path) -> Result<usize> {
     let working = root.join(WORKING_DIRECTORY);
     let mut removed = 0;

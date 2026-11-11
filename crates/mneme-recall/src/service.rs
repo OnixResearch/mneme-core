@@ -78,6 +78,7 @@ impl<'w> RecallService<'w> {
             .unwrap_or_else(|| RecallError::InvalidRequest("recall retry exhausted".to_owned())))
     }
 
+    #[allow(unknown_lints, ambient_clock)] // recall wall-clock budget is the request shell
     fn recall_once(&mut self, request: &RecallRequest) -> Result<RecallResponse> {
         let started = Instant::now();
         let generation = self.workspace.eligibility_generation()?;
@@ -409,8 +410,8 @@ impl<'w> RecallService<'w> {
             returned.clear();
             reasons.push("recall cancelled".to_owned());
         }
-        if started.elapsed()
-            > Duration::from_millis(u64::try_from(request.max_time_ms).unwrap_or(u64::MAX))
+        let max_time_ms = request.max_time_ms.min(u128::from(u64::MAX)) as u64;
+        if started.elapsed() > Duration::from_millis(max_time_ms)
             && execution == RecallExecution::Complete
         {
             execution = RecallExecution::Timeout;
@@ -713,6 +714,7 @@ fn fuse(
     values
 }
 
+#[allow(unknown_lints, ambient_clock)] // packing deadline is the request shell
 fn pack(
     candidates: &mut Vec<RecallCandidate>,
     request: &RecallRequest,
@@ -745,7 +747,8 @@ fn pack(
     let mut omissions = Vec::new();
     let mut truncated = false;
     let mut remaining = request.max_context_bytes;
-    let deadline = Duration::from_millis(u64::try_from(request.max_time_ms).unwrap_or(u64::MAX));
+    let max_time_ms = request.max_time_ms.min(u128::from(u64::MAX)) as u64;
+    let deadline = Duration::from_millis(max_time_ms);
     for candidate in ordered {
         if cancelled(request) {
             *execution = RecallExecution::Cancelled;

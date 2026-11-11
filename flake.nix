@@ -211,17 +211,16 @@
             mkdir -p "$out/vendor"
             cp -R ${ratsSrc} "$out/vendor/rats"
           '';
-          octetCore = octet.lib.mkConsumerCheck {
+          octetWorkspace = octet.lib.mkConsumerCheck {
             inherit system;
             src = octetSrc;
-            packages = [ "mneme-core" ];
-            cargoExtraArgs = "--lib --ignore-rust-version";
+            cargoExtraArgs = "--all-targets --all-features --ignore-rust-version";
             cargoLock = ./Cargo.lock;
-            buildInputs = [ pkgs.openssl pkgs.sqlite ];
+            buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
           };
         in
         {
-          octet-core = octetCore;
+          octet = octetWorkspace;
           documentation =
             pkgs.runCommand "mneme-documentation-check" { nativeBuildInputs = [ pkgs.nodejs_22 ]; }
               ''

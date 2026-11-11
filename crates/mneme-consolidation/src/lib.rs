@@ -532,6 +532,7 @@ pub struct ConsolidationProposal {
 
 impl ConsolidationProposal {
     /// Distinct ancestry roots, not repeated summary count.
+    #[allow(unknown_lints, usize_in_public_api)] // support counts mirror collection lengths
     pub fn independent_support_count(&self) -> usize {
         self.premises
             .iter()

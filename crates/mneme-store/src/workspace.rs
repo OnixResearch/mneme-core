@@ -513,7 +513,7 @@ impl Workspace {
         let sequence = self.current_sequence()?;
         let record_count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM revision_records WHERE revision_sequence = ?1",
-            params![i64::try_from(sequence).unwrap_or(i64::MAX)],
+            params![db_i64(sequence, "sequence")?],
             |row| row.get(0),
         )?;
         let blob_count: i64 =
@@ -528,9 +528,9 @@ impl Workspace {
             revision,
             sequence,
             eligibility_generation: self.eligibility_generation()?,
-            record_count: usize::try_from(record_count).unwrap_or(0),
-            blob_count: usize::try_from(blob_count).unwrap_or(0),
-            pending_publications: usize::try_from(pending).unwrap_or(0),
+            record_count: db_usize(record_count, "record count")?,
+            blob_count: db_usize(blob_count, "blob count")?,
+            pending_publications: db_usize(pending, "pending publication count")?,
         })
     }
 
@@ -594,12 +594,12 @@ impl Workspace {
             params![
                 name.clone(),
                 registration.revision.as_bytes().as_slice(),
-                i64::try_from(row.sequence).unwrap_or(i64::MAX),
+                db_i64(row.sequence, "sequence")?,
                 i64::from(registration.schema_version),
                 registration.rule_version,
                 registration.index_version,
                 registration.scope,
-                i64::try_from(generation).unwrap_or(i64::MAX),
+                db_i64(generation, "generation")?,
                 built_at,
             ],
         )?;
@@ -707,12 +707,12 @@ impl Workspace {
         Ok(Some(ProjectionState {
             name: name.to_owned(),
             revision: revision_from_blob(&revision)?,
-            sequence: u64::try_from(sequence).unwrap_or(0),
-            schema_version: u32::try_from(schema_version).unwrap_or(0),
+            sequence: db_u64(sequence, "sequence")?,
+            schema_version: db_u32(schema_version, "schema version")?,
             rule_version,
             index_version,
             scope,
-            eligibility_generation: u64::try_from(generation).unwrap_or(0),
+            eligibility_generation: db_u64(generation, "generation")?,
             built_at_ns: built_at,
         }))
     }
@@ -1070,7 +1070,7 @@ impl Workspace {
         for (revision, sequence) in rows {
             sequences.insert(
                 revision_from_blob(&revision)?,
-                u64::try_from(sequence).unwrap_or(0),
+                db_u64(sequence, "sequence")?,
             );
         }
         Ok(sequences)
@@ -1315,7 +1315,7 @@ impl Workspace {
                  manifest_digest)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
-                i64::try_from(next_sequence).unwrap_or(i64::MAX),
+                db_i64(next_sequence, "sequence")?,
                 revision_id.as_bytes().as_slice(),
                 base.as_bytes().as_slice(),
                 recorded.at().nanos(),
@@ -1323,7 +1323,7 @@ impl Workspace {
                 command.scope.to_string(),
                 command.idempotency_key,
                 request_digest.as_bytes().as_slice(),
-                i64::try_from(next_generation).unwrap_or(i64::MAX),
+                db_i64(next_generation, "generation")?,
                 manifest_bytes,
                 manifest_digest.as_bytes().as_slice(),
             ],
@@ -1345,7 +1345,7 @@ impl Workspace {
             if let Some((existing_profile, existing_boundary, existing_length)) = existing {
                 if existing_profile != profile.symbol()
                     || existing_boundary != boundary.symbol()
-                    || existing_length != i64::try_from(*length).unwrap_or(i64::MAX)
+                    || existing_length != db_i64(*length, "blob length")?
                 {
                     return Err(StoreError::CorruptBlob {
                         digest: digest.to_hex(),
@@ -1361,7 +1361,7 @@ impl Workspace {
                         digest.algorithm().symbol(),
                         profile.symbol(),
                         boundary.symbol(),
-                        i64::try_from(*length).unwrap_or(i64::MAX),
+                        db_i64(*length, "blob length")?,
                     ],
                 )?;
             }
@@ -1379,7 +1379,7 @@ impl Workspace {
                     i64::from(record.schema_version),
                     record.scope.to_string(),
                     record.recorded.at().nanos(),
-                    i64::try_from(record.recorded.revision_order()).unwrap_or(i64::MAX),
+                    db_i64(record.recorded.revision_order(), "revision order")?,
                     full.as_bytes().as_slice(),
                     record.payload_digest().as_bytes().as_slice(),
                     full.as_bytes().as_slice(),
@@ -1391,7 +1391,7 @@ impl Workspace {
                 "INSERT INTO revision_records (revision_sequence, record_id, revision_id)
                  VALUES (?1, ?2, ?3)",
                 params![
-                    i64::try_from(next_sequence).unwrap_or(i64::MAX),
+                    db_i64(next_sequence, "sequence")?,
                     record.record_id.as_bytes().as_slice(),
                     record.revision_id.as_bytes().as_slice(),
                 ],
@@ -1401,7 +1401,7 @@ impl Workspace {
             transaction.execute(
                 "INSERT INTO revision_blobs (revision_sequence, digest) VALUES (?1, ?2)",
                 params![
-                    i64::try_from(next_sequence).unwrap_or(i64::MAX),
+                    db_i64(next_sequence, "sequence")?,
                     digest.as_bytes().as_slice()
                 ],
             )?;
@@ -1416,13 +1416,13 @@ impl Workspace {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', NULL, NULL, ?7)",
                 params![
                     intent_id,
-                    i64::try_from(next_sequence).unwrap_or(i64::MAX),
+                    db_i64(next_sequence, "sequence")?,
                     publication.path,
                     publication
                         .expected_previous
                         .map(|digest| digest.as_bytes().to_vec()),
                     publication.desired_digest().as_bytes().as_slice(),
-                    i64::try_from(generation).unwrap_or(i64::MAX),
+                    db_i64(generation, "generation")?,
                     recorded.at().nanos(),
                 ],
             )?;
@@ -1439,7 +1439,7 @@ impl Workspace {
                 request_digest.as_bytes().as_slice(),
                 base.as_bytes().as_slice(),
                 revision_id.as_bytes().as_slice(),
-                i64::try_from(next_sequence).unwrap_or(i64::MAX),
+                db_i64(next_sequence, "sequence")?,
                 recorded.at().nanos(),
             ],
         )?;
@@ -1460,9 +1460,9 @@ impl Workspace {
                     retention.policy_version,
                     command.idempotency_key,
                     request_digest.as_bytes().as_slice(),
-                    i64::try_from(next_generation).unwrap_or(i64::MAX),
+                    db_i64(next_generation, "generation")?,
                     revision_id.as_bytes().as_slice(),
-                    i64::try_from(next_sequence).unwrap_or(i64::MAX),
+                    db_i64(next_sequence, "sequence")?,
                     retained_metadata,
                     recorded.at().nanos(),
                 ],
@@ -1501,7 +1501,7 @@ impl Workspace {
                         suppression
                             .content_digest
                             .map(|digest| digest.as_bytes().to_vec()),
-                        i64::try_from(suppression.generation).unwrap_or(i64::MAX),
+                        db_i64(suppression.generation, "generation")?,
                     ],
                 )?;
             }
@@ -1526,7 +1526,7 @@ impl Workspace {
                  WHERE state = 'pending' AND eligibility_generation < ?2",
                 params![
                     recorded.at().nanos(),
-                    i64::try_from(next_generation).unwrap_or(i64::MAX),
+                    db_i64(next_generation, "generation")?,
                 ],
             )?;
         }
@@ -1649,7 +1649,7 @@ impl Workspace {
         let stored = StoredCommand {
             request_digest,
             outcome_revision: revision_from_blob(&outcome_revision)?,
-            outcome_sequence: u64::try_from(outcome_sequence).unwrap_or(0),
+            outcome_sequence: db_u64(outcome_sequence, "outcome sequence")?,
         };
         self.outcome_for_stored(&stored).map(Some)
     }
@@ -1874,13 +1874,13 @@ impl Workspace {
         };
         let revision = WorkspaceRevisionId::from_bytes([0; 16]);
         Ok(Some(StoredIntent {
-            revision_sequence: u64::try_from(revision_sequence).unwrap_or(0),
+            revision_sequence: db_u64(revision_sequence, "revision sequence")?,
             target_path,
             expected_digest: expected_digest
                 .map(|bytes| digest_with(&bytes, "raw-bytes-v1", "source-bytes", revision))
                 .transpose()?,
             desired_digest: digest_with(&desired_digest, "raw-bytes-v1", "source-bytes", revision)?,
-            eligibility_generation: u64::try_from(eligibility_generation).unwrap_or(0),
+            eligibility_generation: db_u64(eligibility_generation, "eligibility generation")?,
             state: PublicationState::parse(&state).unwrap_or(PublicationState::Failed),
         }))
     }
@@ -1964,12 +1964,7 @@ impl Workspace {
             key.copy_from_slice(digest.as_bytes());
             output.insert(
                 key,
-                (
-                    digest,
-                    u64::try_from(length).unwrap_or(0),
-                    profile,
-                    boundary,
-                ),
+                (digest, db_u64(length, "blob length")?, profile, boundary),
             );
         }
         Ok(output)
@@ -2033,7 +2028,7 @@ impl Workspace {
         let mut selectors = Vec::with_capacity(rows.len());
         for (ordinal, kind, target, revision, digest) in rows {
             selectors.push(RetentionSelector {
-                ordinal: u32::try_from(ordinal).unwrap_or(0),
+                ordinal: db_u32(ordinal, "ordinal")?,
                 kind,
                 target: target
                     .map(|bytes| record_id_from_blob(&bytes, self.current_revision()?))
@@ -2104,7 +2099,7 @@ impl Workspace {
                                 "unknown retention location state {state}"
                             ))
                         })?,
-                        attempts: u32::try_from(attempts).unwrap_or(u32::MAX),
+                        attempts: db_u32(attempts, "attempts")?,
                         verified: verified != 0,
                         detail_code,
                     })
@@ -2171,7 +2166,16 @@ impl Workspace {
                 Some("shared-live-reference"),
             ),
         };
-        self.update_retention_location(operation_id, location_id, state, true, detail, true)?;
+        self.update_retention_location(
+            operation_id,
+            location_id,
+            state,
+            RetentionLocationUpdate {
+                verified: true,
+                increment_attempts: true,
+            },
+            detail,
+        )?;
         Ok(outcome)
     }
 
@@ -2204,9 +2208,11 @@ impl Workspace {
                     operation_id,
                     location_id,
                     RetentionLocationState::Absent,
-                    true,
+                    RetentionLocationUpdate {
+                        verified: true,
+                        increment_attempts: true,
+                    },
                     None,
-                    true,
                 )?;
                 return Ok(BlobPurgeOutcome::Absent);
             };
@@ -2215,9 +2221,11 @@ impl Workspace {
                     operation_id,
                     location_id,
                     RetentionLocationState::Unavailable,
-                    true,
+                    RetentionLocationUpdate {
+                        verified: true,
+                        increment_attempts: true,
+                    },
                     Some("external-edit-present"),
-                    true,
                 )?;
                 return Ok(BlobPurgeOutcome::RetainedShared);
             }
@@ -2234,7 +2242,16 @@ impl Workspace {
             BlobPurgeOutcome::Absent => RetentionLocationState::Absent,
             BlobPurgeOutcome::RetainedShared => RetentionLocationState::RetainedShared,
         };
-        self.update_retention_location(operation_id, location_id, state, true, None, true)?;
+        self.update_retention_location(
+            operation_id,
+            location_id,
+            state,
+            RetentionLocationUpdate {
+                verified: true,
+                increment_attempts: true,
+            },
+            None,
+        )?;
         Ok(outcome)
     }
 
@@ -2250,9 +2267,11 @@ impl Workspace {
             operation_id,
             location_id,
             state,
-            state.is_terminal(),
+            RetentionLocationUpdate {
+                verified: state.is_terminal(),
+                increment_attempts: false,
+            },
             detail_code,
-            false,
         )
     }
 
@@ -2261,9 +2280,8 @@ impl Workspace {
         operation_id: &str,
         location_id: &str,
         state: RetentionLocationState,
-        verified: bool,
+        update: RetentionLocationUpdate,
         detail_code: Option<&str>,
-        increment_attempts: bool,
     ) -> Result<()> {
         let changed = self.connection.execute(
             "UPDATE retention_locations
@@ -2272,10 +2290,10 @@ impl Workspace {
              WHERE operation_id = ?6 AND location_id = ?7",
             params![
                 state.as_str(),
-                i64::from(verified),
+                i64::from(update.verified),
                 detail_code,
                 self.clock.now().nanos(),
-                i64::from(increment_attempts),
+                i64::from(update.increment_attempts),
                 operation_id,
                 location_id,
             ],
@@ -2447,7 +2465,7 @@ impl Workspace {
         Ok(ContentDigest::of_payload(&Value::record_named(
             "retention-state",
             vec![
-                Value::integer(i64::try_from(generation).unwrap_or(i64::MAX)),
+                Value::integer(db_i64(generation, "generation")?),
                 Value::set(suppressions.iter().map(RetentionSuppression::to_value)),
             ],
         )))
@@ -2491,7 +2509,7 @@ impl Workspace {
             "retention-state",
             vec![
                 Value::integer(1),
-                Value::integer(i64::try_from(generation).unwrap_or(i64::MAX)),
+                Value::integer(db_i64(generation, "generation")?),
                 Value::set(suppressions.iter().map(RetentionSuppression::to_value)),
             ],
         )))
@@ -2563,7 +2581,7 @@ impl Workspace {
                     suppression
                         .content_digest
                         .map(|digest| digest.as_bytes().to_vec()),
-                    i64::try_from(suppression.generation).unwrap_or(i64::MAX),
+                    db_i64(suppression.generation, "generation")?,
                 ],
             )?;
         }
@@ -2714,9 +2732,9 @@ impl RawRetentionOperation {
             state: RetentionJobState::parse(&self.state).ok_or_else(|| {
                 StoreError::UnsupportedLayout(format!("unknown retention job state {}", self.state))
             })?,
-            generation: u64::try_from(self.generation).unwrap_or(0),
+            generation: db_u64(self.generation, "generation")?,
             outcome_revision: revision_from_blob(&self.outcome_revision)?,
-            outcome_sequence: u64::try_from(self.outcome_sequence).unwrap_or(0),
+            outcome_sequence: db_u64(self.outcome_sequence, "outcome sequence")?,
             retained_metadata: self
                 .retained_metadata
                 .split('\n')
@@ -2802,7 +2820,7 @@ fn all_suppressions(connection: &Connection) -> Result<Vec<RetentionSuppression>
             content_digest: digest
                 .map(|bytes| digest_with(&bytes, "raw-bytes-v1", "source-bytes", context))
                 .transpose()?,
-            generation: u64::try_from(generation).unwrap_or(0),
+            generation: db_u64(generation, "generation")?,
         });
     }
     Ok(suppressions)
@@ -3106,11 +3124,11 @@ fn revision_row_by_id(
     )?;
     Ok(Some(RevisionRow {
         revision,
-        sequence: u64::try_from(sequence).unwrap_or(0),
+        sequence: db_u64(sequence, "sequence")?,
         parent,
         manifest_bytes: manifest,
         manifest_digest: digest,
-        eligibility_generation: u64::try_from(generation).unwrap_or(0),
+        eligibility_generation: db_u64(generation, "generation")?,
     }))
 }
 
@@ -3120,18 +3138,15 @@ fn publication_outcomes(connection: &Connection, sequence: u64) -> Result<Vec<Pu
          FROM publication_intents WHERE revision_sequence = ?1 ORDER BY rowid",
     )?;
     let rows = statement
-        .query_map(
-            params![i64::try_from(sequence).unwrap_or(i64::MAX)],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<Vec<u8>>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            },
-        )?
+        .query_map(params![db_i64(sequence, "sequence")?], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let placeholder = WorkspaceRevisionId::from_bytes([0; 16]);
     rows.into_iter()
@@ -3177,7 +3192,7 @@ fn lookup_command_in(
     Ok(Some(StoredCommand {
         request_digest,
         outcome_revision: revision_from_blob(&outcome_revision)?,
-        outcome_sequence: u64::try_from(outcome_sequence).unwrap_or(0),
+        outcome_sequence: db_u64(outcome_sequence, "outcome sequence")?,
     }))
 }
 
@@ -3450,4 +3465,26 @@ fn join(diagnostics: &[Diagnostic]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+#[derive(Clone, Copy)]
+struct RetentionLocationUpdate {
+    verified: bool,
+    increment_attempts: bool,
+}
+
+fn db_i64(value: u64, field: &'static str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| StoreError::ValueOutOfRange(field))
+}
+
+fn db_u64(value: i64, field: &'static str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| StoreError::ValueOutOfRange(field))
+}
+
+fn db_usize(value: i64, field: &'static str) -> Result<usize> {
+    usize::try_from(value).map_err(|_| StoreError::ValueOutOfRange(field))
+}
+
+fn db_u32(value: i64, field: &'static str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| StoreError::ValueOutOfRange(field))
 }

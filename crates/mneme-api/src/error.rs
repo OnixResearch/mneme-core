@@ -91,7 +91,8 @@ impl ApiError {
             | StoreError::MissingSource { .. }
             | StoreError::SourceLengthMismatch { .. }
             | StoreError::PathEscapes(_)
-            | StoreError::InvalidCandidate { .. } => ApiErrorCode::InvalidInput,
+            | StoreError::InvalidCandidate { .. }
+            | StoreError::ValueOutOfRange(_) => ApiErrorCode::InvalidInput,
             StoreError::RetentionSuppressed { .. }
             | StoreError::MissingRetentionState { .. }
             | StoreError::MissingRetentionParticipant { .. } => ApiErrorCode::Denied,

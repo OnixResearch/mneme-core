@@ -621,6 +621,7 @@ fn resolve_import_includes(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
 fn resolve_include_bytes(
     context: &DocumentContext,
     scope: &ScopeId,
@@ -817,6 +818,12 @@ pub struct Documents<'w> {
     workspace: &'w mut Workspace,
 }
 
+#[derive(Clone, Copy)]
+struct PreparationOptions {
+    publish: bool,
+    external_import: bool,
+}
+
 impl<'w> Documents<'w> {
     /// Wrap a workspace.
     pub fn new(workspace: &'w mut Workspace) -> Self {
@@ -854,7 +861,14 @@ impl<'w> Documents<'w> {
             .ok_or_else(|| DocumentError::Io("working file does not exist".to_owned()))?;
         let prepared = self.prepare_source(&request, &bytes)?;
         self.require_valid(&prepared)?;
-        self.commit_prepared(request, prepared, false, true)
+        self.commit_prepared(
+            request,
+            prepared,
+            PreparationOptions {
+                publish: false,
+                external_import: true,
+            },
+        )
     }
 
     /// Save supplied source bytes and publish them to the managed working file.
@@ -872,7 +886,14 @@ impl<'w> Documents<'w> {
         }
         let prepared = self.prepare_source(&request, bytes)?;
         self.require_valid(&prepared)?;
-        self.commit_prepared(request, prepared, true, false)
+        self.commit_prepared(
+            request,
+            prepared,
+            PreparationOptions {
+                publish: true,
+                external_import: false,
+            },
+        )
     }
 
     /// Move a document to a new logical path without changing identity or source.
@@ -974,7 +995,14 @@ impl<'w> Documents<'w> {
         let import = request.import;
         let prepared = self.prepare_source(&import, &patched)?;
         self.require_valid(&prepared)?;
-        self.commit_prepared(import, prepared, publish, false)
+        self.commit_prepared(
+            import,
+            prepared,
+            PreparationOptions {
+                publish,
+                external_import: false,
+            },
+        )
     }
 
     /// Change one structured entity property without touching document bytes.
@@ -1038,6 +1066,7 @@ impl<'w> Documents<'w> {
         Ok(outcome.revision)
     }
 
+    #[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
     fn prepare_source(&self, request: &ImportRequest, bytes: &[u8]) -> Result<PreparedDocument> {
         if request.actor.trim().is_empty() || request.idempotency_key.trim().is_empty() {
             return Err(DocumentError::Invalid(
@@ -1181,10 +1210,8 @@ impl<'w> Documents<'w> {
             }
         }
         let include_start = Instant::now();
-        let deadline = include_start
-            + std::time::Duration::from_millis(
-                u64::try_from(request.policy.max_time_ms).unwrap_or(u64::MAX),
-            );
+        let max_time_ms = request.policy.max_time_ms.min(u128::from(u64::MAX)) as u64;
+        let deadline = include_start + std::time::Duration::from_millis(max_time_ms);
         let resolved = match resolve_import_includes(
             &context,
             &request.scope,
@@ -1407,6 +1434,7 @@ fn document_binding_payload(
     ]))
 }
 
+#[allow(unknown_lints, fallible_int_fallback)] // positions are bounded by source length
 fn document_anchor_payload(
     document: RecordId,
     source: SourcePin,
@@ -1471,8 +1499,7 @@ impl Documents<'_> {
         &mut self,
         request: ImportRequest,
         prepared: PreparedDocument,
-        publish: bool,
-        external_import: bool,
+        options: PreparationOptions,
     ) -> Result<DocumentRevision> {
         if !prepared.validated.valid {
             return Err(DocumentError::Diagnostics(prepared.validated.diagnostics));
@@ -1489,7 +1516,7 @@ impl Documents<'_> {
                 outcome,
             );
         }
-        let publications = if publish {
+        let publications = if options.publish {
             let expected_previous = blob::read_working_file(self.workspace.root(), &request.path)?
                 .map(|bytes| ContentDigest::of_source_bytes(&bytes));
             vec![PublicationDraft {
@@ -1500,7 +1527,7 @@ impl Documents<'_> {
         } else {
             Vec::new()
         };
-        let import_candidates = if external_import {
+        let import_candidates = if options.external_import {
             vec![ImportCandidateDraft {
                 path: request.path.clone(),
                 bytes: prepared.source_blob.bytes.clone(),
@@ -1733,6 +1760,7 @@ impl Documents<'_> {
     }
 
     /// Render a current or historical document preview.
+    #[allow(unknown_lints, ambient_clock)] // preview deadline is the render shell
     pub fn preview(
         &mut self,
         document_id: RecordId,
@@ -1807,10 +1835,8 @@ impl Documents<'_> {
         let metadata = document
             .entity
             .and_then(|entity| context.entities.get(&entity));
-        let deadline = Instant::now()
-            + std::time::Duration::from_millis(
-                u64::try_from(config.max_time_ms).unwrap_or(u64::MAX),
-            );
+        let max_time_ms = config.max_time_ms.min(u128::from(u64::MAX)) as u64;
+        let deadline = Instant::now() + std::time::Duration::from_millis(max_time_ms);
         let rendered = root_source
             .as_ref()
             .map(|root| preview::render(root, &sources, metadata, &config, Some(deadline)));
@@ -1904,8 +1930,12 @@ impl Documents<'_> {
             let text = std::str::from_utf8(&source.bytes)
                 .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
             for paragraph in asciidoc::scan_paragraphs(text) {
-                let start = usize::try_from(paragraph.span.start()).unwrap_or(usize::MAX);
-                let end = usize::try_from(paragraph.span.end()).unwrap_or(usize::MAX);
+                let start = usize::try_from(paragraph.span.start()).map_err(|_| {
+                    DocumentError::Invalid("span position exceeds the platform limit")
+                })?;
+                let end = usize::try_from(paragraph.span.end()).map_err(|_| {
+                    DocumentError::Invalid("span position exceeds the platform limit")
+                })?;
                 if start > end || end >= source.bytes.len() {
                     continue;
                 }

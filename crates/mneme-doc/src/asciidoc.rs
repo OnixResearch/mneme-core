@@ -18,6 +18,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    #[allow(unknown_lints, usize_in_public_api)] // line/column mirror source positions
     pub fn new(
         code: &'static str,
         message: impl Into<String>,
@@ -36,6 +37,7 @@ impl Diagnostic {
     }
 
     /// A non-fatal diagnostic that does not reject the source bytes.
+    #[allow(unknown_lints, usize_in_public_api)] // line/column mirror source positions
     pub fn warning(
         code: &'static str,
         message: impl Into<String>,

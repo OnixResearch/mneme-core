@@ -55,7 +55,7 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 # Octet runner policy. Lint tuning lives in dylint.toml (consumer-owned).
-# First adoption scope is the pure core crate; extending it is a reviewed change.
+# Required gate: every workspace crate and target, with lint tuning in dylint.toml.
 [workspace.metadata.octet]
-default_scope = ["-p", "mneme-core"]
-cargo_check_args = ["--lib", "--ignore-rust-version"]
+default_scope = ["--workspace"]
+cargo_check_args = ["--all-targets", "--all-features", "--ignore-rust-version"]

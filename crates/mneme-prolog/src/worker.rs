@@ -64,6 +64,7 @@ pub struct WorkerOutcome {
 ///
 /// The caller supplies an already authorized request and enabled capability.
 /// `engine` must be the pinned Scryer-compatible executable.
+#[allow(unknown_lints, ambient_clock)] // worker wall-clock budget is the process shell
 pub fn run_worker(
     engine: &Path,
     metadata: &CapabilityMetadata,
@@ -138,7 +139,7 @@ pub fn run_worker(
     };
     let stdout = read_bounded(&stdout_path, limits.max_output_bytes)?;
     let output_limited = stdout.1;
-    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     Ok(WorkerOutcome {
         status: if output_limited {
             WorkerStatus::Partial
@@ -168,7 +169,7 @@ fn read_bounded(path: &Path, limit: usize) -> Result<(String, bool), CapabilityE
     let file = std::fs::File::open(path)
         .map_err(|error| CapabilityError::InvalidRequest(format!("worker output: {error}")))?;
     let mut bytes = Vec::new();
-    file.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+    file.take((limit as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| CapabilityError::InvalidRequest(format!("worker output: {error}")))?;
     let limited = bytes.len() > limit;

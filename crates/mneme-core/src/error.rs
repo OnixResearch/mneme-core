@@ -208,6 +208,7 @@ impl Path {
 
     /// Append a sequence position.
     #[must_use]
+    #[allow(unknown_lints, usize_in_public_api)] // std-shaped path index
     pub fn index(&self, index: usize) -> Self {
         let mut path = self.clone();
         path.segments.push(Segment::Index(index));

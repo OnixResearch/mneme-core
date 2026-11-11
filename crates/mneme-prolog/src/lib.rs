@@ -698,6 +698,7 @@ impl PrologResult {
 }
 
 /// Encode one finite term into the restricted engine syntax.
+#[allow(unknown_lints, usize_in_public_api)] // byte budgets mirror string lengths
 pub fn encode_term(
     term: &Term,
     profile: TermProfile,
@@ -714,6 +715,7 @@ pub fn encode_term(
 }
 
 /// Encode one atom after finite-term validation.
+#[allow(unknown_lints, usize_in_public_api)] // byte budgets mirror string lengths
 pub fn encode_atom(
     atom: &Atom,
     profile: TermProfile,
@@ -738,6 +740,7 @@ pub fn encode_atom(
 }
 
 /// Serialize finite solution bindings under an output-byte budget.
+#[allow(unknown_lints, usize_in_public_api)] // byte budgets mirror string lengths
 pub fn serialize_solution(
     solution: &Solution,
     profile: TermProfile,
@@ -807,6 +810,7 @@ fn escape_string(value: &str) -> String {
 
 impl Solution {
     /// Distinct ancestry roots, not the number of duplicated summaries.
+    #[allow(unknown_lints, usize_in_public_api)] // support counts mirror collection lengths
     pub fn independent_support_count(&self) -> usize {
         self.premises
             .iter()
