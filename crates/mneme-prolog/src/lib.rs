@@ -8,6 +8,7 @@
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod image;
+pub mod plan;
 pub mod worker;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -617,6 +618,8 @@ pub struct Precondition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlanProposal {
     pub id: String,
+    pub base_revision: WorkspaceRevisionId,
+    pub scope: ScopeId,
     pub actions: Vec<PlanAction>,
     pub preconditions: Vec<Precondition>,
     pub assumptions: BTreeSet<String>,
@@ -628,6 +631,8 @@ pub struct PlanProposal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FactChangeProposal {
     pub id: String,
+    pub base_revision: WorkspaceRevisionId,
+    pub scope: ScopeId,
     pub operation: String,
     pub target: Option<RecordId>,
     pub evidence: Vec<Premise>,
