@@ -5,13 +5,6 @@
 //! rename or an edit keeps the identifier, and two records with equal payloads
 //! keep distinct identifiers. A caller constructs identifiers explicitly; the
 //! workspace coordinator will supply them from its own source of uniqueness.
-#![allow(non_trait_imports)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
-
-use std::fmt;
-
-use crate::error::{Diagnostic, ErrorCode, Path, Stage};
-use crate::value::Value;
-
 macro_rules! opaque_id {
     ($(#[$doc:meta])* $name:ident, $label:literal) => {
         $(#[$doc])*
@@ -43,40 +36,40 @@ macro_rules! opaque_id {
             }
 
             /// Encode as the typed Preserves identifier record.
-            pub fn to_value(self) -> Value {
-                Value::record_named($label, vec![Value::string(self.to_hex())])
+            pub fn to_value(self) -> crate::value::Value {
+                crate::value::Value::record_named($label, vec![crate::value::Value::string(self.to_hex())])
             }
 
             /// Decode from the typed Preserves identifier record.
-            pub fn from_value(value: &Value, path: &Path) -> Result<Self, Diagnostic> {
+            pub fn from_value(value: &crate::value::Value, path: &crate::error::Path) -> Result<Self, crate::error::Diagnostic> {
                 let Some(record) = value.as_record() else {
-                    return Err(Diagnostic::new(
-                        Stage::Envelope,
-                        ErrorCode::TypeMismatch,
+                    return Err(crate::error::Diagnostic::new(
+                        crate::error::Stage::Envelope,
+                        crate::error::ErrorCode::TypeMismatch,
                         path.clone(),
                         format!("expected <{} \"…\">", $label),
                     ));
                 };
-                if record.label() != &Value::symbol($label) || record.fields().len() != 1 {
-                    return Err(Diagnostic::new(
-                        Stage::Envelope,
-                        ErrorCode::TypeMismatch,
+                if record.label() != &crate::value::Value::symbol($label) || record.fields().len() != 1 {
+                    return Err(crate::error::Diagnostic::new(
+                        crate::error::Stage::Envelope,
+                        crate::error::ErrorCode::TypeMismatch,
                         path.clone(),
                         format!("expected <{} \"…\">", $label),
                     ));
                 }
                 let Some(text) = record.fields()[0].as_string() else {
-                    return Err(Diagnostic::new(
-                        Stage::Envelope,
-                        ErrorCode::TypeMismatch,
+                    return Err(crate::error::Diagnostic::new(
+                        crate::error::Stage::Envelope,
+                        crate::error::ErrorCode::TypeMismatch,
                         path.clone(),
                         format!("{} must carry a hexadecimal string", $label),
                     ));
                 };
                 Self::from_hex(text).map_err(|message| {
-                    Diagnostic::new(
-                        Stage::Envelope,
-                        ErrorCode::InvalidIdentifier,
+                    crate::error::Diagnostic::new(
+                        crate::error::Stage::Envelope,
+                        crate::error::ErrorCode::InvalidIdentifier,
                         path.clone(),
                         format!("invalid {}: {message}", $label),
                     )
@@ -84,14 +77,14 @@ macro_rules! opaque_id {
             }
         }
 
-        impl fmt::Debug for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(formatter, concat!($label, "({})"), self.to_hex())
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str(&self.to_hex())
             }
         }
@@ -153,7 +146,7 @@ mod tests {
         let id = RecordId::from_hex("00112233445566778899aabbccddeeff").expect("valid hex");
         let value = id.to_value();
         assert_eq!(
-            RecordId::from_value(&value, &Path::root()).expect("valid id record"),
+            RecordId::from_value(&value, &crate::error::Path::root()).expect("valid id record"),
             id
         );
     }
