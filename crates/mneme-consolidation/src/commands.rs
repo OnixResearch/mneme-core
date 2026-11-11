@@ -5,18 +5,39 @@
 //! with the same idempotency key returns its prior outcome; a different key
 //! after a terminal decision is an explicit conflict.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use mneme_core::{RecordId, RevisionId, WorkspaceRevisionId};
+use mneme_core::{RecordId, RevisionId, ScopeId, WorkspaceRevisionId};
 
 use crate::{ConsolidationProposal, InputKey, ProposalDisposition, SupportOutcome};
 
 /// Current workspace state used by acceptance preconditions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcceptanceState {
+    pub scope: ScopeId,
     pub base_revision: WorkspaceRevisionId,
+    pub eligibility_generation: u64,
+    pub forgotten: BTreeSet<RecordId>,
     pub targets: BTreeMap<RecordId, RevisionId>,
-    pub sources: BTreeMap<InputKey, String>,
+    pub sources: BTreeMap<InputKey, SourceState>,
+}
+
+/// Availability and exact digest of one source premise.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceState {
+    Retained { digest: String },
+    Pruned { digest: String },
+    Forgotten { digest: String },
+}
+
+impl SourceState {
+    pub fn digest(&self) -> &str {
+        match self {
+            SourceState::Retained { digest }
+            | SourceState::Pruned { digest }
+            | SourceState::Forgotten { digest } => digest,
+        }
+    }
 }
 
 /// A registered proposal plus the state it was reviewed against.
@@ -61,8 +82,12 @@ pub enum ConflictKind {
     MissingProposal,
     StaleProposalRevision,
     StaleBase,
+    StaleGeneration,
+    Unauthorized,
     ChangedTarget,
     AlteredSource,
+    ForgottenSource,
+    PrunedSource,
     AlreadyDecided,
     UnsupportedAcceptance,
     IdempotencyMismatch,
@@ -124,6 +149,9 @@ impl ProposalRegistry {
             return Err("proposal is already registered".to_owned());
         }
         proposal.validate()?;
+        if proposal.scope != expected.scope {
+            return Err("proposal scope does not match the acceptance state".to_owned());
+        }
         self.proposals.insert(
             proposal.proposal_id.clone(),
             RegisteredProposal {
@@ -200,11 +228,63 @@ impl ProposalRegistry {
         if self.current.base_revision != registered.expected.base_revision {
             return self.conflict(ConflictKind::StaleBase, "base revision changed");
         }
+        if self.current.scope != registered.expected.scope
+            || registered.proposal.scope != self.current.scope
+        {
+            return self.conflict(
+                ConflictKind::Unauthorized,
+                "proposal is outside the current authorized scope",
+            );
+        }
+        if self.current.eligibility_generation != registered.expected.eligibility_generation {
+            return self.conflict(
+                ConflictKind::StaleGeneration,
+                "eligibility generation changed",
+            );
+        }
+        for premise in &registered.proposal.premises {
+            if self.current.forgotten.contains(&premise.record_id)
+                || premise
+                    .ancestry_roots
+                    .iter()
+                    .any(|root| self.current.forgotten.contains(&root.record_id))
+            {
+                return self.conflict(
+                    ConflictKind::ForgottenSource,
+                    "proposal depends on explicitly forgotten evidence",
+                );
+            }
+            let Some(current_source) = self.current.sources.get(&InputKey {
+                record_id: premise.record_id,
+                revision_id: premise.revision_id,
+            }) else {
+                return self.conflict(ConflictKind::AlteredSource, "source is no longer present");
+            };
+            let expected_source = registered.expected.sources.get(&InputKey {
+                record_id: premise.record_id,
+                revision_id: premise.revision_id,
+            });
+            if expected_source.is_none_or(|expected| expected.digest() != current_source.digest()) {
+                return self.conflict(ConflictKind::AlteredSource, "source digest changed");
+            }
+            match current_source {
+                SourceState::Forgotten { .. } => {
+                    return self.conflict(
+                        ConflictKind::ForgottenSource,
+                        "proposal source was forgotten",
+                    );
+                }
+                SourceState::Pruned { .. } if premise.span.is_some() => {
+                    return self.conflict(
+                        ConflictKind::PrunedSource,
+                        "proposal requires pruned source bytes",
+                    );
+                }
+                SourceState::Retained { .. } | SourceState::Pruned { .. } => {}
+            }
+        }
         if self.current.targets != registered.expected.targets {
             return self.conflict(ConflictKind::ChangedTarget, "target revision changed");
-        }
-        if self.current.sources != registered.expected.sources {
-            return self.conflict(ConflictKind::AlteredSource, "source digest changed");
         }
         let Some(registered) = self.proposals.get_mut(&command.proposal_id) else {
             return CommandOutcome::Conflict {
@@ -309,9 +389,17 @@ mod tests {
             revision_id: RevisionId::from_bytes([0x21; 16]),
         };
         let state = AcceptanceState {
+            scope: fixture.job.scope.clone(),
             base_revision: fixture.job.base_revision,
+            eligibility_generation: fixture.job.batch.eligibility_generation,
+            forgotten: BTreeSet::new(),
             targets: BTreeMap::new(),
-            sources: BTreeMap::from([(source, "sha256:source".to_owned())]),
+            sources: BTreeMap::from([(
+                source,
+                SourceState::Retained {
+                    digest: "sha256:source".to_owned(),
+                },
+            )]),
         };
         (
             AcceptanceCommand {
@@ -369,7 +457,9 @@ mod tests {
                         record_id: RecordId::from_bytes([0x20; 16]),
                         revision_id: RevisionId::from_bytes([0x21; 16]),
                     },
-                    "sha256:altered".to_owned(),
+                    SourceState::Retained {
+                        digest: "sha256:altered".to_owned(),
+                    },
                 );
             }
             let (command, _) = command();
@@ -452,6 +542,103 @@ mod tests {
             registry.accept(command),
             CommandOutcome::Conflict {
                 kind: ConflictKind::AlreadyDecided,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn forgotten_evidence_blocks_acceptance_and_replay() {
+        let mut registry = registry();
+        registry
+            .current
+            .forgotten
+            .insert(RecordId::from_bytes([0x20; 16]));
+        let (command, _) = command();
+        let first = registry.accept(command.clone());
+        assert!(matches!(
+            first,
+            CommandOutcome::Conflict {
+                kind: ConflictKind::ForgottenSource,
+                ..
+            }
+        ));
+        let second = registry.accept(command);
+        assert!(matches!(
+            second,
+            CommandOutcome::Conflict {
+                kind: ConflictKind::ForgottenSource,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn pruned_bytes_block_quotation_but_allow_claim_envelope() {
+        let mut quoted = registry();
+        let (quoted_command, _) = command();
+        let source = InputKey {
+            record_id: RecordId::from_bytes([0x20; 16]),
+            revision_id: RevisionId::from_bytes([0x21; 16]),
+        };
+        quoted.current.sources.insert(
+            source,
+            SourceState::Pruned {
+                digest: "sha256:source".to_owned(),
+            },
+        );
+        assert!(matches!(
+            quoted.accept(quoted_command),
+            CommandOutcome::Conflict {
+                kind: ConflictKind::PrunedSource,
+                ..
+            }
+        ));
+
+        let mut envelope = registry();
+        envelope
+            .proposals
+            .get_mut("proposal-summary")
+            .expect("proposal")
+            .proposal
+            .premises[0]
+            .span = None;
+        let (mut envelope_command, _) = command();
+        envelope_command.idempotency_key = "accept-envelope".to_owned();
+        envelope.current.sources.insert(
+            source,
+            SourceState::Pruned {
+                digest: "sha256:source".to_owned(),
+            },
+        );
+        let outcome = envelope.accept(envelope_command);
+        assert!(
+            matches!(outcome, CommandOutcome::Accepted { .. }),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn generation_and_scope_changes_conflict() {
+        let mut generation = registry();
+        generation.current.eligibility_generation += 1;
+        let (generation_command, _) = command();
+        assert!(matches!(
+            generation.accept(generation_command),
+            CommandOutcome::Conflict {
+                kind: ConflictKind::StaleGeneration,
+                ..
+            }
+        ));
+
+        let mut scope = registry();
+        scope.current.scope =
+            mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "birch").expect("scope");
+        let (scope_command, _) = command();
+        assert!(matches!(
+            scope.accept(scope_command),
+            CommandOutcome::Conflict {
+                kind: ConflictKind::Unauthorized,
                 ..
             }
         ));

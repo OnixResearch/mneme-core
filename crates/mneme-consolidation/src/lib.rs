@@ -80,6 +80,7 @@ pub enum InputKind {
 pub enum InputAvailability {
     Retained,
     Pruned { reason: String },
+    Forgotten { reason: String },
 }
 
 /// One exact input unit and its source availability.
@@ -267,10 +268,11 @@ impl InputBatch {
             if !keys.insert(unit.key) {
                 return Err("input batch contains a duplicate unit".to_owned());
             }
-            if let InputAvailability::Pruned { reason } = &unit.availability
+            if let InputAvailability::Pruned { reason } | InputAvailability::Forgotten { reason } =
+                &unit.availability
                 && reason.trim().is_empty()
             {
-                return Err("pruned input needs a reason".to_owned());
+                return Err("unavailable input needs a reason".to_owned());
             }
         }
         if !self.reviewed.is_subset(&keys) {

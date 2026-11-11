@@ -182,8 +182,14 @@ fn validate_inputs(batch: &InputBatch, inputs: &[GeneratorInput]) -> Result<(), 
             .iter()
             .find(|unit| unit.key == input.key)
             .ok_or_else(|| "generator input has no batch unit".to_owned())?;
-        if matches!(unit.availability, crate::InputAvailability::Pruned { .. }) {
-            return Err("generator cannot quote a pruned input".to_owned());
+        match &unit.availability {
+            crate::InputAvailability::Forgotten { .. } => {
+                return Err("generator input was explicitly forgotten".to_owned());
+            }
+            crate::InputAvailability::Pruned { .. } if input.span.is_some() => {
+                return Err("generator cannot quote a pruned input".to_owned());
+            }
+            _ => {}
         }
         if let Some(span) = input.span {
             validate_span(&input.text, span, "generator input")?;
@@ -335,5 +341,41 @@ mod tests {
             decision: RecordId::from_bytes([0x50; 16]),
         };
         assert!(proposal.validate().is_err());
+    }
+
+    #[test]
+    fn forgotten_or_quoted_pruned_inputs_are_rejected() {
+        let (mut input, job, _batch) = input_and_job();
+        let mut fixture = crate::fixture().expect("fixture");
+        let unit = fixture.job.batch.units[1].clone();
+        fixture.job.batch.units[1].availability = crate::InputAvailability::Forgotten {
+            reason: "explicit forget".to_owned(),
+        };
+        let mut job = job;
+        job.batch = fixture.job.batch.clone();
+        let generator = DeterministicGenerator;
+        assert!(
+            generator
+                .generate(&job, &fixture.job.batch, std::slice::from_ref(&input))
+                .is_err()
+        );
+
+        fixture.job.batch.units[1].availability = crate::InputAvailability::Pruned {
+            reason: "source pruned".to_owned(),
+        };
+        job.batch = fixture.job.batch.clone();
+        input.span = Some(SourceSpan::new(0, 6).expect("span"));
+        assert!(
+            generator
+                .generate(&job, &fixture.job.batch, std::slice::from_ref(&input))
+                .is_err()
+        );
+        input.span = None;
+        assert!(
+            generator
+                .generate(&job, &fixture.job.batch, std::slice::from_ref(&input))
+                .is_ok()
+        );
+        let _ = unit;
     }
 }
