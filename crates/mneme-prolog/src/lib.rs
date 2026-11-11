@@ -22,6 +22,7 @@ pub enum Feature {
     HypotheticalAssumptions,
     Plans,
     GuardedNegation,
+    Aggregation,
     CertifiedProofs,
 }
 
@@ -32,6 +33,7 @@ impl Feature {
             Feature::HypotheticalAssumptions => "hypothetical-assumptions",
             Feature::Plans => "plans",
             Feature::GuardedNegation => "guarded-negation",
+            Feature::Aggregation => "aggregation",
             Feature::CertifiedProofs => "certified-proofs",
         }
     }
@@ -43,6 +45,54 @@ impl fmt::Display for Feature {
     }
 }
 
+/// Preconditions for an absence-sensitive negative conclusion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NegativeConditions {
+    pub relation_complete: bool,
+    pub subgoal_completed: bool,
+    pub subgoal_ground: bool,
+    pub source_pruned: bool,
+    pub within_limits: bool,
+}
+
+/// A guarded negative conclusion. `Established` is about the contracted goal
+/// and snapshot, not universal real-world falsity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NegativeConclusion {
+    Established,
+    Unknown { reason: String },
+}
+
+/// Evaluate whether a negative conclusion is permitted. Any incomplete,
+/// non-ground, pruned, timed-out, or budget-exhausted condition keeps it unknown.
+pub fn evaluate_negative_guard(conditions: NegativeConditions) -> NegativeConclusion {
+    if !conditions.relation_complete {
+        return NegativeConclusion::Unknown {
+            reason: "input relation is not complete".to_owned(),
+        };
+    }
+    if !conditions.subgoal_completed {
+        return NegativeConclusion::Unknown {
+            reason: "subgoal search did not complete".to_owned(),
+        };
+    }
+    if !conditions.subgoal_ground {
+        return NegativeConclusion::Unknown {
+            reason: "subgoal is not ground".to_owned(),
+        };
+    }
+    if conditions.source_pruned {
+        return NegativeConclusion::Unknown {
+            reason: "negative search depends on pruned source bytes".to_owned(),
+        };
+    }
+    if !conditions.within_limits {
+        return NegativeConclusion::Unknown {
+            reason: "negative search exhausted its limits".to_owned(),
+        };
+    }
+    NegativeConclusion::Established
+}
 /// Whether an optional Prolog profile can be used.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CapabilityState {
@@ -137,6 +187,13 @@ impl CapabilityMetadata {
                 }
             }
             CapabilityState::Enabled => {
+                if self.features.contains(&Feature::GuardedNegation)
+                    || self.features.contains(&Feature::Aggregation)
+                {
+                    return Err(CapabilityError::InvalidMetadata(
+                        "guarded negation and aggregation are disabled in this profile".to_owned(),
+                    ));
+                }
                 if self.allowed_predicates.is_empty() {
                     return Err(CapabilityError::InvalidMetadata(
                         "enabled capability needs an allowed predicate set".to_owned(),
@@ -183,6 +240,9 @@ impl CapabilityMetadata {
             });
         }
         for feature in &request.features {
+            if matches!(feature, Feature::GuardedNegation | Feature::Aggregation) {
+                return Err(CapabilityError::UnsupportedFeature(*feature));
+            }
             if !self.features.contains(feature) {
                 return Err(CapabilityError::UnsupportedFeature(*feature));
             }
@@ -1159,5 +1219,60 @@ mod tests {
             reason: String::new(),
         };
         assert!(missing.validate(&BTreeSet::new()).is_err());
+    }
+
+    #[test]
+    fn guarded_negation_and_aggregation_are_disabled() {
+        let mut metadata = enabled(BTreeSet::from([Feature::PositiveQuery]));
+        metadata.features.insert(Feature::GuardedNegation);
+        assert!(metadata.validate().is_err());
+        let mut request = request(BTreeSet::from([Feature::PositiveQuery]));
+        request.features.insert(Feature::Aggregation);
+        assert_eq!(
+            enabled(BTreeSet::from([Feature::PositiveQuery])).ensure_request(&request),
+            Err(CapabilityError::UnsupportedFeature(Feature::Aggregation))
+        );
+    }
+
+    #[test]
+    fn incomplete_or_pruned_conditions_never_establish_negative() {
+        let complete = NegativeConditions {
+            relation_complete: true,
+            subgoal_completed: true,
+            subgoal_ground: true,
+            source_pruned: false,
+            within_limits: true,
+        };
+        assert_eq!(
+            evaluate_negative_guard(complete),
+            NegativeConclusion::Established
+        );
+        for conditions in [
+            NegativeConditions {
+                relation_complete: false,
+                ..complete
+            },
+            NegativeConditions {
+                subgoal_completed: false,
+                ..complete
+            },
+            NegativeConditions {
+                subgoal_ground: false,
+                ..complete
+            },
+            NegativeConditions {
+                source_pruned: true,
+                ..complete
+            },
+            NegativeConditions {
+                within_limits: false,
+                ..complete
+            },
+        ] {
+            assert!(matches!(
+                evaluate_negative_guard(conditions),
+                NegativeConclusion::Unknown { .. }
+            ));
+        }
     }
 }
