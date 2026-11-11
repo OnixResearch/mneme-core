@@ -1425,6 +1425,7 @@ dependencies = [
  "mneme-desktop",
  "mneme-doc",
  "mneme-memory",
+ "mneme-prolog",
  "mneme-recall",
  "mneme-retention",
  "mneme-store",
