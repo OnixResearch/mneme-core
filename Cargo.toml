@@ -29,6 +29,7 @@ mneme-doc = { path = "crates/mneme-doc" }
 mneme-datalog = { path = "crates/mneme-datalog" }
 mneme-recall = { path = "crates/mneme-recall" }
 mneme-api = { path = "crates/mneme-api" }
+mneme-desktop = { path = "crates/mneme-desktop" }
 mneme-eval = { path = "crates/mneme-eval" }
 clap = { version = "4.5", features = ["derive"] }
 getrandom = "0.4"

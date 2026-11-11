@@ -1410,6 +1410,7 @@ dependencies = [
  "mneme-api",
  "mneme-core",
  "mneme-datalog",
+ "mneme-desktop",
  "mneme-doc",
  "mneme-memory",
  "mneme-recall",
