@@ -16,6 +16,7 @@ use mneme_core::{
 };
 use mneme_recall::RecallResponse;
 
+pub mod commands;
 pub mod generator;
 pub mod job;
 
