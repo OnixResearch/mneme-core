@@ -56,12 +56,12 @@ impl DeterministicGenerator {
         }
         validate_inputs(batch, inputs)?;
         let mut proposals = Vec::new();
-        for (index, input) in inputs.iter().enumerate() {
+        for input in inputs {
             if input.text.trim().is_empty() {
                 return Err(format!("input {} has no text", input.key.record_id));
             }
             proposals.push(ConsolidationProposal {
-                proposal_id: format!("{}-summary-{index}", job.job_id),
+                proposal_id: format!("{}-summary-{}", job.job_id, input.key.record_id.to_hex()),
                 job_id: job.job_id.clone(),
                 recorded_at: job.recorded_at,
                 base_revision: job.base_revision,

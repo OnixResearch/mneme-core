@@ -1355,6 +1355,9 @@ version = "0.1.0"
 dependencies = [
  "mneme-core",
  "mneme-recall",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

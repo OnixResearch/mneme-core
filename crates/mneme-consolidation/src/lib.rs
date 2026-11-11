@@ -17,6 +17,7 @@ use mneme_core::{
 use mneme_recall::RecallResponse;
 
 pub mod generator;
+pub mod job;
 
 /// Resource limits for one consolidation job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,6 +297,7 @@ impl InputBatch {
 /// Job execution status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobStatus {
+    Running,
     Complete,
     Partial,
     Timeout,
