@@ -291,10 +291,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "mneme-api"
+version = "0.1.0"
+dependencies = [
+ "mneme-core",
+ "mneme-datalog",
+ "mneme-memory",
+ "mneme-recall",
+ "mneme-retention",
+ "mneme-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "mneme-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "mneme-api",
  "mneme-core",
  "mneme-doc",
  "mneme-eval",
@@ -344,6 +361,7 @@ dependencies = [
 name = "mneme-eval"
 version = "0.1.0"
 dependencies = [
+ "mneme-api",
  "mneme-core",
  "mneme-datalog",
  "mneme-doc",

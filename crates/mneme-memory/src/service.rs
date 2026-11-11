@@ -102,6 +102,18 @@ impl<'w> Memory<'w> {
 
     /// Validate and commit a memory batch.
     pub fn commit(&mut self, batch: MemoryBatch) -> Result<CommitOutcome> {
+        let base = self.workspace.current_revision()?;
+        self.commit_at_base(batch, base)
+    }
+
+    /// Validate and commit a memory batch against a caller-supplied base
+    /// revision. The coordinator still applies its compare-and-swap and
+    /// idempotency rules.
+    pub fn commit_at_base(
+        &mut self,
+        batch: MemoryBatch,
+        base: WorkspaceRevisionId,
+    ) -> Result<CommitOutcome> {
         let snapshot = self.workspace.snapshot()?;
         let history = load_history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
@@ -114,7 +126,6 @@ impl<'w> Memory<'w> {
             &sequences,
             &suppressions,
         )?;
-        let base = self.workspace.current_revision()?;
         let outcome = self.workspace.commit(CommitCommand {
             base,
             actor: batch.actor,
