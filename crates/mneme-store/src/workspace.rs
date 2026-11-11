@@ -197,6 +197,13 @@ impl Default for WorkspaceConfig {
     }
 }
 
+impl WorkspaceConfig {
+    /// Construct a configuration from an explicit clock and fault injector.
+    pub fn new(clock: Box<dyn Clock>, faults: Box<dyn FaultInjector>) -> Self {
+        WorkspaceConfig { clock, faults }
+    }
+}
+
 impl std::fmt::Debug for WorkspaceConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

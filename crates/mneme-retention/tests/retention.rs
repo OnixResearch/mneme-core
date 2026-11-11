@@ -195,7 +195,12 @@ impl Harness {
             operation,
             selector,
             effective: None,
-            policy: mneme_retention::RetentionPolicy::default(),
+            policy: mneme_retention::RetentionPolicy {
+                version: mneme_retention::POLICY_VERSION.to_owned(),
+                retain_assertion_after_prune: true,
+                block_content_replay: true,
+                retain_withdrawn_evidence_metadata: true,
+            },
         }
     }
 }
@@ -1021,7 +1026,12 @@ fn restore_without_current_suppression_state_fails_closed_until_applied() {
         operation: mneme_retention::OperationKind::Forget,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy::default(),
+        policy: mneme_retention::RetentionPolicy {
+            version: mneme_retention::POLICY_VERSION.to_owned(),
+            retain_assertion_after_prune: true,
+            block_content_replay: true,
+            retain_withdrawn_evidence_metadata: true,
+        },
     };
     {
         let mut retention = mneme_retention::Retention::new(&mut current);
@@ -1227,7 +1237,13 @@ fn failed_managed_cache_keeps_barrier_and_reports_incomplete_cleanup() {
             retention: Some(mneme_store::RetentionCommit {
                 operation_id: operation_id.clone(),
                 operation_kind: "forget".to_owned(),
-                policy_version: mneme_retention::RetentionPolicy::default().version,
+                policy_version: mneme_retention::RetentionPolicy {
+                    version: mneme_retention::POLICY_VERSION.to_owned(),
+                    retain_assertion_after_prune: true,
+                    block_content_replay: true,
+                    retain_withdrawn_evidence_metadata: true,
+                }
+                .version,
                 selectors: Vec::new(),
                 suppressions: Vec::new(),
                 locations: vec![mneme_store::RetentionLocationPlan {

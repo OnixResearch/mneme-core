@@ -1031,9 +1031,14 @@ mod tests {
     #[test]
     fn disabled_capability_leaves_baseline_workspace_usable() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace =
-            mneme_store::Workspace::create(temp.path(), mneme_store::WorkspaceConfig::default())
-                .expect("workspace");
+        let workspace = mneme_store::Workspace::create(
+            temp.path(),
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
+        )
+        .expect("workspace");
         let before = workspace.status().expect("baseline status");
         let metadata = CapabilityMetadata::disabled("Prolog disabled");
         assert!(

@@ -99,8 +99,20 @@ impl Harness {
             document_id,
             path: path.to_owned(),
             title: title.map(str::to_owned),
-            policy: mneme_doc::DocumentPolicy::default(),
-            render_config: mneme_doc::RenderConfig::default(),
+            policy: mneme_doc::DocumentPolicy {
+                allowed_roots: vec![String::new()],
+                max_depth: 8,
+                max_inputs: 64,
+                max_total_source_bytes: 4 * 1024 * 1024,
+                max_expanded_bytes: 8 * 1024 * 1024,
+                max_time_ms: 1_000,
+            },
+            render_config: mneme_doc::RenderConfig {
+                version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+                include_entity_metadata: true,
+                max_output_bytes: 8 * 1024 * 1024,
+                max_time_ms: 1_000,
+            },
         }
     }
 
@@ -347,7 +359,16 @@ fn includes_pin_dependencies_and_historical_preview_uses_the_old_closure() {
     {
         let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         let preview = documents
-            .preview(root.document_id, None, mneme_doc::RenderConfig::default())
+            .preview(
+                root.document_id,
+                None,
+                mneme_doc::RenderConfig {
+                    version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+                    include_entity_metadata: true,
+                    max_output_bytes: 8 * 1024 * 1024,
+                    max_time_ms: 1_000,
+                },
+            )
             .expect("preview");
         assert!(preview.source_available);
         assert!(preview.html.contains("old included sentence"));
@@ -366,7 +387,12 @@ fn includes_pin_dependencies_and_historical_preview_uses_the_old_closure() {
             .preview(
                 root.document_id,
                 Some(old_root_revision),
-                mneme_doc::RenderConfig::default(),
+                mneme_doc::RenderConfig {
+                    version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+                    include_entity_metadata: true,
+                    max_output_bytes: 8 * 1024 * 1024,
+                    max_time_ms: 1_000,
+                },
             )
             .expect("historical preview");
         assert!(historical.html.contains("old included sentence"));
@@ -379,7 +405,16 @@ fn includes_pin_dependencies_and_historical_preview_uses_the_old_closure() {
     {
         let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         let current = documents
-            .preview(root.document_id, None, mneme_doc::RenderConfig::default())
+            .preview(
+                root.document_id,
+                None,
+                mneme_doc::RenderConfig {
+                    version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+                    include_entity_metadata: true,
+                    max_output_bytes: 8 * 1024 * 1024,
+                    max_time_ms: 1_000,
+                },
+            )
             .expect("current preview");
         assert!(current.html.contains("new included sentence"));
         assert!(!current.html.contains("old included sentence"));
@@ -446,7 +481,14 @@ fn include_traversal_remote_cycle_and_limits_fail_closed() {
     // Two inputs exceed a one-input policy.
     let policy = mneme_doc::DocumentPolicy {
         max_inputs: 1,
-        ..mneme_doc::DocumentPolicy::default()
+        ..mneme_doc::DocumentPolicy {
+            allowed_roots: vec![String::new()],
+            max_depth: 8,
+            max_inputs: 64,
+            max_total_source_bytes: 4 * 1024 * 1024,
+            max_expanded_bytes: 8 * 1024 * 1024,
+            max_time_ms: 1_000,
+        }
     };
     harness.write_file("docs/other.adoc", b"= Other\n\nother\n");
     harness.import(harness.request("other", None, "docs/other.adoc", None));
@@ -498,7 +540,12 @@ fn preview_escapes_active_content_and_unregistered_constructs() {
         .preview(
             imported.document_id,
             None,
-            mneme_doc::RenderConfig::default(),
+            mneme_doc::RenderConfig {
+                version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+                include_entity_metadata: true,
+                max_output_bytes: 8 * 1024 * 1024,
+                max_time_ms: 1_000,
+            },
         )
         .expect("preview");
     assert!(!preview.html.contains("<script"));
@@ -570,8 +617,20 @@ fn binding_patch_changes_only_the_header_attribute() {
                     document_id: Some(imported.document_id),
                     path: "docs/binding.adoc".to_owned(),
                     title: None,
-                    policy: mneme_doc::DocumentPolicy::default(),
-                    render_config: mneme_doc::RenderConfig::default(),
+                    policy: mneme_doc::DocumentPolicy {
+                        allowed_roots: vec![String::new()],
+                        max_depth: 8,
+                        max_inputs: 64,
+                        max_total_source_bytes: 4 * 1024 * 1024,
+                        max_expanded_bytes: 8 * 1024 * 1024,
+                        max_time_ms: 1_000,
+                    },
+                    render_config: mneme_doc::RenderConfig {
+                        version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+                        include_entity_metadata: true,
+                        max_output_bytes: 8 * 1024 * 1024,
+                        max_time_ms: 1_000,
+                    },
                 },
                 entity: Some(entity_source_id()),
                 publish: false,
@@ -665,7 +724,12 @@ fn preview_cache_keys_cover_configuration_processor_dependencies_and_generation(
             .preview(
                 imported.document_id,
                 None,
-                mneme_doc::RenderConfig::default(),
+                mneme_doc::RenderConfig {
+                    version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+                    include_entity_metadata: true,
+                    max_output_bytes: 8 * 1024 * 1024,
+                    max_time_ms: 1_000,
+                },
             )
             .expect("preview")
     };
@@ -738,7 +802,16 @@ fn unavailable_root_and_include_sources_are_reported_without_substitution() {
     let preview = {
         let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
         documents
-            .preview(root.document_id, None, mneme_doc::RenderConfig::default())
+            .preview(
+                root.document_id,
+                None,
+                mneme_doc::RenderConfig {
+                    version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+                    include_entity_metadata: true,
+                    max_output_bytes: 8 * 1024 * 1024,
+                    max_time_ms: 1_000,
+                },
+            )
             .expect("preview")
     };
     assert!(preview.source_available);
@@ -761,19 +834,47 @@ fn include_policy_depth_byte_roots_and_time_limits_fail_closed() {
     for policy in [
         mneme_doc::DocumentPolicy {
             max_depth: 0,
-            ..mneme_doc::DocumentPolicy::default()
+            ..mneme_doc::DocumentPolicy {
+                allowed_roots: vec![String::new()],
+                max_depth: 8,
+                max_inputs: 64,
+                max_total_source_bytes: 4 * 1024 * 1024,
+                max_expanded_bytes: 8 * 1024 * 1024,
+                max_time_ms: 1_000,
+            }
         },
         mneme_doc::DocumentPolicy {
             max_total_source_bytes: 10,
-            ..mneme_doc::DocumentPolicy::default()
+            ..mneme_doc::DocumentPolicy {
+                allowed_roots: vec![String::new()],
+                max_depth: 8,
+                max_inputs: 64,
+                max_total_source_bytes: 4 * 1024 * 1024,
+                max_expanded_bytes: 8 * 1024 * 1024,
+                max_time_ms: 1_000,
+            }
         },
         mneme_doc::DocumentPolicy {
             max_time_ms: 0,
-            ..mneme_doc::DocumentPolicy::default()
+            ..mneme_doc::DocumentPolicy {
+                allowed_roots: vec![String::new()],
+                max_depth: 8,
+                max_inputs: 64,
+                max_total_source_bytes: 4 * 1024 * 1024,
+                max_expanded_bytes: 8 * 1024 * 1024,
+                max_time_ms: 1_000,
+            }
         },
         mneme_doc::DocumentPolicy {
             allowed_roots: vec!["other".to_owned()],
-            ..mneme_doc::DocumentPolicy::default()
+            ..mneme_doc::DocumentPolicy {
+                allowed_roots: vec![String::new()],
+                max_depth: 8,
+                max_inputs: 64,
+                max_total_source_bytes: 4 * 1024 * 1024,
+                max_expanded_bytes: 8 * 1024 * 1024,
+                max_time_ms: 1_000,
+            }
         },
     ] {
         let mut request = harness.request("limits", None, "docs/root.adoc", None);

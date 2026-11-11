@@ -226,7 +226,7 @@ mod tests {
         BuildContext, Coverage, CoverageStatus, ExecutionStatus, Premise, QueryResult, QueryRow,
     };
     use mneme_memory::MemoryView;
-    use mneme_store::{CommitCommand, RecordDraft, Workspace, WorkspaceConfig};
+    use mneme_store::{CommitCommand, RecordDraft, Workspace};
     use tempfile::TempDir;
 
     fn scope() -> ScopeId {
@@ -272,8 +272,14 @@ mod tests {
 
     fn setup() -> Result<(TempDir, MemoryView, WorkspaceRevisionId, u64), String> {
         let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let mut workspace = Workspace::create(temp.path(), WorkspaceConfig::default())
-            .map_err(|e| e.to_string())?;
+        let mut workspace = Workspace::create(
+            temp.path(),
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
+        )
+        .map_err(|e| e.to_string())?;
         commit_entity(&mut workspace, &scope(), 0x10, "cedar")?;
         commit_entity(&mut workspace, &other_scope(), 0x70, "birch")?;
         let revision = workspace.current_revision().map_err(|e| e.to_string())?;

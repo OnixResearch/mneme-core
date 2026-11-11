@@ -777,7 +777,12 @@ fn retraction_pruning_and_forget_update_datalog_support() {
         operation: mneme_retention::OperationKind::AssertionRetraction,
         selector: mneme_retention::Selector::SourceSupport(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy::default(),
+        policy: mneme_retention::RetentionPolicy {
+            version: mneme_retention::POLICY_VERSION.to_owned(),
+            retain_assertion_after_prune: true,
+            block_content_replay: true,
+            retain_withdrawn_evidence_metadata: true,
+        },
     };
     mneme_retention::Retention::new(&mut harness.workspace)
         .execute(request)
@@ -804,7 +809,12 @@ fn retraction_pruning_and_forget_update_datalog_support() {
         operation: mneme_retention::OperationKind::AssertionRetraction,
         selector: mneme_retention::Selector::SourceSupport(rid(0x22)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy::default(),
+        policy: mneme_retention::RetentionPolicy {
+            version: mneme_retention::POLICY_VERSION.to_owned(),
+            retain_assertion_after_prune: true,
+            block_content_replay: true,
+            retain_withdrawn_evidence_metadata: true,
+        },
     };
     mneme_retention::Retention::new(&mut harness.workspace)
         .execute(request)
@@ -835,7 +845,12 @@ fn retraction_pruning_and_forget_update_datalog_support() {
         operation: mneme_retention::OperationKind::SourcePruning,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy::default(),
+        policy: mneme_retention::RetentionPolicy {
+            version: mneme_retention::POLICY_VERSION.to_owned(),
+            retain_assertion_after_prune: true,
+            block_content_replay: true,
+            retain_withdrawn_evidence_metadata: true,
+        },
     };
     let source_blob = mneme_store::blob::blob_path(
         harness.temp.path(),
@@ -952,7 +967,12 @@ fn explicit_forget_invalidates_builds_and_prevents_replay_rows() {
         operation: mneme_retention::OperationKind::Forget,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy::default(),
+        policy: mneme_retention::RetentionPolicy {
+            version: mneme_retention::POLICY_VERSION.to_owned(),
+            retain_assertion_after_prune: true,
+            block_content_replay: true,
+            retain_withdrawn_evidence_metadata: true,
+        },
     };
     mneme_retention::Retention::new(&mut harness.workspace)
         .execute(request)

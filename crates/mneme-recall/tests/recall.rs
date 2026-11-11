@@ -614,7 +614,12 @@ fn forget_invalidates_warm_index_and_removes_source_candidates() {
         operation: mneme_retention::OperationKind::Forget,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy::default(),
+        policy: mneme_retention::RetentionPolicy {
+            version: mneme_retention::POLICY_VERSION.to_owned(),
+            retain_assertion_after_prune: true,
+            block_content_replay: true,
+            retain_withdrawn_evidence_metadata: true,
+        },
     };
     mneme_retention::Retention::new(&mut harness.workspace)
         .execute(request)
@@ -761,7 +766,12 @@ fn source_pruning_keeps_claim_envelope_without_a_quote() {
         operation: mneme_retention::OperationKind::SourcePruning,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy::default(),
+        policy: mneme_retention::RetentionPolicy {
+            version: mneme_retention::POLICY_VERSION.to_owned(),
+            retain_assertion_after_prune: true,
+            block_content_replay: true,
+            retain_withdrawn_evidence_metadata: true,
+        },
     };
     mneme_retention::Retention::new(&mut harness.workspace)
         .execute(request)

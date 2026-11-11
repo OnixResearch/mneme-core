@@ -351,7 +351,12 @@ impl ApiService {
                     operation: mneme_retention::OperationKind::Forget,
                     selector: selector.clone(),
                     effective: *effective,
-                    policy: mneme_retention::RetentionPolicy::default(),
+                    policy: mneme_retention::RetentionPolicy {
+                        version: mneme_retention::POLICY_VERSION.to_owned(),
+                        retain_assertion_after_prune: true,
+                        block_content_replay: true,
+                        retain_withdrawn_evidence_metadata: true,
+                    },
                 };
                 let result = mneme_retention::Retention::new(&mut workspace)
                     .execute(request)
@@ -401,7 +406,10 @@ impl ApiService {
     fn open(&self) -> crate::error::ApiResult<mneme_store::Workspace> {
         mneme_store::Workspace::open(
             &self.session.workspace_root,
-            mneme_store::WorkspaceConfig::default(),
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
         )
         .map_err(crate::error::ApiError::from_store)
     }

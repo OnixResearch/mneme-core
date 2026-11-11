@@ -425,7 +425,10 @@ mod tests {
         let workspace_dir = tempfile::tempdir().expect("workspace tempdir");
         let workspace = mneme_store::Workspace::create(
             workspace_dir.path(),
-            mneme_store::WorkspaceConfig::default(),
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
         )
         .expect("workspace");
         assert!(workspace.status().is_ok());

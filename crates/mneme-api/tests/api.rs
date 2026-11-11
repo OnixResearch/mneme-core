@@ -71,10 +71,16 @@ impl Harness {
     }
 
     fn revision(&self) -> WorkspaceRevisionId {
-        Workspace::open(&self.root, WorkspaceConfig::default())
-            .expect("workspace")
-            .current_revision()
-            .expect("revision")
+        Workspace::open(
+            &self.root,
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
+        )
+        .expect("workspace")
+        .current_revision()
+        .expect("revision")
     }
 
     fn record(&self, base: WorkspaceRevisionId, key: &str) -> ApiCommand {
@@ -287,7 +293,14 @@ fn revise_dispute_and_retract_preserve_history() {
     assert!(response.ok, "{:?}", response.value);
     let after = revision_from(field(field(&response.value, "data"), "revision"));
     let view = mneme_memory::Memory::new(
-        &mut Workspace::open(&harness.root, WorkspaceConfig::default()).expect("workspace"),
+        &mut Workspace::open(
+            &harness.root,
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
+        )
+        .expect("workspace"),
     )
     .view()
     .expect("view");
@@ -297,7 +310,14 @@ fn revise_dispute_and_retract_preserve_history() {
     assert_eq!(assertion.lifecycle, mneme_core::Lifecycle::Disputed);
     assert_eq!(view.revision(), after);
     drop(view);
-    let reopened = Workspace::open(&harness.root, WorkspaceConfig::default()).expect("reopen");
+    let reopened = Workspace::open(
+        &harness.root,
+        mneme_store::WorkspaceConfig::new(
+            Box::new(mneme_store::SystemClock),
+            Box::new(mneme_store::NoFaults),
+        ),
+    )
+    .expect("reopen");
     assert_eq!(
         reopened
             .record_revisions(fixtures::proposed_assertion().record_id)
