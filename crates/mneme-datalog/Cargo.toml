@@ -1,0 +1,19 @@
+[package]
+name = "mneme-datalog"
+description = "Bounded, explainable relational projections over committed Mneme snapshots"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mneme-core.workspace = true
+mneme-store.workspace = true
+mneme-memory.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+mneme-retention.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
