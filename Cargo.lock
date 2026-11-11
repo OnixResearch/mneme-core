@@ -1384,6 +1384,7 @@ dependencies = [
  "mneme-memory",
  "mneme-retention",
  "mneme-store",
+ "num-bigint",
  "ratcore",
  "serde",
  "serde_json",
