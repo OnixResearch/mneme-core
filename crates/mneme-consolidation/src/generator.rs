@@ -5,12 +5,14 @@
 //! generated proposals begin with an unsupported-hypothesis support review and
 //! require a separate attributed review before acceptance.
 
+use std::collections::BTreeSet;
+
 use mneme_core::{RecordId, SourceSpan, Value};
 
 use crate::{
     AssertionProposal, ConsolidationJob, ConsolidationProposal, InputBatch, InputKey,
-    ProposalDisposition, ProposalOperation, ProposalPremise, ProposalStance, SummaryProposal,
-    SupportOutcome, SupportReview, ValidTime,
+    ProposalAuthority, ProposalDisposition, ProposalOperation, ProposalPremise, ProposalStance,
+    SummaryProposal, SupportOutcome, SupportReview, ValidTime,
 };
 
 /// Exact text associated with one reviewed input unit.
@@ -61,6 +63,7 @@ impl DeterministicGenerator {
             proposals.push(ConsolidationProposal {
                 proposal_id: format!("{}-summary-{index}", job.job_id),
                 job_id: job.job_id.clone(),
+                recorded_at: job.recorded_at,
                 base_revision: job.base_revision,
                 scope: job.scope.clone(),
                 operation: ProposalOperation::Summary(SummaryProposal {
@@ -71,6 +74,8 @@ impl DeterministicGenerator {
                     revision_id: input.key.revision_id,
                     span: input.span,
                     derivation: None,
+                    ancestry_roots: BTreeSet::from([input.key]),
+                    authority: ProposalAuthority::Observed,
                 }],
                 rationale: "deterministic extractive summary; semantic support needs review"
                     .to_owned(),
@@ -109,6 +114,7 @@ pub fn generate_extracted(
             proposals.push(ConsolidationProposal {
                 proposal_id: format!("{}-{}", job.job_id, claim.claim_id),
                 job_id: job.job_id.clone(),
+                recorded_at: job.recorded_at,
                 base_revision: job.base_revision,
                 scope: job.scope.clone(),
                 operation: ProposalOperation::Assertion(AssertionProposal {
@@ -123,6 +129,8 @@ pub fn generate_extracted(
                     revision_id: input.key.revision_id,
                     span: Some(claim.span),
                     derivation: None,
+                    ancestry_roots: BTreeSet::from([input.key]),
+                    authority: ProposalAuthority::ModelExtracted,
                 }],
                 rationale:
                     "extractor candidate; mechanical citation check does not prove semantic support"

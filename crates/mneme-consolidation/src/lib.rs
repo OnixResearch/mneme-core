@@ -11,7 +11,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mneme_core::{
-    Lifecycle, RecordId, RevisionId, ScopeId, SourceSpan, ValidTime, Value, WorkspaceRevisionId,
+    Lifecycle, RecordId, RevisionId, ScopeId, SourceSpan, Timestamp, ValidTime, Value,
+    WorkspaceRevisionId,
 };
 use mneme_recall::RecallResponse;
 
@@ -306,6 +307,7 @@ pub enum JobStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConsolidationJob {
     pub job_id: String,
+    pub recorded_at: Timestamp,
     pub idempotency_key: String,
     pub scope: ScopeId,
     pub base_revision: WorkspaceRevisionId,
@@ -354,6 +356,17 @@ pub struct ProposalPremise {
     pub revision_id: RevisionId,
     pub span: Option<SourceSpan>,
     pub derivation: Option<RecordId>,
+    pub ancestry_roots: BTreeSet<InputKey>,
+    pub authority: ProposalAuthority,
+}
+
+/// The authority of one premise. Ingestion order is not authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProposalAuthority {
+    Authored,
+    Observed,
+    Derived,
+    ModelExtracted,
 }
 
 /// A summary candidate. Its text remains an interpretation, not a quote.
@@ -391,8 +404,18 @@ pub struct DisputeProposal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupersessionProposal {
     pub prior: RecordId,
+    pub prior_authority: ProposalAuthority,
     pub replacement: Value,
     pub reason: String,
+    pub basis: SupersessionBasis,
+}
+
+/// Why a supersession was proposed. Ingestion order alone is never enough.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SupersessionBasis {
+    ExplicitCorrection,
+    EvidenceConflict,
+    LaterIngestion,
 }
 
 /// A proposed absence conclusion. It requires a complete declared extent.
@@ -491,6 +514,7 @@ pub enum ProposalDisposition {
 pub struct ConsolidationProposal {
     pub proposal_id: String,
     pub job_id: String,
+    pub recorded_at: Timestamp,
     pub base_revision: WorkspaceRevisionId,
     pub scope: ScopeId,
     pub operation: ProposalOperation,
@@ -501,6 +525,15 @@ pub struct ConsolidationProposal {
 }
 
 impl ConsolidationProposal {
+    /// Distinct ancestry roots, not repeated summary count.
+    pub fn independent_support_count(&self) -> usize {
+        self.premises
+            .iter()
+            .flat_map(|premise| premise.ancestry_roots.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
     /// Validate proposal identity, support, and disposition.
     pub fn validate(&self) -> Result<(), String> {
         if self.proposal_id.trim().is_empty()
@@ -511,6 +544,13 @@ impl ConsolidationProposal {
         }
         if self.premises.is_empty() {
             return Err("proposal needs at least one source or derivation premise".to_owned());
+        }
+        if self
+            .premises
+            .iter()
+            .any(|premise| premise.ancestry_roots.is_empty())
+        {
+            return Err("each proposal premise needs ancestry roots".to_owned());
         }
         self.support.validate()?;
         match &self.operation {
@@ -524,6 +564,12 @@ impl ConsolidationProposal {
                 if cleanup.records.is_empty() || cleanup.reason.trim().is_empty() =>
             {
                 return Err("cleanup proposal needs records and a reason".to_owned());
+            }
+            ProposalOperation::Supersession(supersession)
+                if supersession.basis == SupersessionBasis::LaterIngestion
+                    && supersession.prior_authority == ProposalAuthority::Authored =>
+            {
+                return Err("later ingestion cannot supersede an authored assertion".to_owned());
             }
             _ => {}
         }
@@ -666,11 +712,14 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         revision_id: source.revision_id,
         span: SourceSpan::new(0, 4).ok(),
         derivation: None,
+        ancestry_roots: BTreeSet::from([source]),
+        authority: ProposalAuthority::Observed,
     };
     let proposals = vec![
         ConsolidationProposal {
             proposal_id: "proposal-summary".to_owned(),
             job_id: "job-1".to_owned(),
+            recorded_at: Timestamp::from_nanos(1_000),
             base_revision: base,
             scope: scope.clone(),
             operation: ProposalOperation::Summary(SummaryProposal {
@@ -689,6 +738,7 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         ConsolidationProposal {
             proposal_id: "proposal-assertion".to_owned(),
             job_id: "job-1".to_owned(),
+            recorded_at: Timestamp::from_nanos(1_000),
             base_revision: base,
             scope: scope.clone(),
             operation: ProposalOperation::Assertion(AssertionProposal {
@@ -711,6 +761,7 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         ConsolidationProposal {
             proposal_id: "proposal-procedure".to_owned(),
             job_id: "job-1".to_owned(),
+            recorded_at: Timestamp::from_nanos(1_000),
             base_revision: base,
             scope: scope.clone(),
             operation: ProposalOperation::Procedure(ProcedureProposal {
@@ -753,6 +804,7 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         observations: vec![observation],
         job: ConsolidationJob {
             job_id: "job-1".to_owned(),
+            recorded_at: Timestamp::from_nanos(1_000),
             idempotency_key: "consolidate-1".to_owned(),
             scope: scope.clone(),
             base_revision: base,
@@ -938,5 +990,66 @@ mod tests {
         };
         fixture.job.status = JobStatus::Partial;
         assert!(fixture.validate().is_err());
+    }
+
+    #[test]
+    fn copied_summaries_share_one_independent_root() {
+        let mut fixture = fixture().expect("fixture");
+        let base_premise = fixture.proposals[0].premises[0].clone();
+        fixture.proposals[0].premises =
+            vec![base_premise.clone(), base_premise.clone(), base_premise];
+        fixture.validate().expect("shared ancestry remains valid");
+        assert_eq!(fixture.proposals[0].independent_support_count(), 1);
+    }
+
+    #[test]
+    fn later_ingestion_cannot_supersede_authored_fact() {
+        let mut fixture = fixture().expect("fixture");
+        fixture.proposals[0].operation = ProposalOperation::Supersession(SupersessionProposal {
+            prior: RecordId::from_bytes([0x40; 16]),
+            prior_authority: ProposalAuthority::Authored,
+            replacement: Value::string("PostgreSQL"),
+            reason: "newer import".to_owned(),
+            basis: SupersessionBasis::LaterIngestion,
+        });
+        assert!(fixture.validate().is_err());
+        if let ProposalOperation::Supersession(supersession) = &mut fixture.proposals[0].operation {
+            supersession.basis = SupersessionBasis::ExplicitCorrection;
+        }
+        fixture
+            .validate()
+            .expect("explicit correction can supersede");
+    }
+
+    #[test]
+    fn dispute_remains_pending_and_does_not_rewrite_accepted_assertion() {
+        let mut fixture = fixture().expect("fixture");
+        fixture.proposals[0].operation = ProposalOperation::Dispute(DisputeProposal {
+            assertion: RecordId::from_bytes([0x40; 16]),
+            reason: "source contradicts the authored claim".to_owned(),
+        });
+        fixture.validate().expect("visible dispute");
+        assert!(matches!(
+            fixture.proposals[0].disposition,
+            ProposalDisposition::Pending
+        ));
+        assert_eq!(
+            fixture.accepted_assertions[0].lifecycle,
+            Lifecycle::Accepted
+        );
+    }
+
+    #[test]
+    fn valid_and_recorded_times_are_separate() {
+        let fixture = fixture().expect("fixture");
+        assert_eq!(
+            fixture.proposals[1].recorded_at,
+            Timestamp::from_nanos(1_000)
+        );
+        let assertion = match &fixture.proposals[1].operation {
+            ProposalOperation::Assertion(assertion) => assertion,
+            _ => return,
+        };
+        assert_eq!(assertion.valid_time, ValidTime::Unknown);
     }
 }
