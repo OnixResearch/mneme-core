@@ -216,7 +216,7 @@
           octetWorkspace = octet.lib.mkConsumerCheck {
             inherit system;
             src = octetSrc;
-            cargoExtraArgs = "--all-targets --all-features --ignore-rust-version";
+            cargoExtraArgs = "--all-targets --all-features --ignore-rust-version --offline";
             cargoLock = ./Cargo.lock;
             buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
           };
@@ -241,7 +241,7 @@
               cp ${octetVendor}/config.toml "$CARGO_HOME/config.toml"
               ${octet.packages.${system}.cargo-octet}/bin/cargo-octet check \
                 --workspace --baseline octet-baseline.json \
-                -- --all-targets --all-features --ignore-rust-version
+                -- --all-targets --all-features --ignore-rust-version --offline
               touch "$out"
             '';
         in
