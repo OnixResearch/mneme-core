@@ -232,6 +232,8 @@
               chmod -R u+w source
               cd source
               cp dylint-all.toml dylint.toml
+              md5sum Cargo.toml dylint.toml dylint-all.toml
+              grep -A2 "workspace.metadata.octet" Cargo.toml
               export HOME="$PWD/home"
               mkdir -p "$HOME"
               export CARGO_HOME="$PWD/.cargo-home"
