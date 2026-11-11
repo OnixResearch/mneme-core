@@ -1,29 +1,20 @@
 //! Shared API behavior over a real workspace and tagged command documents.
-#![allow(unknown_lints, non_trait_imports, no_unwrap)] // Octet custom lint names and test allowances
+#![allow(unknown_lints, no_unwrap)] // Octet custom lint names and test allowances
 #![allow(clippy::expect_used)]
-use mneme_api::{ApiCommand, ApiService, LocalSession, ReviseAction, decode};
-use mneme_core::{
-    RecordId, RevisionId, ScopeClass, ScopeId, Timestamp, Value, WorkspaceRevisionId, fixtures,
-};
-use mneme_recall::{RecallMode, TemporalMode};
-use mneme_store::{FixedClock, NoFaults, Workspace, WorkspaceConfig};
-use serde_json::json;
-use std::collections::BTreeSet;
-use tempfile::TempDir;
-fn scope() -> ScopeId {
-    ScopeId::new(ScopeClass::Project, "cedar").expect("scope")
+fn scope() -> mneme_core::ScopeId {
+    mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar").expect("scope")
 }
-fn other_scope() -> ScopeId {
-    ScopeId::new(ScopeClass::Project, "birch").expect("scope")
+fn other_scope() -> mneme_core::ScopeId {
+    mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "birch").expect("scope")
 }
-fn rid(byte: u8) -> RecordId {
-    RecordId::from_bytes([byte; 16])
+fn rid(byte: u8) -> mneme_core::RecordId {
+    mneme_core::RecordId::from_bytes([byte; 16])
 }
-fn rev(byte: u8) -> RevisionId {
-    RevisionId::from_bytes([byte; 16])
+fn rev(byte: u8) -> mneme_core::RevisionId {
+    mneme_core::RevisionId::from_bytes([byte; 16])
 }
 struct Harness {
-    _temp: TempDir,
+    _temp: tempfile::TempDir,
     root: std::path::PathBuf,
     session_path: std::path::PathBuf,
 }
@@ -31,18 +22,20 @@ impl Harness {
     fn new() -> Self {
         let temp = tempfile::tempdir().expect("temp");
         let root = temp.path().join("workspace");
-        Workspace::create(
+        mneme_store::Workspace::create(
             &root,
-            WorkspaceConfig {
-                clock: Box::new(FixedClock::new(Timestamp::from_nanos(1_000))),
-                faults: Box::new(NoFaults),
+            mneme_store::WorkspaceConfig {
+                clock: Box::new(mneme_store::FixedClock::new(
+                    mneme_core::Timestamp::from_nanos(1_000),
+                )),
+                faults: Box::new(mneme_store::NoFaults),
             },
         )
         .expect("workspace");
         let session_path = temp.path().join("session.json");
         std::fs::write(
             &session_path,
-            serde_json::to_vec(&json!({
+            serde_json::to_vec(&serde_json::json!({
                 "principal": "agent-cedar",
                 "workspace_root": root,
                 "scopes": ["project:cedar"]
@@ -56,11 +49,13 @@ impl Harness {
             session_path,
         }
     }
-    fn service(&self) -> ApiService {
-        ApiService::new(LocalSession::load(&self.session_path).expect("session"))
+    fn service(&self) -> mneme_api::ApiService {
+        mneme_api::ApiService::new(
+            mneme_api::LocalSession::load(&self.session_path).expect("session"),
+        )
     }
-    fn revision(&self) -> WorkspaceRevisionId {
-        Workspace::open(
+    fn revision(&self) -> mneme_core::WorkspaceRevisionId {
+        mneme_store::Workspace::open(
             &self.root,
             mneme_store::WorkspaceConfig::new(
                 Box::new(mneme_store::SystemClock),
@@ -71,26 +66,26 @@ impl Harness {
         .current_revision()
         .expect("revision")
     }
-    fn record(&self, base: WorkspaceRevisionId, key: &str) -> ApiCommand {
-        ApiCommand::Record {
+    fn record(&self, base: mneme_core::WorkspaceRevisionId, key: &str) -> mneme_api::ApiCommand {
+        mneme_api::ApiCommand::Record {
             request_id: format!("record-{key}"),
             scope: scope(),
             base,
             key: key.to_owned(),
-            records: fixtures::fixture_batch(),
+            records: mneme_core::fixtures::fixture_batch(),
             sources: vec![mneme_store::SourceBlobDraft {
-                bytes: fixtures::SOURCE_TEXT.as_bytes().to_vec(),
+                bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
                 media_type: "text/asciidoc".into(),
             }],
         }
     }
-    fn accept(&self, base: WorkspaceRevisionId) -> ApiCommand {
-        ApiCommand::Accept {
+    fn accept(&self, base: mneme_core::WorkspaceRevisionId) -> mneme_api::ApiCommand {
+        mneme_api::ApiCommand::Accept {
             request_id: "accept".to_owned(),
             scope: scope(),
             base,
             key: "accept-author".to_owned(),
-            assertion: fixtures::proposed_assertion().record_id,
+            assertion: mneme_core::fixtures::proposed_assertion().record_id,
             decision: rid(0xa1),
             decision_revision: rev(0xa2),
             accepted_revision: rev(0xa3),
@@ -99,20 +94,20 @@ impl Harness {
         }
     }
 }
-fn field<'a>(value: &'a Value, name: &str) -> &'a Value {
+fn field<'a>(value: &'a mneme_core::Value, name: &str) -> &'a mneme_core::Value {
     value
         .as_dictionary()
-        .and_then(|entries| entries.get(&Value::symbol(name)))
+        .and_then(|entries| entries.get(&mneme_core::Value::symbol(name)))
         .expect("response field")
 }
-fn symbol_text(value: &Value) -> &str {
+fn symbol_text(value: &mneme_core::Value) -> &str {
     value
         .as_symbol()
         .map(|symbol| symbol.as_str())
         .expect("symbol")
 }
-fn revision_from(value: &Value) -> WorkspaceRevisionId {
-    WorkspaceRevisionId::from_value(value, &mneme_core::Path::root()).expect("revision")
+fn revision_from(value: &mneme_core::Value) -> mneme_core::WorkspaceRevisionId {
+    mneme_core::WorkspaceRevisionId::from_value(value, &mneme_core::Path::root()).expect("revision")
 }
 #[test]
 fn record_retries_are_idempotent_and_conflicts_are_structural() {
@@ -129,7 +124,7 @@ fn record_retries_are_idempotent_and_conflicts_are_structural() {
         first_revision
     );
     let mut changed = harness.record(base, "record-1");
-    if let ApiCommand::Record { records, .. } = &mut changed {
+    if let mneme_api::ApiCommand::Record { records, .. } = &mut changed {
         records.pop();
     }
     let conflict = service.execute(&changed);
@@ -156,14 +151,14 @@ fn acceptance_recall_and_explain_share_one_revision() {
     let accept = service.execute(&harness.accept(after_record));
     assert!(accept.ok, "{:?}", accept.value);
     let after_accept = revision_from(field(field(&accept.value, "data"), "revision"));
-    let recall = ApiCommand::Recall {
+    let recall = mneme_api::ApiCommand::Recall {
         request_id: "recall".to_owned(),
         scope: scope(),
         revision: Some(after_accept),
         query: "SQLite".to_owned(),
-        at: Timestamp::from_nanos(2_000),
-        temporal: TemporalMode::Current,
-        modes: BTreeSet::from([RecallMode::Lexical]),
+        at: mneme_core::Timestamp::from_nanos(2_000),
+        temporal: mneme_recall::TemporalMode::Current,
+        modes: std::collections::BTreeSet::from([mneme_recall::RecallMode::Lexical]),
         allow_stale: false,
         allow_fallback: true,
         allow_partial: true,
@@ -183,12 +178,12 @@ fn acceptance_recall_and_explain_share_one_revision() {
     assert!(!candidates.is_empty());
     assert_eq!(
         field(field(&recalled.value, "data"), "absence-established"),
-        &Value::Boolean(false)
+        &mneme_core::Value::Boolean(false)
     );
-    let explain = ApiCommand::Explain {
+    let explain = mneme_api::ApiCommand::Explain {
         request_id: "explain".to_owned(),
         scope: scope(),
-        assertion: fixtures::proposed_assertion().record_id,
+        assertion: mneme_core::fixtures::proposed_assertion().record_id,
         max_nodes: 64,
         max_excerpt_bytes: 4096,
     };
@@ -204,7 +199,7 @@ fn scope_is_checked_before_content_or_receipt_lookup() {
     let harness = Harness::new();
     let service = harness.service();
     let mut command = harness.record(harness.revision(), "cross-scope");
-    if let ApiCommand::Record { scope, .. } = &mut command {
+    if let mneme_api::ApiCommand::Record { scope, .. } = &mut command {
         *scope = other_scope();
     }
     let response = service.execute(&command);
@@ -217,27 +212,36 @@ fn scope_is_checked_before_content_or_receipt_lookup() {
         response
             .value
             .as_dictionary()
-            .and_then(|entries| entries.get(&Value::symbol("context")))
+            .and_then(|entries| entries.get(&mneme_core::Value::symbol("context")))
             .is_none()
     );
 }
 #[test]
 fn unsupported_versions_fail_before_mutation() {
-    let value = Value::symbol_dictionary([
+    let value = mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("format"),
-            Value::string("mneme.agent-command"),
+            mneme_core::Value::string("mneme.agent-command"),
         ),
-        (mneme_core::Symbol::from("version"), Value::integer(99)),
-        (mneme_core::Symbol::from("request-id"), Value::string("bad")),
+        (
+            mneme_core::Symbol::from("version"),
+            mneme_core::Value::integer(99),
+        ),
+        (
+            mneme_core::Symbol::from("request-id"),
+            mneme_core::Value::string("bad"),
+        ),
         (
             mneme_core::Symbol::from("operation"),
-            Value::symbol("record"),
+            mneme_core::Value::symbol("record"),
         ),
-        (mneme_core::Symbol::from("payload"), Value::dictionary([])),
+        (
+            mneme_core::Symbol::from("payload"),
+            mneme_core::Value::dictionary([]),
+        ),
     ]);
-    let error =
-        decode(&mneme_core::encode_document_string(&value)).expect_err("unsupported version");
+    let error = mneme_api::decode(&mneme_core::encode_document_string(&value))
+        .expect_err("unsupported version");
     assert_eq!(error.code.as_str(), "unsupported-version");
 }
 #[test]
@@ -251,13 +255,13 @@ fn revise_dispute_and_retract_preserve_history() {
     let accepted = service.execute(&harness.accept(base));
     assert!(accepted.ok);
     let base = revision_from(field(field(&accepted.value, "data"), "revision"));
-    let revise = ApiCommand::Revise {
+    let revise = mneme_api::ApiCommand::Revise {
         request_id: "dispute".to_owned(),
         scope: scope(),
         base,
         key: "dispute".to_owned(),
-        assertion: fixtures::proposed_assertion().record_id,
-        action: ReviseAction::Dispute,
+        assertion: mneme_core::fixtures::proposed_assertion().record_id,
+        action: mneme_api::ReviseAction::Dispute,
         rationale: "conflicting evidence".to_owned(),
         decision: rid(0xb1),
         decision_revision: rev(0xb2),
@@ -268,7 +272,7 @@ fn revise_dispute_and_retract_preserve_history() {
     assert!(response.ok, "{:?}", response.value);
     let after = revision_from(field(field(&response.value, "data"), "revision"));
     let view = mneme_memory::Memory::new(
-        &mut Workspace::open(
+        &mut mneme_store::Workspace::open(
             &harness.root,
             mneme_store::WorkspaceConfig::new(
                 Box::new(mneme_store::SystemClock),
@@ -280,12 +284,12 @@ fn revise_dispute_and_retract_preserve_history() {
     .view()
     .expect("view");
     let assertion = view
-        .assertion(fixtures::proposed_assertion().record_id)
+        .assertion(mneme_core::fixtures::proposed_assertion().record_id)
         .expect("assertion");
     assert_eq!(assertion.lifecycle, mneme_core::Lifecycle::Disputed);
     assert_eq!(view.revision(), after);
     drop(view);
-    let reopened = Workspace::open(
+    let reopened = mneme_store::Workspace::open(
         &harness.root,
         mneme_store::WorkspaceConfig::new(
             Box::new(mneme_store::SystemClock),
@@ -295,7 +299,7 @@ fn revise_dispute_and_retract_preserve_history() {
     .expect("reopen");
     assert_eq!(
         reopened
-            .record_revisions(fixtures::proposed_assertion().record_id)
+            .record_revisions(mneme_core::fixtures::proposed_assertion().record_id)
             .expect("history")
             .len(),
         3
@@ -321,10 +325,10 @@ fn resume_is_read_only_and_forget_reports_lifecycle_progress() {
         Some("environment: test host"),
     )
     .into_envelope(mneme_core::RecordedTime::new(
-        Timestamp::from_nanos(3_000),
+        mneme_core::Timestamp::from_nanos(3_000),
         1,
     ));
-    let record_checkpoint = ApiCommand::Record {
+    let record_checkpoint = mneme_api::ApiCommand::Record {
         request_id: "checkpoint".to_owned(),
         scope: scope(),
         base,
@@ -335,7 +339,7 @@ fn resume_is_read_only_and_forget_reports_lifecycle_progress() {
     let checkpoint_commit = service.execute(&record_checkpoint);
     assert!(checkpoint_commit.ok, "{:?}", checkpoint_commit.value);
     let base = revision_from(field(field(&checkpoint_commit.value, "data"), "revision"));
-    let resume = ApiCommand::Resume {
+    let resume = mneme_api::ApiCommand::Resume {
         request_id: "resume".to_owned(),
         scope: scope(),
         checkpoint: rid(0xc1),
@@ -344,26 +348,28 @@ fn resume_is_read_only_and_forget_reports_lifecycle_progress() {
     assert!(response.ok, "{:?}", response.value);
     assert_eq!(
         field(field(&response.value, "data"), "goal"),
-        &Value::string("finish the memory task")
+        &mneme_core::Value::string("finish the memory task")
     );
     assert_eq!(
         field(field(&response.value, "data"), "state"),
-        &Value::symbol("waiting")
+        &mneme_core::Value::symbol("waiting")
     );
     assert_eq!(harness.revision(), base);
-    let forget = ApiCommand::Forget {
+    let forget = mneme_api::ApiCommand::Forget {
         request_id: "forget".to_owned(),
         scope: scope(),
         base,
         key: "forget-source".to_owned(),
-        selector: mneme_retention::Selector::Source(fixtures::source_revision().record_id),
+        selector: mneme_retention::Selector::Source(
+            mneme_core::fixtures::source_revision().record_id,
+        ),
         effective: None,
     };
     let response = service.execute(&forget);
     assert!(response.ok, "{:?}", response.value);
     assert_eq!(
         field(field(&response.value, "data"), "logical-withdrawal"),
-        &Value::Boolean(true)
+        &mneme_core::Value::Boolean(true)
     );
     assert!(
         field(field(&response.value, "data"), "physical-cleanup-complete")
@@ -378,16 +384,16 @@ fn proposal_inspection_keeps_proposed_status_before_acceptance() {
     let base = harness.revision();
     let record = service.execute(&harness.record(base, "record-proposal"));
     assert!(record.ok);
-    let inspect = ApiCommand::ProposalInspect {
+    let inspect = mneme_api::ApiCommand::ProposalInspect {
         request_id: "proposal".to_owned(),
         scope: scope(),
-        assertion: fixtures::proposed_assertion().record_id,
+        assertion: mneme_core::fixtures::proposed_assertion().record_id,
     };
     let response = service.execute(&inspect);
     assert!(response.ok, "{:?}", response.value);
     assert_eq!(
         field(field(&response.value, "data"), "lifecycle"),
-        &Value::symbol("proposed")
+        &mneme_core::Value::symbol("proposed")
     );
 }
 #[test]
@@ -409,14 +415,14 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
     let accepted = service.execute(&harness.accept(committed));
     assert!(accepted.ok);
     let accepted_revision = revision_from(field(field(&accepted.value, "data"), "revision"));
-    let recall = |max_time_ms| ApiCommand::Recall {
+    let recall = |max_time_ms| mneme_api::ApiCommand::Recall {
         request_id: "vertical-recall".to_owned(),
         scope: scope(),
         revision: Some(accepted_revision),
         query: "SQLite".to_owned(),
-        at: Timestamp::from_nanos(2_000),
-        temporal: TemporalMode::Current,
-        modes: BTreeSet::from([RecallMode::Lexical]),
+        at: mneme_core::Timestamp::from_nanos(2_000),
+        temporal: mneme_recall::TemporalMode::Current,
+        modes: std::collections::BTreeSet::from([mneme_recall::RecallMode::Lexical]),
         allow_stale: false,
         allow_fallback: true,
         allow_partial: true,
@@ -438,7 +444,7 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
     );
     assert_eq!(
         field(field(&timed.value, "data"), "absence-established"),
-        &Value::Boolean(false)
+        &mneme_core::Value::Boolean(false)
     );
     let bounded = service.execute(&recall(500));
     assert!(bounded.ok);
@@ -447,10 +453,10 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         .expect("candidates");
     assert!(!candidates.is_empty());
     assert!(candidates.len() <= 2);
-    let explain = ApiCommand::Explain {
+    let explain = mneme_api::ApiCommand::Explain {
         request_id: "vertical-explain".to_owned(),
         scope: scope(),
-        assertion: fixtures::proposed_assertion().record_id,
+        assertion: mneme_core::fixtures::proposed_assertion().record_id,
         max_nodes: 64,
         max_excerpt_bytes: 4096,
     };
@@ -467,10 +473,10 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         Some("environment observed before restart"),
     )
     .into_envelope(mneme_core::RecordedTime::new(
-        Timestamp::from_nanos(3_000),
+        mneme_core::Timestamp::from_nanos(3_000),
         1,
     ));
-    let checkpoint_commit = ApiCommand::Record {
+    let checkpoint_commit = mneme_api::ApiCommand::Record {
         request_id: "vertical-checkpoint".to_owned(),
         scope: scope(),
         base: accepted_revision,
@@ -482,7 +488,7 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
     assert!(checkpoint_commit.ok);
     let checkpoint_revision =
         revision_from(field(field(&checkpoint_commit.value, "data"), "revision"));
-    let resume = ApiCommand::Resume {
+    let resume = mneme_api::ApiCommand::Resume {
         request_id: "vertical-resume".to_owned(),
         scope: scope(),
         checkpoint: rid(0xd1),
@@ -493,13 +499,13 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         field(field(&resumed.value, "data"), "current-revision"),
         &checkpoint_revision.to_value()
     );
-    let revise = ApiCommand::Revise {
+    let revise = mneme_api::ApiCommand::Revise {
         request_id: "vertical-revise".to_owned(),
         scope: scope(),
         base: checkpoint_revision,
         key: "vertical-revise".to_owned(),
-        assertion: fixtures::proposed_assertion().record_id,
-        action: ReviseAction::Retract,
+        assertion: mneme_core::fixtures::proposed_assertion().record_id,
+        action: mneme_api::ReviseAction::Retract,
         rationale: "vertical slice retraction".to_owned(),
         decision: rid(0xd3),
         decision_revision: rev(0xd4),
@@ -508,16 +514,18 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
     };
     assert!(service.execute(&revise).ok);
     let forget_base = harness.revision();
-    let forget = ApiCommand::Forget {
+    let forget = mneme_api::ApiCommand::Forget {
         request_id: "vertical-forget".to_owned(),
         scope: scope(),
         base: forget_base,
         key: "vertical-forget".to_owned(),
-        selector: mneme_retention::Selector::Source(fixtures::source_revision().record_id),
+        selector: mneme_retention::Selector::Source(
+            mneme_core::fixtures::source_revision().record_id,
+        ),
         effective: None,
     };
     let forgotten = service.execute(&forget);
     assert!(forgotten.ok);
     let receipt = field(field(&forgotten.value, "data"), "logical-withdrawal");
-    assert_eq!(receipt, &Value::Boolean(true));
+    assert_eq!(receipt, &mneme_core::Value::Boolean(true));
 }
