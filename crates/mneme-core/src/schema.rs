@@ -485,6 +485,11 @@ impl RecordSchema {
                 RecordKind::SourceRevision => {
                     kind.fields
                         .push(optional("availability", FieldType::Symbol));
+                    // A pruned revision keeps the identity of the bytes it no
+                    // longer stores so historical reads can distinguish an
+                    // authorized absence from corruption.
+                    kind.fields
+                        .push(optional("content-digest", FieldType::Digest));
                 }
                 RecordKind::Episode => {
                     kind.fields.push(optional("related", reference_set(None)));

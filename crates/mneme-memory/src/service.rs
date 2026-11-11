@@ -60,11 +60,13 @@ impl<'w> Memory<'w> {
         let snapshot = self.workspace.snapshot_at(revision, pinned_generation)?;
         let history = load_history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
-        Ok(MemoryView::with_context(
+        let suppressions = self.workspace.active_suppressions()?;
+        Ok(MemoryView::with_retention(
             snapshot,
             self.workspace.root(),
             history,
             sequences,
+            suppressions,
         ))
     }
 
@@ -103,12 +105,14 @@ impl<'w> Memory<'w> {
         let snapshot = self.workspace.snapshot()?;
         let history = load_history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
+        let suppressions = self.workspace.active_suppressions()?;
         validate_batch(
             &snapshot,
             self.workspace.root(),
             &batch,
             &history,
             &sequences,
+            &suppressions,
         )?;
         let base = self.workspace.current_revision()?;
         let outcome = self.workspace.commit(CommitCommand {
@@ -120,6 +124,7 @@ impl<'w> Memory<'w> {
             source_blobs: batch.source_blobs,
             publications: batch.publications,
             import_candidates: Vec::new(),
+            retention: None,
         })?;
         Ok(outcome)
     }
@@ -144,6 +149,7 @@ fn validate_batch(
     batch: &MemoryBatch,
     history: &BTreeMap<(RecordId, RevisionId), RecordEnvelope>,
     revision_sequences: &BTreeMap<WorkspaceRevisionId, u64>,
+    suppressions: &[mneme_store::RetentionSuppression],
 ) -> Result<()> {
     let mut combined: BTreeMap<RecordId, RecordEnvelope> = snapshot
         .records
@@ -179,11 +185,12 @@ fn validate_batch(
         records: combined.values().cloned().collect(),
         index,
     };
-    let view = MemoryView::with_context(
+    let view = MemoryView::with_retention(
         virtual_snapshot,
         root,
         history.clone(),
         revision_sequences.clone(),
+        suppressions.to_vec(),
     );
 
     for draft in &batch.records {
@@ -193,6 +200,14 @@ fn validate_batch(
         match envelope.kind {
             mneme_core::RecordKind::Evidence => {
                 let evidence = EvidenceView::parse(envelope.clone())?;
+                if view.suppression_for(&envelope).is_some_and(|suppression| {
+                    suppression.mode == mneme_store::SuppressionMode::Withdrawn
+                }) {
+                    return Err(MemoryError::policy(format!(
+                        "evidence {} is withdrawn and cannot be newly cited",
+                        evidence.record.record_id
+                    )));
+                }
                 let source = view.evidence_source(&evidence).map_err(|_| {
                     MemoryError::policy(format!(
                         "evidence {} references missing source {}",
@@ -241,6 +256,20 @@ fn validate_batch(
             }
             mneme_core::RecordKind::Assertion => {
                 let assertion = AssertionView::parse(envelope.clone())?;
+                for evidence_id in &assertion.evidence {
+                    if let Ok(evidence_record) = view.envelope(*evidence_id)
+                        && view
+                            .suppression_for(evidence_record)
+                            .is_some_and(|suppression| {
+                                suppression.mode == mneme_store::SuppressionMode::Withdrawn
+                            })
+                    {
+                        return Err(MemoryError::policy(format!(
+                            "assertion {} cites withdrawn evidence {evidence_id}",
+                            assertion.record.record_id
+                        )));
+                    }
+                }
                 if !view.lifecycle_decision_valid(&assertion)? {
                     return Err(MemoryError::policy(format!(
                         "assertion {} lifecycle {} lacks a matching decision",
@@ -504,6 +533,31 @@ pub fn build_unavailable_source(
     entity: Option<RecordId>,
     path_hint: Option<&str>,
 ) -> RecordDraft {
+    build_unavailable_source_with_digest(
+        record_id,
+        revision_id,
+        scope,
+        reason,
+        availability,
+        None,
+        entity,
+        path_hint,
+    )
+}
+
+/// Build an unavailable source revision that preserves the identity of the
+/// bytes it no longer stores.
+#[allow(clippy::too_many_arguments)]
+pub fn build_unavailable_source_with_digest(
+    record_id: RecordId,
+    revision_id: RevisionId,
+    scope: &ScopeId,
+    reason: &str,
+    availability: &str,
+    prior_digest: Option<ContentDigest>,
+    entity: Option<RecordId>,
+    path_hint: Option<&str>,
+) -> RecordDraft {
     let mut entries = vec![
         (
             Symbol::from("content"),
@@ -523,6 +577,9 @@ pub fn build_unavailable_source(
     }
     if let Some(path) = path_hint {
         entries.push((Symbol::from("path-hint"), Value::string(path)));
+    }
+    if let Some(digest) = prior_digest {
+        entries.push((Symbol::from("content-digest"), digest.to_value()));
     }
     RecordDraft {
         schema_version: 2,

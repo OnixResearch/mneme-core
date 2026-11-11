@@ -14,6 +14,7 @@ pub mod command;
 pub mod error;
 pub mod faults;
 pub mod manifest;
+pub mod retention;
 pub mod workspace;
 
 pub use clock::{Clock, FixedClock, SystemClock};
@@ -23,6 +24,11 @@ pub use command::{
 pub use error::{Result, StoreError};
 pub use faults::{FaultAt, FaultInjector, FaultPoint, NoFaults};
 pub use manifest::{Manifest, ManifestRecord};
+pub use retention::{
+    BlobPurgeOutcome, RetentionCommit, RetentionJobState, RetentionLocationPlan,
+    RetentionLocationState, RetentionLocationStateRecord, RetentionOperation, RetentionParticipant,
+    RetentionSelector, RetentionSuppression, SuppressionMode,
+};
 pub use workspace::{
     CommitOutcome, LAYOUT_VERSION, LEDGER_FILE, ProjectionRegistration, ProjectionResolution,
     ProjectionState, PublicationOutcome, PublicationState, RecoveryReport, Snapshot, Workspace,

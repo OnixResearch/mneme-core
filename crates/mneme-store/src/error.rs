@@ -85,6 +85,15 @@ pub enum StoreError {
     #[error("eligibility generation advanced from {pinned} to {current}")]
     BarrierAdvanced { pinned: u64, current: u64 },
 
+    #[error("record {target} is suppressed by current retention state")]
+    RetentionSuppressed { target: String },
+
+    #[error("publication requires current retention suppression state: {reason}")]
+    MissingRetentionState { reason: String },
+
+    #[error("projection {name} is not registered as a retention participant")]
+    MissingRetentionParticipant { name: String },
+
     #[error("system randomness unavailable: {0}")]
     Random(String),
 }

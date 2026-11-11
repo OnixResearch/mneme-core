@@ -15,6 +15,10 @@ pub enum FaultPoint {
     BeforeFileReplace,
     /// After the working-file rename but before publication is marked done.
     AfterFileReplace,
+    /// Immediately before a retention payload is removed.
+    BeforeRetentionPurge,
+    /// After a retention payload removal but before its ledger state is saved.
+    AfterRetentionPurge,
 }
 
 /// A policy deciding whether to inject a fault at a boundary.

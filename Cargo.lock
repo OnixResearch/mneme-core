@@ -298,6 +298,7 @@ dependencies = [
  "mneme-core",
  "mneme-eval",
  "mneme-memory",
+ "mneme-retention",
  "mneme-store",
  "serde",
  "serde_json",
@@ -321,6 +322,7 @@ version = "0.1.0"
 dependencies = [
  "mneme-core",
  "mneme-memory",
+ "mneme-retention",
  "mneme-store",
  "serde",
  "serde_json",
@@ -332,6 +334,17 @@ name = "mneme-memory"
 version = "0.1.0"
 dependencies = [
  "mneme-core",
+ "mneme-store",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "mneme-retention"
+version = "0.1.0"
+dependencies = [
+ "mneme-core",
+ "mneme-memory",
  "mneme-store",
  "tempfile",
  "thiserror",

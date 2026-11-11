@@ -9,9 +9,9 @@ use std::path::PathBuf;
 
 use mneme_core::{
     Lifecycle, RecordId, RecordKind, Reference, RevisionId, ScopeClass, ScopeId, SnapshotIndex,
-    Timestamp, ValidTime, WorkspaceRevisionId,
+    Timestamp, ValidTime, Value, WorkspaceRevisionId,
 };
-use mneme_store::{Snapshot, blob};
+use mneme_store::{RetentionSuppression, Snapshot, SuppressionMode, blob};
 
 use crate::error::{MemoryError, Result};
 use crate::model::{
@@ -89,6 +89,10 @@ pub struct EvidenceExplanation {
     pub span_end: Option<u64>,
     pub excerpt: Option<SourceExcerpt>,
     pub ancestry_roots: BTreeSet<SourceRevisionKey>,
+    /// The evidence is retained for inspection but cannot support a claim.
+    pub withdrawn: bool,
+    /// The evidence may contribute to current support and corroboration.
+    pub eligible: bool,
 }
 
 /// One alternative derivation and whether it currently supports its conclusion.
@@ -156,6 +160,7 @@ pub struct MemoryView {
     records: BTreeMap<RecordId, mneme_core::RecordEnvelope>,
     history: BTreeMap<(RecordId, RevisionId), mneme_core::RecordEnvelope>,
     revision_sequences: BTreeMap<WorkspaceRevisionId, u64>,
+    suppressions: Vec<RetentionSuppression>,
 }
 
 impl MemoryView {
@@ -182,6 +187,17 @@ impl MemoryView {
         history: BTreeMap<(RecordId, RevisionId), mneme_core::RecordEnvelope>,
         revision_sequences: BTreeMap<WorkspaceRevisionId, u64>,
     ) -> Self {
+        Self::with_retention(snapshot, root, history, revision_sequences, Vec::new())
+    }
+
+    /// Construct a view with the current retention suppressions in force.
+    pub fn with_retention(
+        snapshot: Snapshot,
+        root: impl Into<PathBuf>,
+        history: BTreeMap<(RecordId, RevisionId), mneme_core::RecordEnvelope>,
+        revision_sequences: BTreeMap<WorkspaceRevisionId, u64>,
+        suppressions: Vec<RetentionSuppression>,
+    ) -> Self {
         let records = snapshot
             .records
             .iter()
@@ -193,7 +209,28 @@ impl MemoryView {
             records,
             history,
             revision_sequences,
+            suppressions,
         }
+    }
+
+    /// The current suppression for a record revision, if any.
+    pub fn suppression_for(
+        &self,
+        record: &mneme_core::RecordEnvelope,
+    ) -> Option<&RetentionSuppression> {
+        self.suppressions.iter().find(|suppression| {
+            suppression.target == record.record_id
+                && suppression
+                    .revision
+                    .is_none_or(|revision| revision == record.revision_id)
+        })
+    }
+
+    /// Whether a record identity has a withdrawn or forgotten suppression.
+    pub fn is_withdrawn(&self, record: RecordId) -> bool {
+        self.suppressions.iter().any(|suppression| {
+            suppression.target == record && suppression.mode == SuppressionMode::Withdrawn
+        })
     }
 
     /// The pinned revision.
@@ -211,10 +248,15 @@ impl MemoryView {
         &self.snapshot
     }
 
-    fn envelope(&self, record: RecordId) -> Result<&mneme_core::RecordEnvelope> {
+    pub(crate) fn envelope(&self, record: RecordId) -> Result<&mneme_core::RecordEnvelope> {
         self.records
             .get(&record)
             .ok_or(MemoryError::Missing { record })
+    }
+
+    /// Read one envelope from the pinned view.
+    pub fn record(&self, record: RecordId) -> Result<&mneme_core::RecordEnvelope> {
+        self.envelope(record)
     }
 
     /// Parse an assertion.
@@ -475,7 +517,9 @@ impl MemoryView {
             }
             match assertion.lifecycle {
                 Lifecycle::Accepted if self.accepted_decision(&assertion).unwrap_or(false) => {
-                    beliefs.push(assertion);
+                    if self.assertion_has_current_basis(&assertion) {
+                        beliefs.push(assertion);
+                    }
                 }
                 Lifecycle::Disputed
                     if view.include_disputed
@@ -720,6 +764,12 @@ impl MemoryView {
             if evidence.relation != SupportRelation::Supports {
                 continue;
             }
+            if self
+                .suppression_for(&evidence.record)
+                .is_some_and(|suppression| suppression.mode == SuppressionMode::Withdrawn)
+            {
+                continue;
+            }
             supporting += 1;
             roots.extend(self.evidence_roots(*evidence_id)?);
         }
@@ -738,6 +788,11 @@ impl MemoryView {
                 Ok(evidence) => {
                     evidence.relation == SupportRelation::Supports
                         && self.records.contains_key(&evidence.source)
+                        && self
+                            .suppression_for(&evidence.record)
+                            .is_none_or(|suppression| {
+                                suppression.mode != SuppressionMode::Withdrawn
+                            })
                 }
                 Err(_) => false,
             })
@@ -753,6 +808,12 @@ impl MemoryView {
         }
         let result = (|| {
             let assertion = self.assertion(assertion_id).ok()?;
+            if self
+                .suppression_for(&assertion.record)
+                .is_some_and(|suppression| suppression.mode == SuppressionMode::Withdrawn)
+            {
+                return Some(false);
+            }
             if assertion.lifecycle != Lifecycle::Accepted {
                 return Some(false);
             }
@@ -817,7 +878,9 @@ impl MemoryView {
                     }
                     Err(_) => false,
                 },
-                RecordKind::Episode => true,
+                RecordKind::Episode => self
+                    .suppression_for(envelope)
+                    .is_none_or(|suppression| suppression.mode != SuppressionMode::Withdrawn),
                 _ => false,
             };
             if !eligible {
@@ -831,6 +894,21 @@ impl MemoryView {
     pub fn assertion_eligible(&self, assertion: RecordId) -> bool {
         let mut visiting = BTreeSet::new();
         self.assertion_eligible_inner(assertion, &mut visiting)
+    }
+
+    /// Whether an accepted assertion has a surviving proof or an explicitly
+    /// complete absence basis.
+    pub fn assertion_has_current_basis(&self, assertion: &AssertionView) -> bool {
+        if self.assertion_eligible(assertion.record.record_id) {
+            return true;
+        }
+        assertion.evidence.is_empty()
+            && assertion
+                .record
+                .payload
+                .get("completeness")
+                .and_then(Value::as_symbol)
+                .is_some_and(|symbol| symbol.as_str() == "declared-complete")
     }
 
     /// Alternative derivations for one conclusion with eligibility reasons.
@@ -904,7 +982,13 @@ impl MemoryView {
                 _ => None,
             };
             let evidence_roots = self.evidence_roots(*evidence_id).unwrap_or_default();
-            roots.extend(evidence_roots.iter().copied());
+            let withdrawn = self
+                .suppression_for(&evidence.record)
+                .is_some_and(|suppression| suppression.mode == SuppressionMode::Withdrawn);
+            let eligible = !withdrawn;
+            if eligible && evidence.relation == SupportRelation::Supports {
+                roots.extend(evidence_roots.iter().copied());
+            }
             evidence_explanations.push(EvidenceExplanation {
                 evidence: evidence.record.record_id,
                 source: evidence.source,
@@ -914,20 +998,28 @@ impl MemoryView {
                 span_end: evidence.span.map(|span| span.end()),
                 excerpt,
                 ancestry_roots: evidence_roots,
+                withdrawn,
+                eligible,
             });
             nodes += 1;
         }
         let derivations = self.derivation_alternatives(assertion.record.record_id)?;
         nodes += derivations.len();
-        let supporting = assertion
-            .evidence
-            .iter()
-            .filter(|evidence_id| {
-                self.evidence(**evidence_id)
-                    .map(|evidence| evidence.relation == SupportRelation::Supports)
-                    .unwrap_or(false)
-            })
-            .count();
+        let supporting =
+            assertion
+                .evidence
+                .iter()
+                .filter(|evidence_id| {
+                    self.evidence(**evidence_id)
+                        .map(|evidence| {
+                            evidence.relation == SupportRelation::Supports
+                                && self.suppression_for(&evidence.record).is_none_or(
+                                    |suppression| suppression.mode != SuppressionMode::Withdrawn,
+                                )
+                        })
+                        .unwrap_or(false)
+                })
+                .count();
         let corroboration = Corroboration {
             independent_supports: roots.len(),
             shared_ancestry: supporting > 1 && roots.len() == 1,

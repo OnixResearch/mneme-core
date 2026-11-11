@@ -6,8 +6,9 @@
 use std::collections::BTreeSet;
 
 use mneme_core::{
-    Lifecycle, Origin, Payload, RecordEnvelope, RecordId, RecordKind, RecordedTime, Reference,
-    RevisionId, SourceContent, SourceSpan, Symbol, ValidTime, Value, WorkspaceRevisionId,
+    ContentDigest, Lifecycle, Origin, Payload, RecordEnvelope, RecordId, RecordKind, RecordedTime,
+    Reference, RevisionId, SourceContent, SourceSpan, Symbol, ValidTime, Value,
+    WorkspaceRevisionId,
 };
 
 use crate::error::{MemoryError, Result};
@@ -46,6 +47,8 @@ pub struct SourceView {
     pub path_hint: Option<String>,
     pub entity: Option<RecordId>,
     pub media_type: Option<Symbol>,
+    /// Identity of bytes removed by an authorized pruning/erasure step.
+    pub prior_digest: Option<ContentDigest>,
 }
 
 impl SourceView {
@@ -82,12 +85,26 @@ impl SourceView {
             SourceContent::Retained(retained) => Some(retained.media_type().clone()),
             SourceContent::Unavailable { .. } => None,
         };
+        let prior_digest = match record.payload.get("content-digest") {
+            Some(value) => Some(
+                ContentDigest::from_value(value, &mneme_core::Path::root().field("content-digest"))
+                    .map_err(|diagnostic| {
+                        MemoryError::invalid(
+                            record.record_id,
+                            "source-revision",
+                            diagnostic.to_string(),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
         Ok(SourceView {
             path_hint: optional_text(&record, "path-hint"),
             entity: optional_reference_target(&record, "entity")?,
             content,
             availability,
             media_type,
+            prior_digest,
             record,
         })
     }

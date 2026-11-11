@@ -56,6 +56,7 @@ fn fixture_command(base: WorkspaceRevisionId, key: &str) -> CommitCommand {
         }],
         publications: Vec::new(),
         import_candidates: Vec::new(),
+        retention: None,
     }
 }
 
@@ -228,6 +229,7 @@ fn external_import_candidate_must_match_existing_bytes_and_bindings() {
             bytes: fixtures::SOURCE_TEXT.as_bytes().to_vec(),
         }],
         import_candidates: Vec::new(),
+        retention: None,
     };
     workspace.commit(initial).expect("initial commit");
     let base = workspace.current_revision().expect("current");
@@ -255,6 +257,7 @@ fn external_import_candidate_must_match_existing_bytes_and_bindings() {
             path: "project.adoc".to_owned(),
             bytes: edited.as_bytes().to_vec(),
         }],
+        retention: None,
     };
     workspace.commit(import).expect("candidate import");
     let snapshot = workspace.snapshot().expect("snapshot");
@@ -289,6 +292,7 @@ fn external_import_candidate_must_match_existing_bytes_and_bindings() {
             path: "project.adoc".to_owned(),
             bytes: edited.as_bytes().to_vec(),
         }],
+        retention: None,
     };
     let error = workspace.commit(stale).expect_err("stale candidate");
     assert!(matches!(error, StoreError::InvalidCandidate { .. }));
@@ -323,6 +327,7 @@ fn conflicting_source_binding_is_rejected_before_commit() {
             }],
             publications: Vec::new(),
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect("base commit");
 
@@ -358,6 +363,7 @@ fn conflicting_source_binding_is_rejected_before_commit() {
             }],
             publications: Vec::new(),
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect_err("binding conflict");
     assert!(matches!(error, StoreError::BindingConflict(_)));
@@ -451,6 +457,7 @@ fn fault_after_commit_leaves_a_pending_publication_for_recovery() {
             bytes: fixtures::SOURCE_TEXT.as_bytes().to_vec(),
         }],
         import_candidates: Vec::new(),
+        retention: None,
     };
     let error = workspace.commit(command).expect_err("crash after commit");
     assert!(matches!(
@@ -496,6 +503,7 @@ fn external_edit_during_pending_publication_is_preserved_and_reported() {
             bytes: b"version one".to_vec(),
         }],
         import_candidates: Vec::new(),
+        retention: None,
     };
     let outcome = workspace.commit(first).expect("first publication");
     assert_eq!(outcome.publications[0].state, PublicationState::Published);
@@ -518,6 +526,7 @@ fn external_edit_during_pending_publication_is_preserved_and_reported() {
             bytes: b"version two".to_vec(),
         }],
         import_candidates: Vec::new(),
+        retention: None,
     };
     let outcome = workspace.commit(second).expect("second publication");
     assert_eq!(outcome.publications[0].state, PublicationState::Diverged);
@@ -566,6 +575,7 @@ fn metadata_only_update_preserves_exact_source_bytes() {
                 bytes: source_bytes.to_vec(),
             }],
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect("source commit");
     let before = workspace.snapshot().expect("snapshot");
@@ -598,6 +608,7 @@ fn metadata_only_update_preserves_exact_source_bytes() {
             source_blobs: Vec::new(),
             publications: Vec::new(),
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect("metadata update");
     let after = workspace.snapshot().expect("snapshot");
@@ -642,6 +653,7 @@ fn barrier_advance_suppresses_publication_and_pinned_reads() {
             bytes: b"should not appear".to_vec(),
         }],
         import_candidates: Vec::new(),
+        retention: None,
     };
     workspace.commit(pending).expect_err("crash after commit");
     let pinned = workspace.snapshot().expect("pinned snapshot");
@@ -776,6 +788,7 @@ fn lost_commit_response_retries_to_the_same_revision_after_restart() {
             bytes: b"published after retry".to_vec(),
         }],
         import_candidates: Vec::new(),
+        retention: None,
     };
     workspace.commit(command.clone()).expect_err("crash");
     let committed = workspace.current_revision().expect("committed");
@@ -826,6 +839,7 @@ fn historical_snapshot_is_pinned_while_a_new_revision_commits() {
             source_blobs: Vec::new(),
             publications: Vec::new(),
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect("second");
     let current = workspace.snapshot().expect("current");
@@ -864,6 +878,7 @@ fn fault_after_file_replace_recovers_without_rewriting() {
                 bytes: b"already there".to_vec(),
             }],
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect_err("crash after replacement");
     assert!(matches!(
@@ -949,6 +964,7 @@ fn declared_source_length_mismatch_is_rejected() {
             }],
             publications: Vec::new(),
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect_err("length mismatch");
     assert!(matches!(error, StoreError::SourceLengthMismatch { .. }));
@@ -974,6 +990,7 @@ fn publication_path_escape_is_rejected() {
                 bytes: b"nope".to_vec(),
             }],
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect_err("escape");
     assert!(matches!(error, StoreError::PathEscapes(_)));
@@ -1008,6 +1025,16 @@ fn projections_are_revision_scope_and_generation_fenced() {
         .commit(fixture_command(genesis, "first"))
         .expect("first");
     let first = workspace.snapshot().expect("snapshot");
+    workspace
+        .register_retention_participant(mneme_store::RetentionParticipant {
+            name: "lexical".to_owned(),
+            storage_role: "lexical-index".to_owned(),
+            supports_invalidation: true,
+            supports_purge: true,
+            checks_generation: true,
+            inventory_locator: "index/lexical".to_owned(),
+        })
+        .expect("participant");
     let projection = workspace
         .register_projection(mneme_store::ProjectionRegistration {
             name: "lexical".to_owned(),
@@ -1059,6 +1086,7 @@ fn projections_are_revision_scope_and_generation_fenced() {
             source_blobs: Vec::new(),
             publications: Vec::new(),
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect("second");
     let second = workspace.snapshot().expect("second snapshot");
@@ -1084,6 +1112,16 @@ fn projections_are_revision_scope_and_generation_fenced() {
     ));
     // Record reads do not depend on any projection existing.
     assert_eq!(workspace.snapshot().expect("snapshot").records.len(), 5);
+    workspace
+        .register_retention_participant(mneme_store::RetentionParticipant {
+            name: "orphan".to_owned(),
+            storage_role: "test-index".to_owned(),
+            supports_invalidation: true,
+            supports_purge: true,
+            checks_generation: true,
+            inventory_locator: "index/orphan".to_owned(),
+        })
+        .expect("orphan participant");
     assert!(
         workspace
             .register_projection(mneme_store::ProjectionRegistration {
@@ -1121,6 +1159,7 @@ fn fault_before_file_replace_leaves_the_intent_pending_and_no_file() {
                 bytes: b"pending".to_vec(),
             }],
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect_err("crash before replacement");
     assert!(matches!(
@@ -1158,6 +1197,7 @@ fn malformed_import_candidate_is_refused_and_keeps_the_prior_snapshot() {
             source_blobs: Vec::new(),
             publications: Vec::new(),
             import_candidates: Vec::new(),
+            retention: None,
         })
         .expect("base commit");
     let before = workspace.snapshot().expect("snapshot");
@@ -1185,6 +1225,7 @@ fn malformed_import_candidate_is_refused_and_keeps_the_prior_snapshot() {
                 path: "project.adoc".to_owned(),
                 bytes: candidate_bytes.to_vec(),
             }],
+            retention: None,
         })
         .expect_err("malformed candidate");
     assert!(matches!(error, StoreError::InvalidCandidate { .. }));

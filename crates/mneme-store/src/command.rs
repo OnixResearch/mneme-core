@@ -11,6 +11,8 @@ use mneme_core::{
     ScopeId, Symbol, Value, WorkspaceRevisionId,
 };
 
+use crate::retention::RetentionCommit;
+
 /// A record revision proposed for the next snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordDraft {
@@ -137,6 +139,8 @@ pub struct CommitCommand {
     pub source_blobs: Vec<SourceBlobDraft>,
     pub publications: Vec<PublicationDraft>,
     pub import_candidates: Vec<ImportCandidateDraft>,
+    /// An atomically committed retention barrier and cleanup plan.
+    pub retention: Option<RetentionCommit>,
 }
 
 impl CommitCommand {
@@ -168,6 +172,10 @@ impl CommitCommand {
                         .iter()
                         .map(ImportCandidateDraft::request_value),
                 ),
+                match &self.retention {
+                    Some(retention) => retention.to_value(),
+                    None => Value::symbol("none"),
+                },
             ],
         )
     }
