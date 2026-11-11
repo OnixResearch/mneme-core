@@ -122,9 +122,7 @@
             pkgs.libxrandr
             pkgs.wayland
           ];
-        in
-        {
-          default = (rustPlatformFor pkgs).buildRustPackage {
+          package = (rustPlatformFor pkgs).buildRustPackage {
             pname = "mneme";
             version = "0.1.0";
             src = self;
@@ -148,6 +146,34 @@
               description = "Local knowledge workspace and durable external agent memory";
               mainProgram = "mneme";
             };
+          };
+        in
+        {
+          default = package;
+          desktop = package;
+        }
+      );
+
+      apps = forAllSystems (
+        system:
+        let
+          package = self.packages.${system}.default;
+        in
+        {
+          default = {
+            type = "app";
+            program = "${package}/bin/mneme-desktop";
+            meta.description = "Mneme desktop notes (creates a workspace on first run)";
+          };
+          desktop = {
+            type = "app";
+            program = "${package}/bin/mneme-desktop";
+            meta.description = "Mneme desktop notes";
+          };
+          cli = {
+            type = "app";
+            program = "${package}/bin/mneme";
+            meta.description = "Mneme command line, MCP, and evaluation harness";
           };
         }
       );
@@ -191,6 +217,18 @@
                 chmod -R u+w source
                 cd source
                 node --test scripts/test-loop-state.mjs
+                touch "$out"
+              '';
+          desktop-help =
+            pkgs.runCommand "mneme-desktop-help-check" { }
+              ''
+                export HOME="$TMPDIR/home"
+                mkdir -p "$HOME"
+                ${self.packages.${system}.default}/bin/mneme-desktop --help > help.txt
+                grep -q "Usage: mneme-desktop" help.txt
+                grep -q -- "--workspace <DIR>" help.txt
+                ${self.packages.${system}.default}/bin/mneme-desktop --version > version.txt
+                grep -q "mneme-desktop" version.txt
                 touch "$out"
               '';
           # Formatting is cheap and needs no dependency closure.
