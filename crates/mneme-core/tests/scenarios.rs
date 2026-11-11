@@ -1,4 +1,5 @@
 //! End-to-end domain scenarios for the typed-record contract.
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mneme_core::{

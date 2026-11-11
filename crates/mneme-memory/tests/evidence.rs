@@ -1,4 +1,5 @@
 //! End-to-end evidence-memory tests over the durable workspace.
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use mneme_core::{

@@ -37,6 +37,7 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// Random bytes from the operating system.
+#[allow(unknown_lints, ambient_random)] // entropy is the blob-identity shell
 pub fn random_bytes() -> Result<[u8; 16]> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|error| StoreError::Random(error.to_string()))?;
@@ -45,7 +46,9 @@ pub fn random_bytes() -> Result<[u8; 16]> {
 
 /// Random lowercase hexadecimal text of `bytes` bytes.
 pub fn random_hex(bytes: u32) -> Result<String> {
-    let mut output = String::with_capacity(bytes as usize * 2);
+    let capacity = usize::try_from(bytes)
+        .map_err(|_| StoreError::InvalidCommand("hex output length exceeds usize".to_owned()))?;
+    let mut output = String::with_capacity(capacity * 2);
     for _ in 0..bytes {
         let random = random_bytes()?;
         output.push_str(&format!("{:02x}", random[0]));

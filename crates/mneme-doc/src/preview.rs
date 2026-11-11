@@ -1,5 +1,6 @@
 //! Restricted preview rendering and explicit include occurrence mapping.
 
+#![allow(unknown_lints, ignored_result)] // fmt::Write to String and test cleanup cannot fail recoverably
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::time::Instant;

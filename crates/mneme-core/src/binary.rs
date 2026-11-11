@@ -158,7 +158,7 @@ pub fn decode_canonical(bytes: &[u8]) -> Result<Value, Diagnostic> {
 
 fn write_varint(output: &mut Vec<u8>, mut value: u64) {
     loop {
-        let byte = (value & 0x7F) as u8;
+        let byte = (value & 0x7F).to_le_bytes()[0];
         value >>= 7;
         if value == 0 {
             output.push(byte);

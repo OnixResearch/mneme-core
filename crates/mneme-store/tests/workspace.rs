@@ -1,4 +1,5 @@
 //! End-to-end workspace coordinator tests.
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
@@ -916,7 +917,8 @@ fn corrupt_blob_content_is_an_explicit_integrity_failure() {
         .find(|record| record.record_id == fixtures::assertion_id())
         .expect("assertion");
     let path = blob::blob_path(temp.path(), assertion.full_digest());
-    let length = std::fs::metadata(&path).expect("metadata").len() as usize;
+    let length =
+        usize::try_from(std::fs::metadata(&path).expect("metadata").len()).expect("file length");
     std::fs::write(&path, vec![0x5a_u8; length]).expect("tamper");
     assert!(matches!(
         workspace.snapshot().expect_err("corrupt"),

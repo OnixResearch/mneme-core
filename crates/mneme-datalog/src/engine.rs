@@ -65,7 +65,10 @@ impl<'a> Evaluation<'a> {
             self.status = ExecutionStatus::Timeout;
             return false;
         }
-        let max_time_ms = self.limits.max_time_ms.min(u128::from(u64::MAX)) as u64;
+        let Ok(max_time_ms) = u64::try_from(self.limits.max_time_ms) else {
+            self.status = ExecutionStatus::Timeout;
+            return false;
+        };
         if self.start.elapsed() > Duration::from_millis(max_time_ms) {
             self.status = ExecutionStatus::Timeout;
             return false;
@@ -462,13 +465,17 @@ fn evaluate_rule(
             Literal::Compare { .. } => {}
         }
     }
-    let aggregate = rule.body.iter().find_map(|literal| match literal {
-        Literal::Aggregate {
+    let aggregate = rule.body.iter().find_map(|literal| {
+        if let Literal::Aggregate {
             function,
             input,
             output,
-        } => Some((*function, input.clone(), output.clone())),
-        _ => None,
+        } = literal
+        {
+            Some((*function, input.clone(), output.clone()))
+        } else {
+            None
+        }
     });
     let has_negative = rule
         .body
@@ -675,9 +682,16 @@ fn aggregate_rows(
     let group_variables = head
         .terms
         .iter()
-        .filter_map(|term| match term {
-            Term::Variable(name) if name != output => Some(name.clone()),
-            _ => None,
+        .filter_map(|term| {
+            if let Term::Variable(name) = term {
+                if name != output {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         })
         .collect::<BTreeSet<_>>();
     let mut groups: BTreeMap<Vec<Value>, (Vec<usize>, Vec<Value>)> = BTreeMap::new();
@@ -700,7 +714,9 @@ fn aggregate_rows(
     for (_, (indices, values)) in groups {
         let value = match function {
             AggregateFunction::Count => {
-                Value::integer(i64::try_from(values.len()).unwrap_or(i64::MAX))
+                Value::integer(i64::try_from(values.len()).map_err(|_| {
+                    crate::DatalogError::Failed("aggregate count exceeds i64".to_owned())
+                })?)
             }
             AggregateFunction::Sum => {
                 let mut total = 0_u64;

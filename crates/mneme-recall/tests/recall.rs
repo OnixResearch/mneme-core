@@ -1,5 +1,6 @@
 //! Behavioral recall tests over real committed workspaces.
 
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -433,7 +434,8 @@ fn lexical_source_quote_and_claim_keep_exact_provenance() {
     assert_eq!(source.source, Some(rid(0x20)));
     let span = source.span.expect("exact span");
     assert_eq!(
-        &SOURCE_TEXT.as_bytes()[span.start() as usize..=span.end() as usize],
+        &SOURCE_TEXT.as_bytes()[usize::try_from(span.start()).expect("span start")
+            ..=usize::try_from(span.end()).expect("span end")],
         source.text.as_bytes()
     );
     assert!(response.boundary.instructions_are_data);
@@ -490,8 +492,9 @@ fn budget_truncation_keeps_source_span_and_reports_omissions() {
         .expect("truncated source");
     assert!(source.text_truncated);
     assert_eq!(
-        &SOURCE_TEXT.as_bytes()[source.span.expect("span").start() as usize
-            ..=source.span.expect("span").end() as usize],
+        &SOURCE_TEXT.as_bytes()[usize::try_from(source.span.expect("span").start())
+            .expect("span start")
+            ..=usize::try_from(source.span.expect("span").end()).expect("span end")],
         source.text.as_bytes()
     );
     assert!(response.truncated);

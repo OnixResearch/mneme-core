@@ -345,82 +345,82 @@ impl Value {
 
     /// Access a record, if this is one.
     pub fn as_record(&self) -> Option<&Record> {
-        match self {
-            Value::Record(record) => Some(record),
-            _ => None,
-        }
+        let Value::Record(record) = self else {
+            return None;
+        };
+        Some(record)
     }
 
     /// Access a sequence, if this is one.
     pub fn as_sequence(&self) -> Option<&[Value]> {
-        match self {
-            Value::Sequence(items) => Some(items),
-            _ => None,
-        }
+        let Value::Sequence(items) = self else {
+            return None;
+        };
+        Some(items)
     }
 
     /// Access a set, if this is one.
     pub fn as_set(&self) -> Option<&BTreeSet<Value>> {
-        match self {
-            Value::Set(items) => Some(items),
-            _ => None,
-        }
+        let Value::Set(items) = self else {
+            return None;
+        };
+        Some(items)
     }
 
     /// Access a dictionary, if this is one.
     pub fn as_dictionary(&self) -> Option<&BTreeMap<Value, Value>> {
-        match self {
-            Value::Dictionary(entries) => Some(entries),
-            _ => None,
-        }
+        let Value::Dictionary(entries) = self else {
+            return None;
+        };
+        Some(entries)
     }
 
     /// Access a symbol, if this is one.
     pub fn as_symbol(&self) -> Option<&Symbol> {
-        match self {
-            Value::Symbol(symbol) => Some(symbol),
-            _ => None,
-        }
+        let Value::Symbol(symbol) = self else {
+            return None;
+        };
+        Some(symbol)
     }
 
     /// Access a string, if this is one.
     pub fn as_string(&self) -> Option<&str> {
-        match self {
-            Value::String(text) => Some(text),
-            _ => None,
-        }
+        let Value::String(text) = self else {
+            return None;
+        };
+        Some(text)
     }
 
     /// Access bytes, if this is a byte string.
     pub fn as_bytes(&self) -> Option<&[u8]> {
-        match self {
-            Value::ByteString(bytes) => Some(bytes.as_slice()),
-            _ => None,
-        }
+        let Value::ByteString(bytes) = self else {
+            return None;
+        };
+        Some(bytes.as_slice())
     }
 
     /// Access an integer, if this is one.
     pub fn as_integer(&self) -> Option<&SignedInteger> {
-        match self {
-            Value::SignedInteger(integer) => Some(integer),
-            _ => None,
-        }
+        let Value::SignedInteger(integer) = self else {
+            return None;
+        };
+        Some(integer)
     }
 
     /// Access a boolean, if this is one.
     pub fn as_boolean(&self) -> Option<bool> {
-        match self {
-            Value::Boolean(boolean) => Some(*boolean),
-            _ => None,
-        }
+        let Value::Boolean(boolean) = self else {
+            return None;
+        };
+        Some(*boolean)
     }
 
     /// Access a double, if this is one.
     pub fn as_double(&self) -> Option<Double> {
-        match self {
-            Value::Double(double) => Some(*double),
-            _ => None,
-        }
+        let Value::Double(double) = self else {
+            return None;
+        };
+        Some(*double)
     }
 
     /// The Preserves kind name, for diagnostics.
@@ -453,7 +453,12 @@ impl Value {
             Value::Dictionary(entries) => entries
                 .iter()
                 .any(|(key, value)| key.contains_embedded() || value.contains_embedded()),
-            _ => false,
+            Value::Boolean(_)
+            | Value::Double(_)
+            | Value::SignedInteger(_)
+            | Value::Symbol(_)
+            | Value::String(_)
+            | Value::ByteString(_) => false,
         }
     }
 }

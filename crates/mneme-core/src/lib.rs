@@ -9,6 +9,7 @@
 //! No module in this crate performs I/O, reads a clock, or mutates committed
 //! state. Time, identity, authorization, and limits are supplied explicitly.
 
+#![allow(unknown_lints, module_file_count, underscore_in_module_filename)] // public transport module path and intentional top-level layout
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -26,6 +27,7 @@ pub mod payload;
 pub mod reference;
 pub mod schema;
 pub mod scope;
+#[allow(unknown_lints, underscore_in_module_filename)] // public transport module path
 pub mod tagged_json;
 pub mod text;
 pub mod time;

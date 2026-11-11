@@ -1,5 +1,6 @@
 //! Datalog projection behavior over real committed snapshots.
 
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -1,5 +1,6 @@
 //! Retention behavior over real workspaces, evidence records, and blobs.
 
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
 use std::path::Path;

@@ -8,9 +8,7 @@ use mneme_core::{
     ContentDigest, RecordId, RevisionId, ScopeId, SourceSpan, Timestamp, Value,
     WorkspaceRevisionId, text,
 };
-use mneme_datalog::{
-    BuildRequest, CoverageStatus, DatalogBuild, DatalogService, ExecutionStatus as DatalogStatus,
-};
+use mneme_datalog::{BuildRequest, CoverageStatus, DatalogBuild, DatalogService, ExecutionStatus};
 use mneme_memory::MemoryView;
 use mneme_store::{Snapshot, Workspace};
 
@@ -360,10 +358,10 @@ impl<'w> RecallService<'w> {
                                     }
                                     ranking.push((RecallMode::Structured, structured_ranking));
                                     let status = match rows.status {
-                                        DatalogStatus::Complete => ModeStatus::Used,
-                                        DatalogStatus::Timeout => ModeStatus::TimedOut,
-                                        DatalogStatus::Cancelled => ModeStatus::Omitted,
-                                        DatalogStatus::Failed | DatalogStatus::Partial => {
+                                        ExecutionStatus::Complete => ModeStatus::Used,
+                                        ExecutionStatus::Timeout => ModeStatus::TimedOut,
+                                        ExecutionStatus::Cancelled => ModeStatus::Omitted,
+                                        ExecutionStatus::Failed | ExecutionStatus::Partial => {
                                             ModeStatus::Failed
                                         }
                                     };
@@ -410,7 +408,9 @@ impl<'w> RecallService<'w> {
             returned.clear();
             reasons.push("recall cancelled".to_owned());
         }
-        let max_time_ms = request.max_time_ms.min(u128::from(u64::MAX)) as u64;
+        let max_time_ms = u64::try_from(request.max_time_ms).map_err(|_| {
+            RecallError::InvalidRequest("recall time budget exceeds u64 milliseconds".to_owned())
+        })?;
         if started.elapsed() > Duration::from_millis(max_time_ms)
             && execution == RecallExecution::Complete
         {
@@ -747,7 +747,14 @@ fn pack(
     let mut omissions = Vec::new();
     let mut truncated = false;
     let mut remaining = request.max_context_bytes;
-    let max_time_ms = request.max_time_ms.min(u128::from(u64::MAX)) as u64;
+    let max_time_ms = match u64::try_from(request.max_time_ms) {
+        Ok(value) => value,
+        Err(_) => {
+            *execution = RecallExecution::Timeout;
+            reasons.push("recall time budget exceeds u64 milliseconds".to_owned());
+            return (returned, omissions, truncated);
+        }
+    };
     let deadline = Duration::from_millis(max_time_ms);
     for candidate in ordered {
         if cancelled(request) {
@@ -858,7 +865,7 @@ fn structured_coverage(
     if coverage == CoverageStatus::Complete && result.exhaustive {
         return IndexCoverage::complete(result.rows.len());
     }
-    let reason = if build.status == DatalogStatus::Complete {
+    let reason = if build.status == ExecutionStatus::Complete {
         format!("declared relation coverage is {:?}", coverage)
     } else {
         format!("Datalog execution finished with {:?}", build.status)

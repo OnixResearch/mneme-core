@@ -86,7 +86,7 @@ pub struct RetentionSuppression {
 impl RetentionSuppression {
     // Generation is read from the SQLite i64 ledger column, so the conversion is
     // within range for every stored suppression.
-    #[allow(unknown_lints, fallible_int_fallback)]
+    #[allow(unknown_lints, fallible_int_fallback, sentinel_fallback)]
     pub(crate) fn to_value(&self) -> Value {
         Value::record_named(
             "retention-suppression",

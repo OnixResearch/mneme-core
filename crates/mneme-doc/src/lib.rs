@@ -1210,7 +1210,8 @@ impl<'w> Documents<'w> {
             }
         }
         let include_start = Instant::now();
-        let max_time_ms = request.policy.max_time_ms.min(u128::from(u64::MAX)) as u64;
+        let max_time_ms = u64::try_from(request.policy.max_time_ms)
+            .map_err(|_| DocumentError::Invalid("include time budget exceeds u64 milliseconds"))?;
         let deadline = include_start + std::time::Duration::from_millis(max_time_ms);
         let resolved = match resolve_import_includes(
             &context,
@@ -1434,7 +1435,7 @@ fn document_binding_payload(
     ]))
 }
 
-#[allow(unknown_lints, fallible_int_fallback)] // positions are bounded by source length
+#[allow(unknown_lints, fallible_int_fallback, sentinel_fallback)] // positions are bounded by source length
 fn document_anchor_payload(
     document: RecordId,
     source: SourcePin,
@@ -1835,7 +1836,8 @@ impl Documents<'_> {
         let metadata = document
             .entity
             .and_then(|entity| context.entities.get(&entity));
-        let max_time_ms = config.max_time_ms.min(u128::from(u64::MAX)) as u64;
+        let max_time_ms = u64::try_from(config.max_time_ms)
+            .map_err(|_| DocumentError::Invalid("preview time budget exceeds u64 milliseconds"))?;
         let deadline = Instant::now() + std::time::Duration::from_millis(max_time_ms);
         let rendered = root_source
             .as_ref()

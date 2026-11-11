@@ -505,7 +505,11 @@ impl MemoryView {
                         bytes.len()
                     )));
                 }
-                Some(bytes[span.start() as usize..=end as usize].to_vec())
+                let start = usize::try_from(span.start())
+                    .map_err(|_| MemoryError::policy("span start exceeds usize"))?;
+                let end = usize::try_from(end)
+                    .map_err(|_| MemoryError::policy("span end exceeds usize"))?;
+                Some(bytes[start..=end].to_vec())
             }
             _ => None,
         };
@@ -909,7 +913,17 @@ impl MemoryView {
                 RecordKind::Episode => self
                     .suppression_for(envelope)
                     .is_none_or(|suppression| suppression.mode != SuppressionMode::Withdrawn),
-                _ => false,
+                RecordKind::Entity
+                | RecordKind::Relation
+                | RecordKind::Document
+                | RecordKind::SourceRevision
+                | RecordKind::Evidence
+                | RecordKind::Checkpoint
+                | RecordKind::Proposal
+                | RecordKind::Decision
+                | RecordKind::RetentionDirective
+                | RecordKind::DocumentBinding
+                | RecordKind::DocumentAnchor => false,
             };
             if !eligible {
                 return false;
@@ -994,8 +1008,12 @@ impl MemoryView {
             let availability = status.availability();
             let excerpt = match (&evidence.span, &status) {
                 (Some(span), SourceStatus::Retained(bytes)) => {
-                    let start = span.start() as usize;
-                    let end = (span.end() as usize + 1).min(bytes.len());
+                    let start = usize::try_from(span.start())
+                        .map_err(|_| MemoryError::policy("span start exceeds usize"))?;
+                    let end = usize::try_from(span.end())
+                        .map_err(|_| MemoryError::policy("span end exceeds usize"))?
+                        .saturating_add(1)
+                        .min(bytes.len());
                     if start <= end {
                         let truncated_excerpt = end - start > policy.max_excerpt_bytes;
                         let end = start + (end - start).min(policy.max_excerpt_bytes);

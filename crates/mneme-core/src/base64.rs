@@ -13,20 +13,21 @@ pub fn encode(bytes: &[u8]) -> String {
         let first = chunk[0];
         let second = chunk.get(1).copied();
         let third = chunk.get(2).copied();
-        output.push(ALPHABET[(first >> 2) as usize] as char);
-        output
-            .push(ALPHABET[(((first & 0b11) << 4) | (second.unwrap_or(0) >> 4)) as usize] as char);
+        output.push(ALPHABET[usize::from(first >> 2)] as char);
+        output.push(
+            ALPHABET[usize::from(((first & 0b11) << 4) | (second.unwrap_or(0) >> 4))] as char,
+        );
         match second {
             Some(second) => {
                 output.push(
-                    ALPHABET[(((second & 0b1111) << 2) | (third.unwrap_or(0) >> 6)) as usize]
+                    ALPHABET[usize::from(((second & 0b1111) << 2) | (third.unwrap_or(0) >> 6))]
                         as char,
                 );
             }
             None => output.push('='),
         }
         match third {
-            Some(third) => output.push(ALPHABET[(third & 0b11_1111) as usize] as char),
+            Some(third) => output.push(ALPHABET[usize::from(third & 0b11_1111)] as char),
             None => output.push('='),
         }
     }

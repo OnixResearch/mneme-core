@@ -139,7 +139,9 @@ pub fn run_worker(
     };
     let stdout = read_bounded(&stdout_path, limits.max_output_bytes)?;
     let output_limited = stdout.1;
-    let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).map_err(|_| {
+        CapabilityError::LimitExceeded("worker elapsed time exceeds u64 milliseconds".to_owned())
+    })?;
     Ok(WorkerOutcome {
         status: if output_limited {
             WorkerStatus::Partial
@@ -160,6 +162,7 @@ pub fn run_worker(
     })
 }
 
+#[allow(unknown_lints, ignored_result)] // process teardown is best-effort
 fn terminate(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();

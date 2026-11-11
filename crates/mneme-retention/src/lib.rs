@@ -1422,6 +1422,11 @@ fn references_any(value: &Value, targets: &BTreeSet<RecordId>) -> bool {
             .iter()
             .any(|(key, value)| references_any(key, targets) || references_any(value, targets)),
         Value::Embedded(inner) => references_any(inner, targets),
-        _ => false,
+        Value::Boolean(_)
+        | Value::Double(_)
+        | Value::SignedInteger(_)
+        | Value::Symbol(_)
+        | Value::String(_)
+        | Value::ByteString(_) => false,
     }
 }

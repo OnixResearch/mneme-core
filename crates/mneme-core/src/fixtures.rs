@@ -11,6 +11,7 @@
 // asserted by the fixture tests below. Keeping the construction infallible makes
 // fixture use readable in dependent capabilities; the same inputs are rejected
 // if any of those invariants changes.
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
 use crate::digest::ContentDigest;

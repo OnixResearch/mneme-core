@@ -1,4 +1,4 @@
-//! Versioned, type-tagged JSON transport for Preserves values.
+//! Versioned, type-tagged JSON transport for crate::value::Value values.
 //!
 //! Every supported value kind has an explicit tag. A symbol and a string with
 //! equal text remain distinct, integers are decimal strings of arbitrary
@@ -10,11 +10,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use num_bigint::BigInt;
-use serde_json::{Map, Value as Json};
+use serde_json::Map;
 
 use crate::base64;
 use crate::error::{Diagnostic, ErrorCode, Path, Stage};
-use crate::value::{ByteString, Double, Record, SignedInteger, Symbol, Value as Preserves};
+use crate::value::{ByteString, Double, Record, SignedInteger, Symbol};
 
 /// The tagged JSON document format name.
 pub const TRANSPORT_FORMAT: &str = "mneme.preserves-tagged-json";
@@ -25,28 +25,28 @@ const TAG: &str = "t";
 const VALUE: &str = "v";
 
 /// Wrap one encoded value in the versioned transport document.
-pub fn encode_document(value: &Preserves) -> Json {
+pub fn encode_document(value: &crate::value::Value) -> serde_json::Value {
     let mut document = Map::new();
     document.insert(
         "format".to_owned(),
-        Json::String(TRANSPORT_FORMAT.to_owned()),
+        serde_json::Value::String(TRANSPORT_FORMAT.to_owned()),
     );
     document.insert(
         "version".to_owned(),
-        Json::from(u64::from(TRANSPORT_VERSION)),
+        serde_json::Value::from(u64::from(TRANSPORT_VERSION)),
     );
     document.insert("value".to_owned(), encode_value(value));
-    Json::Object(document)
+    serde_json::Value::Object(document)
 }
 
 /// Render a transport document as compact JSON text.
-pub fn encode_document_string(value: &Preserves) -> String {
+pub fn encode_document_string(value: &crate::value::Value) -> String {
     encode_document(value).to_string()
 }
 
 /// Decode a transport document from text.
-pub fn decode_document(text: &str) -> Result<Preserves, Diagnostic> {
-    let json: Json = serde_json::from_str(text).map_err(|error| {
+pub fn decode_document(text: &str) -> Result<crate::value::Value, Diagnostic> {
+    let json: serde_json::Value = serde_json::from_str(text).map_err(|error| {
         Diagnostic::new(
             Stage::Transport,
             ErrorCode::InvalidTaggedJson,
@@ -58,7 +58,7 @@ pub fn decode_document(text: &str) -> Result<Preserves, Diagnostic> {
 }
 
 /// Decode a transport document from an already parsed JSON value.
-pub fn decode_document_value(json: &Json) -> Result<Preserves, Diagnostic> {
+pub fn decode_document_value(json: &serde_json::Value) -> Result<crate::value::Value, Diagnostic> {
     let Some(document) = json.as_object() else {
         return Err(Diagnostic::new(
             Stage::Transport,
@@ -79,7 +79,7 @@ pub fn decode_document_value(json: &Json) -> Result<Preserves, Diagnostic> {
     }
     let version = document
         .get("version")
-        .and_then(Json::as_u64)
+        .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| {
             Diagnostic::new(
                 Stage::Transport,
@@ -109,55 +109,69 @@ pub fn decode_document_value(json: &Json) -> Result<Preserves, Diagnostic> {
     decode_value(value, &Path::root().named("value"))
 }
 
-/// Encode one Preserves value with explicit type tags.
-pub fn encode_value(value: &Preserves) -> Json {
+/// Encode one crate::value::Value value with explicit type tags.
+pub fn encode_value(value: &crate::value::Value) -> serde_json::Value {
     match value {
-        Preserves::Boolean(boolean) => tagged("bool", [("v", Json::Bool(*boolean))]),
-        Preserves::Double(double) => tagged(
-            "double",
-            [("bits", Json::String(format!("{:016x}", double.bits())))],
-        ),
-        Preserves::SignedInteger(integer) => tagged(
-            "int",
-            [("v", Json::String(integer.as_bigint().to_string()))],
-        ),
-        Preserves::String(text) => tagged("string", [("v", Json::String(text.clone()))]),
-        Preserves::ByteString(bytes) => tagged(
-            "bytes",
-            [("v", Json::String(base64::encode(bytes.as_slice())))],
-        ),
-        Preserves::Symbol(symbol) => {
-            tagged("symbol", [("v", Json::String(symbol.as_str().to_owned()))])
+        crate::value::Value::Boolean(boolean) => {
+            tagged("bool", [("v", serde_json::Value::Bool(*boolean))])
         }
-        Preserves::Record(record) => tagged(
+        crate::value::Value::Double(double) => tagged(
+            "double",
+            [(
+                "bits",
+                serde_json::Value::String(format!("{:016x}", double.bits())),
+            )],
+        ),
+        crate::value::Value::SignedInteger(integer) => tagged(
+            "int",
+            [(
+                "v",
+                serde_json::Value::String(integer.as_bigint().to_string()),
+            )],
+        ),
+        crate::value::Value::String(text) => {
+            tagged("string", [("v", serde_json::Value::String(text.clone()))])
+        }
+        crate::value::Value::ByteString(bytes) => tagged(
+            "bytes",
+            [(
+                "v",
+                serde_json::Value::String(base64::encode(bytes.as_slice())),
+            )],
+        ),
+        crate::value::Value::Symbol(symbol) => tagged(
+            "symbol",
+            [("v", serde_json::Value::String(symbol.as_str().to_owned()))],
+        ),
+        crate::value::Value::Record(record) => tagged(
             "record",
             [
                 ("label", encode_value(record.label())),
                 (
                     "fields",
-                    Json::Array(record.fields().iter().map(encode_value).collect()),
+                    serde_json::Value::Array(record.fields().iter().map(encode_value).collect()),
                 ),
             ],
         ),
-        Preserves::Sequence(items) => tagged(
+        crate::value::Value::Sequence(items) => tagged(
             "sequence",
             [(
                 "items",
-                Json::Array(items.iter().map(encode_value).collect()),
+                serde_json::Value::Array(items.iter().map(encode_value).collect()),
             )],
         ),
-        Preserves::Set(items) => tagged(
+        crate::value::Value::Set(items) => tagged(
             "set",
             [(
                 "items",
-                Json::Array(items.iter().map(encode_value).collect()),
+                serde_json::Value::Array(items.iter().map(encode_value).collect()),
             )],
         ),
-        Preserves::Dictionary(entries) => tagged(
+        crate::value::Value::Dictionary(entries) => tagged(
             "dictionary",
             [(
                 "entries",
-                Json::Array(
+                serde_json::Value::Array(
                     entries
                         .iter()
                         .map(|(key, item)| {
@@ -170,21 +184,26 @@ pub fn encode_value(value: &Preserves) -> Json {
                 ),
             )],
         ),
-        Preserves::Embedded(inner) => tagged("embedded", [("value", encode_value(inner))]),
+        crate::value::Value::Embedded(inner) => {
+            tagged("embedded", [("value", encode_value(inner))])
+        }
     }
 }
 
-fn tagged<const N: usize>(tag: &str, members: [(&str, Json); N]) -> Json {
+fn tagged<const N: usize>(tag: &str, members: [(&str, serde_json::Value); N]) -> serde_json::Value {
     let mut object = Map::new();
-    object.insert(TAG.to_owned(), Json::String(tag.to_owned()));
+    object.insert(TAG.to_owned(), serde_json::Value::String(tag.to_owned()));
     for (name, value) in members {
         object.insert(name.to_owned(), value);
     }
-    Json::Object(object)
+    serde_json::Value::Object(object)
 }
 
 /// Decode one tagged value. No coercion or fallback is applied.
-pub fn decode_value(json: &Json, path: &Path) -> Result<Preserves, Diagnostic> {
+pub fn decode_value(
+    json: &serde_json::Value,
+    path: &Path,
+) -> Result<crate::value::Value, Diagnostic> {
     let object = json
         .as_object()
         .ok_or_else(|| invalid(path, "tagged value must be a JSON object"))?;
@@ -194,9 +213,9 @@ pub fn decode_value(json: &Json, path: &Path) -> Result<Preserves, Diagnostic> {
             reject_extra(object, &[TAG, VALUE], path)?;
             let boolean = object
                 .get(VALUE)
-                .and_then(Json::as_bool)
+                .and_then(serde_json::Value::as_bool)
                 .ok_or_else(|| invalid(&path.named(VALUE), "bool value must be a JSON boolean"))?;
-            Ok(Preserves::Boolean(boolean))
+            Ok(crate::value::Value::Boolean(boolean))
         }
         "double" => {
             reject_extra(object, &[TAG, "bits"], path)?;
@@ -217,7 +236,7 @@ pub fn decode_value(json: &Json, path: &Path) -> Result<Preserves, Diagnostic> {
                     "double bits are not valid hexadecimal",
                 )
             })?;
-            Ok(Preserves::Double(Double::from_bits(bits)))
+            Ok(crate::value::Value::Double(Double::from_bits(bits)))
         }
         "int" => {
             reject_extra(object, &[TAG, VALUE], path)?;
@@ -230,17 +249,19 @@ pub fn decode_value(json: &Json, path: &Path) -> Result<Preserves, Diagnostic> {
                     message,
                 )
             })?;
-            Ok(Preserves::SignedInteger(SignedInteger::new(integer)))
+            Ok(crate::value::Value::SignedInteger(SignedInteger::new(
+                integer,
+            )))
         }
         "string" => {
             reject_extra(object, &[TAG, VALUE], path)?;
-            Ok(Preserves::String(
+            Ok(crate::value::Value::String(
                 string_member(object, VALUE, path)?.to_owned(),
             ))
         }
         "symbol" => {
             reject_extra(object, &[TAG, VALUE], path)?;
-            Ok(Preserves::Symbol(Symbol::new(
+            Ok(crate::value::Value::Symbol(Symbol::new(
                 string_member(object, VALUE, path)?.to_owned(),
             )))
         }
@@ -255,7 +276,7 @@ pub fn decode_value(json: &Json, path: &Path) -> Result<Preserves, Diagnostic> {
                     message,
                 )
             })?;
-            Ok(Preserves::ByteString(ByteString::new(bytes)))
+            Ok(crate::value::Value::ByteString(ByteString::new(bytes)))
         }
         "record" => {
             reject_extra(object, &[TAG, "label", "fields"], path)?;
@@ -265,26 +286,26 @@ pub fn decode_value(json: &Json, path: &Path) -> Result<Preserves, Diagnostic> {
             let label = decode_value(label_json, &path.named("label"))?;
             let fields_json = object
                 .get("fields")
-                .and_then(Json::as_array)
+                .and_then(serde_json::Value::as_array)
                 .ok_or_else(|| invalid(&path.named("fields"), "record fields must be an array"))?;
             let mut fields = Vec::with_capacity(fields_json.len());
             for (index, field) in fields_json.iter().enumerate() {
                 fields.push(decode_value(field, &path.named("fields").index(index))?);
             }
-            Ok(Preserves::Record(Record::new(label, fields)))
+            Ok(crate::value::Value::Record(Record::new(label, fields)))
         }
         "sequence" | "set" => {
             reject_extra(object, &[TAG, "items"], path)?;
             let items_json = object
                 .get("items")
-                .and_then(Json::as_array)
+                .and_then(serde_json::Value::as_array)
                 .ok_or_else(|| invalid(&path.named("items"), "items must be an array"))?;
             if tag == "sequence" {
                 let mut items = Vec::with_capacity(items_json.len());
                 for (index, item) in items_json.iter().enumerate() {
                     items.push(decode_value(item, &path.named("items").index(index))?);
                 }
-                Ok(Preserves::Sequence(items))
+                Ok(crate::value::Value::Sequence(items))
             } else {
                 let mut items = BTreeSet::new();
                 for (index, item) in items_json.iter().enumerate() {
@@ -298,14 +319,14 @@ pub fn decode_value(json: &Json, path: &Path) -> Result<Preserves, Diagnostic> {
                         ));
                     }
                 }
-                Ok(Preserves::Set(items))
+                Ok(crate::value::Value::Set(items))
             }
         }
         "dictionary" => {
             reject_extra(object, &[TAG, "entries"], path)?;
             let entries_json = object
                 .get("entries")
-                .and_then(Json::as_array)
+                .and_then(serde_json::Value::as_array)
                 .ok_or_else(|| invalid(&path.named("entries"), "entries must be an array"))?;
             let mut entries = BTreeMap::new();
             for (index, entry) in entries_json.iter().enumerate() {
@@ -337,14 +358,14 @@ pub fn decode_value(json: &Json, path: &Path) -> Result<Preserves, Diagnostic> {
                     ));
                 }
             }
-            Ok(Preserves::Dictionary(entries))
+            Ok(crate::value::Value::Dictionary(entries))
         }
         "embedded" => {
             reject_extra(object, &[TAG, "value"], path)?;
             let inner = object
                 .get("value")
                 .ok_or_else(|| invalid(&path.named("value"), "embedded value is missing"))?;
-            Ok(Preserves::embedded(decode_value(
+            Ok(crate::value::Value::embedded(decode_value(
                 inner,
                 &path.named("value"),
             )?))
@@ -383,22 +404,25 @@ fn invalid(path: &Path, message: &'static str) -> Diagnostic {
 }
 
 fn string_member<'a>(
-    object: &'a Map<String, Json>,
+    object: &'a Map<String, serde_json::Value>,
     name: &str,
     path: &Path,
 ) -> Result<&'a str, Diagnostic> {
-    object.get(name).and_then(Json::as_str).ok_or_else(|| {
-        Diagnostic::new(
-            Stage::Transport,
-            ErrorCode::InvalidTaggedJson,
-            path.named(name),
-            format!("member {name:?} must be a string"),
-        )
-    })
+    object
+        .get(name)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            Diagnostic::new(
+                Stage::Transport,
+                ErrorCode::InvalidTaggedJson,
+                path.named(name),
+                format!("member {name:?} must be a string"),
+            )
+        })
 }
 
 fn reject_extra(
-    object: &Map<String, Json>,
+    object: &Map<String, serde_json::Value>,
     allowed: &[&str],
     path: &Path,
 ) -> Result<(), Diagnostic> {
@@ -419,7 +443,7 @@ fn reject_extra(
 mod tests {
     use super::*;
 
-    fn roundtrip(value: Preserves) -> Preserves {
+    fn roundtrip(value: crate::value::Value) -> crate::value::Value {
         let document = encode_document_string(&value);
         decode_document(&document).expect("roundtrip")
     }
@@ -427,62 +451,85 @@ mod tests {
     #[test]
     fn rich_values_survive_the_json_boundary() {
         let values = [
-            Preserves::symbol("same-text"),
-            Preserves::string("same-text"),
-            Preserves::integer(
+            crate::value::Value::symbol("same-text"),
+            crate::value::Value::string("same-text"),
+            crate::value::Value::integer(
                 "1234567890123456789012345678901234567890"
                     .parse::<BigInt>()
                     .expect("valid integer"),
             ),
-            Preserves::double(-0.0),
-            Preserves::double(f64::NAN),
-            Preserves::double(1.202e300),
-            Preserves::bytes([0_u8, 1, 2, 250, 255]),
-            Preserves::record_named(
+            crate::value::Value::double(-0.0),
+            crate::value::Value::double(f64::NAN),
+            crate::value::Value::double(1.202e300),
+            crate::value::Value::bytes([0_u8, 1, 2, 250, 255]),
+            crate::value::Value::record_named(
                 "capture",
-                vec![Preserves::sequence(vec![Preserves::symbol("nested")])],
+                vec![crate::value::Value::sequence(vec![
+                    crate::value::Value::symbol("nested"),
+                ])],
             ),
-            Preserves::set([Preserves::integer(2_i64), Preserves::integer(1_i64)]),
-            Preserves::dictionary([
-                (Preserves::integer(1_i64), Preserves::string("integer key")),
-                (Preserves::bytes([9_u8]), Preserves::symbol("byte key")),
+            crate::value::Value::set([
+                crate::value::Value::integer(2_i64),
+                crate::value::Value::integer(1_i64),
             ]),
-            Preserves::embedded(Preserves::symbol("marker")),
-            Preserves::Boolean(false),
+            crate::value::Value::dictionary([
+                (
+                    crate::value::Value::integer(1_i64),
+                    crate::value::Value::string("integer key"),
+                ),
+                (
+                    crate::value::Value::bytes([9_u8]),
+                    crate::value::Value::symbol("byte key"),
+                ),
+            ]),
+            crate::value::Value::embedded(crate::value::Value::symbol("marker")),
+            crate::value::Value::Boolean(false),
         ];
         for value in values {
             assert_eq!(roundtrip(value.clone()), value);
         }
         // Symbols and strings with equal text remain distinguishable.
-        assert_ne!(Preserves::symbol("x"), Preserves::string("x"));
+        assert_ne!(
+            crate::value::Value::symbol("x"),
+            crate::value::Value::string("x")
+        );
         // Exact NaN payloads survive.
         let nan_bits = f64::NAN.to_bits();
-        let decoded = roundtrip(Preserves::double(f64::from_bits(nan_bits)));
+        let decoded = roundtrip(crate::value::Value::double(f64::from_bits(nan_bits)));
         assert_eq!(decoded.as_double().map(Double::bits), Some(nan_bits));
     }
 
     #[test]
     fn document_envelope_is_versioned_and_strict() {
-        let document = encode_document(&Preserves::integer(1_i64));
+        let document = encode_document(&crate::value::Value::integer(1_i64));
         assert_eq!(
-            document.get("format").and_then(Json::as_str),
+            document.get("format").and_then(serde_json::Value::as_str),
             Some(TRANSPORT_FORMAT)
         );
 
-        let wrong_format = Json::Object(Map::from_iter([
-            ("format".to_owned(), Json::String("other".to_owned())),
-            ("version".to_owned(), Json::from(1)),
-            ("value".to_owned(), encode_value(&Preserves::Boolean(true))),
+        let wrong_format = serde_json::Value::Object(Map::from_iter([
+            (
+                "format".to_owned(),
+                serde_json::Value::String("other".to_owned()),
+            ),
+            ("version".to_owned(), serde_json::Value::from(1)),
+            (
+                "value".to_owned(),
+                encode_value(&crate::value::Value::Boolean(true)),
+            ),
         ]));
         assert!(decode_document_value(&wrong_format).is_err());
 
-        let wrong_version = Json::Object(Map::from_iter([
+        let wrong_version = serde_json::Value::Object(Map::from_iter([
             (
                 "format".to_owned(),
-                Json::String(TRANSPORT_FORMAT.to_owned()),
+                serde_json::Value::String(TRANSPORT_FORMAT.to_owned()),
             ),
-            ("version".to_owned(), Json::from(2)),
-            ("value".to_owned(), encode_value(&Preserves::Boolean(true))),
+            ("version".to_owned(), serde_json::Value::from(2)),
+            (
+                "value".to_owned(),
+                encode_value(&crate::value::Value::Boolean(true)),
+            ),
         ]));
         assert_eq!(
             decode_document_value(&wrong_version)
@@ -552,9 +599,15 @@ mod tests {
     #[test]
     fn user_data_cannot_impersonate_codec_control_members() {
         // A user dictionary is itself a tagged value; its members are data.
-        let value = Preserves::dictionary([(Preserves::symbol("t"), Preserves::string("string"))]);
+        let value = crate::value::Value::dictionary([(
+            crate::value::Value::symbol("t"),
+            crate::value::Value::string("string"),
+        )]);
         let encoded = encode_value(&value);
-        assert_eq!(encoded.get("t").and_then(Json::as_str), Some("dictionary"));
+        assert_eq!(
+            encoded.get("t").and_then(serde_json::Value::as_str),
+            Some("dictionary")
+        );
         assert_eq!(
             decode_value(&encoded, &Path::root()).expect("decode"),
             value

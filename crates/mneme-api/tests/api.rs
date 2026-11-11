@@ -1,5 +1,6 @@
 //! Shared API behavior over a real workspace and tagged command documents.
 
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
 use std::collections::BTreeSet;

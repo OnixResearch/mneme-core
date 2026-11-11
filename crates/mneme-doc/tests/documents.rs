@@ -1,5 +1,6 @@
 //! Source-first document behavior over real workspace blobs and commits.
 
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
 use mneme_core::{RecordId, RevisionId, ScopeClass, ScopeId, Timestamp, Value};
@@ -142,8 +143,8 @@ fn import_move_and_property_edit_preserve_identity_and_source_bytes() {
     assert_eq!(anchors.len(), 1);
     assert_eq!(anchors[0].anchor, "intro");
     assert_eq!(
-        &source[anchors[0].span.expect("span").start() as usize
-            ..=anchors[0].span.expect("span").end() as usize],
+        &source[usize::try_from(anchors[0].span.expect("span").start()).expect("span start")
+            ..=usize::try_from(anchors[0].span.expect("span").end()).expect("span end")],
         "[[intro,Intro anchor]]"
     );
 

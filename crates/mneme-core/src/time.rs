@@ -71,7 +71,9 @@ impl Timestamp {
                 return Err("fractional seconds must contain 1 to 9 digits");
             }
             let fraction = digits(bytes, start, count)?;
-            nanoseconds = i64::from(fraction) * 10_i64.pow(9 - count as u32);
+            let exponent = u32::try_from(count)
+                .map_err(|_| "fractional seconds must contain 1 to 9 digits")?;
+            nanoseconds = i64::from(fraction) * 10_i64.pow(9 - exponent);
         }
         if position >= bytes.len() {
             return Err("timestamp is missing its offset");
@@ -247,6 +249,7 @@ fn days_from_civil(year: u32, month: u32, day: u32) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
+#[allow(unknown_lints, unchecked_narrowing)] // month/day are bounded by calendar arithmetic
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let shifted = days + 719_468;
     let era = if shifted >= 0 {
