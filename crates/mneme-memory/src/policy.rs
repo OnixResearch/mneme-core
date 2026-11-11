@@ -295,6 +295,25 @@ impl MemoryView {
         Ok(resolved)
     }
 
+    /// Resolve one pinned source revision and overlay current availability.
+    pub fn source_at(&self, source: RecordId, revision: RevisionId) -> Result<SourceView> {
+        let mut resolved = if let Some(record) = self.history.get(&(source, revision)) {
+            SourceView::parse(record.clone())?
+        } else if let Ok(current) = self.source(source)
+            && current.record.revision_id == revision
+        {
+            current
+        } else {
+            return Err(MemoryError::Missing { record: source });
+        };
+        if let Ok(current) = self.source(source)
+            && current.availability != SourceAvailability::Retained
+        {
+            resolved.availability = current.availability;
+        }
+        Ok(resolved)
+    }
+
     /// The current source record revision.
     pub fn current_source_revision(&self, source: RecordId) -> Result<RevisionId> {
         Ok(self.source(source)?.record.revision_id)

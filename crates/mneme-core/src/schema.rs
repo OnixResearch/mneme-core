@@ -31,11 +31,13 @@ pub enum RecordKind {
     Proposal,
     Decision,
     RetentionDirective,
+    DocumentBinding,
+    DocumentAnchor,
 }
 
 impl RecordKind {
     /// Every declared kind.
-    pub const ALL: [RecordKind; 12] = [
+    pub const ALL: [RecordKind; 14] = [
         RecordKind::Entity,
         RecordKind::Relation,
         RecordKind::Document,
@@ -48,6 +50,8 @@ impl RecordKind {
         RecordKind::Proposal,
         RecordKind::Decision,
         RecordKind::RetentionDirective,
+        RecordKind::DocumentBinding,
+        RecordKind::DocumentAnchor,
     ];
 
     /// The schema symbol for this kind.
@@ -65,6 +69,8 @@ impl RecordKind {
             RecordKind::Proposal => "proposal",
             RecordKind::Decision => "decision",
             RecordKind::RetentionDirective => "retention-directive",
+            RecordKind::DocumentBinding => "document-binding",
+            RecordKind::DocumentAnchor => "document-anchor",
         }
     }
 
@@ -519,6 +525,66 @@ impl RecordSchema {
         schema
     }
 
+    /// The production version 3 schema introduced by `document-authoring`.
+    ///
+    /// It keeps every version 1/2 kind, makes the document entity binding
+    /// optional, and adds explicit binding and source-anchor records.
+    pub fn documents_v3() -> Self {
+        let mut schema = RecordSchema::evidence_v2();
+        schema.version = 3;
+        for kind in &mut schema.kinds {
+            if kind.kind == RecordKind::Document {
+                *kind = KindSchema::new(
+                    RecordKind::Document,
+                    vec![
+                        required("title", FieldType::Text),
+                        optional("entity", reference(Some(RecordKind::Entity))),
+                        required(
+                            "source-revision",
+                            reference(Some(RecordKind::SourceRevision)),
+                        ),
+                        optional("path", FieldType::Text),
+                        optional("binding", reference(Some(RecordKind::DocumentBinding))),
+                        optional("includes", FieldType::Dictionary),
+                        optional("render-config", FieldType::Text),
+                    ],
+                    ExtensionPolicy::Retain,
+                );
+            }
+        }
+        schema.kinds.push(KindSchema::new(
+            RecordKind::DocumentBinding,
+            vec![
+                required("document", reference(Some(RecordKind::Document))),
+                required("entity", reference(Some(RecordKind::Entity))),
+                required("status", FieldType::Symbol),
+                required("basis", FieldType::Text),
+                required(
+                    "source-revision",
+                    reference(Some(RecordKind::SourceRevision)),
+                ),
+            ],
+            ExtensionPolicy::Retain,
+        ));
+        schema.kinds.push(KindSchema::new(
+            RecordKind::DocumentAnchor,
+            vec![
+                required("document", reference(Some(RecordKind::Document))),
+                required(
+                    "source-revision",
+                    reference(Some(RecordKind::SourceRevision)),
+                ),
+                required("span", FieldType::Span),
+                required("anchor", FieldType::Text),
+                optional("label", FieldType::Text),
+                optional("line", FieldType::Integer),
+                optional("column", FieldType::Integer),
+            ],
+            ExtensionPolicy::Retain,
+        ));
+        schema
+    }
+
     /// A synthetic version 2 schema used only by migration fixtures.
     ///
     /// It adds one required `extraction` field to assertions. It is not a
@@ -570,6 +636,7 @@ impl SchemaRegistry {
     pub fn production() -> Self {
         let mut registry = SchemaRegistry::v1();
         registry.register(RecordSchema::evidence_v2());
+        registry.register(RecordSchema::documents_v3());
         registry
     }
 
@@ -835,9 +902,14 @@ mod tests {
     fn version_one_declares_every_core_kind() {
         let schema = RecordSchema::v1();
         assert_eq!(schema.version(), 1);
+        let later = [
+            RecordKind::Decision,
+            RecordKind::DocumentBinding,
+            RecordKind::DocumentAnchor,
+        ];
         for kind in RecordKind::ALL
             .into_iter()
-            .filter(|kind| *kind != RecordKind::Decision)
+            .filter(|kind| !later.contains(kind))
         {
             assert!(
                 schema.kind(kind).is_some(),
@@ -845,8 +917,10 @@ mod tests {
                 kind.symbol()
             );
         }
-        assert!(schema.kind(RecordKind::Decision).is_none());
-        assert_eq!(schema.kinds().len(), RecordKind::ALL.len() - 1);
+        for kind in later {
+            assert!(schema.kind(kind).is_none());
+        }
+        assert_eq!(schema.kinds().len(), RecordKind::ALL.len() - later.len());
     }
 
     #[test]
@@ -873,9 +947,9 @@ mod tests {
     }
 
     #[test]
-    fn production_registry_adds_the_decision_kind_at_version_two() {
+    fn production_registry_adds_decision_and_document_kinds() {
         let registry = SchemaRegistry::production();
-        assert_eq!(registry.supported_versions(), vec![1, 2]);
+        assert_eq!(registry.supported_versions(), vec![1, 2, 3]);
         assert!(
             registry
                 .schema(1)
@@ -893,6 +967,30 @@ mod tests {
             .and_then(|schema| schema.kind(RecordKind::Assertion))
             .expect("assertion v2");
         assert!(assertion.field("decision").is_some());
+        assert!(
+            registry
+                .schema(2)
+                .and_then(|schema| schema.kind(RecordKind::DocumentBinding))
+                .is_none()
+        );
+        let document = registry
+            .schema(3)
+            .and_then(|schema| schema.kind(RecordKind::Document))
+            .expect("document v3");
+        assert!(!document.field("entity").expect("entity").required);
+        assert!(document.field("path").is_some());
+        assert!(
+            registry
+                .schema(3)
+                .and_then(|schema| schema.kind(RecordKind::DocumentBinding))
+                .is_some()
+        );
+        assert!(
+            registry
+                .schema(3)
+                .and_then(|schema| schema.kind(RecordKind::DocumentAnchor))
+                .is_some()
+        );
     }
 
     #[test]

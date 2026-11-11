@@ -1621,6 +1621,39 @@ impl Workspace {
         lookup_command_in(&self.connection, command)
     }
 
+    /// Read the committed outcome for one actor/scope/idempotency key.
+    pub fn command_outcome_by_key(
+        &self,
+        actor: &str,
+        scope: &ScopeId,
+        idempotency_key: &str,
+    ) -> Result<Option<CommitOutcome>> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT request_digest, outcome_revision, outcome_sequence FROM commands
+                 WHERE actor = ?1 AND scope = ?2 AND idempotency_key = ?3",
+                params![actor, scope.to_string(), idempotency_key],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((request_digest, outcome_revision, outcome_sequence)) = row else {
+            return Ok(None);
+        };
+        let stored = StoredCommand {
+            request_digest,
+            outcome_revision: revision_from_blob(&outcome_revision)?,
+            outcome_sequence: u64::try_from(outcome_sequence).unwrap_or(0),
+        };
+        self.outcome_for_stored(&stored).map(Some)
+    }
+
     fn outcome_for_stored(&self, stored: &StoredCommand) -> Result<CommitOutcome> {
         let row =
             revision_row_by_id(&self.connection, stored.outcome_revision)?.ok_or_else(|| {
@@ -3343,11 +3376,6 @@ fn candidate_matches(candidate: &ImportCandidateDraft, record: &RecordEnvelope) 
         return false;
     }
     let path = record.payload.get("path-hint").and_then(Value::as_string);
-    let entity = record
-        .payload
-        .get("entity")
-        .and_then(|value| Reference::from_value(value, &mneme_core::Path::root()).ok())
-        .and_then(|reference| reference.target());
     let content = record
         .payload
         .get("content")
@@ -3357,7 +3385,6 @@ fn candidate_matches(candidate: &ImportCandidateDraft, record: &RecordEnvelope) 
         _ => None,
     };
     path == Some(candidate.path.as_str())
-        && entity.is_some()
         && retained
             .map(|retained| {
                 retained.digest() == candidate.digest()

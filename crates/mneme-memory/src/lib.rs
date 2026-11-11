@@ -23,7 +23,8 @@ pub use model::{
 };
 pub use policy::{
     BeliefView, ConflictGroup, Corroboration, DerivationAlternative, EXPLICIT_AUTHORED_PREDICATE,
-    EvidenceExplanation, Explanation, MemoryView, Policy, SourceExcerpt, ValidatedEvidence,
+    EvidenceExplanation, Explanation, MemoryView, Policy, SourceExcerpt, SourceStatus,
+    ValidatedEvidence,
 };
 pub use service::{
     Memory, MemoryBatch, build_assertion_revision, build_checkpoint, build_decision,

@@ -1,0 +1,18 @@
+[package]
+name = "mneme-doc"
+description = "Source-first AsciiDoc documents, bounded includes, safe preview, and anchors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mneme-core.workspace = true
+mneme-store.workspace = true
+mneme-memory.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
