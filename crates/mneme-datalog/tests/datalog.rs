@@ -633,67 +633,11 @@ fn stale_builds_require_explicit_permission_and_publication_is_registered() {
     );
 }
 
-#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn add_assertion_support(harness: &mut Harness, sources: bool) -> mneme_core::RecordId {
     harness.add_entity("assertion-entity", rid(0x10), &scope(), "A");
-    let source_a = b"= Source A\n\nExact source A.\n";
-    let source_b = b"= Source B\n\nExact source B.\n";
-    let (source_record, source_blob) = mneme_memory::build_source(
-        rid(0x20),
-        rev(0x21),
-        &scope(),
-        source_a,
-        "text/asciidoc",
-        Some(rid(0x10)),
-        Some("a.adoc"),
-    )
-    .expect("source a");
-    let mut records = vec![source_record];
-    let mut blobs = vec![source_blob];
-    if sources {
-        let (source_record_b, source_blob_b) = mneme_memory::build_source(
-            rid(0x22),
-            rev(0x23),
-            &scope(),
-            source_b,
-            "text/asciidoc",
-            Some(rid(0x10)),
-            Some("b.adoc"),
-        )
-        .expect("source b");
-        records.push(source_record_b);
-        blobs.push(source_blob_b);
-    }
-    harness.commit("sources", records, blobs);
-    let span = mneme_core::SourceSpan::new(0, 10).expect("span");
-    let mut evidence = vec![mneme_memory::build_evidence(
-        rid(0x30),
-        rev(0x31),
-        &scope(),
-        rid(0x40),
-        rid(0x20),
-        rev(0x21),
-        Some(span),
-        Some("a"),
-        mneme_memory::SupportRelation::Supports,
-        mneme_core::Origin::AuthoredStatement,
-        &[],
-    )];
-    if sources {
-        evidence.push(mneme_memory::build_evidence(
-            rid(0x32),
-            rev(0x33),
-            &scope(),
-            rid(0x40),
-            rid(0x22),
-            rev(0x23),
-            Some(span),
-            Some("b"),
-            mneme_memory::SupportRelation::Supports,
-            mneme_core::Origin::AuthoredStatement,
-            &[],
-        ));
-    }
+    add_support_sources(harness, sources);
+    let evidence = support_evidence(sources);
     let evidence_refs = evidence
         .iter()
         .map(|record| {
@@ -723,6 +667,76 @@ fn add_assertion_support(harness: &mut Harness, sources: bool) -> mneme_core::Re
             .collect(),
         Vec::new(),
     );
+    accept_support_assertion(harness);
+    rid(0x40)
+}
+
+fn add_support_sources(harness: &mut Harness, sources: bool) {
+    let source_a = b"= Source A\n\nExact source A.\n";
+    let source_b = b"= Source B\n\nExact source B.\n";
+    let (source_record, source_blob) = mneme_memory::build_source(
+        rid(0x20),
+        rev(0x21),
+        &scope(),
+        source_a,
+        "text/asciidoc",
+        Some(rid(0x10)),
+        Some("a.adoc"),
+    )
+    .expect("source a");
+    let mut records = vec![source_record];
+    let mut blobs = vec![source_blob];
+    if sources {
+        let (source_record_b, source_blob_b) = mneme_memory::build_source(
+            rid(0x22),
+            rev(0x23),
+            &scope(),
+            source_b,
+            "text/asciidoc",
+            Some(rid(0x10)),
+            Some("b.adoc"),
+        )
+        .expect("source b");
+        records.push(source_record_b);
+        blobs.push(source_blob_b);
+    }
+    harness.commit("sources", records, blobs);
+}
+
+fn support_evidence(sources: bool) -> Vec<mneme_store::RecordDraft> {
+    let span = mneme_core::SourceSpan::new(0, 10).expect("span");
+    let mut evidence = vec![mneme_memory::build_evidence(
+        rid(0x30),
+        rev(0x31),
+        &scope(),
+        rid(0x40),
+        rid(0x20),
+        rev(0x21),
+        Some(span),
+        Some("a"),
+        mneme_memory::SupportRelation::Supports,
+        mneme_core::Origin::AuthoredStatement,
+        &[],
+    )];
+    if sources {
+        evidence.push(mneme_memory::build_evidence(
+            rid(0x32),
+            rev(0x33),
+            &scope(),
+            rid(0x40),
+            rid(0x22),
+            rev(0x23),
+            Some(span),
+            Some("b"),
+            mneme_memory::SupportRelation::Supports,
+            mneme_core::Origin::AuthoredStatement,
+            &[],
+        ));
+    }
+    evidence
+}
+
+fn accept_support_assertion(harness: &mut Harness) {
     let current = harness
         .workspace
         .record_revisions(rid(0x40))
@@ -752,7 +766,6 @@ fn add_assertion_support(harness: &mut Harness, sources: bool) -> mneme_core::Re
         None,
     );
     harness.commit("accept", vec![decision, accepted], Vec::new());
-    rid(0x40)
 }
 
 #[test]

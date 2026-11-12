@@ -1,11 +1,51 @@
 //! Restricted rule validation and stratification.
 
 /// Validate a rule bundle before any evaluation or publication.
-#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate(
     bundle: &crate::RuleBundle,
 ) -> Result<crate::RuleProgram, Vec<crate::RuleDiagnostic>> {
-    let mut diagnostics = Vec::with_capacity(bundle.base_predicates.len());
+    let body_literals = bundle
+        .rules
+        .iter()
+        .fold(0_usize, |total, rule| total.saturating_add(rule.body.len()));
+    let rule_terms = bundle.rules.iter().fold(0_usize, |total, rule| {
+        let body_terms = rule.body.iter().fold(0_usize, |terms, literal| {
+            terms.saturating_add(match literal {
+                crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => atom.arity(),
+                crate::Literal::Compare { .. } | crate::Literal::Aggregate { .. } => 2,
+                crate::Literal::Forbidden(_) => 0,
+            })
+        });
+        total
+            .saturating_add(rule.head.arity())
+            .saturating_add(body_terms)
+    });
+    let max_diagnostics = 3_usize
+        .saturating_add(bundle.base_predicates.len().saturating_mul(2))
+        .saturating_add(bundle.rules.len().saturating_mul(5))
+        .saturating_add(body_literals.saturating_mul(5))
+        .saturating_add(rule_terms)
+        .saturating_add(bundle.complete_predicates.len());
+    let mut diagnostics = Vec::with_capacity(max_diagnostics);
+    validate_bundle_header(bundle, &mut diagnostics);
+    let arities = validate_base_predicates(bundle, &mut diagnostics);
+    let heads = predeclare_rule_heads(bundle, &mut diagnostics);
+    for rule in &bundle.rules {
+        let analysis = analyze_rule_body(bundle, rule, &arities, &heads, &mut diagnostics);
+        if !analysis.is_seen_forbidden {
+            validate_aggregate_coverage(bundle, rule, &analysis, &mut diagnostics);
+            validate_rule_variables(rule, &analysis, &mut diagnostics);
+        }
+    }
+    validate_complete_predicates(bundle, &arities, &heads, &mut diagnostics);
+    finish_validation(bundle, arities, heads, diagnostics)
+}
+
+fn validate_bundle_header(
+    bundle: &crate::RuleBundle,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
+) {
     if bundle.id.trim().is_empty() {
         diagnostics.push(diag("bundle-id", None, "rule bundle id is empty"));
     }
@@ -19,6 +59,12 @@ pub fn validate(
             "rule bundle schema version is zero",
         ));
     }
+}
+
+fn validate_base_predicates(
+    bundle: &crate::RuleBundle,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
+) -> std::collections::BTreeMap<String, usize> {
     let mut arities = std::collections::BTreeMap::new();
     for (predicate, arity) in &bundle.base_predicates {
         if !valid_name(predicate) {
@@ -35,8 +81,18 @@ pub fn validate(
                 format!("base predicate {predicate:?} has zero arity"),
             ));
         }
+        if arities.len() >= bundle.base_predicates.len() {
+            break;
+        }
         arities.insert(predicate.clone(), *arity);
     }
+    arities
+}
+
+fn predeclare_rule_heads(
+    bundle: &crate::RuleBundle,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
+) -> std::collections::BTreeMap<String, usize> {
     let mut heads = std::collections::BTreeMap::new();
     // Predeclare every rule head so a body may reference a rule defined later.
     for rule in &bundle.rules {
@@ -73,157 +129,235 @@ pub fn validate(
             ));
         }
     }
-    for rule in &bundle.rules {
-        let mut positive_vars = std::collections::BTreeSet::new();
-        let mut negative_vars = std::collections::BTreeSet::new();
-        let mut compare_vars = std::collections::BTreeSet::new();
-        let mut aggregate = None;
-        let mut is_seen_forbidden = false;
-        for (index, literal) in rule.body.iter().enumerate() {
+    heads
+}
+
+struct RuleBodyAnalysis {
+    positive_vars: std::collections::BTreeSet<String>,
+    negative_vars: std::collections::BTreeSet<String>,
+    compare_vars: std::collections::BTreeSet<String>,
+    aggregate: Option<(crate::Term, String)>,
+    is_seen_forbidden: bool,
+}
+
+impl RuleBodyAnalysis {
+    fn new() -> Self {
+        Self {
+            positive_vars: std::collections::BTreeSet::new(),
+            negative_vars: std::collections::BTreeSet::new(),
+            compare_vars: std::collections::BTreeSet::new(),
+            aggregate: None,
+            is_seen_forbidden: false,
+        }
+    }
+}
+
+fn analyze_rule_body(
+    bundle: &crate::RuleBundle,
+    rule: &crate::Rule,
+    arities: &std::collections::BTreeMap<String, usize>,
+    heads: &std::collections::BTreeMap<String, usize>,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
+) -> RuleBodyAnalysis {
+    let mut analysis = RuleBodyAnalysis::new();
+    for (index, literal) in rule.body.iter().enumerate() {
+        analyze_literal(
+            bundle,
+            rule,
+            index,
+            literal,
+            arities,
+            heads,
+            &mut analysis,
+            diagnostics,
+        );
+    }
+    analysis
+}
+
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one cohesive context
+fn analyze_literal(
+    bundle: &crate::RuleBundle,
+    rule: &crate::Rule,
+    index: usize,
+    literal: &crate::Literal,
+    arities: &std::collections::BTreeMap<String, usize>,
+    heads: &std::collections::BTreeMap<String, usize>,
+    analysis: &mut RuleBodyAnalysis,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
+) {
+    match literal {
+        crate::Literal::Forbidden(name) => {
+            analysis.is_seen_forbidden = true;
+            diagnostics.push(diag(
+                "forbidden-builtin",
+                Some(rule.id.clone()),
+                format!("forbidden operation {name:?}"),
+            ));
+        }
+        crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
+            validate_atom(atom, arities, heads, &bundle.rules, &rule.id, diagnostics);
             match literal {
-                crate::Literal::Forbidden(name) => {
-                    is_seen_forbidden = true;
-                    diagnostics.push(diag(
-                        "forbidden-builtin",
-                        Some(rule.id.clone()),
-                        format!("forbidden operation {name:?}"),
-                    ));
+                crate::Literal::Positive(_) => {
+                    analysis
+                        .positive_vars
+                        .extend(atom.terms.iter().filter_map(term_var));
                 }
-                crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
-                    validate_atom(
-                        atom,
-                        &arities,
-                        &heads,
-                        &bundle.rules,
-                        &rule.id,
-                        &mut diagnostics,
-                    );
-                    match literal {
-                        crate::Literal::Positive(_) => {
-                            positive_vars.extend(atom.terms.iter().filter_map(term_var));
-                        }
-                        crate::Literal::Negative(_) => {
-                            negative_vars.extend(atom.terms.iter().filter_map(term_var));
-                            if !bundle.complete_predicates.contains(&atom.predicate) {
-                                diagnostics.push(diag(
-                                    "negation-coverage",
-                                    Some(rule.id.clone()),
-                                    format!(
-                                        "negated predicate {:?} is not declared complete",
-                                        atom.predicate
-                                    ),
-                                ));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                crate::Literal::Compare { left, right, .. } => {
-                    compare_vars.extend(term_var(left));
-                    compare_vars.extend(term_var(right));
-                }
-                crate::Literal::Aggregate { input, output, .. } => {
-                    if aggregate.is_some() {
+                crate::Literal::Negative(_) => {
+                    analysis
+                        .negative_vars
+                        .extend(atom.terms.iter().filter_map(term_var));
+                    if !bundle.complete_predicates.contains(&atom.predicate) {
                         diagnostics.push(diag(
-                            "aggregate-count",
+                            "negation-coverage",
                             Some(rule.id.clone()),
-                            "at most one aggregate literal is supported",
+                            format!(
+                                "negated predicate {:?} is not declared complete",
+                                atom.predicate
+                            ),
                         ));
                     }
-                    if index + 1 != rule.body.len() {
-                        diagnostics.push(diag(
-                            "aggregate-position",
-                            Some(rule.id.clone()),
-                            "aggregate literal must be final",
-                        ));
-                    }
-                    if output.trim().is_empty() {
-                        diagnostics.push(diag(
-                            "aggregate-output",
-                            Some(rule.id.clone()),
-                            "aggregate output variable is empty",
-                        ));
-                    }
-                    if positive_vars.contains(output) || negative_vars.contains(output) {
-                        diagnostics.push(diag(
-                            "aggregate-output-bound",
-                            Some(rule.id.clone()),
-                            "aggregate output variable must be newly bound",
-                        ));
-                    }
-                    aggregate = Some((input.clone(), output.clone()));
-                    if !bundle.complete_predicates.iter().any(|predicate| {
-                        rule.body.iter().any(|literal| {
-                            matches!(
-                                literal,
-                                crate::Literal::Positive(atom) if &atom.predicate == predicate
-                            )
-                        })
-                    }) {
-                        // The detailed per-positive-relation check below catches
-                        // the usual missing declaration; this branch only makes
-                        // the diagnostic explicit for an empty positive body.
-                    }
                 }
+                _ => {}
             }
         }
-        if is_seen_forbidden {
-            continue;
+        crate::Literal::Compare { left, right, .. } => {
+            analysis.compare_vars.extend(term_var(left));
+            analysis.compare_vars.extend(term_var(right));
         }
-        if aggregate.is_some() {
-            let mut is_all_positive_complete = true;
-            for literal in &rule.body {
-                if let crate::Literal::Positive(atom) = literal
-                    && !bundle.complete_predicates.contains(&atom.predicate)
-                {
-                    is_all_positive_complete = false;
-                    diagnostics.push(diag(
-                        "aggregate-coverage",
-                        Some(rule.id.clone()),
-                        format!(
-                            "aggregate body predicate {:?} is not declared complete",
-                            atom.predicate
-                        ),
-                    ));
-                }
-            }
-            if !is_all_positive_complete {
-                // The diagnostic above is sufficient.
+        crate::Literal::Aggregate { input, output, .. } => {
+            validate_aggregate_literal(rule, index, output, analysis, diagnostics);
+            analysis.aggregate = Some((input.clone(), output.clone()));
+            if !bundle.complete_predicates.iter().any(|predicate| {
+                rule.body.iter().any(|literal| {
+                    matches!(
+                        literal,
+                        crate::Literal::Positive(atom) if &atom.predicate == predicate
+                    )
+                })
+            }) {
+                // The detailed per-positive-relation check below catches
+                // the usual missing declaration; this branch only makes
+                // the diagnostic explicit for an empty positive body.
             }
         }
-        let aggregate_output = aggregate.as_ref().map(|(_, output)| output.as_str());
-        for variable in head_vars(&rule.head) {
-            if aggregate_output.is_some_and(|output| output == variable) {
-                continue;
-            }
-            if !positive_vars.contains(&variable) {
-                diagnostics.push(diag(
-                    "unsafe-head-variable",
-                    Some(rule.id.clone()),
-                    format!("head variable {variable:?} is not positively bound"),
-                ));
-            }
-        }
-        for variable in negative_vars.iter().chain(compare_vars.iter()) {
-            if !positive_vars.contains(variable) {
-                diagnostics.push(diag(
-                    "unsafe-body-variable",
-                    Some(rule.id.clone()),
-                    format!("variable {variable:?} is not positively bound"),
-                ));
-            }
-        }
-        if let Some((input, _)) = aggregate
-            && let Some(variable) = term_var(&input)
-            && !positive_vars.contains(&variable)
+    }
+}
+
+fn validate_aggregate_literal(
+    rule: &crate::Rule,
+    index: usize,
+    output: &str,
+    analysis: &RuleBodyAnalysis,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
+) {
+    if analysis.aggregate.is_some() {
+        diagnostics.push(diag(
+            "aggregate-count",
+            Some(rule.id.clone()),
+            "at most one aggregate literal is supported",
+        ));
+    }
+    if index + 1 != rule.body.len() {
+        diagnostics.push(diag(
+            "aggregate-position",
+            Some(rule.id.clone()),
+            "aggregate literal must be final",
+        ));
+    }
+    if output.trim().is_empty() {
+        diagnostics.push(diag(
+            "aggregate-output",
+            Some(rule.id.clone()),
+            "aggregate output variable is empty",
+        ));
+    }
+    if analysis.positive_vars.contains(output) || analysis.negative_vars.contains(output) {
+        diagnostics.push(diag(
+            "aggregate-output-bound",
+            Some(rule.id.clone()),
+            "aggregate output variable must be newly bound",
+        ));
+    }
+}
+
+fn validate_aggregate_coverage(
+    bundle: &crate::RuleBundle,
+    rule: &crate::Rule,
+    analysis: &RuleBodyAnalysis,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
+) {
+    if analysis.aggregate.is_none() {
+        return;
+    }
+    for literal in &rule.body {
+        if let crate::Literal::Positive(atom) = literal
+            && !bundle.complete_predicates.contains(&atom.predicate)
         {
             diagnostics.push(diag(
-                "unsafe-aggregate-variable",
+                "aggregate-coverage",
                 Some(rule.id.clone()),
-                format!("aggregate input variable {variable:?} is not positively bound"),
+                format!(
+                    "aggregate body predicate {:?} is not declared complete",
+                    atom.predicate
+                ),
             ));
         }
     }
+}
+
+fn validate_rule_variables(
+    rule: &crate::Rule,
+    analysis: &RuleBodyAnalysis,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
+) {
+    let aggregate_output = analysis
+        .aggregate
+        .as_ref()
+        .map(|(_, output)| output.as_str());
+    for variable in head_vars(&rule.head) {
+        if aggregate_output.is_some_and(|output| output == variable) {
+            continue;
+        }
+        if !analysis.positive_vars.contains(&variable) {
+            diagnostics.push(diag(
+                "unsafe-head-variable",
+                Some(rule.id.clone()),
+                format!("head variable {variable:?} is not positively bound"),
+            ));
+        }
+    }
+    for variable in analysis
+        .negative_vars
+        .iter()
+        .chain(analysis.compare_vars.iter())
+    {
+        if !analysis.positive_vars.contains(variable) {
+            diagnostics.push(diag(
+                "unsafe-body-variable",
+                Some(rule.id.clone()),
+                format!("variable {variable:?} is not positively bound"),
+            ));
+        }
+    }
+    if let Some((input, _)) = &analysis.aggregate
+        && let Some(variable) = term_var(input)
+        && !analysis.positive_vars.contains(&variable)
+    {
+        diagnostics.push(diag(
+            "unsafe-aggregate-variable",
+            Some(rule.id.clone()),
+            format!("aggregate input variable {variable:?} is not positively bound"),
+        ));
+    }
+}
+
+fn validate_complete_predicates(
+    bundle: &crate::RuleBundle,
+    arities: &std::collections::BTreeMap<String, usize>,
+    heads: &std::collections::BTreeMap<String, usize>,
+    diagnostics: &mut Vec<crate::RuleDiagnostic>,
+) {
     for predicate in &bundle.complete_predicates {
         if !arities.contains_key(predicate) && !heads.contains_key(predicate) {
             diagnostics.push(diag(
@@ -233,6 +367,14 @@ pub fn validate(
             ));
         }
     }
+}
+
+fn finish_validation(
+    bundle: &crate::RuleBundle,
+    mut arities: std::collections::BTreeMap<String, usize>,
+    heads: std::collections::BTreeMap<String, usize>,
+    mut diagnostics: Vec<crate::RuleDiagnostic>,
+) -> Result<crate::RuleProgram, Vec<crate::RuleDiagnostic>> {
     if diagnostics.is_empty() {
         for (predicate, arity) in &heads {
             arities.insert(predicate.clone(), *arity);

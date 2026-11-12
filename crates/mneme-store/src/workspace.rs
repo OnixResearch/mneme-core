@@ -8,7 +8,6 @@
 //! references a missing required blob; filesystem publication never overwrites a
 //! divergent external edit.
 #![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
-
 use rusqlite::OptionalExtension;
 
 use crate::clock::Clock;
@@ -33,6 +32,35 @@ type BlobRecord = (
     mneme_core::ValueBoundary,
 );
 type BlobIndex = std::collections::BTreeMap<[u8; 32], BlobRecord>;
+
+struct PreparedCommit {
+    request_digest: mneme_core::ContentDigest,
+    base: mneme_core::WorkspaceRevisionId,
+    next_sequence: u64,
+    generation: u64,
+    next_generation: u64,
+    recorded: mneme_core::RecordedTime,
+    new_records: Vec<mneme_core::RecordEnvelope>,
+    staged: BlobIndex,
+    snapshot_records: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    revision_id: mneme_core::WorkspaceRevisionId,
+    manifest: crate::manifest::Manifest,
+    manifest_digest: mneme_core::ContentDigest,
+    manifest_bytes: Vec<u8>,
+}
+
+struct CommitManifest {
+    snapshot_records: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    revision_id: mneme_core::WorkspaceRevisionId,
+    manifest: crate::manifest::Manifest,
+    manifest_digest: mneme_core::ContentDigest,
+    manifest_bytes: Vec<u8>,
+}
+
+enum CommitWrite {
+    Existing(CommitOutcome),
+    New(Vec<String>),
+}
 
 const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
@@ -184,6 +212,8 @@ CREATE TABLE IF NOT EXISTS retention_locations (
 "#;
 
 /// Configuration for a workspace handle.
+type RetainedRecordRow = (Vec<u8>, Vec<u8>, String, Vec<u8>, Vec<u8>, Vec<u8>);
+
 pub struct WorkspaceConfig {
     pub clock: Box<dyn Clock>,
     pub faults: Box<dyn FaultInjector>,
@@ -801,38 +831,48 @@ impl Workspace {
         Ok(snapshot)
     }
 
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn load_snapshot(&self, row: RevisionRow, generation: u64) -> crate::error::Result<Snapshot> {
         let revision = row.revision;
-        let manifest_value =
-            mneme_core::binary::decode(&row.manifest_bytes).map_err(|diagnostic| {
-                crate::error::StoreError::Integrity {
-                    revision,
-                    reason: format!("manifest is not valid Preserves: {diagnostic}"),
-                }
-            })?;
-        let manifest =
-            crate::manifest::Manifest::from_value(&manifest_value).map_err(|reason| {
-                crate::error::StoreError::Integrity {
-                    revision,
-                    reason: format!("manifest is invalid: {reason}"),
-                }
-            })?;
-        if manifest.revision != revision
-            || manifest.parent != row.parent
-            || mneme_core::ContentDigest::of_payload(&manifest_value) != row.manifest_digest
-            || manifest.encode() != row.manifest_bytes
-        {
+        let manifest = validate_manifest_row(&row)?;
+        let forgotten = self.forgotten_suppressions()?;
+        let (records, manifest_records) = self.load_records(row.sequence, revision, &forgotten)?;
+        let index = self.snapshot_index(&records, revision, &forgotten)?;
+        if manifest_records != manifest.records {
             return Err(crate::error::StoreError::Integrity {
                 revision,
-                reason: "manifest identity or digest does not match the ledger row".to_owned(),
+                reason: "manifest record set does not match the committed revision".to_owned(),
             });
         }
 
-        let forgotten = self.forgotten_suppressions()?;
-        let (records, manifest_records) = self.load_records(row.sequence, revision, &forgotten)?;
+        // Historical manifests remain audit structure. A blob that is only
+        // referenced by a forgotten record or by an authorized pruned source
+        // need not remain on disk. Every live record payload was verified by
+        // `load_records`; verify the retained source bytes that are still
+        // required by a visible record below.
+        let current_sources = self.current_source_states()?;
+        let blob_lengths = self.blob_lengths()?;
+        self.verify_snapshot_sources(&records, revision, &current_sources, &blob_lengths)?;
+
+        Ok(Snapshot {
+            revision,
+            sequence: row.sequence,
+            parent: row.parent,
+            manifest_digest: row.manifest_digest,
+            eligibility_generation: generation,
+            records,
+            index,
+        })
+    }
+
+    fn snapshot_index(
+        &self,
+        records: &[mneme_core::RecordEnvelope],
+        revision: mneme_core::WorkspaceRevisionId,
+        forgotten: &ForgottenSuppressions,
+    ) -> crate::error::Result<mneme_core::SnapshotIndex> {
         let mut index = mneme_core::SnapshotIndex::new();
-        for record in &records {
+        for record in records {
             index.insert(record.record_id, record.kind, record.revision_id);
             let mut history = self
                 .connection
@@ -851,21 +891,17 @@ impl Workspace {
                 }
             }
         }
-        if manifest_records != manifest.records {
-            return Err(crate::error::StoreError::Integrity {
-                revision,
-                reason: "manifest record set does not match the committed revision".to_owned(),
-            });
-        }
+        Ok(index)
+    }
 
-        // Historical manifests remain audit structure. A blob that is only
-        // referenced by a forgotten record or by an authorized pruned source
-        // need not remain on disk. Every live record payload was verified by
-        // `load_records`; verify the retained source bytes that are still
-        // required by a visible record below.
-        let current_sources = self.current_source_states()?;
-        let blob_lengths = self.blob_lengths()?;
-        for record in &records {
+    fn verify_snapshot_sources(
+        &self,
+        records: &[mneme_core::RecordEnvelope],
+        revision: mneme_core::WorkspaceRevisionId,
+        current_sources: &std::collections::BTreeMap<mneme_core::RecordId, SourcePresence>,
+        blob_lengths: &BlobIndex,
+    ) -> crate::error::Result<()> {
+        for record in records {
             let Some(digest) = retained_source_digest(record) else {
                 continue;
             };
@@ -887,19 +923,10 @@ impl Workspace {
                 }
             })?;
         }
-
-        Ok(Snapshot {
-            revision,
-            sequence: row.sequence,
-            parent: row.parent,
-            manifest_digest: row.manifest_digest,
-            eligibility_generation: generation,
-            records,
-            index,
-        })
+        Ok(())
     }
 
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn load_records(
         &self,
         sequence: u64,
@@ -953,61 +980,83 @@ impl Workspace {
             if forgotten.matches(record_id, revision_id) {
                 continue;
             }
-            let digest = digest_with(
+            records.push(self.load_verified_record_envelope(
+                record_id,
+                revision_id,
+                kind,
                 &envelope_digest,
-                "preserves-canonical-binary-v1",
-                "full-record",
-                revision,
-            )?;
-            let bytes = crate::blob::read(&self.root, digest).map_err(|error| {
-                crate::error::StoreError::Integrity {
-                    revision,
-                    reason: format!("record blob {digest} is unavailable: {error}"),
-                }
-            })?;
-            let value = mneme_core::binary::decode(&bytes).map_err(|diagnostic| {
-                crate::error::StoreError::Integrity {
-                    revision,
-                    reason: format!("record blob {digest} is not valid Preserves: {diagnostic}"),
-                }
-            })?;
-            let record = mneme_core::RecordEnvelope::from_value(&value).map_err(|diagnostics| {
-                crate::error::StoreError::Integrity {
-                    revision,
-                    reason: format!(
-                        "record blob {digest} is not a valid envelope: {}",
-                        join(&diagnostics)
-                    ),
-                }
-            })?;
-            let payload_digest = digest_with(
                 &payload_digest,
-                "preserves-canonical-binary-v1",
-                "payload",
+                &full_digest,
                 revision,
-            )?;
-            if record.record_id != record_id
-                || record.revision_id != revision_id
-                || record.kind != kind
-                || record.full_digest() != digest
-                || record.full_digest().as_bytes() != full_digest.as_slice()
-                || record.payload_digest() != payload_digest
-            {
-                return Err(crate::error::StoreError::Integrity {
-                    revision,
-                    reason: format!("record blob {digest} does not match its ledger identity"),
-                });
-            }
-            records.push(record);
+            )?);
         }
         Ok((records, manifest_records))
+    }
+
+    #[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one compact fixture/context
+    fn load_verified_record_envelope(
+        &self,
+        record_id: mneme_core::RecordId,
+        revision_id: mneme_core::RevisionId,
+        kind: mneme_core::RecordKind,
+        envelope_digest: &[u8],
+        payload_digest: &[u8],
+        full_digest: &[u8],
+        revision: mneme_core::WorkspaceRevisionId,
+    ) -> crate::error::Result<mneme_core::RecordEnvelope> {
+        let digest = digest_with(
+            envelope_digest,
+            "preserves-canonical-binary-v1",
+            "full-record",
+            revision,
+        )?;
+        let bytes = crate::blob::read(&self.root, digest).map_err(|error| {
+            crate::error::StoreError::Integrity {
+                revision,
+                reason: format!("record blob {digest} is unavailable: {error}"),
+            }
+        })?;
+        let value = mneme_core::binary::decode(&bytes).map_err(|diagnostic| {
+            crate::error::StoreError::Integrity {
+                revision,
+                reason: format!("record blob {digest} is not valid Preserves: {diagnostic}"),
+            }
+        })?;
+        let record = mneme_core::RecordEnvelope::from_value(&value).map_err(|diagnostics| {
+            crate::error::StoreError::Integrity {
+                revision,
+                reason: format!(
+                    "record blob {digest} is not a valid envelope: {}",
+                    join(&diagnostics)
+                ),
+            }
+        })?;
+        let payload_digest = digest_with(
+            payload_digest,
+            "preserves-canonical-binary-v1",
+            "payload",
+            revision,
+        )?;
+        if record.record_id != record_id
+            || record.revision_id != revision_id
+            || record.kind != kind
+            || record.full_digest() != digest
+            || record.full_digest().as_bytes() != full_digest
+            || record.payload_digest() != payload_digest
+        {
+            return Err(crate::error::StoreError::Integrity {
+                revision,
+                reason: format!("record blob {digest} does not match its ledger identity"),
+            });
+        }
+        Ok(record)
     }
 
     /// All retained revisions of one record identity, in recorded order.
     ///
     /// This is the historical view used by evidence correction and lineage
     /// checks; each envelope is loaded from its verified blob.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn record_revisions(
         &self,
         record_id: mneme_core::RecordId,
@@ -1048,58 +1097,21 @@ impl Workspace {
                     reason: format!("unknown record kind {kind}"),
                 }
             })?;
-            let digest = digest_with(
+            records.push(self.load_verified_record_envelope(
+                record_id,
+                revision_id,
+                kind,
                 &envelope_digest,
-                "preserves-canonical-binary-v1",
-                "full-record",
-                context,
-            )?;
-            let bytes = crate::blob::read(&self.root, digest).map_err(|error| {
-                crate::error::StoreError::Integrity {
-                    revision: context,
-                    reason: format!("record blob {digest} is unavailable: {error}"),
-                }
-            })?;
-            let value = mneme_core::binary::decode(&bytes).map_err(|diagnostic| {
-                crate::error::StoreError::Integrity {
-                    revision: context,
-                    reason: format!("record blob {digest} is not valid Preserves: {diagnostic}"),
-                }
-            })?;
-            let record = mneme_core::RecordEnvelope::from_value(&value).map_err(|diagnostics| {
-                crate::error::StoreError::Integrity {
-                    revision: context,
-                    reason: format!(
-                        "record blob {digest} is not a valid envelope: {}",
-                        join(&diagnostics)
-                    ),
-                }
-            })?;
-            let payload = digest_with(
                 &payload_digest,
-                "preserves-canonical-binary-v1",
-                "payload",
+                &full_digest,
                 context,
-            )?;
-            if record.record_id != record_id
-                || record.revision_id != revision_id
-                || record.kind != kind
-                || record.full_digest() != digest
-                || record.full_digest().as_bytes() != full_digest.as_slice()
-                || record.payload_digest() != payload
-            {
-                return Err(crate::error::StoreError::Integrity {
-                    revision: context,
-                    reason: format!("record blob {digest} does not match its ledger identity"),
-                });
-            }
-            records.push(record);
+            )?);
         }
         Ok(records)
     }
 
     /// Committed workspace revisions and their monotonic sequences.
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn revision_sequences(
         &self,
     ) -> crate::error::Result<std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>>
@@ -1107,13 +1119,18 @@ impl Workspace {
         let mut statement = self
             .connection
             .prepare("SELECT revision_id, sequence FROM revisions")?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
+        })?;
         let mut sequences = std::collections::BTreeMap::new();
-        for (revision, sequence) in rows {
+        let max_revision_sequences = 1_000_000;
+        for row in rows {
+            let (revision, sequence) = row?;
+            if sequences.len() >= max_revision_sequences {
+                return Err(crate::error::StoreError::UnsupportedLayout(
+                    "revision sequence inventory exceeds the 1M entry bound".to_owned(),
+                ));
+            }
             sequences.insert(
                 revision_from_blob(&revision)?,
                 db_u64(sequence, "sequence")?,
@@ -1123,13 +1140,69 @@ impl Workspace {
     }
 
     /// Commit one command through the serialized coordinator.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn commit(
         &mut self,
         command: crate::command::CommitCommand,
     ) -> crate::error::Result<CommitOutcome> {
         self.require_restore_suppression()?;
         validate_command(&command)?;
+        self.validate_retention_command(&command)?;
+        let request_digest = command.request_digest();
+        if let Some(stored) = self.lookup_command(&command)? {
+            if stored.request_digest.as_slice() != request_digest.as_bytes() {
+                return Err(crate::error::StoreError::IdempotencyConflict {
+                    key: command.idempotency_key,
+                });
+            }
+            return self.outcome_for_stored(&stored);
+        }
+
+        let prepared = self.prepare_commit(&command, request_digest)?;
+
+        match self.write_prepared_commit(command, &prepared)? {
+            CommitWrite::Existing(outcome) => Ok(outcome),
+            CommitWrite::New(intent_ids) => self.finish_new_commit(&prepared, intent_ids),
+        }
+    }
+
+    fn finish_new_commit(
+        &self,
+        prepared: &PreparedCommit,
+        intent_ids: Vec<String>,
+    ) -> crate::error::Result<CommitOutcome> {
+        crate::faults::check(self.faults.as_ref(), crate::faults::FaultPoint::AfterCommit)?;
+        let mut publications = Vec::with_capacity(intent_ids.len());
+        for intent_id in intent_ids {
+            match self.publish_intent(&intent_id) {
+                Ok(outcome) => publications.push(outcome),
+                Err(crate::error::StoreError::InjectedFault(point)) => {
+                    return Err(crate::error::StoreError::InjectedFault(point));
+                }
+                Err(error) => {
+                    self.mark_intent_failed(&intent_id, &error)?;
+                    publications.push(self.publication_outcome(&intent_id)?.ok_or_else(|| {
+                        crate::error::StoreError::Integrity {
+                            revision: prepared.revision_id,
+                            reason: "publication intent disappeared".to_owned(),
+                        }
+                    })?);
+                }
+            }
+        }
+        Ok(CommitOutcome {
+            revision: prepared.revision_id,
+            sequence: prepared.next_sequence,
+            manifest_digest: prepared.manifest_digest,
+            eligibility_generation: prepared.next_generation,
+            publications,
+        })
+    }
+
+    fn validate_retention_command(
+        &self,
+        command: &crate::command::CommitCommand,
+    ) -> crate::error::Result<()> {
         if let Some(retention) = &command.retention {
             retention
                 .validate()
@@ -1143,16 +1216,14 @@ impl Workspace {
                 })?;
             }
         }
-        let request_digest = command.request_digest();
-        if let Some(stored) = self.lookup_command(&command)? {
-            if stored.request_digest.as_slice() != request_digest.as_bytes() {
-                return Err(crate::error::StoreError::IdempotencyConflict {
-                    key: command.idempotency_key,
-                });
-            }
-            return self.outcome_for_stored(&stored);
-        }
+        Ok(())
+    }
 
+    fn prepare_commit(
+        &self,
+        command: &crate::command::CommitCommand,
+        request_digest: mneme_core::ContentDigest,
+    ) -> crate::error::Result<PreparedCommit> {
         let base = self.current_revision()?;
         if command.base != base {
             return Err(crate::error::StoreError::StaleBase {
@@ -1160,8 +1231,7 @@ impl Workspace {
                 current: base,
             });
         }
-        let current_sequence = self.current_sequence()?;
-        let next_sequence = current_sequence.saturating_add(1);
+        let next_sequence = self.current_sequence()?.saturating_add(1);
         let generation = self.eligibility_generation()?;
         let next_generation = if command.retention.is_some() {
             generation.saturating_add(1)
@@ -1179,9 +1249,43 @@ impl Workspace {
             ));
         }
         let recorded = mneme_core::RecordedTime::new(self.clock.now(), next_sequence);
-        self.ensure_not_suppressed(&command)?;
-
+        self.ensure_not_suppressed(command)?;
         let prior = self.snapshot()?;
+        let new_records = self.validate_commit_records(command, recorded, &prior)?;
+        let staged = self.stage_commit_blobs(command, &new_records)?;
+        crate::faults::check(
+            self.faults.as_ref(),
+            crate::faults::FaultPoint::AfterBlobStaging,
+        )?;
+        let manifest = self.create_commit_manifest(command, base, &prior, &new_records)?;
+        self.verify_commit_blobs(&manifest, &staged)?;
+        crate::faults::check(
+            self.faults.as_ref(),
+            crate::faults::FaultPoint::BeforeCommitTransaction,
+        )?;
+        Ok(PreparedCommit {
+            request_digest,
+            base,
+            next_sequence,
+            generation,
+            next_generation,
+            recorded,
+            new_records,
+            staged,
+            snapshot_records: manifest.snapshot_records,
+            revision_id: manifest.revision_id,
+            manifest: manifest.manifest,
+            manifest_digest: manifest.manifest_digest,
+            manifest_bytes: manifest.manifest_bytes,
+        })
+    }
+
+    fn validate_commit_records(
+        &self,
+        command: &crate::command::CommitCommand,
+        recorded: mneme_core::RecordedTime,
+        prior: &Snapshot,
+    ) -> crate::error::Result<Vec<mneme_core::RecordEnvelope>> {
         let envelopes: Vec<mneme_core::RecordEnvelope> = command
             .records
             .clone()
@@ -1203,9 +1307,28 @@ impl Workspace {
         validate_bindings(&prior.records, &new_records)?;
         validate_sources(&command.source_blobs, &new_records)?;
         validate_publication_paths(&command.publications, &command.import_candidates)?;
+        Ok(new_records)
+    }
 
-        let mut staged: BlobIndex = std::collections::BTreeMap::new();
-        for record in &new_records {
+    fn stage_commit_blobs(
+        &self,
+        command: &crate::command::CommitCommand,
+        new_records: &[mneme_core::RecordEnvelope],
+    ) -> crate::error::Result<BlobIndex> {
+        let mut staged = std::collections::BTreeMap::new();
+        self.stage_record_blobs(new_records, &mut staged)?;
+        self.stage_source_blobs(&command.source_blobs, &mut staged)?;
+        self.stage_import_candidate_blobs(&command.import_candidates, new_records, &mut staged)?;
+        self.stage_publication_blobs(&command.publications, &mut staged)?;
+        Ok(staged)
+    }
+
+    fn stage_record_blobs(
+        &self,
+        records: &[mneme_core::RecordEnvelope],
+        staged: &mut BlobIndex,
+    ) -> crate::error::Result<()> {
+        for record in records {
             let value = record.to_value();
             let bytes = mneme_core::binary::encode(&value);
             let digest = mneme_core::ContentDigest::of_full_record(&value);
@@ -1220,7 +1343,15 @@ impl Workspace {
                 ),
             );
         }
-        for source in &command.source_blobs {
+        Ok(())
+    }
+
+    fn stage_source_blobs(
+        &self,
+        sources: &[crate::command::SourceBlobDraft],
+        staged: &mut BlobIndex,
+    ) -> crate::error::Result<()> {
+        for source in sources {
             let digest = source.digest();
             let staged_blob = crate::blob::stage(&self.root, digest, &source.bytes)?;
             staged.insert(
@@ -1233,18 +1364,23 @@ impl Workspace {
                 ),
             );
         }
-        for candidate in &command.import_candidates {
+        Ok(())
+    }
+
+    fn stage_import_candidate_blobs(
+        &self,
+        candidates: &[crate::command::ImportCandidateDraft],
+        records: &[mneme_core::RecordEnvelope],
+        staged: &mut BlobIndex,
+    ) -> crate::error::Result<()> {
+        for candidate in candidates {
             crate::blob::validate_relative_path(&candidate.path)?;
             let current = crate::blob::read_working_file(&self.root, &candidate.path)?;
-            if current.as_deref() != Some(candidate.bytes.as_slice()) {
-                return Err(crate::error::StoreError::InvalidCandidate {
-                    path: candidate.path.clone(),
-                });
-            }
-            let is_matching = new_records
-                .iter()
-                .any(|record| candidate_matches(candidate, record));
-            if !is_matching {
+            if current.as_deref() != Some(candidate.bytes.as_slice())
+                || !records
+                    .iter()
+                    .any(|record| candidate_matches(candidate, record))
+            {
                 return Err(crate::error::StoreError::InvalidCandidate {
                     path: candidate.path.clone(),
                 });
@@ -1261,7 +1397,15 @@ impl Workspace {
                 ),
             );
         }
-        for publication in &command.publications {
+        Ok(())
+    }
+
+    fn stage_publication_blobs(
+        &self,
+        publications: &[crate::command::PublicationDraft],
+        staged: &mut BlobIndex,
+    ) -> crate::error::Result<()> {
+        for publication in publications {
             crate::blob::validate_relative_path(&publication.path)?;
             let digest = publication.desired_digest();
             let staged_blob = crate::blob::stage(&self.root, digest, &publication.bytes)?;
@@ -1275,12 +1419,16 @@ impl Workspace {
                 ),
             );
         }
+        Ok(())
+    }
 
-        crate::faults::check(
-            self.faults.as_ref(),
-            crate::faults::FaultPoint::AfterBlobStaging,
-        )?;
-
+    fn create_commit_manifest(
+        &self,
+        command: &crate::command::CommitCommand,
+        base: mneme_core::WorkspaceRevisionId,
+        prior: &Snapshot,
+        new_records: &[mneme_core::RecordEnvelope],
+    ) -> crate::error::Result<CommitManifest> {
         let mut snapshot_records: std::collections::BTreeMap<
             mneme_core::RecordId,
             mneme_core::RecordEnvelope,
@@ -1289,20 +1437,18 @@ impl Workspace {
             .iter()
             .map(|record| (record.record_id, record.clone()))
             .collect();
-        for record in &new_records {
+        for record in new_records {
             snapshot_records.insert(record.record_id, record.clone());
         }
         validate_snapshot_bindings(&snapshot_records)?;
-
-        let manifest_records: std::collections::BTreeSet<crate::manifest::ManifestRecord> =
-            snapshot_records
-                .values()
-                .map(|record| crate::manifest::ManifestRecord {
-                    record_id: record.record_id,
-                    revision_id: record.revision_id,
-                    kind: record.kind,
-                })
-                .collect();
+        let manifest_records = snapshot_records
+            .values()
+            .map(|record| crate::manifest::ManifestRecord {
+                record_id: record.record_id,
+                revision_id: record.revision_id,
+                kind: record.kind,
+            })
+            .collect();
         let mut required_blobs = std::collections::BTreeSet::new();
         for record in snapshot_records.values() {
             required_blobs.insert(mneme_core::ContentDigest::of_full_record(
@@ -1324,9 +1470,22 @@ impl Workspace {
         };
         let manifest_digest = manifest.digest();
         let manifest_bytes = manifest.encode();
+        Ok(CommitManifest {
+            snapshot_records,
+            revision_id,
+            manifest,
+            manifest_digest,
+            manifest_bytes,
+        })
+    }
 
+    fn verify_commit_blobs(
+        &self,
+        manifest: &CommitManifest,
+        staged: &BlobIndex,
+    ) -> crate::error::Result<()> {
         let mut blob_lengths = self.blob_lengths()?;
-        for (key, (digest, length, profile, boundary)) in &staged {
+        for (key, (digest, length, profile, boundary)) in staged {
             if let Some(existing) = blob_lengths.get(key) {
                 if existing.1 != *length || existing.2 != *profile || existing.3 != *boundary {
                     return Err(crate::error::StoreError::CorruptBlob {
@@ -1338,8 +1497,8 @@ impl Workspace {
                 blob_lengths.insert(*key, (*digest, *length, *profile, *boundary));
             }
         }
-        validate_snapshot_sources(&snapshot_records, &blob_lengths)?;
-        for digest in &manifest.blobs {
+        validate_snapshot_sources(&manifest.snapshot_records, &blob_lengths)?;
+        for digest in &manifest.manifest.blobs {
             let Some((_, length, _, _)) = blob_lengths.get(digest.as_bytes()) else {
                 return Err(crate::error::StoreError::MissingBlob {
                     digest: digest.to_hex(),
@@ -1347,59 +1506,103 @@ impl Workspace {
             };
             crate::blob::verify(&self.root, *digest, *length)?;
         }
+        Ok(())
+    }
 
-        crate::faults::check(
-            self.faults.as_ref(),
-            crate::faults::FaultPoint::BeforeCommitTransaction,
-        )?;
-
+    fn write_prepared_commit(
+        &mut self,
+        command: crate::command::CommitCommand,
+        prepared: &PreparedCommit,
+    ) -> crate::error::Result<CommitWrite> {
         let transaction = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let current_now = meta_blob(&transaction, META_CURRENT_REVISION)?;
-        if current_now.as_slice() != base.as_bytes() {
+        if current_now.as_slice() != prepared.base.as_bytes() {
             return Err(crate::error::StoreError::StaleBase {
-                base,
+                base: prepared.base,
                 current: revision_from_blob(&current_now)?,
             });
         }
         let generation_now = meta_u64(&transaction, META_GENERATION)?;
-        if generation_now != generation {
+        if generation_now != prepared.generation {
             return Err(crate::error::StoreError::BarrierAdvanced {
-                pinned: generation,
+                pinned: prepared.generation,
                 current: generation_now,
             });
         }
         if let Some(stored) = lookup_command_in(&transaction, &command)? {
-            if stored.request_digest.as_slice() != request_digest.as_bytes() {
+            if stored.request_digest.as_slice() != prepared.request_digest.as_bytes() {
                 return Err(crate::error::StoreError::IdempotencyConflict {
                     key: command.idempotency_key,
                 });
             }
             drop(transaction);
-            return self.outcome_for_stored(&stored);
+            return self.outcome_for_stored(&stored).map(CommitWrite::Existing);
         }
+        let intent_ids = Self::insert_prepared_commit(&transaction, &command, prepared)?;
+        transaction.commit()?;
+        Ok(CommitWrite::New(intent_ids))
+    }
 
+    fn insert_prepared_commit(
+        transaction: &rusqlite::Transaction<'_>,
+        command: &crate::command::CommitCommand,
+        prepared: &PreparedCommit,
+    ) -> crate::error::Result<Vec<String>> {
+        Self::insert_revision_row(transaction, command, prepared)?;
+        Self::insert_blob_rows(transaction, &prepared.staged)?;
+        Self::insert_record_rows(transaction, &prepared.new_records)?;
+        Self::insert_revision_membership(transaction, prepared)?;
+        let intent_ids = Self::insert_publication_intents(transaction, command, prepared)?;
+        Self::insert_command_row(transaction, command, prepared)?;
+        if command.retention.is_some() {
+            Self::insert_retention_commit(transaction, command, prepared)?;
+        }
+        set_meta(
+            transaction,
+            META_CURRENT_REVISION,
+            prepared.revision_id.as_bytes(),
+        )?;
+        set_meta_u64(transaction, META_CURRENT_SEQUENCE, prepared.next_sequence)?;
+        if command.retention.is_some() {
+            set_meta_u64(transaction, META_GENERATION, prepared.next_generation)?;
+        }
+        Ok(intent_ids)
+    }
+
+    fn insert_revision_row(
+        transaction: &rusqlite::Transaction<'_>,
+        command: &crate::command::CommitCommand,
+        prepared: &PreparedCommit,
+    ) -> crate::error::Result<()> {
         transaction.execute(
             "INSERT INTO revisions (sequence, revision_id, parent_revision_id, committed_at_ns,
                  actor, scope, command_id, request_digest, eligibility_generation, manifest,
                  manifest_digest)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
-                db_i64(next_sequence, "sequence")?,
-                revision_id.as_bytes().as_slice(),
-                base.as_bytes().as_slice(),
-                recorded.at().nanos(),
+                db_i64(prepared.next_sequence, "sequence")?,
+                prepared.revision_id.as_bytes().as_slice(),
+                prepared.base.as_bytes().as_slice(),
+                prepared.recorded.at().nanos(),
                 command.actor,
                 command.scope.to_string(),
                 command.idempotency_key,
-                request_digest.as_bytes().as_slice(),
-                db_i64(next_generation, "generation")?,
-                manifest_bytes,
-                manifest_digest.as_bytes().as_slice(),
+                prepared.request_digest.as_bytes().as_slice(),
+                db_i64(prepared.next_generation, "generation")?,
+                prepared.manifest_bytes,
+                prepared.manifest_digest.as_bytes().as_slice(),
             ],
         )?;
-        for (key, (digest, length, profile, boundary)) in &staged {
+        Ok(())
+    }
+
+    fn insert_blob_rows(
+        transaction: &rusqlite::Transaction<'_>,
+        staged: &BlobIndex,
+    ) -> crate::error::Result<()> {
+        for (key, (digest, length, profile, boundary)) in staged {
             let existing = transaction
                 .query_row(
                     "SELECT profile, boundary, byte_length FROM blobs WHERE digest = ?1",
@@ -1437,7 +1640,14 @@ impl Workspace {
                 )?;
             }
         }
-        for record in &new_records {
+        Ok(())
+    }
+
+    fn insert_record_rows(
+        transaction: &rusqlite::Transaction<'_>,
+        records: &[mneme_core::RecordEnvelope],
+    ) -> crate::error::Result<()> {
+        for record in records {
             let full = record.full_digest();
             transaction.execute(
                 "INSERT INTO records (record_id, revision_id, kind, schema_version, scope,
@@ -1457,26 +1667,41 @@ impl Workspace {
                 ],
             )?;
         }
-        for record in snapshot_records.values() {
+        Ok(())
+    }
+
+    fn insert_revision_membership(
+        transaction: &rusqlite::Transaction<'_>,
+        prepared: &PreparedCommit,
+    ) -> crate::error::Result<()> {
+        for record in prepared.snapshot_records.values() {
             transaction.execute(
                 "INSERT INTO revision_records (revision_sequence, record_id, revision_id)
                  VALUES (?1, ?2, ?3)",
                 rusqlite::params![
-                    db_i64(next_sequence, "sequence")?,
+                    db_i64(prepared.next_sequence, "sequence")?,
                     record.record_id.as_bytes().as_slice(),
                     record.revision_id.as_bytes().as_slice(),
                 ],
             )?;
         }
-        for digest in &manifest.blobs {
+        for digest in &prepared.manifest.blobs {
             transaction.execute(
                 "INSERT INTO revision_blobs (revision_sequence, digest) VALUES (?1, ?2)",
                 rusqlite::params![
-                    db_i64(next_sequence, "sequence")?,
+                    db_i64(prepared.next_sequence, "sequence")?,
                     digest.as_bytes().as_slice()
                 ],
             )?;
         }
+        Ok(())
+    }
+
+    fn insert_publication_intents(
+        transaction: &rusqlite::Transaction<'_>,
+        command: &crate::command::CommitCommand,
+        prepared: &PreparedCommit,
+    ) -> crate::error::Result<Vec<String>> {
         let mut intent_ids = Vec::with_capacity(command.publications.len());
         for publication in &command.publications {
             let intent_id = crate::blob::random_hex(16)?;
@@ -1487,18 +1712,26 @@ impl Workspace {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', NULL, NULL, ?7)",
                 rusqlite::params![
                     intent_id,
-                    db_i64(next_sequence, "sequence")?,
+                    db_i64(prepared.next_sequence, "sequence")?,
                     publication.path,
                     publication
                         .expected_previous
                         .map(|digest| digest.as_bytes().to_vec()),
                     publication.desired_digest().as_bytes().as_slice(),
-                    db_i64(generation, "generation")?,
-                    recorded.at().nanos(),
+                    db_i64(prepared.generation, "generation")?,
+                    prepared.recorded.at().nanos(),
                 ],
             )?;
             intent_ids.push(intent_id);
         }
+        Ok(intent_ids)
+    }
+
+    fn insert_command_row(
+        transaction: &rusqlite::Transaction<'_>,
+        command: &crate::command::CommitCommand,
+        prepared: &PreparedCommit,
+    ) -> crate::error::Result<()> {
         transaction.execute(
             "INSERT INTO commands (actor, scope, idempotency_key, request_digest, base_revision,
                  outcome_revision, outcome_sequence, committed_at_ns)
@@ -1507,134 +1740,135 @@ impl Workspace {
                 command.actor,
                 command.scope.to_string(),
                 command.idempotency_key,
-                request_digest.as_bytes().as_slice(),
-                base.as_bytes().as_slice(),
-                revision_id.as_bytes().as_slice(),
-                db_i64(next_sequence, "sequence")?,
-                recorded.at().nanos(),
+                prepared.request_digest.as_bytes().as_slice(),
+                prepared.base.as_bytes().as_slice(),
+                prepared.revision_id.as_bytes().as_slice(),
+                db_i64(prepared.next_sequence, "sequence")?,
+                prepared.recorded.at().nanos(),
             ],
         )?;
-        if let Some(retention) = &command.retention {
-            let retained_metadata = retention.retained_metadata.join("\n");
+        Ok(())
+    }
+
+    fn insert_retention_commit(
+        transaction: &rusqlite::Transaction<'_>,
+        command: &crate::command::CommitCommand,
+        prepared: &PreparedCommit,
+    ) -> crate::error::Result<()> {
+        let Some(retention) = &command.retention else {
+            return Ok(());
+        };
+        let retained_metadata = retention.retained_metadata.join("\n");
+        transaction.execute(
+            "INSERT INTO retention_operations (operation_id, operation_kind, actor, scope,
+                 policy_version, idempotency_key, request_digest, state, generation,
+                 outcome_revision, outcome_sequence, retained_metadata, created_at_ns,
+                 updated_at_ns)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'barrier-committed', ?8, ?9, ?10, ?11,
+                 ?12, ?12)",
+            rusqlite::params![
+                retention.operation_id,
+                retention.operation_kind,
+                command.actor,
+                command.scope.to_string(),
+                retention.policy_version,
+                command.idempotency_key,
+                prepared.request_digest.as_bytes().as_slice(),
+                db_i64(prepared.next_generation, "generation")?,
+                prepared.revision_id.as_bytes().as_slice(),
+                db_i64(prepared.next_sequence, "sequence")?,
+                retained_metadata,
+                prepared.recorded.at().nanos(),
+            ],
+        )?;
+        Self::insert_retention_selectors(transaction, retention)?;
+        Self::insert_retention_suppressions(transaction, retention)?;
+        Self::insert_retention_locations(transaction, retention, prepared.recorded)?;
+        transaction.execute(
+            "UPDATE publication_intents
+             SET state = 'suppressed', detail = 'retention barrier',
+                 updated_at_ns = ?1
+             WHERE state = 'pending' AND eligibility_generation < ?2",
+            rusqlite::params![
+                prepared.recorded.at().nanos(),
+                db_i64(prepared.next_generation, "generation")?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn insert_retention_selectors(
+        transaction: &rusqlite::Transaction<'_>,
+        retention: &crate::retention::RetentionCommit,
+    ) -> crate::error::Result<()> {
+        for selector in &retention.selectors {
             transaction.execute(
-                "INSERT INTO retention_operations (operation_id, operation_kind, actor, scope,
-                     policy_version, idempotency_key, request_digest, state, generation,
-                     outcome_revision, outcome_sequence, retained_metadata, created_at_ns,
-                     updated_at_ns)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'barrier-committed', ?8, ?9, ?10, ?11,
-                     ?12, ?12)",
+                "INSERT INTO retention_selectors (operation_id, ordinal, selector_kind,
+                     target_id, target_revision, target_digest)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
                     retention.operation_id,
-                    retention.operation_kind,
-                    command.actor,
-                    command.scope.to_string(),
-                    retention.policy_version,
-                    command.idempotency_key,
-                    request_digest.as_bytes().as_slice(),
-                    db_i64(next_generation, "generation")?,
-                    revision_id.as_bytes().as_slice(),
-                    db_i64(next_sequence, "sequence")?,
-                    retained_metadata,
-                    recorded.at().nanos(),
+                    i64::from(selector.ordinal),
+                    selector.kind,
+                    selector.target.map(|target| target.as_bytes().to_vec()),
+                    selector
+                        .revision
+                        .map(|revision| revision.as_bytes().to_vec()),
+                    selector.digest.map(|digest| digest.as_bytes().to_vec()),
                 ],
             )?;
-            for selector in &retention.selectors {
-                transaction.execute(
-                    "INSERT INTO retention_selectors (operation_id, ordinal, selector_kind,
-                         target_id, target_revision, target_digest)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![
-                        retention.operation_id,
-                        i64::from(selector.ordinal),
-                        selector.kind,
-                        selector.target.map(|target| target.as_bytes().to_vec()),
-                        selector
-                            .revision
-                            .map(|revision| revision.as_bytes().to_vec()),
-                        selector.digest.map(|digest| digest.as_bytes().to_vec()),
-                    ],
-                )?;
-            }
-            for suppression in &retention.suppressions {
-                transaction.execute(
-                    "INSERT INTO retention_suppressions (operation_id, target_id, target_revision,
-                         target_kind, mode, content_digest, generation)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![
-                        suppression.operation_id,
-                        suppression.target.as_bytes().as_slice(),
-                        suppression
-                            .revision
-                            .map(|revision| revision.as_bytes().to_vec())
-                            .unwrap_or_default(),
-                        suppression.target_kind,
-                        suppression.mode.as_str(),
-                        suppression
-                            .content_digest
-                            .map(|digest| digest.as_bytes().to_vec()),
-                        db_i64(suppression.generation, "generation")?,
-                    ],
-                )?;
-            }
-            for location in &retention.locations {
-                transaction.execute(
-                    "INSERT INTO retention_locations (operation_id, location_id, location_kind,
-                         locator, state, attempts, verified, detail_code, updated_at_ns)
-                     VALUES (?1, ?2, ?3, ?4, 'pending', 0, 0, NULL, ?5)",
-                    rusqlite::params![
-                        retention.operation_id,
-                        location.location_id,
-                        location.location_kind,
-                        location.locator,
-                        recorded.at().nanos(),
-                    ],
-                )?;
-            }
+        }
+        Ok(())
+    }
+
+    fn insert_retention_suppressions(
+        transaction: &rusqlite::Transaction<'_>,
+        retention: &crate::retention::RetentionCommit,
+    ) -> crate::error::Result<()> {
+        for suppression in &retention.suppressions {
             transaction.execute(
-                "UPDATE publication_intents
-                 SET state = 'suppressed', detail = 'retention barrier',
-                     updated_at_ns = ?1
-                 WHERE state = 'pending' AND eligibility_generation < ?2",
+                "INSERT INTO retention_suppressions (operation_id, target_id, target_revision,
+                     target_kind, mode, content_digest, generation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
-                    recorded.at().nanos(),
-                    db_i64(next_generation, "generation")?,
+                    suppression.operation_id,
+                    suppression.target.as_bytes().as_slice(),
+                    suppression
+                        .revision
+                        .map(|revision| revision.as_bytes().to_vec())
+                        .unwrap_or_default(),
+                    suppression.target_kind,
+                    suppression.mode.as_str(),
+                    suppression
+                        .content_digest
+                        .map(|digest| digest.as_bytes().to_vec()),
+                    db_i64(suppression.generation, "generation")?,
                 ],
             )?;
         }
-        set_meta(&transaction, META_CURRENT_REVISION, revision_id.as_bytes())?;
-        set_meta_u64(&transaction, META_CURRENT_SEQUENCE, next_sequence)?;
-        if command.retention.is_some() {
-            set_meta_u64(&transaction, META_GENERATION, next_generation)?;
-        }
-        transaction.commit()?;
+        Ok(())
+    }
 
-        crate::faults::check(self.faults.as_ref(), crate::faults::FaultPoint::AfterCommit)?;
-
-        let mut publications = Vec::with_capacity(intent_ids.len());
-        for intent_id in intent_ids {
-            match self.publish_intent(&intent_id) {
-                Ok(outcome) => publications.push(outcome),
-                Err(crate::error::StoreError::InjectedFault(point)) => {
-                    return Err(crate::error::StoreError::InjectedFault(point));
-                }
-                Err(error) => {
-                    self.mark_intent_failed(&intent_id, &error)?;
-                    publications.push(self.publication_outcome(&intent_id)?.ok_or_else(|| {
-                        crate::error::StoreError::Integrity {
-                            revision: revision_id,
-                            reason: "publication intent disappeared".to_owned(),
-                        }
-                    })?);
-                }
-            }
+    fn insert_retention_locations(
+        transaction: &rusqlite::Transaction<'_>,
+        retention: &crate::retention::RetentionCommit,
+        recorded: mneme_core::RecordedTime,
+    ) -> crate::error::Result<()> {
+        for location in &retention.locations {
+            transaction.execute(
+                "INSERT INTO retention_locations (operation_id, location_id, location_kind,
+                     locator, state, attempts, verified, detail_code, updated_at_ns)
+                 VALUES (?1, ?2, ?3, ?4, 'pending', 0, 0, NULL, ?5)",
+                rusqlite::params![
+                    retention.operation_id,
+                    location.location_id,
+                    location.location_kind,
+                    location.locator,
+                    recorded.at().nanos(),
+                ],
+            )?;
         }
-        Ok(CommitOutcome {
-            revision: revision_id,
-            sequence: next_sequence,
-            manifest_digest,
-            eligibility_generation: next_generation,
-            publications,
-        })
+        Ok(())
     }
 
     fn ensure_revisions_unused(
@@ -1825,7 +2059,7 @@ impl Workspace {
         })
     }
 
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn publish_intent(&self, intent_id: &str) -> crate::error::Result<PublicationOutcome> {
         let intent = self.publication_intent(intent_id)?.ok_or_else(|| {
             crate::error::StoreError::InvalidCommand(format!(
@@ -1835,6 +2069,17 @@ impl Workspace {
         if intent.state != PublicationState::Pending {
             return self.require_outcome(intent_id);
         }
+        if let Some(outcome) = self.suppress_stale_publication(intent_id, &intent)? {
+            return Ok(outcome);
+        }
+        self.publish_current_intent(intent_id, &intent)
+    }
+
+    fn suppress_stale_publication(
+        &self,
+        intent_id: &str,
+        intent: &StoredIntent,
+    ) -> crate::error::Result<Option<PublicationOutcome>> {
         let current_sequence = self.current_sequence()?;
         if intent.revision_sequence != current_sequence {
             self.set_intent_state(
@@ -1843,7 +2088,7 @@ impl Workspace {
                 None,
                 Some("revision is not current".to_owned()),
             )?;
-            return self.require_outcome(intent_id);
+            return self.require_outcome(intent_id).map(Some);
         }
         let generation = self.eligibility_generation()?;
         if intent.eligibility_generation != generation {
@@ -1853,8 +2098,16 @@ impl Workspace {
                 None,
                 Some("eligibility generation advanced".to_owned()),
             )?;
-            return self.require_outcome(intent_id);
+            return self.require_outcome(intent_id).map(Some);
         }
+        Ok(None)
+    }
+
+    fn publish_current_intent(
+        &self,
+        intent_id: &str,
+        intent: &StoredIntent,
+    ) -> crate::error::Result<PublicationOutcome> {
         let desired = intent.desired_digest;
         let bytes = crate::blob::read(&self.root, desired)?;
         let current = crate::blob::read_working_file(&self.root, &intent.target_path)?;
@@ -2311,7 +2564,7 @@ impl Workspace {
     /// Remove an exact managed working-file copy identified by
     /// `relative-path#source-digest`. A divergent external edit is retained and
     /// reported rather than overwritten or deleted.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn purge_retention_working_file(
         &mut self,
         operation_id: &str,
@@ -2331,52 +2584,10 @@ impl Workspace {
         {
             crate::retention::BlobPurgeOutcome::RetainedShared
         } else {
-            crate::faults::check(
-                self.faults.as_ref(),
-                crate::faults::FaultPoint::BeforeRetentionPurge,
-            )?;
-            let Some(bytes) =
-                crate::blob::read_working_file(&self.root, &relative.to_string_lossy())?
-            else {
-                self.update_retention_location(
-                    operation_id,
-                    location_id,
-                    crate::retention::RetentionLocationState::Absent,
-                    RetentionLocationUpdate {
-                        verified: true,
-                        increment_attempts: true,
-                    },
-                    None,
-                )?;
-                return Ok(crate::retention::BlobPurgeOutcome::Absent);
-            };
-            if mneme_core::ContentDigest::of_source_bytes(&bytes) != digest {
-                self.update_retention_location(
-                    operation_id,
-                    location_id,
-                    crate::retention::RetentionLocationState::Unavailable,
-                    RetentionLocationUpdate {
-                        verified: true,
-                        increment_attempts: true,
-                    },
-                    Some("external-edit-present"),
-                )?;
-                return Ok(crate::retention::BlobPurgeOutcome::RetainedShared);
+            match self.purge_unshared_working_file(operation_id, location_id, &relative, digest)? {
+                Some(outcome) => return Ok(outcome),
+                None => crate::retention::BlobPurgeOutcome::Purged,
             }
-            let path = self
-                .root
-                .join(crate::blob::WORKING_DIRECTORY)
-                .join(&relative);
-            std::fs::remove_file(&path)
-                .map_err(|error| crate::error::StoreError::io(&path, error))?;
-            if let Some(parent) = path.parent() {
-                sync_directory(parent)?;
-            }
-            crate::faults::check(
-                self.faults.as_ref(),
-                crate::faults::FaultPoint::AfterRetentionPurge,
-            )?;
-            crate::retention::BlobPurgeOutcome::Purged
         };
         let state = match outcome {
             crate::retention::BlobPurgeOutcome::Purged => {
@@ -2400,6 +2611,59 @@ impl Workspace {
             None,
         )?;
         Ok(outcome)
+    }
+
+    fn purge_unshared_working_file(
+        &self,
+        operation_id: &str,
+        location_id: &str,
+        relative: &std::path::Path,
+        digest: mneme_core::ContentDigest,
+    ) -> crate::error::Result<Option<crate::retention::BlobPurgeOutcome>> {
+        crate::faults::check(
+            self.faults.as_ref(),
+            crate::faults::FaultPoint::BeforeRetentionPurge,
+        )?;
+        let Some(bytes) = crate::blob::read_working_file(&self.root, &relative.to_string_lossy())?
+        else {
+            self.update_retention_location(
+                operation_id,
+                location_id,
+                crate::retention::RetentionLocationState::Absent,
+                RetentionLocationUpdate {
+                    verified: true,
+                    increment_attempts: true,
+                },
+                None,
+            )?;
+            return Ok(Some(crate::retention::BlobPurgeOutcome::Absent));
+        };
+        if mneme_core::ContentDigest::of_source_bytes(&bytes) != digest {
+            self.update_retention_location(
+                operation_id,
+                location_id,
+                crate::retention::RetentionLocationState::Unavailable,
+                RetentionLocationUpdate {
+                    verified: true,
+                    increment_attempts: true,
+                },
+                Some("external-edit-present"),
+            )?;
+            return Ok(Some(crate::retention::BlobPurgeOutcome::RetainedShared));
+        }
+        let path = self
+            .root
+            .join(crate::blob::WORKING_DIRECTORY)
+            .join(relative);
+        std::fs::remove_file(&path).map_err(|error| crate::error::StoreError::io(&path, error))?;
+        if let Some(parent) = path.parent() {
+            sync_directory(parent)?;
+        }
+        crate::faults::check(
+            self.faults.as_ref(),
+            crate::faults::FaultPoint::AfterRetentionPurge,
+        )?;
+        Ok(None)
     }
 
     /// Record a verified inventory location that stores no target payload.
@@ -2499,7 +2763,7 @@ impl Workspace {
 
     /// Digests still required by a live record revision, source, or pending
     /// publication.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn retention_required_digests(
         &self,
     ) -> crate::error::Result<std::collections::BTreeSet<[u8; 32]>> {
@@ -2523,80 +2787,14 @@ impl Workspace {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let context = self.current_revision()?;
         let mut required = std::collections::BTreeSet::new();
-        for (record_id, revision_id, kind, envelope_digest, full_digest, payload_digest) in rows {
-            let record_id = record_id_from_blob(&record_id, context)?;
-            let revision_id = revision_id_from_blob(&revision_id, context)?;
-            if forgotten.matches(record_id, revision_id) {
-                continue;
-            }
-            let kind = mneme_core::RecordKind::parse(&kind).ok_or_else(|| {
-                crate::error::StoreError::Integrity {
-                    revision: context,
-                    reason: format!("unknown record kind {kind}"),
-                }
-            })?;
-            let full = digest_with(
-                &full_digest,
-                "preserves-canonical-binary-v1",
-                "full-record",
+        for row in rows {
+            self.include_retention_record_digests(
+                row,
                 context,
+                &forgotten,
+                &current,
+                &mut required,
             )?;
-            if full.as_bytes() != envelope_digest.as_slice() {
-                return Err(crate::error::StoreError::Integrity {
-                    revision: context,
-                    reason: "record envelope digest columns disagree".to_owned(),
-                });
-            }
-            required.insert(*full.as_bytes());
-            if kind == mneme_core::RecordKind::SourceRevision {
-                let payload = digest_with(
-                    &payload_digest,
-                    "preserves-canonical-binary-v1",
-                    "payload",
-                    context,
-                )?;
-                let bytes = crate::blob::read(&self.root, full).map_err(|error| {
-                    crate::error::StoreError::Integrity {
-                        revision: context,
-                        reason: format!(
-                            "source record {record_id} blob {full} is unavailable: {error}"
-                        ),
-                    }
-                })?;
-                let value = mneme_core::binary::decode(&bytes).map_err(|diagnostic| {
-                    crate::error::StoreError::Integrity {
-                        revision: context,
-                        reason: format!(
-                            "source record {full} is not valid Preserves: {diagnostic}"
-                        ),
-                    }
-                })?;
-                let record =
-                    mneme_core::RecordEnvelope::from_value(&value).map_err(|diagnostics| {
-                        crate::error::StoreError::Integrity {
-                            revision: context,
-                            reason: format!(
-                                "source record {full} is not an envelope: {}",
-                                join(&diagnostics)
-                            ),
-                        }
-                    })?;
-                if record.payload_digest() != payload {
-                    return Err(crate::error::StoreError::Integrity {
-                        revision: context,
-                        reason: "source record payload digest disagrees".to_owned(),
-                    });
-                }
-                if let Some(digest) = retained_source_digest(&record) {
-                    let is_allowed_absence = matches!(
-                        current.get(&record_id),
-                        Some(SourcePresence::Unavailable(Some(previous))) if *previous == digest
-                    );
-                    if !is_allowed_absence {
-                        required.insert(*digest.as_bytes());
-                    }
-                }
-            }
         }
         let mut intents = self
             .connection
@@ -2614,6 +2812,107 @@ impl Workspace {
             required.insert(digest);
         }
         Ok(required)
+    }
+
+    fn include_retention_record_digests(
+        &self,
+        row: RetainedRecordRow,
+        context: mneme_core::WorkspaceRevisionId,
+        forgotten: &ForgottenSuppressions,
+        current: &std::collections::BTreeMap<mneme_core::RecordId, SourcePresence>,
+        required: &mut std::collections::BTreeSet<[u8; 32]>,
+    ) -> crate::error::Result<()> {
+        let (record_id, revision_id, kind, envelope_digest, full_digest, payload_digest) = row;
+        let record_id = record_id_from_blob(&record_id, context)?;
+        let revision_id = revision_id_from_blob(&revision_id, context)?;
+        if forgotten.matches(record_id, revision_id) {
+            return Ok(());
+        }
+        let kind = mneme_core::RecordKind::parse(&kind).ok_or_else(|| {
+            crate::error::StoreError::Integrity {
+                revision: context,
+                reason: format!("unknown record kind {kind}"),
+            }
+        })?;
+        let full = digest_with(
+            &full_digest,
+            "preserves-canonical-binary-v1",
+            "full-record",
+            context,
+        )?;
+        if full.as_bytes() != envelope_digest.as_slice() {
+            return Err(crate::error::StoreError::Integrity {
+                revision: context,
+                reason: "record envelope digest columns disagree".to_owned(),
+            });
+        }
+        required.insert(*full.as_bytes());
+        if kind == mneme_core::RecordKind::SourceRevision {
+            self.include_source_record_digest(
+                record_id,
+                full,
+                &payload_digest,
+                context,
+                current,
+                required,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(unknown_lints, too_many_parameters)] // parameter groups mirror one compact fixture/context
+    fn include_source_record_digest(
+        &self,
+        record_id: mneme_core::RecordId,
+        full: mneme_core::ContentDigest,
+        payload_digest: &[u8],
+        context: mneme_core::WorkspaceRevisionId,
+        current: &std::collections::BTreeMap<mneme_core::RecordId, SourcePresence>,
+        required: &mut std::collections::BTreeSet<[u8; 32]>,
+    ) -> crate::error::Result<()> {
+        let payload = digest_with(
+            payload_digest,
+            "preserves-canonical-binary-v1",
+            "payload",
+            context,
+        )?;
+        let bytes = crate::blob::read(&self.root, full).map_err(|error| {
+            crate::error::StoreError::Integrity {
+                revision: context,
+                reason: format!("source record {record_id} blob {full} is unavailable: {error}"),
+            }
+        })?;
+        let value = mneme_core::binary::decode(&bytes).map_err(|diagnostic| {
+            crate::error::StoreError::Integrity {
+                revision: context,
+                reason: format!("source record {full} is not valid Preserves: {diagnostic}"),
+            }
+        })?;
+        let record = mneme_core::RecordEnvelope::from_value(&value).map_err(|diagnostics| {
+            crate::error::StoreError::Integrity {
+                revision: context,
+                reason: format!(
+                    "source record {full} is not an envelope: {}",
+                    join(&diagnostics)
+                ),
+            }
+        })?;
+        if record.payload_digest() != payload {
+            return Err(crate::error::StoreError::Integrity {
+                revision: context,
+                reason: "source record payload digest disagrees".to_owned(),
+            });
+        }
+        if let Some(digest) = retained_source_digest(&record) {
+            let is_allowed_absence = matches!(
+                current.get(&record_id),
+                Some(SourcePresence::Unavailable(Some(previous))) if *previous == digest
+            );
+            if !is_allowed_absence {
+                required.insert(*digest.as_bytes());
+            }
+        }
+        Ok(())
     }
 
     /// A digest over the current minimal suppression state.
@@ -2687,59 +2986,14 @@ impl Workspace {
 
     /// Apply a current suppression ledger to a restored workspace before any
     /// restored content can be read or published.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn apply_restore_suppression_ledger(&mut self, bytes: &[u8]) -> crate::error::Result<()> {
         if !self.restore_required {
             return Err(crate::error::StoreError::InvalidCommand(
                 "this workspace is not awaiting a restore suppression ledger".to_owned(),
             ));
         }
-        let value = mneme_core::binary::decode(bytes).map_err(|diagnostic| {
-            crate::error::StoreError::InvalidCommand(format!(
-                "retention ledger is not canonical Preserves: {diagnostic}"
-            ))
-        })?;
-        let record = value.as_record().ok_or_else(|| {
-            crate::error::StoreError::InvalidCommand("retention ledger is not a record".to_owned())
-        })?;
-        if record.label() != &mneme_core::Value::symbol("retention-state")
-            || record.fields().len() != 3
-        {
-            return Err(crate::error::StoreError::InvalidCommand(
-                "retention ledger has an unsupported envelope".to_owned(),
-            ));
-        }
-        let version = record.fields()[0]
-            .as_integer()
-            .and_then(|integer| integer.to_i64())
-            .ok_or_else(|| {
-                crate::error::StoreError::InvalidCommand(
-                    "retention ledger version is not an integer".to_owned(),
-                )
-            })?;
-        if version != 1 {
-            return Err(crate::error::StoreError::UnsupportedLayout(format!(
-                "retention ledger version {version} is not supported"
-            )));
-        }
-        let ledger_generation = record.fields()[1]
-            .as_integer()
-            .and_then(|integer| integer.to_i64())
-            .and_then(|value| u64::try_from(value).ok())
-            .ok_or_else(|| {
-                crate::error::StoreError::InvalidCommand(
-                    "retention ledger generation is not a u64".to_owned(),
-                )
-            })?;
-        let suppressions = record.fields()[2].as_set().ok_or_else(|| {
-            crate::error::StoreError::InvalidCommand(
-                "retention ledger suppressions are not a set".to_owned(),
-            )
-        })?;
-        let mut parsed = Vec::with_capacity(suppressions.len());
-        for suppression in suppressions {
-            parsed.push(suppression_from_value(suppression)?);
-        }
+        let (ledger_generation, parsed) = parse_restore_suppression_ledger(bytes)?;
         let transaction = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -2797,7 +3051,7 @@ impl Workspace {
         Ok(())
     }
 
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn current_source_states(
         &self,
     ) -> crate::error::Result<std::collections::BTreeMap<mneme_core::RecordId, SourcePresence>>
@@ -2838,43 +3092,40 @@ impl Workspace {
                 "full-record",
                 revision,
             )?;
-            let record = match crate::blob::read(&self.root, digest)
-                .ok()
-                .and_then(|bytes| mneme_core::binary::decode(&bytes).ok())
-                .and_then(|value| mneme_core::RecordEnvelope::from_value(&value).ok())
-            {
-                Some(record) => record,
-                None => {
-                    states.insert(record_id, SourcePresence::Unknown);
-                    continue;
-                }
-            };
-            let content = record.payload.get("content").and_then(|value| {
-                mneme_core::SourceContent::from_value(
-                    value,
-                    &mneme_core::Path::root().field("content"),
-                )
-                .ok()
-            });
-            let prior = record.payload.get("content-digest").and_then(|value| {
-                mneme_core::ContentDigest::from_value(
-                    value,
-                    &mneme_core::Path::root().field("content-digest"),
-                )
-                .ok()
-            });
-            let state = match content {
-                Some(mneme_core::SourceContent::Retained(retained)) => {
-                    SourcePresence::Retained(retained.digest())
-                }
-                Some(mneme_core::SourceContent::Unavailable { .. }) => {
-                    SourcePresence::Unavailable(prior)
-                }
-                None => SourcePresence::Unknown,
-            };
+            let state = self.source_presence_from_envelope(digest);
             states.insert(record_id, state);
         }
         Ok(states)
+    }
+
+    fn source_presence_from_envelope(&self, digest: mneme_core::ContentDigest) -> SourcePresence {
+        let Some(record) = crate::blob::read(&self.root, digest)
+            .ok()
+            .and_then(|bytes| mneme_core::binary::decode(&bytes).ok())
+            .and_then(|value| mneme_core::RecordEnvelope::from_value(&value).ok())
+        else {
+            return SourcePresence::Unknown;
+        };
+        let content = record.payload.get("content").and_then(|value| {
+            mneme_core::SourceContent::from_value(value, &mneme_core::Path::root().field("content"))
+                .ok()
+        });
+        let prior = record.payload.get("content-digest").and_then(|value| {
+            mneme_core::ContentDigest::from_value(
+                value,
+                &mneme_core::Path::root().field("content-digest"),
+            )
+            .ok()
+        });
+        match content {
+            Some(mneme_core::SourceContent::Retained(retained)) => {
+                SourcePresence::Retained(retained.digest())
+            }
+            Some(mneme_core::SourceContent::Unavailable { .. }) => {
+                SourcePresence::Unavailable(prior)
+            }
+            None => SourcePresence::Unknown,
+        }
     }
 }
 
@@ -3023,7 +3274,58 @@ fn all_suppressions(
     Ok(suppressions)
 }
 
-#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+fn parse_restore_suppression_ledger(
+    bytes: &[u8],
+) -> crate::error::Result<(u64, Vec<crate::retention::RetentionSuppression>)> {
+    let value = mneme_core::binary::decode(bytes).map_err(|diagnostic| {
+        crate::error::StoreError::InvalidCommand(format!(
+            "retention ledger is not canonical Preserves: {diagnostic}"
+        ))
+    })?;
+    let record = value.as_record().ok_or_else(|| {
+        crate::error::StoreError::InvalidCommand("retention ledger is not a record".to_owned())
+    })?;
+    if record.label() != &mneme_core::Value::symbol("retention-state") || record.fields().len() != 3
+    {
+        return Err(crate::error::StoreError::InvalidCommand(
+            "retention ledger has an unsupported envelope".to_owned(),
+        ));
+    }
+    let version = record.fields()[0]
+        .as_integer()
+        .and_then(|integer| integer.to_i64())
+        .ok_or_else(|| {
+            crate::error::StoreError::InvalidCommand(
+                "retention ledger version is not an integer".to_owned(),
+            )
+        })?;
+    if version != 1 {
+        return Err(crate::error::StoreError::UnsupportedLayout(format!(
+            "retention ledger version {version} is not supported"
+        )));
+    }
+    let generation = record.fields()[1]
+        .as_integer()
+        .and_then(|integer| integer.to_i64())
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| {
+            crate::error::StoreError::InvalidCommand(
+                "retention ledger generation is not a u64".to_owned(),
+            )
+        })?;
+    let suppressions = record.fields()[2].as_set().ok_or_else(|| {
+        crate::error::StoreError::InvalidCommand(
+            "retention ledger suppressions are not a set".to_owned(),
+        )
+    })?;
+    let mut parsed = Vec::with_capacity(suppressions.len());
+    for suppression in suppressions {
+        parsed.push(suppression_from_value(suppression)?);
+    }
+    Ok((generation, parsed))
+}
+
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn suppression_from_value(
     value: &mneme_core::Value,
 ) -> crate::error::Result<crate::retention::RetentionSuppression> {
@@ -3037,8 +3339,23 @@ fn suppression_from_value(
             "retention suppression has an unsupported envelope".to_owned(),
         ));
     }
-    let path = mneme_core::Path::root();
-    let operation_id = record.fields()[0]
+    let operation_id = suppression_operation_id(&record.fields()[0])?;
+    let (target, revision) = suppression_target_revision(record.fields())?;
+    let (target_kind, mode, content_digest, generation) =
+        suppression_policy_fields(record.fields())?;
+    Ok(crate::retention::RetentionSuppression {
+        operation_id,
+        target,
+        revision,
+        target_kind,
+        mode,
+        content_digest,
+        generation,
+    })
+}
+
+fn suppression_operation_id(value: &mneme_core::Value) -> crate::error::Result<String> {
+    let operation_id = value
         .as_string()
         .ok_or_else(|| {
             crate::error::StoreError::InvalidCommand(
@@ -3051,17 +3368,23 @@ fn suppression_from_value(
             "retention suppression operation is empty".to_owned(),
         ));
     }
-    let target = mneme_core::RecordId::from_value(&record.fields()[1], &path.index(1)).map_err(
-        |diagnostic| {
+    Ok(operation_id)
+}
+
+fn suppression_target_revision(
+    fields: &[mneme_core::Value],
+) -> crate::error::Result<(mneme_core::RecordId, Option<mneme_core::RevisionId>)> {
+    let path = mneme_core::Path::root();
+    let target =
+        mneme_core::RecordId::from_value(&fields[1], &path.index(1)).map_err(|diagnostic| {
             crate::error::StoreError::InvalidCommand(format!(
                 "retention suppression target: {diagnostic}"
             ))
-        },
-    )?;
-    let revision = match (record.fields()[2].as_symbol(), &record.fields()[2]) {
+        })?;
+    let revision = match (fields[2].as_symbol(), &fields[2]) {
         (Some(symbol), _) if symbol.as_str() == "none" => None,
         _ => Some(
-            mneme_core::RevisionId::from_value(&record.fields()[2], &path.index(2)).map_err(
+            mneme_core::RevisionId::from_value(&fields[2], &path.index(2)).map_err(
                 |diagnostic| {
                     crate::error::StoreError::InvalidCommand(format!(
                         "retention suppression revision: {diagnostic}"
@@ -3070,7 +3393,19 @@ fn suppression_from_value(
             )?,
         ),
     };
-    let target_kind = record.fields()[3]
+    Ok((target, revision))
+}
+
+fn suppression_policy_fields(
+    fields: &[mneme_core::Value],
+) -> crate::error::Result<(
+    String,
+    crate::retention::SuppressionMode,
+    Option<mneme_core::ContentDigest>,
+    u64,
+)> {
+    let path = mneme_core::Path::root();
+    let target_kind = fields[3]
         .as_symbol()
         .ok_or_else(|| {
             crate::error::StoreError::InvalidCommand(
@@ -3082,7 +3417,7 @@ fn suppression_from_value(
     mneme_core::RecordKind::parse(&target_kind).ok_or_else(|| {
         crate::error::StoreError::InvalidCommand("retention suppression kind is unknown".to_owned())
     })?;
-    let mode = record.fields()[4]
+    let mode = fields[4]
         .as_symbol()
         .and_then(|symbol| crate::retention::SuppressionMode::parse(symbol.as_str()))
         .ok_or_else(|| {
@@ -3090,10 +3425,10 @@ fn suppression_from_value(
                 "retention suppression mode is unknown".to_owned(),
             )
         })?;
-    let content_digest = match record.fields()[5].as_symbol() {
+    let content_digest = match fields[5].as_symbol() {
         Some(symbol) if symbol.as_str() == "none" => None,
         _ => Some(
-            mneme_core::ContentDigest::from_value(&record.fields()[5], &path.index(5)).map_err(
+            mneme_core::ContentDigest::from_value(&fields[5], &path.index(5)).map_err(
                 |diagnostic| {
                     crate::error::StoreError::InvalidCommand(format!(
                         "retention suppression digest: {diagnostic}"
@@ -3102,7 +3437,7 @@ fn suppression_from_value(
             )?,
         ),
     };
-    let generation = record.fields()[6]
+    let generation = fields[6]
         .as_integer()
         .and_then(|integer| integer.to_i64())
         .and_then(|value| u64::try_from(value).ok())
@@ -3111,15 +3446,7 @@ fn suppression_from_value(
                 "retention suppression generation is not a u64".to_owned(),
             )
         })?;
-    Ok(crate::retention::RetentionSuppression {
-        operation_id,
-        target,
-        revision,
-        target_kind,
-        mode,
-        content_digest,
-        generation,
-    })
+    Ok((target_kind, mode, content_digest, generation))
 }
 
 fn scope_from_text(text: &str) -> crate::error::Result<mneme_core::ScopeId> {
@@ -3202,6 +3529,33 @@ struct RevisionRow {
     manifest_bytes: Vec<u8>,
     manifest_digest: mneme_core::ContentDigest,
     eligibility_generation: u64,
+}
+
+fn validate_manifest_row(row: &RevisionRow) -> crate::error::Result<crate::manifest::Manifest> {
+    let revision = row.revision;
+    let value = mneme_core::binary::decode(&row.manifest_bytes).map_err(|diagnostic| {
+        crate::error::StoreError::Integrity {
+            revision,
+            reason: format!("manifest is not valid Preserves: {diagnostic}"),
+        }
+    })?;
+    let manifest = crate::manifest::Manifest::from_value(&value).map_err(|reason| {
+        crate::error::StoreError::Integrity {
+            revision,
+            reason: format!("manifest is invalid: {reason}"),
+        }
+    })?;
+    if manifest.revision != revision
+        || manifest.parent != row.parent
+        || mneme_core::ContentDigest::of_payload(&value) != row.manifest_digest
+        || manifest.encode() != row.manifest_bytes
+    {
+        return Err(crate::error::StoreError::Integrity {
+            revision,
+            reason: "manifest identity or digest does not match the ledger row".to_owned(),
+        });
+    }
+    Ok(manifest)
 }
 
 #[derive(Clone, Debug)]

@@ -174,13 +174,33 @@ pub(crate) fn build(
     })
 }
 
-#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn load_base_facts(
     view: &mneme_memory::MemoryView,
     scope: &mneme_core::ScopeId,
     evaluation: &mut Evaluation<'_>,
     incomplete_extents: &std::collections::BTreeSet<String>,
 ) -> Result<(), crate::DatalogError> {
+    initialize_base_coverage(evaluation, incomplete_extents);
+    for record in &view.snapshot().records {
+        if record.scope != *scope {
+            continue;
+        }
+        load_record_facts(view, record, evaluation);
+        if evaluation.status != crate::ExecutionStatus::Complete {
+            return Ok(());
+        }
+        if !evaluation.charge(1) {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn initialize_base_coverage(
+    evaluation: &mut Evaluation<'_>,
+    incomplete_extents: &std::collections::BTreeSet<String>,
+) {
     let known = [
         "entity",
         "relation",
@@ -202,51 +222,212 @@ fn load_base_facts(
             .insert(predicate.to_owned(), status);
     }
     for (predicate, arity) in &evaluation.bundle.base_predicates {
-        if !known.contains(&predicate.as_str()) {
-            evaluation
-                .coverage
-                .insert(predicate.clone(), crate::CoverageStatus::Unknown);
-            evaluation
-                .base_coverage
-                .insert(predicate.clone(), crate::CoverageStatus::Unknown);
+        let status = if !known.contains(&predicate.as_str()) {
+            crate::CoverageStatus::Unknown
         } else if incomplete_extents.contains(predicate) {
-            evaluation
-                .coverage
-                .insert(predicate.clone(), crate::CoverageStatus::Incomplete);
-            evaluation
-                .base_coverage
-                .insert(predicate.clone(), crate::CoverageStatus::Incomplete);
+            crate::CoverageStatus::Incomplete
         } else {
-            evaluation
-                .coverage
-                .insert(predicate.clone(), crate::CoverageStatus::Complete);
-            evaluation
-                .base_coverage
-                .insert(predicate.clone(), crate::CoverageStatus::Complete);
-        }
+            crate::CoverageStatus::Complete
+        };
+        evaluation.coverage.insert(predicate.clone(), status);
+        evaluation.base_coverage.insert(predicate.clone(), status);
         let _ = arity;
     }
-    for record in &view.snapshot().records {
-        if record.scope != *scope {
-            continue;
-        }
-        match record.kind {
-            mneme_core::RecordKind::Entity => {
-                let entity_type = record
-                    .payload
-                    .get("entity-type")
-                    .and_then(mneme_core::Value::as_symbol)
-                    .map(|symbol| mneme_core::Value::symbol(symbol.as_str().to_owned()))
-                    .unwrap_or_else(|| mneme_core::Value::symbol("unknown"));
-                let label = record
-                    .payload
-                    .get("label")
-                    .and_then(mneme_core::Value::as_string)
-                    .map(|label| mneme_core::Value::string(label.to_owned()))
-                    .unwrap_or_else(|| mneme_core::Value::string(""));
+}
+
+fn load_record_facts(
+    view: &mneme_memory::MemoryView,
+    record: &mneme_core::RecordEnvelope,
+    evaluation: &mut Evaluation<'_>,
+) {
+    match record.kind {
+        mneme_core::RecordKind::Entity => load_entity_fact(record, evaluation),
+        mneme_core::RecordKind::Relation => load_relation_fact(record, evaluation),
+        mneme_core::RecordKind::Assertion => load_assertion_fact(view, record, evaluation),
+        mneme_core::RecordKind::Evidence => load_evidence_fact(view, record, evaluation),
+        mneme_core::RecordKind::Document => load_document_fact(record, evaluation),
+        mneme_core::RecordKind::SourceRevision => load_source_fact(view, record, evaluation),
+        mneme_core::RecordKind::Derivation => load_derivation_facts(record, evaluation),
+        _ => {}
+    }
+}
+
+fn load_entity_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Evaluation<'_>) {
+    let entity_type = record
+        .payload
+        .get("entity-type")
+        .and_then(mneme_core::Value::as_symbol)
+        .map(|symbol| mneme_core::Value::symbol(symbol.as_str().to_owned()))
+        .unwrap_or_else(|| mneme_core::Value::symbol("unknown"));
+    let label = record
+        .payload
+        .get("label")
+        .and_then(mneme_core::Value::as_string)
+        .map(|label| mneme_core::Value::string(label.to_owned()))
+        .unwrap_or_else(|| mneme_core::Value::string(""));
+    evaluation.add_fact_with_sources(
+        "entity",
+        vec![record.record_id.to_value(), entity_type, label],
+        canonical_support(
+            record,
+            evaluation.context,
+            std::collections::BTreeSet::new(),
+        ),
+        &std::collections::BTreeSet::new(),
+    );
+}
+
+fn load_relation_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Evaluation<'_>) {
+    let relation_type = record
+        .payload
+        .get("relation-type")
+        .and_then(mneme_core::Value::as_symbol)
+        .map(|symbol| mneme_core::Value::symbol(symbol.as_str().to_owned()))
+        .unwrap_or_else(|| mneme_core::Value::symbol("unknown"));
+    if let (Some(from), Some(to)) = (
+        reference_target(record, "from"),
+        reference_target(record, "to"),
+    ) {
+        evaluation.add_fact_with_sources(
+            "relation",
+            vec![relation_type, from.to_value(), to.to_value()],
+            canonical_support(
+                record,
+                evaluation.context,
+                std::collections::BTreeSet::new(),
+            ),
+            &std::collections::BTreeSet::new(),
+        );
+    }
+}
+
+fn load_assertion_fact(
+    view: &mneme_memory::MemoryView,
+    record: &mneme_core::RecordEnvelope,
+    evaluation: &mut Evaluation<'_>,
+) {
+    if let Ok(assertion) = mneme_memory::AssertionView::parse(record.clone())
+        && assertion.lifecycle == mneme_core::Lifecycle::Accepted
+        && view.accepted_decision(&assertion).unwrap_or(false)
+        && view.assertion_has_current_basis(&assertion)
+    {
+        let (sources, availability) = assertion_sources(view, &assertion);
+        evaluation.add_fact_with_sources(
+            "assertion",
+            vec![
+                assertion.subject.to_value(),
+                mneme_core::Value::symbol(assertion.predicate.clone()),
+                assertion.value.clone(),
+                assertion.record_id().to_value(),
+            ],
+            canonical_support_with_availability(
+                record,
+                evaluation.context,
+                sources.clone(),
+                availability.clone(),
+            ),
+            &sources,
+        );
+    }
+}
+
+fn load_evidence_fact(
+    view: &mneme_memory::MemoryView,
+    record: &mneme_core::RecordEnvelope,
+    evaluation: &mut Evaluation<'_>,
+) {
+    if let Ok(evidence) = mneme_memory::EvidenceView::parse(record.clone()) {
+        let sources = match evidence.source_reference {
+            mneme_core::Reference::Pinned {
+                target, revision, ..
+            } => std::collections::BTreeSet::from([(target, revision)]),
+            _ => std::collections::BTreeSet::new(),
+        };
+        let availability = sources.iter().next().and_then(|(source, revision)| {
+            view.source_at(*source, *revision)
+                .ok()
+                .map(|source| source.availability.name().to_owned())
+        });
+        evaluation.add_fact_with_sources(
+            "evidence",
+            vec![evidence.assertion.to_value(), evidence.source.to_value()],
+            canonical_support_with_availability(
+                record,
+                evaluation.context,
+                sources.clone(),
+                availability,
+            ),
+            &sources,
+        );
+    }
+}
+
+fn load_document_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Evaluation<'_>) {
+    let entity = reference_target(record, "entity")
+        .map(|entity| entity.to_value())
+        .unwrap_or_else(|| mneme_core::Value::symbol("unbound"));
+    let path = record
+        .payload
+        .get("path")
+        .and_then(mneme_core::Value::as_string)
+        .map(|path| mneme_core::Value::string(path.to_owned()))
+        .unwrap_or_else(|| mneme_core::Value::symbol("unpathed"));
+    evaluation.add_fact_with_sources(
+        "document",
+        vec![record.record_id.to_value(), entity, path],
+        canonical_support(
+            record,
+            evaluation.context,
+            std::collections::BTreeSet::new(),
+        ),
+        &std::collections::BTreeSet::new(),
+    );
+}
+
+fn load_source_fact(
+    view: &mneme_memory::MemoryView,
+    record: &mneme_core::RecordEnvelope,
+    evaluation: &mut Evaluation<'_>,
+) {
+    if let Ok(source) = mneme_memory::SourceView::parse(record.clone()) {
+        let availability = view.source_status(record.record_id).ok().map_or_else(
+            || "unknown".to_owned(),
+            |status| status.availability().name().to_owned(),
+        );
+        let sources = std::collections::BTreeSet::from([(record.record_id, record.revision_id)]);
+        evaluation.add_fact_with_sources(
+            "source",
+            vec![
+                record.record_id.to_value(),
+                record.revision_id.to_value(),
+                mneme_core::Value::string(availability),
+            ],
+            canonical_support_with_availability(
+                record,
+                evaluation.context,
+                sources.clone(),
+                Some(source.availability.name().to_owned()),
+            ),
+            &sources,
+        );
+    }
+}
+
+fn load_derivation_facts(record: &mneme_core::RecordEnvelope, evaluation: &mut Evaluation<'_>) {
+    if let Some(conclusion) = reference_target(record, "conclusion")
+        && let Some(premises) = record
+            .payload
+            .get("premises")
+            .and_then(mneme_core::Value::as_set)
+    {
+        for premise in premises {
+            if let Ok(reference) =
+                mneme_core::Reference::from_value(premise, &mneme_core::Path::root())
+                && let Some(target) = reference.target()
+            {
                 evaluation.add_fact_with_sources(
-                    "entity",
-                    vec![record.record_id.to_value(), entity_type, label],
+                    "derivation",
+                    vec![conclusion.to_value(), target.to_value()],
                     canonical_support(
                         record,
                         evaluation.context,
@@ -255,162 +436,8 @@ fn load_base_facts(
                     &std::collections::BTreeSet::new(),
                 );
             }
-            mneme_core::RecordKind::Relation => {
-                let relation_type = record
-                    .payload
-                    .get("relation-type")
-                    .and_then(mneme_core::Value::as_symbol)
-                    .map(|symbol| mneme_core::Value::symbol(symbol.as_str().to_owned()))
-                    .unwrap_or_else(|| mneme_core::Value::symbol("unknown"));
-                if let (Some(from), Some(to)) = (
-                    reference_target(record, "from"),
-                    reference_target(record, "to"),
-                ) {
-                    evaluation.add_fact_with_sources(
-                        "relation",
-                        vec![relation_type, from.to_value(), to.to_value()],
-                        canonical_support(
-                            record,
-                            evaluation.context,
-                            std::collections::BTreeSet::new(),
-                        ),
-                        &std::collections::BTreeSet::new(),
-                    );
-                }
-            }
-            mneme_core::RecordKind::Assertion => {
-                if let Ok(assertion) = mneme_memory::AssertionView::parse(record.clone())
-                    && assertion.lifecycle == mneme_core::Lifecycle::Accepted
-                    && view.accepted_decision(&assertion).unwrap_or(false)
-                    && view.assertion_has_current_basis(&assertion)
-                {
-                    let (sources, availability) = assertion_sources(view, &assertion);
-                    evaluation.add_fact_with_sources(
-                        "assertion",
-                        vec![
-                            assertion.subject.to_value(),
-                            mneme_core::Value::symbol(assertion.predicate.clone()),
-                            assertion.value.clone(),
-                            assertion.record_id().to_value(),
-                        ],
-                        canonical_support_with_availability(
-                            record,
-                            evaluation.context,
-                            sources.clone(),
-                            availability.clone(),
-                        ),
-                        &sources,
-                    );
-                }
-            }
-            mneme_core::RecordKind::Evidence => {
-                if let Ok(evidence) = mneme_memory::EvidenceView::parse(record.clone()) {
-                    let sources = match evidence.source_reference {
-                        mneme_core::Reference::Pinned {
-                            target, revision, ..
-                        } => std::collections::BTreeSet::from([(target, revision)]),
-                        _ => std::collections::BTreeSet::new(),
-                    };
-                    let availability = sources.iter().next().and_then(|(source, revision)| {
-                        view.source_at(*source, *revision)
-                            .ok()
-                            .map(|source| source.availability.name().to_owned())
-                    });
-                    evaluation.add_fact_with_sources(
-                        "evidence",
-                        vec![evidence.assertion.to_value(), evidence.source.to_value()],
-                        canonical_support_with_availability(
-                            record,
-                            evaluation.context,
-                            sources.clone(),
-                            availability,
-                        ),
-                        &sources,
-                    );
-                }
-            }
-            mneme_core::RecordKind::Document => {
-                let entity = reference_target(record, "entity")
-                    .map(|entity| entity.to_value())
-                    .unwrap_or_else(|| mneme_core::Value::symbol("unbound"));
-                let path = record
-                    .payload
-                    .get("path")
-                    .and_then(mneme_core::Value::as_string)
-                    .map(|path| mneme_core::Value::string(path.to_owned()))
-                    .unwrap_or_else(|| mneme_core::Value::symbol("unpathed"));
-                evaluation.add_fact_with_sources(
-                    "document",
-                    vec![record.record_id.to_value(), entity, path],
-                    canonical_support(
-                        record,
-                        evaluation.context,
-                        std::collections::BTreeSet::new(),
-                    ),
-                    &std::collections::BTreeSet::new(),
-                );
-            }
-            mneme_core::RecordKind::SourceRevision => {
-                if let Ok(source) = mneme_memory::SourceView::parse(record.clone()) {
-                    let availability = view.source_status(record.record_id).ok().map_or_else(
-                        || "unknown".to_owned(),
-                        |status| status.availability().name().to_owned(),
-                    );
-                    let sources =
-                        std::collections::BTreeSet::from([(record.record_id, record.revision_id)]);
-                    evaluation.add_fact_with_sources(
-                        "source",
-                        vec![
-                            record.record_id.to_value(),
-                            record.revision_id.to_value(),
-                            mneme_core::Value::string(availability),
-                        ],
-                        canonical_support_with_availability(
-                            record,
-                            evaluation.context,
-                            sources.clone(),
-                            Some(source.availability.name().to_owned()),
-                        ),
-                        &sources,
-                    );
-                }
-            }
-            mneme_core::RecordKind::Derivation => {
-                if let Some(conclusion) = reference_target(record, "conclusion")
-                    && let Some(premises) = record
-                        .payload
-                        .get("premises")
-                        .and_then(mneme_core::Value::as_set)
-                {
-                    for premise in premises {
-                        if let Ok(reference) =
-                            mneme_core::Reference::from_value(premise, &mneme_core::Path::root())
-                            && let Some(target) = reference.target()
-                        {
-                            evaluation.add_fact_with_sources(
-                                "derivation",
-                                vec![conclusion.to_value(), target.to_value()],
-                                canonical_support(
-                                    record,
-                                    evaluation.context,
-                                    std::collections::BTreeSet::new(),
-                                ),
-                                &std::collections::BTreeSet::new(),
-                            );
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        if evaluation.status != crate::ExecutionStatus::Complete {
-            return Ok(());
-        }
-        if !evaluation.charge(1) {
-            return Ok(());
         }
     }
-    Ok(())
 }
 
 fn evaluate_rules(
@@ -463,24 +490,14 @@ enum RuleOutcome {
     Skipped,
 }
 
-#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn evaluate_rule(
     evaluation: &mut Evaluation<'_>,
     rule: &crate::Rule,
 ) -> Result<RuleOutcome, crate::DatalogError> {
-    let mut is_body_complete = true;
-    for literal in &rule.body {
-        match literal {
-            crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
-                if evaluation.coverage_status(&atom.predicate) != crate::CoverageStatus::Complete {
-                    is_body_complete = false;
-                }
-            }
-            crate::Literal::Aggregate { .. } => {}
-            crate::Literal::Forbidden(_) => return Ok(RuleOutcome::Skipped),
-            crate::Literal::Compare { .. } => {}
-        }
-    }
+    let Some(is_body_complete) = body_is_complete(evaluation, rule) else {
+        return Ok(RuleOutcome::Skipped);
+    };
     let aggregate = rule.body.iter().find_map(|literal| {
         if let crate::Literal::Aggregate {
             function,
@@ -500,27 +517,71 @@ fn evaluate_rule(
     if (aggregate.is_some() || has_negative) && !is_body_complete {
         return Ok(RuleOutcome::Skipped);
     }
+    let mut bindings = match positive_bindings(evaluation, rule) {
+        Ok(bindings) => bindings,
+        Err(outcome) => return Ok(outcome),
+    };
+    if let Err(outcome) = filter_nonpositive_literals(evaluation, rule, &mut bindings) {
+        return Ok(outcome);
+    }
+    if let Some((function, input, output)) = aggregate {
+        return evaluate_aggregate_rule(evaluation, rule, function, &input, &output, &bindings);
+    }
+    evaluate_ordinary_rule(evaluation, rule, &bindings)
+}
+
+type RuleBindings = Vec<std::collections::BTreeMap<String, mneme_core::Value>>;
+
+fn body_is_complete(evaluation: &Evaluation<'_>, rule: &crate::Rule) -> Option<bool> {
+    let mut is_body_complete = true;
+    for literal in &rule.body {
+        match literal {
+            crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
+                if evaluation.coverage_status(&atom.predicate) != crate::CoverageStatus::Complete {
+                    is_body_complete = false;
+                }
+            }
+            crate::Literal::Aggregate { .. } => {}
+            crate::Literal::Forbidden(_) => return None,
+            crate::Literal::Compare { .. } => {}
+        }
+    }
+    Some(is_body_complete)
+}
+
+fn positive_bindings(
+    evaluation: &mut Evaluation<'_>,
+    rule: &crate::Rule,
+) -> Result<RuleBindings, RuleOutcome> {
     let mut bindings = vec![std::collections::BTreeMap::<String, mneme_core::Value>::new()];
     for literal in &rule.body {
         if let crate::Literal::Positive(atom) = literal {
             if !evaluation.charge(bindings.len() as u64) {
-                return Ok(RuleOutcome::Skipped);
+                return Err(RuleOutcome::Skipped);
             }
             bindings = join(evaluation, &bindings, atom);
             if bindings.is_empty() {
-                return Ok(RuleOutcome::Stable);
+                return Err(RuleOutcome::Stable);
             }
         }
     }
+    Ok(bindings)
+}
+
+fn filter_nonpositive_literals(
+    evaluation: &Evaluation<'_>,
+    rule: &crate::Rule,
+    bindings: &mut RuleBindings,
+) -> Result<(), RuleOutcome> {
     for literal in &rule.body {
         match literal {
             crate::Literal::Negative(atom) => {
                 if evaluation.coverage_status(&atom.predicate) != crate::CoverageStatus::Complete {
-                    return Ok(RuleOutcome::Skipped);
+                    return Err(RuleOutcome::Skipped);
                 }
                 bindings.retain(|binding| !matches_atom(evaluation, atom, binding));
                 if bindings.is_empty() {
-                    return Ok(RuleOutcome::Stable);
+                    return Err(RuleOutcome::Stable);
                 }
             }
             crate::Literal::Compare { op, left, right } => {
@@ -536,32 +597,46 @@ fn evaluate_rule(
             _ => {}
         }
     }
-    if let Some((function, input, output)) = aggregate {
-        if !is_body_complete {
-            return Ok(RuleOutcome::Skipped);
-        }
-        let grouped = aggregate_rows(&rule.head, &output, function, &input, &bindings)?;
-        let mut is_changed = false;
-        for aggregate_row in grouped {
-            let (support, sources) =
-                aggregate_support(rule, evaluation, &bindings, &aggregate_row.binding_indices);
-            if evaluation.add_fact_with_sources(
-                &rule.head.predicate,
-                aggregate_row.head_terms,
-                support,
-                &sources,
-            ) {
-                is_changed = true;
-            }
-        }
-        return Ok(if is_changed {
-            RuleOutcome::Changed
-        } else {
-            RuleOutcome::Stable
-        });
-    }
+    Ok(())
+}
+
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one cohesive context
+fn evaluate_aggregate_rule(
+    evaluation: &mut Evaluation<'_>,
+    rule: &crate::Rule,
+    function: crate::AggregateFunction,
+    input: &crate::Term,
+    output: &str,
+    bindings: &RuleBindings,
+) -> Result<RuleOutcome, crate::DatalogError> {
+    let grouped = aggregate_rows(&rule.head, output, function, input, bindings)?;
     let mut is_changed = false;
-    for binding in &bindings {
+    for aggregate_row in grouped {
+        let (support, sources) =
+            aggregate_support(rule, evaluation, bindings, &aggregate_row.binding_indices);
+        if evaluation.add_fact_with_sources(
+            &rule.head.predicate,
+            aggregate_row.head_terms,
+            support,
+            &sources,
+        ) {
+            is_changed = true;
+        }
+    }
+    Ok(if is_changed {
+        RuleOutcome::Changed
+    } else {
+        RuleOutcome::Stable
+    })
+}
+
+fn evaluate_ordinary_rule(
+    evaluation: &mut Evaluation<'_>,
+    rule: &crate::Rule,
+    bindings: &RuleBindings,
+) -> Result<RuleOutcome, crate::DatalogError> {
+    let mut is_changed = false;
+    for binding in bindings {
         let terms = head_terms(&rule.head, binding)?;
         let (support, sources) = instantiated_support(rule, evaluation, binding);
         if evaluation.add_fact_with_sources(&rule.head.predicate, terms, support, &sources) {
@@ -692,7 +767,7 @@ struct AggregateRow {
     binding_indices: Vec<usize>,
 }
 
-#[allow(unknown_lints, fallible_int_fallback, function_length)] // row count is bounded by the result-row limit
+#[allow(unknown_lints, fallible_int_fallback)] // row count is bounded by the result-row limit
 fn aggregate_rows(
     head: &crate::Atom,
     output: &str,
@@ -700,8 +775,24 @@ fn aggregate_rows(
     input: &crate::Term,
     bindings: &[std::collections::BTreeMap<String, mneme_core::Value>],
 ) -> Result<Vec<AggregateRow>, crate::DatalogError> {
-    let group_variables = head
-        .terms
+    let group_variables = aggregate_group_variables(head, output);
+    let groups = collect_aggregate_groups(&group_variables, input, bindings)?;
+    let mut output_rows = Vec::new();
+    for (_, (indices, values)) in groups {
+        let value = aggregate_value(function, values)?;
+        let Some(first) = indices.first().and_then(|index| bindings.get(*index)) else {
+            continue;
+        };
+        output_rows.push(aggregate_head_row(head, output, first, value, indices)?);
+    }
+    Ok(output_rows)
+}
+
+fn aggregate_group_variables(
+    head: &crate::Atom,
+    output: &str,
+) -> std::collections::BTreeSet<String> {
+    head.terms
         .iter()
         .filter_map(|term| {
             if let crate::Term::Variable(name) = term {
@@ -714,11 +805,18 @@ fn aggregate_rows(
                 None
             }
         })
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut groups: std::collections::BTreeMap<
-        Vec<mneme_core::Value>,
-        (Vec<usize>, Vec<mneme_core::Value>),
-    > = std::collections::BTreeMap::new();
+        .collect()
+}
+
+type AggregateGroups =
+    std::collections::BTreeMap<Vec<mneme_core::Value>, (Vec<usize>, Vec<mneme_core::Value>)>;
+
+fn collect_aggregate_groups(
+    group_variables: &std::collections::BTreeSet<String>,
+    input: &crate::Term,
+    bindings: &[std::collections::BTreeMap<String, mneme_core::Value>],
+) -> Result<AggregateGroups, crate::DatalogError> {
+    let mut groups: AggregateGroups = std::collections::BTreeMap::new();
     for (index, binding) in bindings.iter().enumerate() {
         let key = group_variables
             .iter()
@@ -734,62 +832,70 @@ fn aggregate_rows(
         entry.0.push(index);
         entry.1.push(value);
     }
-    let mut output_rows = Vec::new();
-    for (_, (indices, values)) in groups {
-        let value = match function {
-            crate::AggregateFunction::Count => {
-                mneme_core::Value::integer(i64::try_from(values.len()).map_err(|_| {
-                    crate::DatalogError::Failed("aggregate count exceeds i64".to_owned())
-                })?)
-            }
-            crate::AggregateFunction::Sum => {
-                let mut total = 0_u64;
-                for value in &values {
-                    let Some(integer) = value.as_integer().and_then(|integer| integer.to_i64())
-                    else {
-                        return Err(crate::DatalogError::Failed(
-                            "sum aggregate requires integer values".to_owned(),
-                        ));
-                    };
-                    let integer = u64::try_from(integer).map_err(|_| {
-                        crate::DatalogError::Failed(
-                            "sum aggregate requires non-negative values".to_owned(),
-                        )
-                    })?;
-                    total = total.saturating_add(integer);
-                }
-                mneme_core::Value::integer(total)
-            }
-            crate::AggregateFunction::Min => values
-                .into_iter()
-                .min()
-                .unwrap_or_else(|| mneme_core::Value::integer(0)),
-            crate::AggregateFunction::Max => values
-                .into_iter()
-                .max()
-                .unwrap_or_else(|| mneme_core::Value::integer(0)),
-        };
-        let Some(first) = indices.first().and_then(|index| bindings.get(*index)) else {
-            continue;
-        };
-        let head_terms = head
-            .terms
-            .iter()
-            .map(|term| match term {
-                crate::Term::Constant(value) => Some(value.clone()),
-                crate::Term::Variable(name) if name == output => Some(value.clone()),
-                crate::Term::Variable(name) => first.get(name).cloned(),
-            })
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| {
-                crate::DatalogError::Failed("aggregate head variable is unbound".to_owned())
-            })?;
-        output_rows.push(AggregateRow {
-            head_terms,
-            binding_indices: indices,
-        });
+    Ok(groups)
+}
+
+fn aggregate_value(
+    function: crate::AggregateFunction,
+    values: Vec<mneme_core::Value>,
+) -> Result<mneme_core::Value, crate::DatalogError> {
+    match function {
+        crate::AggregateFunction::Count => Ok(mneme_core::Value::integer(
+            i64::try_from(values.len()).map_err(|_| {
+                crate::DatalogError::Failed("aggregate count exceeds i64".to_owned())
+            })?,
+        )),
+        crate::AggregateFunction::Sum => aggregate_sum(&values),
+        crate::AggregateFunction::Min => Ok(values
+            .into_iter()
+            .min()
+            .unwrap_or_else(|| mneme_core::Value::integer(0))),
+        crate::AggregateFunction::Max => Ok(values
+            .into_iter()
+            .max()
+            .unwrap_or_else(|| mneme_core::Value::integer(0))),
     }
-    Ok(output_rows)
+}
+
+fn aggregate_sum(values: &[mneme_core::Value]) -> Result<mneme_core::Value, crate::DatalogError> {
+    let mut total = 0_u64;
+    for value in values {
+        let Some(integer) = value.as_integer().and_then(|integer| integer.to_i64()) else {
+            return Err(crate::DatalogError::Failed(
+                "sum aggregate requires integer values".to_owned(),
+            ));
+        };
+        let integer = u64::try_from(integer).map_err(|_| {
+            crate::DatalogError::Failed("sum aggregate requires non-negative values".to_owned())
+        })?;
+        total = total.saturating_add(integer);
+    }
+    Ok(mneme_core::Value::integer(total))
+}
+
+fn aggregate_head_row(
+    head: &crate::Atom,
+    output: &str,
+    first: &std::collections::BTreeMap<String, mneme_core::Value>,
+    value: mneme_core::Value,
+    indices: Vec<usize>,
+) -> Result<AggregateRow, crate::DatalogError> {
+    let head_terms = head
+        .terms
+        .iter()
+        .map(|term| match term {
+            crate::Term::Constant(value) => Some(value.clone()),
+            crate::Term::Variable(name) if name == output => Some(value.clone()),
+            crate::Term::Variable(name) => first.get(name).cloned(),
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            crate::DatalogError::Failed("aggregate head variable is unbound".to_owned())
+        })?;
+    Ok(AggregateRow {
+        head_terms,
+        binding_indices: indices,
+    })
 }
 
 fn instantiated_support(

@@ -93,9 +93,10 @@ impl Line<'_> {
     }
 }
 
-#[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn lines(text: &str) -> Vec<Line<'_>> {
-    let mut output = Vec::new();
+    let max_lines = text.split_inclusive('\n').count();
+    let mut output = Vec::with_capacity(max_lines);
     let mut offset = 0;
     for (index, chunk) in text.split_inclusive('\n').enumerate() {
         let start = offset;
@@ -122,101 +123,22 @@ fn lines(text: &str) -> Vec<Line<'_>> {
 }
 
 /// Parse the document header and literal entity binding.
-#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn parse_header(text: &str) -> Result<Header, Vec<Diagnostic>> {
-    let mut diagnostics = Vec::new();
+    let source_lines = lines(text);
+    let mut diagnostics = Vec::with_capacity(source_lines.len().saturating_add(1));
     let mut header = Header::default();
     let mut is_seen_entity = false;
     let mut is_conditional = false;
-    let all = lines(text);
-    for line in &all {
-        let content = line.text.trim();
-        if content.is_empty() {
+    for line in source_lines {
+        if !parse_header_line(
+            &line,
+            &mut header,
+            &mut is_seen_entity,
+            &mut is_conditional,
+            &mut diagnostics,
+        ) {
             break;
-        }
-        if content.starts_with("//") {
-            continue;
-        }
-        if content.starts_with("ifdef::")
-            || content.starts_with("ifndef::")
-            || content.starts_with("ifeval::")
-        {
-            is_conditional = true;
-            continue;
-        }
-        if let Some(title) = content.strip_prefix("= ") {
-            if header.title.is_none() {
-                header.title = Some(title.trim().to_owned());
-            }
-            continue;
-        }
-        if content.starts_with(':') {
-            let Some(rest) = content.strip_prefix(':') else {
-                continue;
-            };
-            if rest.starts_with("entity-id!:") {
-                diagnostics.push(Diagnostic::new(
-                    "binding-unset",
-                    "entity-id cannot be unset in a document header",
-                    line.number,
-                    1,
-                    line.span(),
-                ));
-                continue;
-            }
-            let Some((name, value)) = rest.split_once(':') else {
-                continue;
-            };
-            if name.trim() != "entity-id" {
-                continue;
-            }
-            if is_seen_entity {
-                diagnostics.push(Diagnostic::new(
-                    "binding-conflict",
-                    "document declares entity-id more than once",
-                    line.number,
-                    1,
-                    line.span(),
-                ));
-                continue;
-            }
-            is_seen_entity = true;
-            let value = value.trim();
-            if value.is_empty() {
-                diagnostics.push(Diagnostic::new(
-                    "binding-invalid",
-                    "entity-id must be a literal opaque identifier",
-                    line.number,
-                    1,
-                    line.span(),
-                ));
-                continue;
-            }
-            if value.contains('{')
-                || value.contains('}')
-                || value.contains('+')
-                || value.starts_with("pass:")
-                || value.chars().any(char::is_whitespace)
-            {
-                diagnostics.push(Diagnostic::new(
-                    "binding-substitution",
-                    "entity-id must not use substitutions or continuations",
-                    line.number,
-                    1,
-                    line.span(),
-                ));
-                continue;
-            }
-            match mneme_core::RecordId::from_hex(value) {
-                Ok(id) => header.entity_id = Some(id),
-                Err(_) => diagnostics.push(Diagnostic::new(
-                    "binding-invalid",
-                    "entity-id is not a valid opaque identifier",
-                    line.number,
-                    1,
-                    line.span(),
-                )),
-            }
         }
     }
     if is_conditional && is_seen_entity {
@@ -235,11 +157,117 @@ pub fn parse_header(text: &str) -> Result<Header, Vec<Diagnostic>> {
     }
 }
 
+fn parse_header_line(
+    line: &Line<'_>,
+    header: &mut Header,
+    is_seen_entity: &mut bool,
+    is_conditional: &mut bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let content = line.text.trim();
+    if content.is_empty() {
+        return false;
+    }
+    if content.starts_with("//") {
+        return true;
+    }
+    if content.starts_with("ifdef::")
+        || content.starts_with("ifndef::")
+        || content.starts_with("ifeval::")
+    {
+        *is_conditional = true;
+        return true;
+    }
+    if let Some(title) = content.strip_prefix("= ") {
+        if header.title.is_none() {
+            header.title = Some(title.trim().to_owned());
+        }
+        return true;
+    }
+    if let Some(rest) = content.strip_prefix(':') {
+        parse_entity_header_attribute(rest, line, header, is_seen_entity, diagnostics);
+    }
+    true
+}
+
+fn parse_entity_header_attribute(
+    rest: &str,
+    line: &Line<'_>,
+    header: &mut Header,
+    is_seen_entity: &mut bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if rest.starts_with("entity-id!:") {
+        diagnostics.push(Diagnostic::new(
+            "binding-unset",
+            "entity-id cannot be unset in a document header",
+            line.number,
+            1,
+            line.span(),
+        ));
+        return;
+    }
+    let Some((name, value)) = rest.split_once(':') else {
+        return;
+    };
+    if name.trim() != "entity-id" {
+        return;
+    }
+    if *is_seen_entity {
+        diagnostics.push(Diagnostic::new(
+            "binding-conflict",
+            "document declares entity-id more than once",
+            line.number,
+            1,
+            line.span(),
+        ));
+        return;
+    }
+    *is_seen_entity = true;
+    let value = value.trim();
+    if value.is_empty() {
+        diagnostics.push(Diagnostic::new(
+            "binding-invalid",
+            "entity-id must be a literal opaque identifier",
+            line.number,
+            1,
+            line.span(),
+        ));
+        return;
+    }
+    if value.contains('{')
+        || value.contains('}')
+        || value.contains('+')
+        || value.starts_with("pass:")
+        || value.chars().any(char::is_whitespace)
+    {
+        diagnostics.push(Diagnostic::new(
+            "binding-substitution",
+            "entity-id must not use substitutions or continuations",
+            line.number,
+            1,
+            line.span(),
+        ));
+        return;
+    }
+    match mneme_core::RecordId::from_hex(value) {
+        Ok(id) => header.entity_id = Some(id),
+        Err(_) => diagnostics.push(Diagnostic::new(
+            "binding-invalid",
+            "entity-id is not a valid opaque identifier",
+            line.number,
+            1,
+            line.span(),
+        )),
+    }
+}
+
 /// Scan include directives without resolving them.
-#[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn scan_includes(text: &str) -> Vec<IncludeDirective> {
-    let mut includes = Vec::new();
-    for line in lines(text) {
+    let source_lines = lines(text);
+    let mut includes = Vec::with_capacity(source_lines.len());
+    for line in source_lines {
         let raw = line.text;
         let Some(start) = raw.find("include::") else {
             continue;
@@ -276,10 +304,11 @@ pub fn scan_includes(text: &str) -> Vec<IncludeDirective> {
 }
 
 /// Scan explicit anchors. Heading-derived IDs are intentionally not invented.
-#[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn scan_anchors(text: &str) -> Vec<AnchorSpec> {
-    let mut anchors = Vec::new();
-    for line in lines(text) {
+    let source_lines = lines(text);
+    let mut anchors = Vec::with_capacity(source_lines.len());
+    for line in source_lines {
         let content = line.text.trim();
         let (inner, explicit) = if content.starts_with("[[") && content.ends_with("]]") {
             (&content[2..content.len() - 2], "bracket")

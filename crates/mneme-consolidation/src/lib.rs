@@ -149,13 +149,40 @@ impl InputBatch {
     /// The response remains a ranked, non-exhaustive source selection. Its
     /// omissions, truncation, mode failures, and unpinned candidates are
     /// retained so proposals cannot infer absence or cleanup.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn from_recall(
         scope: mneme_core::ScopeId,
         expected_revision: mneme_core::WorkspaceRevisionId,
         response: &mneme_recall::RecallResponse,
     ) -> Result<Self, String> {
-        if response.context.scope != scope {
+        Self::validate_recall_response(&scope, expected_revision, response)?;
+        let (units, unpinned_candidates) = Self::recall_units(response);
+        let reviewed = units
+            .iter()
+            .map(|unit| unit.key)
+            .collect::<std::collections::BTreeSet<_>>();
+        let limitations = Self::recall_limitations(response, unpinned_candidates);
+        Ok(InputBatch {
+            scope,
+            requested_revision: response.context.requested_revision,
+            served_revision: response.context.served_revision,
+            eligibility_generation: response.context.eligibility_generation,
+            units,
+            reviewed,
+            declared_extent: None,
+            coverage: BatchCoverage::Partial {
+                reason: "ranked recall is not a complete source extent".to_owned(),
+            },
+            limitations,
+        })
+    }
+
+    fn validate_recall_response(
+        scope: &mneme_core::ScopeId,
+        expected_revision: mneme_core::WorkspaceRevisionId,
+        response: &mneme_recall::RecallResponse,
+    ) -> Result<(), String> {
+        if &response.context.scope != scope {
             return Err("recall scope does not match the consolidation scope".to_owned());
         }
         if response.context.requested_revision != expected_revision {
@@ -171,6 +198,10 @@ impl InputBatch {
         {
             return Err("recall boundary is not data-only".to_owned());
         }
+        Ok(())
+    }
+
+    fn recall_units(response: &mneme_recall::RecallResponse) -> (Vec<InputUnit>, usize) {
         let mut units = Vec::with_capacity(response.candidates.len());
         let mut seen = std::collections::BTreeSet::new();
         let mut unpinned_candidates = 0;
@@ -207,11 +238,14 @@ impl InputBatch {
                 availability,
             });
         }
-        let reviewed = units
-            .iter()
-            .map(|unit| unit.key)
-            .collect::<std::collections::BTreeSet<_>>();
-        let limitations = RecallLimitations {
+        (units, unpinned_candidates)
+    }
+
+    fn recall_limitations(
+        response: &mneme_recall::RecallResponse,
+        unpinned_candidates: usize,
+    ) -> RecallLimitations {
+        RecallLimitations {
             status: response.status.name().to_owned(),
             exhaustive: response.exhaustive,
             absence_established: response.absence_established,
@@ -232,20 +266,7 @@ impl InputBatch {
                 })
                 .collect(),
             unpinned_candidates,
-        };
-        Ok(InputBatch {
-            scope,
-            requested_revision: response.context.requested_revision,
-            served_revision: response.context.served_revision,
-            eligibility_generation: response.context.eligibility_generation,
-            units,
-            reviewed,
-            declared_extent: None,
-            coverage: BatchCoverage::Partial {
-                reason: "ranked recall is not a complete source extent".to_owned(),
-            },
-            limitations,
-        })
+        }
     }
 
     /// Whether a batch may support an absence or cleanup conclusion.
@@ -690,7 +711,7 @@ impl ConsolidationFixture {
 }
 
 /// Construct sample fixture data used by the type-contract tests.
-#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn fixture() -> Result<ConsolidationFixture, String> {
     let scope = mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar")?;
     let base = mneme_core::WorkspaceRevisionId::from_bytes([0xb0; 16]);
@@ -711,6 +732,22 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         revision_id: mneme_core::RevisionId::from_bytes([0x41; 16]),
         lifecycle: mneme_core::Lifecycle::Accepted,
     };
+    let proposals = fixture_proposals(&scope, base, source);
+    let batch = fixture_batch(&scope, base, &observation, source);
+    Ok(ConsolidationFixture {
+        observations: vec![observation],
+        job: fixture_job(scope.clone(), base, batch),
+        proposals,
+        accepted_assertions: vec![accepted],
+        acceptance: fixture_acceptance(scope, base, source),
+    })
+}
+
+fn fixture_proposals(
+    scope: &mneme_core::ScopeId,
+    base: mneme_core::WorkspaceRevisionId,
+    source: InputKey,
+) -> Vec<ConsolidationProposal> {
     let premise = ProposalPremise {
         record_id: source.record_id,
         revision_id: source.revision_id,
@@ -719,74 +756,100 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         ancestry_roots: std::collections::BTreeSet::from([source]),
         authority: ProposalAuthority::Observed,
     };
-    let proposals = vec![
-        ConsolidationProposal {
-            proposal_id: "proposal-summary".to_owned(),
-            job_id: "job-1".to_owned(),
-            recorded_at: mneme_core::Timestamp::from_nanos(1_000),
-            base_revision: base,
-            scope: scope.clone(),
-            operation: ProposalOperation::Summary(SummaryProposal {
-                text: "Cedar uses SQLite.".to_owned(),
-            }),
-            premises: vec![premise.clone()],
-            rationale: "summarize pinned evidence".to_owned(),
-            support: SupportReview {
-                actor: "reviewer".to_owned(),
-                policy: "support-review/v1".to_owned(),
-                outcome: SupportOutcome::Supported,
-                detail: "cited span states the claim".to_owned(),
-            },
-            disposition: ProposalDisposition::Pending,
+    vec![
+        fixture_summary_proposal(scope, base, premise.clone()),
+        fixture_assertion_proposal(scope, base, premise.clone()),
+        fixture_procedure_proposal(scope, base, premise),
+    ]
+}
+
+fn fixture_support(detail: &str) -> SupportReview {
+    SupportReview {
+        actor: "reviewer".to_owned(),
+        policy: "support-review/v1".to_owned(),
+        outcome: SupportOutcome::Supported,
+        detail: detail.to_owned(),
+    }
+}
+
+fn fixture_summary_proposal(
+    scope: &mneme_core::ScopeId,
+    base: mneme_core::WorkspaceRevisionId,
+    premise: ProposalPremise,
+) -> ConsolidationProposal {
+    ConsolidationProposal {
+        proposal_id: "proposal-summary".to_owned(),
+        job_id: "job-1".to_owned(),
+        recorded_at: mneme_core::Timestamp::from_nanos(1_000),
+        base_revision: base,
+        scope: scope.clone(),
+        operation: ProposalOperation::Summary(SummaryProposal {
+            text: "Cedar uses SQLite.".to_owned(),
+        }),
+        premises: vec![premise],
+        rationale: "summarize pinned evidence".to_owned(),
+        support: fixture_support("cited span states the claim"),
+        disposition: ProposalDisposition::Pending,
+    }
+}
+
+fn fixture_assertion_proposal(
+    scope: &mneme_core::ScopeId,
+    base: mneme_core::WorkspaceRevisionId,
+    premise: ProposalPremise,
+) -> ConsolidationProposal {
+    ConsolidationProposal {
+        proposal_id: "proposal-assertion".to_owned(),
+        job_id: "job-1".to_owned(),
+        recorded_at: mneme_core::Timestamp::from_nanos(1_000),
+        base_revision: base,
+        scope: scope.clone(),
+        operation: ProposalOperation::Assertion(AssertionProposal {
+            subject: mneme_core::RecordId::from_bytes([0x10; 16]),
+            predicate: "storage-engine".to_owned(),
+            value: mneme_core::Value::string("SQLite"),
+            stance: ProposalStance::Affirm,
+            valid_time: mneme_core::ValidTime::Unknown,
+        }),
+        premises: vec![premise],
+        rationale: "extract an explicitly proposed claim".to_owned(),
+        support: fixture_support("cited span supports the storage engine"),
+        disposition: ProposalDisposition::Pending,
+    }
+}
+
+fn fixture_procedure_proposal(
+    scope: &mneme_core::ScopeId,
+    base: mneme_core::WorkspaceRevisionId,
+    premise: ProposalPremise,
+) -> ConsolidationProposal {
+    ConsolidationProposal {
+        proposal_id: "proposal-procedure".to_owned(),
+        job_id: "job-1".to_owned(),
+        recorded_at: mneme_core::Timestamp::from_nanos(1_000),
+        base_revision: base,
+        scope: scope.clone(),
+        operation: ProposalOperation::Procedure(ProcedureProposal {
+            kind: ProcedureKind::PrologRule,
+            content: "grant_scope(user).".to_owned(),
+            validator: "prolog-policy/v1".to_owned(),
+        }),
+        premises: vec![premise],
+        rationale: "episode suggests a rule".to_owned(),
+        support: fixture_support("source contains the suggested text"),
+        disposition: ProposalDisposition::Blocked {
+            reason: "requires separate procedural validation".to_owned(),
         },
-        ConsolidationProposal {
-            proposal_id: "proposal-assertion".to_owned(),
-            job_id: "job-1".to_owned(),
-            recorded_at: mneme_core::Timestamp::from_nanos(1_000),
-            base_revision: base,
-            scope: scope.clone(),
-            operation: ProposalOperation::Assertion(AssertionProposal {
-                subject: mneme_core::RecordId::from_bytes([0x10; 16]),
-                predicate: "storage-engine".to_owned(),
-                value: mneme_core::Value::string("SQLite"),
-                stance: ProposalStance::Affirm,
-                valid_time: mneme_core::ValidTime::Unknown,
-            }),
-            premises: vec![premise.clone()],
-            rationale: "extract an explicitly proposed claim".to_owned(),
-            support: SupportReview {
-                actor: "reviewer".to_owned(),
-                policy: "support-review/v1".to_owned(),
-                outcome: SupportOutcome::Supported,
-                detail: "cited span supports the storage engine".to_owned(),
-            },
-            disposition: ProposalDisposition::Pending,
-        },
-        ConsolidationProposal {
-            proposal_id: "proposal-procedure".to_owned(),
-            job_id: "job-1".to_owned(),
-            recorded_at: mneme_core::Timestamp::from_nanos(1_000),
-            base_revision: base,
-            scope: scope.clone(),
-            operation: ProposalOperation::Procedure(ProcedureProposal {
-                kind: ProcedureKind::PrologRule,
-                content: "grant_scope(user).".to_owned(),
-                validator: "prolog-policy/v1".to_owned(),
-            }),
-            premises: vec![premise],
-            rationale: "episode suggests a rule".to_owned(),
-            support: SupportReview {
-                actor: "reviewer".to_owned(),
-                policy: "support-review/v1".to_owned(),
-                outcome: SupportOutcome::Supported,
-                detail: "source contains the suggested text".to_owned(),
-            },
-            disposition: ProposalDisposition::Blocked {
-                reason: "requires separate procedural validation".to_owned(),
-            },
-        },
-    ];
-    let batch = InputBatch {
+    }
+}
+
+fn fixture_batch(
+    scope: &mneme_core::ScopeId,
+    base: mneme_core::WorkspaceRevisionId,
+    observation: &InputUnit,
+    source: InputKey,
+) -> InputBatch {
+    InputBatch {
         scope: scope.clone(),
         requested_revision: base,
         served_revision: base,
@@ -803,38 +866,47 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
         declared_extent: Some(std::collections::BTreeSet::from([observation.key, source])),
         coverage: BatchCoverage::Complete,
         limitations: RecallLimitations::complete(),
-    };
-    Ok(ConsolidationFixture {
-        observations: vec![observation],
-        job: ConsolidationJob {
-            job_id: "job-1".to_owned(),
-            recorded_at: mneme_core::Timestamp::from_nanos(1_000),
-            idempotency_key: "consolidate-1".to_owned(),
-            scope: scope.clone(),
-            base_revision: base,
-            policy_version: "consolidation-policy/v1".to_owned(),
-            extractor: None,
-            batch,
-            limits: JobLimits {
-                max_inputs: 8,
-                max_proposals: 8,
-                max_time_ms: 1_000,
-                max_model_calls: 0,
-            },
-            status: JobStatus::Complete,
+    }
+}
+
+fn fixture_job(
+    scope: mneme_core::ScopeId,
+    base: mneme_core::WorkspaceRevisionId,
+    batch: InputBatch,
+) -> ConsolidationJob {
+    ConsolidationJob {
+        job_id: "job-1".to_owned(),
+        recorded_at: mneme_core::Timestamp::from_nanos(1_000),
+        idempotency_key: "consolidate-1".to_owned(),
+        scope,
+        base_revision: base,
+        policy_version: "consolidation-policy/v1".to_owned(),
+        extractor: None,
+        batch,
+        limits: JobLimits {
+            max_inputs: 8,
+            max_proposals: 8,
+            max_time_ms: 1_000,
+            max_model_calls: 0,
         },
-        proposals,
-        accepted_assertions: vec![accepted],
-        acceptance: AcceptancePrecondition {
-            proposal_id: "proposal-summary".to_owned(),
-            proposal_revision: 1,
-            expected_base_revision: base,
-            expected_targets: std::collections::BTreeMap::new(),
-            required_sources: std::collections::BTreeSet::from([source]),
-            policy_version: "consolidation-policy/v1".to_owned(),
-            scope,
-        },
-    })
+        status: JobStatus::Complete,
+    }
+}
+
+fn fixture_acceptance(
+    scope: mneme_core::ScopeId,
+    base: mneme_core::WorkspaceRevisionId,
+    source: InputKey,
+) -> AcceptancePrecondition {
+    AcceptancePrecondition {
+        proposal_id: "proposal-summary".to_owned(),
+        proposal_revision: 1,
+        expected_base_revision: base,
+        expected_targets: std::collections::BTreeMap::new(),
+        required_sources: std::collections::BTreeSet::from([source]),
+        policy_version: "consolidation-policy/v1".to_owned(),
+        scope,
+    }
 }
 
 #[cfg(test)]

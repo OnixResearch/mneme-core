@@ -301,11 +301,12 @@ fn cleanup_temporaries_in(directory: &std::path::Path) -> crate::error::Result<u
     Ok(removed)
 }
 
-#[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn blob_files(
     blob_root: &std::path::Path,
 ) -> crate::error::Result<Vec<(std::path::PathBuf, [u8; 32])>> {
     let mut output = Vec::new();
+    let max_blob_files = 1_000_000;
     for algorithm in std::fs::read_dir(blob_root)
         .map_err(|error| crate::error::StoreError::io(blob_root, error))?
     {
@@ -338,6 +339,11 @@ fn blob_files(
                 let Some(digest) = parse_hex_32(&name.to_string_lossy()) else {
                     continue;
                 };
+                if output.len() >= max_blob_files {
+                    return Err(crate::error::StoreError::UnsupportedLayout(
+                        "blob inventory exceeds the 1M file bound".to_owned(),
+                    ));
+                }
                 output.push((file.path(), digest));
             }
         }

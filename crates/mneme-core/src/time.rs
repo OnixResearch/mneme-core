@@ -36,7 +36,7 @@ impl Timestamp {
     }
 
     /// Parse a strict RFC 3339 timestamp with a `Z` or numeric offset.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn parse(text: &str) -> Result<Self, &'static str> {
         let bytes = text.as_bytes();
         if bytes.len() < 20 {
@@ -53,51 +53,7 @@ impl Timestamp {
         let minute = digits(bytes, 14, 2)?;
         expect(bytes, 16, b':')?;
         let second = digits(bytes, 17, 2)?;
-
-        let mut position = 19;
-        let mut nanoseconds = 0_i64;
-        if bytes.get(position) == Some(&b'.') {
-            position += 1;
-            let start = position;
-            while position < bytes.len() && bytes[position].is_ascii_digit() {
-                position += 1;
-            }
-            let count = position - start;
-            if count == 0 || count > 9 {
-                return Err("fractional seconds must contain 1 to 9 digits");
-            }
-            let fraction = digits(bytes, start, count)?;
-            let exponent = u32::try_from(count)
-                .map_err(|_| "fractional seconds must contain 1 to 9 digits")?;
-            nanoseconds = i64::from(fraction) * 10_i64.pow(9 - exponent);
-        }
-        if position >= bytes.len() {
-            return Err("timestamp is missing its offset");
-        }
-        let offset_seconds = match bytes[position] {
-            b'Z' | b'z' => {
-                position += 1;
-                0_i64
-            }
-            sign @ (b'+' | b'-') => {
-                position += 1;
-                let offset_hour = digits(bytes, position, 2)?;
-                position += 2;
-                expect(bytes, position, b':')?;
-                position += 1;
-                let offset_minute = digits(bytes, position, 2)?;
-                position += 2;
-                if offset_hour > 23 || offset_minute > 59 {
-                    return Err("offset is out of range");
-                }
-                let magnitude = i64::from(offset_hour) * 3600 + i64::from(offset_minute) * 60;
-                if sign == b'-' { -magnitude } else { magnitude }
-            }
-            _ => return Err("timestamp offset must be Z or ±HH:MM"),
-        };
-        if position != bytes.len() {
-            return Err("unexpected characters after the timestamp offset");
-        }
+        let (nanoseconds, offset_seconds) = parse_timestamp_suffix(bytes, 19)?;
 
         if !(1..=12).contains(&month) {
             return Err("month is out of range");
@@ -183,6 +139,53 @@ impl Timestamp {
         };
         Ok(Timestamp(nanos))
     }
+}
+
+fn parse_timestamp_suffix(bytes: &[u8], mut position: usize) -> Result<(i64, i64), &'static str> {
+    let mut nanoseconds = 0_i64;
+    if bytes.get(position) == Some(&b'.') {
+        position += 1;
+        let start = position;
+        while position < bytes.len() && bytes[position].is_ascii_digit() {
+            position += 1;
+        }
+        let count = position - start;
+        if count == 0 || count > 9 {
+            return Err("fractional seconds must contain 1 to 9 digits");
+        }
+        let fraction = digits(bytes, start, count)?;
+        let exponent =
+            u32::try_from(count).map_err(|_| "fractional seconds must contain 1 to 9 digits")?;
+        nanoseconds = i64::from(fraction) * 10_i64.pow(9 - exponent);
+    }
+    if position >= bytes.len() {
+        return Err("timestamp is missing its offset");
+    }
+    let offset_seconds = match bytes[position] {
+        b'Z' | b'z' => {
+            position += 1;
+            0_i64
+        }
+        sign @ (b'+' | b'-') => {
+            position += 1;
+            let offset_hour = digits(bytes, position, 2)?;
+            position += 2;
+            expect(bytes, position, b':')?;
+            position += 1;
+            let offset_minute = digits(bytes, position, 2)?;
+            position += 2;
+            if offset_hour > 23 || offset_minute > 59 {
+                return Err("offset is out of range");
+            }
+            let magnitude = i64::from(offset_hour) * 3600 + i64::from(offset_minute) * 60;
+            if sign == b'-' { -magnitude } else { magnitude }
+        }
+        _ => return Err("timestamp offset must be Z or ±HH:MM"),
+    };
+    if position != bytes.len() {
+        return Err("unexpected characters after the timestamp offset");
+    }
+    Ok((nanoseconds, offset_seconds))
 }
 
 impl std::fmt::Display for Timestamp {

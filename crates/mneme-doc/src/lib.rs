@@ -333,19 +333,20 @@ struct DocumentContext {
 }
 
 impl DocumentContext {
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn load(
         workspace: &mneme_store::Workspace,
         revision: Option<mneme_core::WorkspaceRevisionId>,
     ) -> Result<Self> {
         let revision = revision.unwrap_or(workspace.current_revision()?);
         let snapshot = workspace.snapshot_at(revision, None)?;
-        let mut history = std::collections::BTreeMap::new();
-        for record in &snapshot.records {
-            for retained in workspace.record_revisions(record.record_id)? {
-                history.insert((retained.record_id, retained.revision_id), retained);
-            }
+        let max_context_records = 1_000_000;
+        if snapshot.records.len() > max_context_records {
+            return Err(DocumentError::Invalid(
+                "document context exceeds the 1M record bound",
+            ));
         }
+        let history = load_history(workspace, &snapshot, max_context_records)?;
         let sequences = workspace.revision_sequences()?;
         let suppressions = workspace.active_suppressions()?;
         let view = mneme_memory::MemoryView::with_retention(
@@ -355,41 +356,7 @@ impl DocumentContext {
             sequences,
             suppressions,
         );
-        let mut documents = std::collections::BTreeMap::new();
-        let mut paths = std::collections::BTreeMap::new();
-        let mut entities = std::collections::BTreeMap::new();
-        for record in &snapshot.records {
-            match record.kind {
-                mneme_core::RecordKind::Document => {
-                    let mut document = DocumentView::parse(record.clone())?;
-                    if !document.source_is_pinned {
-                        let source = snapshot
-                            .records
-                            .iter()
-                            .find(|candidate| {
-                                candidate.record_id == document.source.source
-                                    && candidate.kind == mneme_core::RecordKind::SourceRevision
-                            })
-                            .ok_or(DocumentError::Missing(document.source.source))?;
-                        document.source.revision = source.revision_id;
-                        document.source_is_pinned = true;
-                    }
-                    if let Some(path) = &document.path
-                        && let Some(existing) = paths.insert(path.clone(), record.record_id)
-                        && existing != record.record_id
-                    {
-                        return Err(DocumentError::Conflict(
-                            "two committed documents share one logical path",
-                        ));
-                    }
-                    documents.insert(record.record_id, document);
-                }
-                mneme_core::RecordKind::Entity => {
-                    entities.insert(record.record_id, record.clone());
-                }
-                _ => {}
-            }
-        }
+        let (documents, paths, entities) = index_documents(&snapshot, max_context_records)?;
         Ok(DocumentContext {
             generation: snapshot.eligibility_generation,
             view,
@@ -483,7 +450,7 @@ impl DocumentView {
     }
 }
 
-#[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn parse_include_map(
     record: &mneme_core::RecordEnvelope,
 ) -> Result<std::collections::BTreeMap<String, SourcePin>> {
@@ -494,6 +461,7 @@ fn parse_include_map(
         .as_dictionary()
         .ok_or(DocumentError::Invalid("includes must be a dictionary"))?;
     let mut includes = std::collections::BTreeMap::new();
+    let max_includes = 1_000_000;
     for (path, reference_value) in dictionary {
         let Some(path) = path.as_string() else {
             return Err(DocumentError::Invalid("include path must be text"));
@@ -511,6 +479,11 @@ fn parse_include_map(
                 "include closure entries must be pinned",
             ));
         };
+        if !includes.contains_key(path) && includes.len() >= max_includes {
+            return Err(DocumentError::Invalid(
+                "document include closure exceeds the 1M entry bound",
+            ));
+        }
         includes.insert(
             path.to_owned(),
             SourcePin {
@@ -632,7 +605,7 @@ fn resolve_import_includes(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(unknown_lints, ambient_clock, function_length, too_many_parameters)] // include deadline is the import shell
+#[allow(unknown_lints, ambient_clock, too_many_parameters)] // include deadline is the import shell
 fn resolve_include_bytes(
     context: &DocumentContext,
     scope: &mneme_core::ScopeId,
@@ -644,46 +617,110 @@ fn resolve_include_bytes(
     stack: &mut std::collections::BTreeSet<String>,
     resolved: &mut ResolvedIncludes,
 ) -> Result<()> {
-    if depth > policy.max_depth {
-        return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
-            "include-depth-limit",
-            "include depth exceeds the configured policy",
-            1,
-            1,
-            None,
-        )]));
+    IncludeResolver {
+        context,
+        scope,
+        policy,
+        deadline,
+        stack,
+        resolved,
     }
-    if std::time::Instant::now() > deadline {
-        return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
-            "include-time-limit",
-            "include resolution exceeded the configured time limit",
-            1,
-            1,
-            None,
-        )]));
-    }
-    if resolved.closure.len() > policy.max_inputs {
-        return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
-            "include-input-limit",
-            "include input count exceeds the configured policy",
-            1,
-            1,
-            None,
-        )]));
-    }
-    let text = match std::str::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(error) => {
-            return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
+    .resolve_bytes(origin_path, bytes, depth)
+}
+
+struct IncludeResolver<'a> {
+    context: &'a DocumentContext,
+    scope: &'a mneme_core::ScopeId,
+    policy: &'a DocumentPolicy,
+    deadline: std::time::Instant,
+    stack: &'a mut std::collections::BTreeSet<String>,
+    resolved: &'a mut ResolvedIncludes,
+}
+
+impl IncludeResolver<'_> {
+    fn resolve_bytes(&mut self, origin_path: &str, bytes: &[u8], depth: usize) -> Result<()> {
+        self.check_limits(depth)?;
+        let text = std::str::from_utf8(bytes).map_err(|error| {
+            DocumentError::Diagnostics(vec![Diagnostic::new(
                 "invalid-utf8",
                 "included source is not valid UTF-8",
                 1,
                 error.valid_up_to(),
                 None,
+            )])
+        })?;
+        for directive in asciidoc::scan_includes(text) {
+            self.resolve_directive(origin_path, &directive, depth)?;
+        }
+        Ok(())
+    }
+
+    #[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
+    fn check_limits(&self, depth: usize) -> Result<()> {
+        if depth > self.policy.max_depth {
+            return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
+                "include-depth-limit",
+                "include depth exceeds the configured policy",
+                1,
+                1,
+                None,
             )]));
         }
-    };
-    for directive in asciidoc::scan_includes(text) {
+        if std::time::Instant::now() > self.deadline {
+            return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
+                "include-time-limit",
+                "include resolution exceeded the configured time limit",
+                1,
+                1,
+                None,
+            )]));
+        }
+        if self.resolved.closure.len() > self.policy.max_inputs {
+            return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
+                "include-input-limit",
+                "include input count exceeds the configured policy",
+                1,
+                1,
+                None,
+            )]));
+        }
+        Ok(())
+    }
+
+    fn resolve_directive(
+        &mut self,
+        origin_path: &str,
+        directive: &asciidoc::IncludeDirective,
+        depth: usize,
+    ) -> Result<()> {
+        let Some((path, source_pin)) = self.resolve_target(origin_path, directive)? else {
+            return Ok(());
+        };
+        let included = self.load_source(source_pin, directive)?;
+        self.resolved.total_bytes = self.resolved.total_bytes.saturating_add(included.len());
+        if self.resolved.total_bytes > self.policy.max_total_source_bytes {
+            return Err(include_error(
+                "include-byte-limit",
+                "include closure exceeds the configured byte limit",
+                directive,
+            ));
+        }
+        if self
+            .resolved
+            .closure
+            .insert(path.clone(), source_pin)
+            .is_none()
+        {
+            self.recurse_include(path, source_pin, included, directive, depth)?;
+        }
+        Ok(())
+    }
+
+    fn resolve_target(
+        &mut self,
+        origin_path: &str,
+        directive: &asciidoc::IncludeDirective,
+    ) -> Result<Option<(String, SourcePin)>> {
         let path = match asciidoc::normalize_include_path(origin_path, &directive.target) {
             Ok(path) => path,
             Err(mut diagnostic) => {
@@ -693,29 +730,22 @@ fn resolve_include_bytes(
                 return Err(DocumentError::Diagnostics(vec![diagnostic]));
             }
         };
-        if !asciidoc::allowed_path(&path, &policy.allowed_roots) {
-            let mut diagnostic = Diagnostic::new(
+        if !asciidoc::allowed_path(&path, &self.policy.allowed_roots) {
+            let mut diagnostic = include_diagnostic(
                 "include-not-allowed",
                 "include target is outside the authorized document roots",
-                directive.line,
-                directive.column,
-                Some(directive.span),
+                directive,
             );
             diagnostic.fatal = true;
             return Err(DocumentError::Diagnostics(vec![diagnostic]));
         }
-        if stack.contains(&path) {
-            let mut diagnostic = Diagnostic::new(
-                "include-cycle",
-                "include graph contains a cycle",
-                directive.line,
-                directive.column,
-                Some(directive.span),
-            );
+        if self.stack.contains(&path) {
+            let mut diagnostic =
+                include_diagnostic("include-cycle", "include graph contains a cycle", directive);
             diagnostic.fatal = true;
             return Err(DocumentError::Diagnostics(vec![diagnostic]));
         }
-        let Some(document_id) = context.paths.get(&path).copied() else {
+        let Some(document_id) = self.context.paths.get(&path).copied() else {
             let diagnostic = if directive.optional {
                 Diagnostic::warning(
                     "include-optional-missing",
@@ -736,85 +766,95 @@ fn resolve_include_bytes(
             if diagnostic.fatal {
                 return Err(DocumentError::Diagnostics(vec![diagnostic]));
             }
-            resolved.diagnostics.push(diagnostic);
-            continue;
+            self.resolved.diagnostics.push(diagnostic);
+            return Ok(None);
         };
-        let document = context
+        let document = self
+            .context
             .documents
             .get(&document_id)
             .ok_or(DocumentError::Missing(document_id))?;
-        if document.record.scope != *scope {
-            return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
+        if document.record.scope != *self.scope {
+            return Err(DocumentError::Diagnostics(vec![include_diagnostic(
                 "include-unauthorized",
                 "include target is outside the caller's scope",
-                directive.line,
-                directive.column,
-                Some(directive.span),
+                directive,
             )]));
         }
-        let (source, included) =
-            context
-                .require_retained_source(document.source)
-                .map_err(|error| match error {
-                    DocumentError::Diagnostics(mut diagnostics) => {
-                        for diagnostic in &mut diagnostics {
-                            diagnostic.line = directive.line;
-                            diagnostic.column = directive.column;
-                            diagnostic.span = Some(directive.span);
-                        }
-                        DocumentError::Diagnostics(diagnostics)
-                    }
-                    other => other,
-                })?;
-        let _ = source;
-        resolved.total_bytes = resolved.total_bytes.saturating_add(included.len());
-        if resolved.total_bytes > policy.max_total_source_bytes {
-            return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
-                "include-byte-limit",
-                "include closure exceeds the configured byte limit",
-                directive.line,
-                directive.column,
-                Some(directive.span),
-            )]));
-        }
-        if resolved
-            .closure
-            .insert(path.clone(), document.source)
-            .is_none()
-        {
-            if resolved.closure.len() > policy.max_inputs {
-                return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
-                    "include-input-limit",
-                    "include input count exceeds the configured policy",
-                    directive.line,
-                    directive.column,
-                    Some(directive.span),
-                )]));
-            }
-            resolved.sources.insert(
-                path.clone(),
-                preview::RenderSource {
-                    path: path.clone(),
-                    pin: document.source,
-                    bytes: included.clone(),
-                },
-            );
-            stack.insert(path.clone());
-            resolve_include_bytes(
-                context,
-                scope,
-                &path,
-                &included,
-                policy,
-                deadline,
-                depth + 1,
-                stack,
-                resolved,
-            )?;
-            stack.remove(&path);
-        }
+        Ok(Some((path, document.source)))
     }
-    Ok(())
+
+    fn load_source(
+        &self,
+        source: SourcePin,
+        directive: &asciidoc::IncludeDirective,
+    ) -> Result<Vec<u8>> {
+        self.context
+            .require_retained_source(source)
+            .map(|(_, bytes)| bytes)
+            .map_err(|error| match error {
+                DocumentError::Diagnostics(mut diagnostics) => {
+                    for diagnostic in &mut diagnostics {
+                        diagnostic.line = directive.line;
+                        diagnostic.column = directive.column;
+                        diagnostic.span = Some(directive.span);
+                    }
+                    DocumentError::Diagnostics(diagnostics)
+                }
+                other => other,
+            })
+    }
+
+    fn recurse_include(
+        &mut self,
+        path: String,
+        source_pin: SourcePin,
+        included: Vec<u8>,
+        directive: &asciidoc::IncludeDirective,
+        depth: usize,
+    ) -> Result<()> {
+        if self.resolved.closure.len() > self.policy.max_inputs {
+            return Err(include_error(
+                "include-input-limit",
+                "include input count exceeds the configured policy",
+                directive,
+            ));
+        }
+        self.resolved.sources.insert(
+            path.clone(),
+            preview::RenderSource {
+                path: path.clone(),
+                pin: source_pin,
+                bytes: included.clone(),
+            },
+        );
+        self.stack.insert(path.clone());
+        self.resolve_bytes(&path, &included, depth + 1)?;
+        self.stack.remove(&path);
+        Ok(())
+    }
+}
+
+fn include_error(
+    code: &'static str,
+    message: &'static str,
+    directive: &asciidoc::IncludeDirective,
+) -> DocumentError {
+    DocumentError::Diagnostics(vec![include_diagnostic(code, message, directive)])
+}
+
+fn include_diagnostic(
+    code: &'static str,
+    message: &'static str,
+    directive: &asciidoc::IncludeDirective,
+) -> Diagnostic {
+    Diagnostic::new(
+        code,
+        message,
+        directive.line,
+        directive.column,
+        Some(directive.span),
+    )
 }
 
 struct PreparedDocument {
@@ -822,6 +862,36 @@ struct PreparedDocument {
     records: Vec<mneme_store::RecordDraft>,
     source_blob: mneme_store::SourceBlobDraft,
     document_id: mneme_core::RecordId,
+}
+
+struct SourcePreparation<'a> {
+    request: &'a ImportRequest,
+    bytes: &'a [u8],
+    text: &'a str,
+    context: DocumentContext,
+    existing: Option<DocumentView>,
+    document_id: mneme_core::RecordId,
+    source_id: mneme_core::RecordId,
+    source_revision: mneme_core::RevisionId,
+    document_revision: mneme_core::RevisionId,
+    source: SourcePin,
+    digest: mneme_core::ContentDigest,
+    candidate_id: String,
+}
+
+struct SourceAnalysis {
+    title: String,
+    entity: Option<mneme_core::RecordId>,
+    diagnostics: Vec<Diagnostic>,
+    deadline: std::time::Instant,
+    resolved: ResolvedIncludes,
+    anchors: Vec<asciidoc::AnchorSpec>,
+}
+
+struct SourceRender {
+    html: String,
+    diagnostics: Vec<Diagnostic>,
+    includes: Vec<IncludedSource>,
 }
 
 /// A source-first document service over one mutable workspace.
@@ -908,7 +978,7 @@ impl<'w> Documents<'w> {
     }
 
     /// Move a document to a new logical path without changing identity or source.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn move_document(&mut self, request: MoveRequest) -> Result<DocumentRevision> {
         if let Some(outcome) = self.workspace.command_outcome_by_key(
             &request.actor,
@@ -928,33 +998,7 @@ impl<'w> Documents<'w> {
             .get(&request.document_id)
             .cloned()
             .ok_or(DocumentError::Missing(request.document_id))?;
-        if document.record.scope != request.scope {
-            return Err(DocumentError::Invalid("document scope is not authorized"));
-        }
-        mneme_store::blob::validate_relative_path(&request.path)
-            .map_err(|error| DocumentError::Io(error.to_string()))?;
-        if request.path.contains('\\') {
-            return Err(DocumentError::Invalid(
-                "document path must use forward slashes",
-            ));
-        }
-        if let Some(existing) = context.paths.get(&request.path)
-            && *existing != request.document_id
-        {
-            return Err(DocumentError::Conflict(
-                "destination path is already in use",
-            ));
-        }
-        let title = match request.title.as_deref() {
-            Some(title) => {
-                let title = title.trim();
-                if title.is_empty() {
-                    return Err(DocumentError::Invalid("document title is required"));
-                }
-                Some(title.to_owned())
-            }
-            None => None,
-        };
+        let title = Self::move_destination_title(&context, &request, &document)?;
         let mut payload = document.record.payload.clone();
         payload.insert(
             mneme_core::Symbol::from("path"),
@@ -988,6 +1032,40 @@ impl<'w> Documents<'w> {
             retention: None,
         })?;
         self.revision_from_outcome(&scope, Some(request.document_id), &request.path, outcome)
+    }
+
+    fn move_destination_title(
+        context: &DocumentContext,
+        request: &MoveRequest,
+        document: &DocumentView,
+    ) -> Result<Option<String>> {
+        if document.record.scope != request.scope {
+            return Err(DocumentError::Invalid("document scope is not authorized"));
+        }
+        mneme_store::blob::validate_relative_path(&request.path)
+            .map_err(|error| DocumentError::Io(error.to_string()))?;
+        if request.path.contains('\\') {
+            return Err(DocumentError::Invalid(
+                "document path must use forward slashes",
+            ));
+        }
+        if let Some(existing) = context.paths.get(&request.path)
+            && *existing != request.document_id
+        {
+            return Err(DocumentError::Conflict(
+                "destination path is already in use",
+            ));
+        }
+        match request.title.as_deref() {
+            Some(title) => {
+                let title = title.trim();
+                if title.is_empty() {
+                    return Err(DocumentError::Invalid("document title is required"));
+                }
+                Ok(Some(title.to_owned()))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Apply a localized entity-id header patch and import the result.
@@ -1087,56 +1165,11 @@ impl<'w> Documents<'w> {
         Ok(outcome.revision)
     }
 
-    #[allow(unknown_lints, ambient_clock, function_length)] // include deadline is the import shell
+    #[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
     fn prepare_source(&self, request: &ImportRequest, bytes: &[u8]) -> Result<PreparedDocument> {
-        if request.actor.trim().is_empty() || request.idempotency_key.trim().is_empty() {
-            return Err(DocumentError::Invalid(
-                "actor and idempotency key are required",
-            ));
-        }
-        mneme_store::blob::validate_relative_path(&request.path)
-            .map_err(|error| DocumentError::Io(error.to_string()))?;
-        if request.path.contains('\\') {
-            return Err(DocumentError::Invalid(
-                "document path must use forward slashes",
-            ));
-        }
+        validate_import_request(request)?;
         let context = DocumentContext::load(self.workspace, Some(request.base_revision))?;
-        let existing = match request.document_id {
-            Some(id) => Some(
-                context
-                    .documents
-                    .get(&id)
-                    .cloned()
-                    .ok_or(DocumentError::Missing(id))?,
-            ),
-            None => context
-                .paths
-                .get(&request.path)
-                .and_then(|id| context.documents.get(id))
-                .cloned(),
-        };
-        if let Some(existing) = &existing {
-            if existing.record.scope != request.scope {
-                return Err(DocumentError::Invalid("document scope is not authorized"));
-            }
-            if existing
-                .path
-                .as_deref()
-                .is_some_and(|path| path != request.path)
-            {
-                return Err(DocumentError::Conflict(
-                    "use move_document for a path change",
-                ));
-            }
-        }
-        if let Some(existing_id) = context.paths.get(&request.path)
-            && request
-                .document_id
-                .is_some_and(|document_id| document_id != *existing_id)
-        {
-            return Err(DocumentError::Conflict("document path is already in use"));
-        }
+        let existing = load_existing_document(request, &context)?;
         let document_id = existing
             .as_ref()
             .map(|document| document.record.record_id)
@@ -1154,301 +1187,479 @@ impl<'w> Documents<'w> {
         let text = match std::str::from_utf8(bytes) {
             Ok(text) => text,
             Err(error) => {
-                return Ok(PreparedDocument {
-                    validated: ValidatedDocument {
-                        candidate_id,
-                        base_revision: request.base_revision,
-                        document_id: Some(document_id),
-                        path: request.path.clone(),
-                        title: request.title.clone().unwrap_or_default(),
-                        entity: None,
-                        source_digest: digest,
-                        anchors: Vec::new(),
-                        includes: Vec::new(),
-                        diagnostics: vec![Diagnostic::new(
-                            "invalid-utf8",
-                            "document source is not valid UTF-8",
-                            1,
-                            error.valid_up_to(),
-                            None,
-                        )],
-                        preview_diagnostics: Vec::new(),
-                        valid: false,
-                        preview_html: String::new(),
-                    },
-                    records: Vec::new(),
-                    source_blob: mneme_store::SourceBlobDraft {
-                        bytes: bytes.to_vec(),
-                        media_type: mneme_core::Symbol::from("text/asciidoc"),
-                    },
+                return Ok(invalid_utf8_document(
+                    request,
+                    bytes,
                     document_id,
-                });
-            }
-        };
-        let mut diagnostics = Vec::new();
-        let header = match asciidoc::parse_header(text) {
-            Ok(header) => header,
-            Err(errors) => {
-                diagnostics.extend(errors);
-                Header::default()
-            }
-        };
-        let title = request
-            .title
-            .clone()
-            .or(header.title.clone())
-            .unwrap_or_else(|| {
-                std::path::Path::new(&request.path)
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .unwrap_or("Untitled")
-                    .to_owned()
-            });
-        let mut entity = header.entity_id;
-        if let Some(entity_id) = entity {
-            match context.entities.get(&entity_id) {
-                None => {
-                    diagnostics.push(Diagnostic::new(
-                        "binding-missing",
-                        "entity-id does not name a committed entity",
-                        1,
-                        1,
-                        None,
-                    ));
-                    entity = None;
-                }
-                Some(record) if record.scope != request.scope => {
-                    diagnostics.push(Diagnostic::new(
-                        "binding-unauthorized",
-                        "entity-id is outside the caller's scope",
-                        1,
-                        1,
-                        None,
-                    ));
-                    entity = None;
-                }
-                Some(_) => {}
-            }
-        }
-        let include_start = std::time::Instant::now();
-        let max_time_ms = u64::try_from(request.policy.max_time_ms)
-            .map_err(|_| DocumentError::Invalid("include time budget exceeds u64 milliseconds"))?;
-        let deadline = include_start + std::time::Duration::from_millis(max_time_ms);
-        let resolved = match resolve_import_includes(
-            &context,
-            &request.scope,
-            &request.path,
-            bytes,
-            &request.policy,
-            deadline,
-        ) {
-            Ok(resolved) => resolved,
-            Err(DocumentError::Diagnostics(errors)) => {
-                diagnostics.extend(errors);
-                ResolvedIncludes {
-                    closure: std::collections::BTreeMap::new(),
-                    sources: std::collections::BTreeMap::new(),
-                    diagnostics: Vec::new(),
-                    total_bytes: bytes.len(),
-                }
-            }
-            Err(error) => return Err(error),
-        };
-        diagnostics.extend(resolved.diagnostics.clone());
-        let mut anchors = asciidoc::scan_anchors(text);
-        let mut seen_anchors = std::collections::BTreeSet::new();
-        anchors.retain(|anchor| {
-            if seen_anchors.insert(anchor.anchor.clone()) {
-                true
-            } else {
-                diagnostics.push(Diagnostic::new(
-                    "anchor-conflict",
-                    format!("duplicate anchor {}", anchor.anchor),
-                    anchor.line,
-                    anchor.column,
-                    Some(anchor.span),
+                    digest,
+                    candidate_id,
+                    error.valid_up_to(),
                 ));
-                false
             }
-        });
-        let mut render_sources = resolved.sources.clone();
-        render_sources.insert(
-            request.path.clone(),
-            preview::RenderSource {
-                path: request.path.clone(),
-                pin: source,
-                bytes: bytes.to_vec(),
-            },
-        );
-        let metadata = entity.and_then(|id| context.entities.get(&id));
-        let root_render = render_sources
-            .get(&request.path)
-            .cloned()
-            .ok_or(DocumentError::Invalid("root preview source is missing"))?;
-        let rendered = preview::render(
-            &root_render,
-            &render_sources,
-            metadata,
-            &request.render_config,
-            Some(deadline),
-        );
-        let is_valid = !diagnostics.iter().any(|diagnostic| diagnostic.fatal);
-        let included = resolved
-            .closure
-            .iter()
-            .filter_map(|(path, pin)| {
-                resolved.sources.get(path).map(|source| IncludedSource {
-                    path: path.clone(),
-                    pin: *pin,
-                    digest: Some(mneme_core::ContentDigest::of_source_bytes(&source.bytes)),
-                })
-            })
-            .collect::<Vec<_>>();
-        let validated = ValidatedDocument {
+        };
+        self.prepare_valid_source(SourcePreparation {
+            request,
+            bytes,
+            text,
+            context,
+            existing,
+            document_id,
+            source_id,
+            source_revision,
+            document_revision,
+            source,
+            digest,
             candidate_id,
-            base_revision: request.base_revision,
-            document_id: Some(document_id),
-            path: request.path.clone(),
-            title: title.clone(),
+        })
+    }
+
+    fn prepare_valid_source(&self, preparation: SourcePreparation<'_>) -> Result<PreparedDocument> {
+        let (title, entity, diagnostics) = source_header(&preparation);
+        let (deadline, resolved, anchors, diagnostics) =
+            source_dependencies(&preparation, diagnostics)?;
+        let analysis = SourceAnalysis {
+            title,
             entity,
-            source_digest: digest,
-            anchors: anchors.clone(),
-            includes: included.clone(),
             diagnostics,
+            deadline,
+            resolved,
+            anchors,
+        };
+        let rendered = render_prepared_source(&preparation, &analysis)?;
+        let is_valid = !analysis
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.fatal);
+        let records = if is_valid {
+            build_source_records(&preparation, &analysis)?
+        } else {
+            Vec::new()
+        };
+        let validated = ValidatedDocument {
+            candidate_id: preparation.candidate_id,
+            base_revision: preparation.request.base_revision,
+            document_id: Some(preparation.document_id),
+            path: preparation.request.path.clone(),
+            title: analysis.title,
+            entity: analysis.entity,
+            source_digest: preparation.digest,
+            anchors: analysis.anchors,
+            includes: rendered.includes,
+            diagnostics: analysis.diagnostics,
             preview_diagnostics: rendered.diagnostics,
             valid: is_valid,
             preview_html: rendered.html,
         };
-        let mut records = Vec::new();
-        let mut binding = None;
-        if is_valid {
-            let mut source_draft = mneme_memory::build_source(
-                source_id,
-                source_revision,
-                &request.scope,
-                bytes,
-                "text/asciidoc",
-                entity,
-                Some(&request.path),
-            )?
-            .0;
-            if let Some(existing) = &existing {
-                source_draft.predecessor = Some(existing.source.revision);
-            }
-            records.push(source_draft);
-            if let Some(entity_id) = entity {
-                let binding_id = fresh_id()?;
-                let binding_revision = fresh_revision()?;
-                records.push(mneme_store::RecordDraft {
-                    schema_version: DOCUMENT_SCHEMA_VERSION,
-                    kind: mneme_core::RecordKind::DocumentBinding,
-                    record_id: binding_id,
-                    revision_id: binding_revision,
-                    predecessor: None,
-                    scope: request.scope.clone(),
-                    payload: document_binding_payload(document_id, entity_id, source)?,
-                });
-                binding = Some(binding_id);
-            }
-            let mut includes_dictionary = std::collections::BTreeMap::new();
-            for (path, pin) in &resolved.closure {
-                includes_dictionary.insert(
-                    mneme_core::Value::string(path.clone()),
-                    mneme_core::Reference::pinned(
-                        pin.source,
-                        pin.revision,
-                        mneme_core::RecordKind::SourceRevision,
-                    )
-                    .to_value(),
-                );
-            }
-            let mut document_payload = vec![
-                (
-                    mneme_core::Symbol::from("title"),
-                    mneme_core::Value::string(title),
-                ),
-                (
-                    mneme_core::Symbol::from("source-revision"),
-                    mneme_core::Reference::pinned(
-                        source_id,
-                        source_revision,
-                        mneme_core::RecordKind::SourceRevision,
-                    )
-                    .to_value(),
-                ),
-                (
-                    mneme_core::Symbol::from("path"),
-                    mneme_core::Value::string(request.path.clone()),
-                ),
-                (
-                    mneme_core::Symbol::from("render-config"),
-                    mneme_core::Value::string(request.render_config.version.clone()),
-                ),
-            ];
-            if let Some(entity_id) = entity {
-                document_payload.push((
-                    mneme_core::Symbol::from("entity"),
-                    mneme_core::Reference::local(entity_id, mneme_core::RecordKind::Entity)
-                        .to_value(),
-                ));
-            }
-            if let Some(binding_id) = binding {
-                document_payload.push((
-                    mneme_core::Symbol::from("binding"),
-                    mneme_core::Reference::local(
-                        binding_id,
-                        mneme_core::RecordKind::DocumentBinding,
-                    )
-                    .to_value(),
-                ));
-            }
-            if !includes_dictionary.is_empty() {
-                document_payload.push((
-                    mneme_core::Symbol::from("includes"),
-                    mneme_core::Value::Dictionary(includes_dictionary),
-                ));
-            }
-            records.push(mneme_store::RecordDraft {
-                schema_version: DOCUMENT_SCHEMA_VERSION,
-                kind: mneme_core::RecordKind::Document,
-                record_id: document_id,
-                revision_id: document_revision,
-                predecessor: existing
-                    .as_ref()
-                    .map(|document| document.record.revision_id),
-                scope: request.scope.clone(),
-                payload: mneme_core::Payload::new(document_payload),
-            });
-            for anchor in &anchors {
-                let anchor_id = fresh_id()?;
-                let anchor_revision = fresh_revision()?;
-                records.push(mneme_store::RecordDraft {
-                    schema_version: DOCUMENT_SCHEMA_VERSION,
-                    kind: mneme_core::RecordKind::DocumentAnchor,
-                    record_id: anchor_id,
-                    revision_id: anchor_revision,
-                    predecessor: None,
-                    scope: request.scope.clone(),
-                    payload: document_anchor_payload(document_id, source, anchor),
-                });
-            }
-        }
         Ok(PreparedDocument {
             validated,
             records,
             source_blob: mneme_memory::build_source(
-                source_id,
-                source_revision,
-                &request.scope,
-                bytes,
+                preparation.source_id,
+                preparation.source_revision,
+                &preparation.request.scope,
+                preparation.bytes,
                 "text/asciidoc",
-                entity,
-                Some(&request.path),
+                analysis.entity,
+                Some(&preparation.request.path),
             )?
             .1,
-            document_id,
+            document_id: preparation.document_id,
         })
     }
+}
+
+fn validate_import_request(request: &ImportRequest) -> Result<()> {
+    if request.actor.trim().is_empty() || request.idempotency_key.trim().is_empty() {
+        return Err(DocumentError::Invalid(
+            "actor and idempotency key are required",
+        ));
+    }
+    mneme_store::blob::validate_relative_path(&request.path)
+        .map_err(|error| DocumentError::Io(error.to_string()))?;
+    if request.path.contains('\\') {
+        return Err(DocumentError::Invalid(
+            "document path must use forward slashes",
+        ));
+    }
+    Ok(())
+}
+
+fn load_existing_document(
+    request: &ImportRequest,
+    context: &DocumentContext,
+) -> Result<Option<DocumentView>> {
+    let existing = match request.document_id {
+        Some(id) => Some(
+            context
+                .documents
+                .get(&id)
+                .cloned()
+                .ok_or(DocumentError::Missing(id))?,
+        ),
+        None => context
+            .paths
+            .get(&request.path)
+            .and_then(|id| context.documents.get(id))
+            .cloned(),
+    };
+    if let Some(existing) = &existing {
+        if existing.record.scope != request.scope {
+            return Err(DocumentError::Invalid("document scope is not authorized"));
+        }
+        if existing
+            .path
+            .as_deref()
+            .is_some_and(|path| path != request.path)
+        {
+            return Err(DocumentError::Conflict(
+                "use move_document for a path change",
+            ));
+        }
+    }
+    if let Some(existing_id) = context.paths.get(&request.path)
+        && request
+            .document_id
+            .is_some_and(|document_id| document_id != *existing_id)
+    {
+        return Err(DocumentError::Conflict("document path is already in use"));
+    }
+    Ok(existing)
+}
+
+#[allow(unknown_lints, too_many_parameters)] // parameter groups mirror one compact fixture/context
+fn invalid_utf8_document(
+    request: &ImportRequest,
+    bytes: &[u8],
+    document_id: mneme_core::RecordId,
+    digest: mneme_core::ContentDigest,
+    candidate_id: String,
+    valid_up_to: usize,
+) -> PreparedDocument {
+    PreparedDocument {
+        validated: ValidatedDocument {
+            candidate_id,
+            base_revision: request.base_revision,
+            document_id: Some(document_id),
+            path: request.path.clone(),
+            title: request.title.clone().unwrap_or_default(),
+            entity: None,
+            source_digest: digest,
+            anchors: Vec::new(),
+            includes: Vec::new(),
+            diagnostics: vec![Diagnostic::new(
+                "invalid-utf8",
+                "document source is not valid UTF-8",
+                1,
+                valid_up_to,
+                None,
+            )],
+            preview_diagnostics: Vec::new(),
+            valid: false,
+            preview_html: String::new(),
+        },
+        records: Vec::new(),
+        source_blob: mneme_store::SourceBlobDraft {
+            bytes: bytes.to_vec(),
+            media_type: mneme_core::Symbol::from("text/asciidoc"),
+        },
+        document_id,
+    }
+}
+
+fn source_header(
+    preparation: &SourcePreparation<'_>,
+) -> (String, Option<mneme_core::RecordId>, Vec<Diagnostic>) {
+    let mut diagnostics = Vec::new();
+    let header = match asciidoc::parse_header(preparation.text) {
+        Ok(header) => header,
+        Err(errors) => {
+            diagnostics.extend(errors);
+            Header::default()
+        }
+    };
+    let title = preparation
+        .request
+        .title
+        .clone()
+        .or(header.title.clone())
+        .unwrap_or_else(|| {
+            std::path::Path::new(&preparation.request.path)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("Untitled")
+                .to_owned()
+        });
+    let mut entity = header.entity_id;
+    if let Some(entity_id) = entity {
+        match preparation.context.entities.get(&entity_id) {
+            None => {
+                diagnostics.push(Diagnostic::new(
+                    "binding-missing",
+                    "entity-id does not name a committed entity",
+                    1,
+                    1,
+                    None,
+                ));
+                entity = None;
+            }
+            Some(record) if record.scope != preparation.request.scope => {
+                diagnostics.push(Diagnostic::new(
+                    "binding-unauthorized",
+                    "entity-id is outside the caller's scope",
+                    1,
+                    1,
+                    None,
+                ));
+                entity = None;
+            }
+            Some(_) => {}
+        }
+    }
+    (title, entity, diagnostics)
+}
+
+#[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
+fn source_dependencies(
+    preparation: &SourcePreparation<'_>,
+    mut diagnostics: Vec<Diagnostic>,
+) -> Result<(
+    std::time::Instant,
+    ResolvedIncludes,
+    Vec<asciidoc::AnchorSpec>,
+    Vec<Diagnostic>,
+)> {
+    let include_start = std::time::Instant::now();
+    let max_time_ms = u64::try_from(preparation.request.policy.max_time_ms)
+        .map_err(|_| DocumentError::Invalid("include time budget exceeds u64 milliseconds"))?;
+    let deadline = include_start + std::time::Duration::from_millis(max_time_ms);
+    let resolved = match resolve_import_includes(
+        &preparation.context,
+        &preparation.request.scope,
+        &preparation.request.path,
+        preparation.bytes,
+        &preparation.request.policy,
+        deadline,
+    ) {
+        Ok(resolved) => resolved,
+        Err(DocumentError::Diagnostics(errors)) => {
+            diagnostics.extend(errors);
+            ResolvedIncludes {
+                closure: std::collections::BTreeMap::new(),
+                sources: std::collections::BTreeMap::new(),
+                diagnostics: Vec::new(),
+                total_bytes: preparation.bytes.len(),
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    diagnostics.extend(resolved.diagnostics.clone());
+    let mut anchors = asciidoc::scan_anchors(preparation.text);
+    let mut seen_anchors = std::collections::BTreeSet::new();
+    anchors.retain(|anchor| {
+        if seen_anchors.insert(anchor.anchor.clone()) {
+            true
+        } else {
+            diagnostics.push(Diagnostic::new(
+                "anchor-conflict",
+                format!("duplicate anchor {}", anchor.anchor),
+                anchor.line,
+                anchor.column,
+                Some(anchor.span),
+            ));
+            false
+        }
+    });
+    Ok((deadline, resolved, anchors, diagnostics))
+}
+
+fn render_prepared_source(
+    preparation: &SourcePreparation<'_>,
+    analysis: &SourceAnalysis,
+) -> Result<SourceRender> {
+    let mut render_sources = analysis.resolved.sources.clone();
+    render_sources.insert(
+        preparation.request.path.clone(),
+        preview::RenderSource {
+            path: preparation.request.path.clone(),
+            pin: preparation.source,
+            bytes: preparation.bytes.to_vec(),
+        },
+    );
+    let metadata = analysis
+        .entity
+        .and_then(|id| preparation.context.entities.get(&id));
+    let root_render = render_sources
+        .get(&preparation.request.path)
+        .cloned()
+        .ok_or(DocumentError::Invalid("root preview source is missing"))?;
+    let rendered = preview::render(
+        &root_render,
+        &render_sources,
+        metadata,
+        &preparation.request.render_config,
+        Some(analysis.deadline),
+    );
+    let includes = analysis
+        .resolved
+        .closure
+        .iter()
+        .filter_map(|(path, pin)| {
+            analysis
+                .resolved
+                .sources
+                .get(path)
+                .map(|source| IncludedSource {
+                    path: path.clone(),
+                    pin: *pin,
+                    digest: Some(mneme_core::ContentDigest::of_source_bytes(&source.bytes)),
+                })
+        })
+        .collect();
+    Ok(SourceRender {
+        html: rendered.html,
+        diagnostics: rendered.diagnostics,
+        includes,
+    })
+}
+
+fn build_source_records(
+    preparation: &SourcePreparation<'_>,
+    analysis: &SourceAnalysis,
+) -> Result<Vec<mneme_store::RecordDraft>> {
+    let request = preparation.request;
+    let mut source_draft = mneme_memory::build_source(
+        preparation.source_id,
+        preparation.source_revision,
+        &request.scope,
+        preparation.bytes,
+        "text/asciidoc",
+        analysis.entity,
+        Some(&request.path),
+    )?
+    .0;
+    if let Some(existing) = &preparation.existing {
+        source_draft.predecessor = Some(existing.source.revision);
+    }
+    let mut records = vec![source_draft];
+    let binding = if let Some(entity_id) = analysis.entity {
+        let binding_id = fresh_id()?;
+        let binding_revision = fresh_revision()?;
+        records.push(mneme_store::RecordDraft {
+            schema_version: DOCUMENT_SCHEMA_VERSION,
+            kind: mneme_core::RecordKind::DocumentBinding,
+            record_id: binding_id,
+            revision_id: binding_revision,
+            predecessor: None,
+            scope: request.scope.clone(),
+            payload: document_binding_payload(
+                preparation.document_id,
+                entity_id,
+                preparation.source,
+            )?,
+        });
+        Some(binding_id)
+    } else {
+        None
+    };
+    let payload = document_payload(preparation, analysis, binding);
+    records.push(mneme_store::RecordDraft {
+        schema_version: DOCUMENT_SCHEMA_VERSION,
+        kind: mneme_core::RecordKind::Document,
+        record_id: preparation.document_id,
+        revision_id: preparation.document_revision,
+        predecessor: preparation
+            .existing
+            .as_ref()
+            .map(|document| document.record.revision_id),
+        scope: request.scope.clone(),
+        payload,
+    });
+    append_anchor_records(&mut records, preparation, analysis)?;
+    Ok(records)
+}
+
+fn document_payload(
+    preparation: &SourcePreparation<'_>,
+    analysis: &SourceAnalysis,
+    binding: Option<mneme_core::RecordId>,
+) -> mneme_core::Payload {
+    let request = preparation.request;
+    let mut includes_dictionary = std::collections::BTreeMap::new();
+    for (path, pin) in &analysis.resolved.closure {
+        includes_dictionary.insert(
+            mneme_core::Value::string(path.clone()),
+            mneme_core::Reference::pinned(
+                pin.source,
+                pin.revision,
+                mneme_core::RecordKind::SourceRevision,
+            )
+            .to_value(),
+        );
+    }
+    let mut payload = vec![
+        (
+            mneme_core::Symbol::from("title"),
+            mneme_core::Value::string(analysis.title.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("source-revision"),
+            mneme_core::Reference::pinned(
+                preparation.source_id,
+                preparation.source_revision,
+                mneme_core::RecordKind::SourceRevision,
+            )
+            .to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("path"),
+            mneme_core::Value::string(request.path.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("render-config"),
+            mneme_core::Value::string(request.render_config.version.clone()),
+        ),
+    ];
+    if let Some(entity_id) = analysis.entity {
+        payload.push((
+            mneme_core::Symbol::from("entity"),
+            mneme_core::Reference::local(entity_id, mneme_core::RecordKind::Entity).to_value(),
+        ));
+    }
+    if let Some(binding_id) = binding {
+        payload.push((
+            mneme_core::Symbol::from("binding"),
+            mneme_core::Reference::local(binding_id, mneme_core::RecordKind::DocumentBinding)
+                .to_value(),
+        ));
+    }
+    if !includes_dictionary.is_empty() {
+        payload.push((
+            mneme_core::Symbol::from("includes"),
+            mneme_core::Value::Dictionary(includes_dictionary),
+        ));
+    }
+    mneme_core::Payload::new(payload)
+}
+
+fn append_anchor_records(
+    records: &mut Vec<mneme_store::RecordDraft>,
+    preparation: &SourcePreparation<'_>,
+    analysis: &SourceAnalysis,
+) -> Result<()> {
+    for anchor in &analysis.anchors {
+        let anchor_id = fresh_id()?;
+        let anchor_revision = fresh_revision()?;
+        records.push(mneme_store::RecordDraft {
+            schema_version: DOCUMENT_SCHEMA_VERSION,
+            kind: mneme_core::RecordKind::DocumentAnchor,
+            record_id: anchor_id,
+            revision_id: anchor_revision,
+            predecessor: None,
+            scope: preparation.request.scope.clone(),
+            payload: document_anchor_payload(preparation.document_id, preparation.source, anchor),
+        });
+    }
+    Ok(())
 }
 
 fn document_binding_payload(
@@ -1781,15 +1992,20 @@ impl Documents<'_> {
     }
 
     /// List explicit anchors for the current document revision.
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn anchors(&self, document_id: mneme_core::RecordId) -> Result<Vec<AnchorRecord>> {
         let context = DocumentContext::load(self.workspace, None)?;
         let document = context
             .documents
             .get(&document_id)
             .ok_or(DocumentError::Missing(document_id))?;
-        let mut anchors = Vec::new();
-        for record in &context.view.snapshot().records {
+        let records = &context.view.snapshot().records;
+        let max_anchors = records
+            .iter()
+            .filter(|record| record.kind == mneme_core::RecordKind::DocumentAnchor)
+            .count();
+        let mut anchors = Vec::with_capacity(max_anchors);
+        for record in records {
             if record.kind != mneme_core::RecordKind::DocumentAnchor
                 || optional_reference_target(record, "document") != Some(document_id)
                 || !reference_is_pinned_to(record, "source-revision", document.source)
@@ -1822,7 +2038,7 @@ impl Documents<'_> {
     }
 
     /// Render a current or historical document preview.
-    #[allow(unknown_lints, ambient_clock, function_length)] // preview deadline is the render shell
+    #[allow(unknown_lints, ambient_clock)] // preview deadline is the render shell
     pub fn preview(
         &mut self,
         document_id: mneme_core::RecordId,
@@ -1839,102 +2055,12 @@ impl Documents<'_> {
         let source_digest = source_view
             .as_ref()
             .and_then(|source| source.digest().or(source.prior_digest));
-        let mut diagnostics = Vec::new();
-        let mut root_source = None;
-        match context.source_bytes(document.source) {
-            Ok(Some(bytes)) => {
-                root_source = Some(preview::RenderSource {
-                    path: document
-                        .path
-                        .clone()
-                        .unwrap_or_else(|| "<document>".to_owned()),
-                    pin: document.source,
-                    bytes,
-                });
-            }
-            Ok(None) | Err(_) => {
-                diagnostics.push(Diagnostic::warning(
-                    "source-unavailable",
-                    "document source bytes are unavailable",
-                    1,
-                    1,
-                    None,
-                ));
-            }
-        }
-        let mut sources = std::collections::BTreeMap::new();
-        let mut included = Vec::with_capacity(document.includes.len());
-        for (path, pin) in &document.includes {
-            let source = context.source(*pin).ok();
-            let digest = source
-                .as_ref()
-                .and_then(|source| source.digest().or(source.prior_digest));
-            included.push(IncludedSource {
-                path: path.clone(),
-                pin: *pin,
-                digest,
-            });
-            match context.source_bytes(*pin) {
-                Ok(Some(bytes)) => {
-                    sources.insert(
-                        path.clone(),
-                        preview::RenderSource {
-                            path: path.clone(),
-                            pin: *pin,
-                            bytes,
-                        },
-                    );
-                }
-                Ok(None) | Err(_) => diagnostics.push(Diagnostic::warning(
-                    "include-unavailable",
-                    format!("include source {path:?} is unavailable"),
-                    1,
-                    1,
-                    None,
-                )),
-            }
-        }
-        let metadata = document
-            .entity
-            .and_then(|entity| context.entities.get(&entity));
-        let max_time_ms = u64::try_from(config.max_time_ms)
-            .map_err(|_| DocumentError::Invalid("preview time budget exceeds u64 milliseconds"))?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_time_ms);
-        let rendered = root_source
-            .as_ref()
-            .map(|root| preview::render(root, &sources, metadata, &config, Some(deadline)));
-        if let Some(rendered) = &rendered {
-            diagnostics.extend(rendered.diagnostics.clone());
-        }
-        let config_fingerprint = render_config_fingerprint(&config);
-        Ok(PreviewArtifact {
-            document: document.record.record_id,
-            document_revision: document.record.revision_id,
-            workspace_revision: context.view.revision(),
-            generation: context.generation,
-            path: document.path.clone().unwrap_or_default(),
-            title: document.title.clone(),
-            entity: document.entity,
-            source: document.source,
-            source_digest,
-            config_version: config.version.clone(),
-            config_fingerprint,
-            processor_version: PROCESSOR_VERSION.to_owned(),
-            html: rendered
-                .as_ref()
-                .map(|rendered| rendered.html.clone())
-                .unwrap_or_default(),
-            included,
-            occurrences: rendered
-                .map(|rendered| rendered.occurrences)
-                .unwrap_or_default(),
-            diagnostics,
-            source_available: root_source.is_some(),
-        })
+        let sources = load_preview_sources(&context, &document);
+        render_preview_artifact(&context, &document, &config, source_digest, sources)
     }
 
     /// Extract revision-bound authored paragraphs without accepting assertions.
-    #[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn extract_proposals(
         &mut self,
         document_id: mneme_core::RecordId,
@@ -1945,93 +2071,256 @@ impl Documents<'_> {
             .get(&document_id)
             .cloned()
             .ok_or(DocumentError::Missing(document_id))?;
-        let root_bytes = context.require_retained_source(document.source)?.1;
-        let mut sources = std::collections::BTreeMap::new();
-        let root_path = document
-            .path
-            .clone()
-            .unwrap_or_else(|| "<document>".to_owned());
+        let sources = load_extraction_sources(&context, &document)?;
+        let occurrences = extraction_include_occurrences(&sources)?;
+        let candidates = extraction_candidates(document_id, &sources, &occurrences)?;
+        let mut proposals = Vec::with_capacity(candidates.len());
+        proposals.extend(candidates.into_values());
+        Ok(proposals)
+    }
+}
+
+struct PreviewSources {
+    root: Option<preview::RenderSource>,
+    sources: std::collections::BTreeMap<String, preview::RenderSource>,
+    included: Vec<IncludedSource>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn load_preview_sources(context: &DocumentContext, document: &DocumentView) -> PreviewSources {
+    let mut diagnostics = Vec::new();
+    let root = match context.source_bytes(document.source) {
+        Ok(Some(bytes)) => Some(preview::RenderSource {
+            path: document
+                .path
+                .clone()
+                .unwrap_or_else(|| "<document>".to_owned()),
+            pin: document.source,
+            bytes,
+        }),
+        Ok(None) | Err(_) => {
+            diagnostics.push(Diagnostic::warning(
+                "source-unavailable",
+                "document source bytes are unavailable",
+                1,
+                1,
+                None,
+            ));
+            None
+        }
+    };
+    let mut sources = std::collections::BTreeMap::new();
+    let mut included = Vec::with_capacity(document.includes.len());
+    for (path, pin) in &document.includes {
+        let source = context.source(*pin).ok();
+        let digest = source
+            .as_ref()
+            .and_then(|source| source.digest().or(source.prior_digest));
+        included.push(IncludedSource {
+            path: path.clone(),
+            pin: *pin,
+            digest,
+        });
+        match context.source_bytes(*pin) {
+            Ok(Some(bytes)) => {
+                sources.insert(
+                    path.clone(),
+                    preview::RenderSource {
+                        path: path.clone(),
+                        pin: *pin,
+                        bytes,
+                    },
+                );
+            }
+            Ok(None) | Err(_) => diagnostics.push(Diagnostic::warning(
+                "include-unavailable",
+                format!("include source {path:?} is unavailable"),
+                1,
+                1,
+                None,
+            )),
+        }
+    }
+    PreviewSources {
+        root,
+        sources,
+        included,
+        diagnostics,
+    }
+}
+
+#[allow(unknown_lints, ambient_clock)] // preview deadline is the render shell
+fn render_preview_artifact(
+    context: &DocumentContext,
+    document: &DocumentView,
+    config: &RenderConfig,
+    source_digest: Option<mneme_core::ContentDigest>,
+    mut sources: PreviewSources,
+) -> Result<PreviewArtifact> {
+    let metadata = document
+        .entity
+        .and_then(|entity| context.entities.get(&entity));
+    let max_time_ms = u64::try_from(config.max_time_ms)
+        .map_err(|_| DocumentError::Invalid("preview time budget exceeds u64 milliseconds"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_time_ms);
+    let rendered = sources
+        .root
+        .as_ref()
+        .map(|root| preview::render(root, &sources.sources, metadata, config, Some(deadline)));
+    if let Some(rendered) = &rendered {
+        sources.diagnostics.extend(rendered.diagnostics.clone());
+    }
+    let config_fingerprint = render_config_fingerprint(config);
+    Ok(PreviewArtifact {
+        document: document.record.record_id,
+        document_revision: document.record.revision_id,
+        workspace_revision: context.view.revision(),
+        generation: context.generation,
+        path: document.path.clone().unwrap_or_default(),
+        title: document.title.clone(),
+        entity: document.entity,
+        source: document.source,
+        source_digest,
+        config_version: config.version.clone(),
+        config_fingerprint,
+        processor_version: PROCESSOR_VERSION.to_owned(),
+        html: rendered
+            .as_ref()
+            .map(|rendered| rendered.html.clone())
+            .unwrap_or_default(),
+        included: sources.included,
+        occurrences: rendered
+            .map(|rendered| rendered.occurrences)
+            .unwrap_or_default(),
+        diagnostics: sources.diagnostics,
+        source_available: sources.root.is_some(),
+    })
+}
+
+fn load_extraction_sources(
+    context: &DocumentContext,
+    document: &DocumentView,
+) -> Result<std::collections::BTreeMap<String, preview::RenderSource>> {
+    let root_bytes = context.require_retained_source(document.source)?.1;
+    let mut sources = std::collections::BTreeMap::new();
+    let root_path = document
+        .path
+        .clone()
+        .unwrap_or_else(|| "<document>".to_owned());
+    sources.insert(
+        root_path.clone(),
+        preview::RenderSource {
+            path: root_path.clone(),
+            pin: document.source,
+            bytes: root_bytes,
+        },
+    );
+    for (path, pin) in &document.includes {
+        let (_, bytes) = context.require_retained_source(*pin)?;
         sources.insert(
-            root_path.clone(),
+            path.clone(),
             preview::RenderSource {
-                path: root_path.clone(),
-                pin: document.source,
-                bytes: root_bytes,
+                path: path.clone(),
+                pin: *pin,
+                bytes,
             },
         );
-        for (path, pin) in &document.includes {
-            let (_, bytes) = context.require_retained_source(*pin)?;
-            sources.insert(
-                path.clone(),
-                preview::RenderSource {
-                    path: path.clone(),
-                    pin: *pin,
-                    bytes,
-                },
-            );
-        }
-        let mut occurrences_by_path: std::collections::BTreeMap<String, Vec<IncludeOccurrence>> =
-            std::collections::BTreeMap::new();
-        for source in sources.values() {
-            let text = std::str::from_utf8(&source.bytes)
-                .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
-            for directive in asciidoc::scan_includes(text) {
-                let path = asciidoc::normalize_include_path(&source.path, &directive.target)
-                    .map_err(|diagnostic| DocumentError::Diagnostics(vec![diagnostic]))?;
-                let Some(target) = sources.get(&path) else {
-                    continue;
-                };
-                occurrences_by_path
-                    .entry(path.clone())
-                    .or_default()
-                    .push(IncludeOccurrence {
-                        including_path: source.path.clone(),
-                        target_path: path,
-                        directive_span: directive.span,
-                        source: target.pin,
-                    });
-            }
-        }
-        let mut candidates: std::collections::BTreeMap<
-            (mneme_core::RecordId, mneme_core::RevisionId, u64, u64),
-            ExtractionCandidate,
-        > = std::collections::BTreeMap::new();
-        for source in sources.values() {
-            let text = std::str::from_utf8(&source.bytes)
-                .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
-            for paragraph in asciidoc::scan_paragraphs(text) {
-                let start = usize::try_from(paragraph.span.start()).map_err(|_| {
-                    DocumentError::Invalid("span position exceeds the platform limit")
-                })?;
-                let end = usize::try_from(paragraph.span.end()).map_err(|_| {
-                    DocumentError::Invalid("span position exceeds the platform limit")
-                })?;
-                if start > end || end >= source.bytes.len() {
-                    continue;
-                }
-                let text = String::from_utf8_lossy(&source.bytes[start..=end]).into_owned();
-                let key = (
-                    source.pin.source,
-                    source.pin.revision,
-                    paragraph.span.start(),
-                    paragraph.span.end(),
-                );
-                let occurrences = occurrences_by_path
-                    .get(&source.path)
-                    .cloned()
-                    .unwrap_or_default();
-                candidates.entry(key).or_insert(ExtractionCandidate {
-                    document: document_id,
-                    origin_path: source.path.clone(),
-                    source: source.pin,
-                    span: paragraph.span,
-                    text,
-                    occurrences,
-                });
-            }
-        }
-        Ok(candidates.into_values().collect())
     }
+    Ok(sources)
+}
+
+fn extraction_include_occurrences(
+    sources: &std::collections::BTreeMap<String, preview::RenderSource>,
+) -> Result<std::collections::BTreeMap<String, Vec<IncludeOccurrence>>> {
+    let mut occurrences_by_path: std::collections::BTreeMap<String, Vec<IncludeOccurrence>> =
+        std::collections::BTreeMap::new();
+    for source in sources.values() {
+        let text = std::str::from_utf8(&source.bytes)
+            .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
+        for directive in asciidoc::scan_includes(text) {
+            let path = asciidoc::normalize_include_path(&source.path, &directive.target)
+                .map_err(|diagnostic| DocumentError::Diagnostics(vec![diagnostic]))?;
+            let Some(target) = sources.get(&path) else {
+                continue;
+            };
+            occurrences_by_path
+                .entry(path.clone())
+                .or_default()
+                .push(IncludeOccurrence {
+                    including_path: source.path.clone(),
+                    target_path: path,
+                    directive_span: directive.span,
+                    source: target.pin,
+                });
+        }
+    }
+    Ok(occurrences_by_path)
+}
+
+fn extraction_candidates(
+    document_id: mneme_core::RecordId,
+    sources: &std::collections::BTreeMap<String, preview::RenderSource>,
+    occurrences_by_path: &std::collections::BTreeMap<String, Vec<IncludeOccurrence>>,
+) -> Result<
+    std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId, u64, u64),
+        ExtractionCandidate,
+    >,
+> {
+    let mut candidates = std::collections::BTreeMap::new();
+    for source in sources.values() {
+        let text = std::str::from_utf8(&source.bytes)
+            .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
+        for paragraph in asciidoc::scan_paragraphs(text) {
+            insert_extraction_candidate(
+                &mut candidates,
+                document_id,
+                source,
+                paragraph,
+                occurrences_by_path,
+            )?;
+        }
+    }
+    Ok(candidates)
+}
+
+fn insert_extraction_candidate(
+    candidates: &mut std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId, u64, u64),
+        ExtractionCandidate,
+    >,
+    document_id: mneme_core::RecordId,
+    source: &preview::RenderSource,
+    paragraph: asciidoc::Paragraph,
+    occurrences_by_path: &std::collections::BTreeMap<String, Vec<IncludeOccurrence>>,
+) -> Result<()> {
+    let start = usize::try_from(paragraph.span.start())
+        .map_err(|_| DocumentError::Invalid("span position exceeds the platform limit"))?;
+    let end = usize::try_from(paragraph.span.end())
+        .map_err(|_| DocumentError::Invalid("span position exceeds the platform limit"))?;
+    if start > end || end >= source.bytes.len() {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(&source.bytes[start..=end]).into_owned();
+    let key = (
+        source.pin.source,
+        source.pin.revision,
+        paragraph.span.start(),
+        paragraph.span.end(),
+    );
+    let occurrences = occurrences_by_path
+        .get(&source.path)
+        .cloned()
+        .unwrap_or_default();
+    candidates.entry(key).or_insert(ExtractionCandidate {
+        document: document_id,
+        origin_path: source.path.clone(),
+        source: source.pin,
+        span: paragraph.span,
+        text,
+        occurrences,
+    });
+    Ok(())
 }
 
 /// One committed explicit anchor.
@@ -2112,4 +2401,98 @@ fn render_config_fingerprint(config: &RenderConfig) -> String {
         "{}|entity-metadata={}|output={}|time={}",
         config.version, config.include_entity_metadata, config.max_output_bytes, config.max_time_ms
     )
+}
+
+fn load_history(
+    workspace: &mneme_store::Workspace,
+    snapshot: &mneme_store::Snapshot,
+    max_history_revisions: usize,
+) -> Result<
+    std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+> {
+    let mut history = std::collections::BTreeMap::new();
+    for record in &snapshot.records {
+        for retained in workspace.record_revisions(record.record_id)? {
+            if history.len() >= max_history_revisions {
+                return Err(DocumentError::Invalid(
+                    "document history exceeds the 1M revision bound",
+                ));
+            }
+            history.insert((retained.record_id, retained.revision_id), retained);
+        }
+    }
+    Ok(history)
+}
+
+type DocumentIndexes = (
+    std::collections::BTreeMap<mneme_core::RecordId, DocumentView>,
+    std::collections::BTreeMap<String, mneme_core::RecordId>,
+    std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+);
+
+fn index_documents(
+    snapshot: &mneme_store::Snapshot,
+    max_context_records: usize,
+) -> Result<DocumentIndexes> {
+    let mut documents = std::collections::BTreeMap::new();
+    let mut paths = std::collections::BTreeMap::new();
+    let mut entities = std::collections::BTreeMap::new();
+    for record in &snapshot.records {
+        match record.kind {
+            mneme_core::RecordKind::Document => {
+                let mut document = DocumentView::parse(record.clone())?;
+                if !document.source_is_pinned {
+                    let source = snapshot
+                        .records
+                        .iter()
+                        .find(|candidate| {
+                            candidate.record_id == document.source.source
+                                && candidate.kind == mneme_core::RecordKind::SourceRevision
+                        })
+                        .ok_or(DocumentError::Missing(document.source.source))?;
+                    document.source.revision = source.revision_id;
+                    document.source_is_pinned = true;
+                }
+                if let Some(path) = &document.path
+                    && !paths.contains_key(path)
+                    && paths.len() >= max_context_records
+                {
+                    return Err(DocumentError::Invalid(
+                        "document path index exceeds the 1M record bound",
+                    ));
+                }
+                if let Some(path) = &document.path
+                    && let Some(existing) = paths.insert(path.clone(), record.record_id)
+                    && existing != record.record_id
+                {
+                    return Err(DocumentError::Conflict(
+                        "two committed documents share one logical path",
+                    ));
+                }
+                if !documents.contains_key(&record.record_id)
+                    && documents.len() >= max_context_records
+                {
+                    return Err(DocumentError::Invalid(
+                        "document index exceeds the 1M record bound",
+                    ));
+                }
+                documents.insert(record.record_id, document);
+            }
+            mneme_core::RecordKind::Entity => {
+                if !entities.contains_key(&record.record_id)
+                    && entities.len() >= max_context_records
+                {
+                    return Err(DocumentError::Invalid(
+                        "entity index exceeds the 1M record bound",
+                    ));
+                }
+                entities.insert(record.record_id, record.clone());
+            }
+            _ => {}
+        }
+    }
+    Ok((documents, paths, entities))
 }

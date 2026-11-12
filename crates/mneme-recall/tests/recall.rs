@@ -69,13 +69,21 @@ impl Harness {
             .expect("commit");
     }
 
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn add_base(&mut self) {
         let entity = rid(0x10);
         let source = rid(0x20);
         let revision = rev(0x21);
         let assertion = rid(0x40);
         let evidence = rid(0x30);
+        self.add_base_entity(entity);
+        self.add_base_source(entity, source, revision);
+        self.add_base_claim(entity, source, revision, assertion, evidence);
+        self.add_base_episode(source);
+        self.add_other_scope();
+    }
+
+    fn add_base_entity(&mut self, entity: mneme_core::RecordId) {
         self.commit(
             scope(),
             "entity",
@@ -90,6 +98,14 @@ impl Harness {
             }],
             Vec::new(),
         );
+    }
+
+    fn add_base_source(
+        &mut self,
+        entity: mneme_core::RecordId,
+        source: mneme_core::RecordId,
+        revision: mneme_core::RevisionId,
+    ) {
         let (source_record, source_blob) = mneme_memory::build_source(
             source,
             revision,
@@ -101,6 +117,16 @@ impl Harness {
         )
         .expect("source");
         self.commit(scope(), "source", vec![source_record], vec![source_blob]);
+    }
+
+    fn add_base_claim(
+        &mut self,
+        entity: mneme_core::RecordId,
+        source: mneme_core::RecordId,
+        revision: mneme_core::RevisionId,
+        assertion: mneme_core::RecordId,
+        evidence: mneme_core::RecordId,
+    ) {
         let evidence_record = mneme_memory::build_evidence(
             evidence,
             rev(0x31),
@@ -139,6 +165,9 @@ impl Harness {
             Vec::new(),
         );
         self.accept(assertion, 0x50, 0x51, 0x42);
+    }
+
+    fn add_base_episode(&mut self, source: mneme_core::RecordId) {
         let episode = mneme_memory::build_episode(
             rid(0x60),
             rev(0x61),
@@ -154,16 +183,22 @@ impl Harness {
             &[],
         );
         self.commit(scope(), "episode", vec![episode], Vec::new());
-        self.add_other_scope();
     }
 
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn add_other_scope(&mut self) {
         let entity = rid(0x70);
         let source = rid(0x72);
         let revision = rev(0x73);
         let assertion = rid(0x80);
         let evidence = rid(0x74);
+        self.add_other_entity(entity);
+        self.add_other_source(entity, source, revision);
+        self.add_other_claim(entity, source, revision, assertion, evidence);
+        self.accept_in_scope(assertion, 0x90, 0x91, 0x82, other_scope());
+    }
+
+    fn add_other_entity(&mut self, entity: mneme_core::RecordId) {
         self.commit(
             other_scope(),
             "other-entity",
@@ -178,6 +213,14 @@ impl Harness {
             }],
             Vec::new(),
         );
+    }
+
+    fn add_other_source(
+        &mut self,
+        entity: mneme_core::RecordId,
+        source: mneme_core::RecordId,
+        revision: mneme_core::RevisionId,
+    ) {
         let (source_record, source_blob) = mneme_memory::build_source(
             source,
             revision,
@@ -194,6 +237,16 @@ impl Harness {
             vec![source_record],
             vec![source_blob],
         );
+    }
+
+    fn add_other_claim(
+        &mut self,
+        entity: mneme_core::RecordId,
+        source: mneme_core::RecordId,
+        revision: mneme_core::RevisionId,
+        assertion: mneme_core::RecordId,
+        evidence: mneme_core::RecordId,
+    ) {
         let evidence_record = mneme_memory::build_evidence(
             evidence,
             rev(0x75),
@@ -231,7 +284,6 @@ impl Harness {
             vec![evidence_record, proposed],
             Vec::new(),
         );
-        self.accept_in_scope(assertion, 0x90, 0x91, 0x82, other_scope());
     }
 
     fn accept(

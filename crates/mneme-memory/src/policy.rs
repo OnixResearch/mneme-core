@@ -599,8 +599,6 @@ impl MemoryView {
             && assertion.record.scope.class() == mneme_core::ScopeClass::Hypothesis
     }
 
-    /// Assertions eligible for the requested current-belief view.
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn current_beliefs(
         &self,
         view: &BeliefView,
@@ -660,8 +658,6 @@ impl MemoryView {
         }
     }
 
-    /// Detected conflicts among accepted/disputed claims in a belief view.
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn conflicts(&self, view: &BeliefView) -> crate::error::Result<Vec<ConflictGroup>> {
         let mut candidates = Vec::new();
         for assertion in self.assertions()? {
@@ -1063,16 +1059,23 @@ impl MemoryView {
     }
 
     /// Alternative derivations for one conclusion with eligibility reasons.
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn derivation_alternatives(
         &self,
         conclusion: mneme_core::RecordId,
     ) -> crate::error::Result<Vec<DerivationAlternative>> {
-        let mut alternatives = Vec::new();
-        for derivation in self.derivations_for(conclusion)? {
+        let max_derivation_records = 1_000_000;
+        if self.records.len() > max_derivation_records {
+            return Err(crate::error::MemoryError::policy(
+                "derivation traversal exceeds the 1M record bound",
+            ));
+        }
+        let derivations = self.derivations_for(conclusion)?;
+        let mut alternatives = Vec::with_capacity(derivations.len());
+        for derivation in derivations {
             let mut visiting = std::collections::BTreeSet::new();
             let is_eligible = self.derivation_eligible_inner(&derivation, &mut visiting);
-            let mut reasons = Vec::with_capacity(derivation.premises.len());
+            let mut reasons = Vec::with_capacity(derivation.premises.len().saturating_add(1));
             if !self.derivation_revision_matches(&derivation) {
                 reasons.push(
                     "derivation evaluation revision is not the pinned revision or its parent"
@@ -1102,16 +1105,47 @@ impl MemoryView {
     }
 
     /// Build a bounded explanation for one current assertion.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn explain(
         &self,
         assertion: mneme_core::RecordId,
         policy: Policy,
     ) -> crate::error::Result<Explanation> {
         let assertion = self.assertion(assertion)?;
+        let decisions = self.decisions_for(assertion.record.record_id)?;
+        let (evidence_explanations, roots, evidence_nodes, is_truncated) =
+            self.explain_evidence(&assertion, policy)?;
+        let derivations = self.derivation_alternatives(assertion.record.record_id)?;
+        let nodes = evidence_nodes + derivations.len();
+        let supporting = self.supporting_evidence_count(&assertion);
+        let corroboration = Corroboration {
+            independent_supports: roots.len(),
+            shared_ancestry: supporting > 1 && roots.len() == 1,
+            roots,
+        };
+        Ok(Explanation {
+            assertion,
+            workspace_revision: self.snapshot.revision,
+            decisions,
+            evidence: evidence_explanations,
+            derivations,
+            corroboration,
+            truncated: is_truncated || nodes > policy.max_explanation_nodes,
+        })
+    }
+
+    fn explain_evidence(
+        &self,
+        assertion: &crate::model::AssertionView,
+        policy: Policy,
+    ) -> crate::error::Result<(
+        Vec<EvidenceExplanation>,
+        std::collections::BTreeSet<SourceRevisionKey>,
+        usize,
+        bool,
+    )> {
         let mut nodes = 1;
         let mut is_truncated = false;
-        let decisions = self.decisions_for(assertion.record.record_id)?;
         let mut evidence_explanations = Vec::new();
         let mut roots = std::collections::BTreeSet::new();
         for evidence_id in &assertion.evidence {
@@ -1169,9 +1203,11 @@ impl MemoryView {
             });
             nodes += 1;
         }
-        let derivations = self.derivation_alternatives(assertion.record.record_id)?;
-        nodes += derivations.len();
-        let supporting = assertion
+        Ok((evidence_explanations, roots, nodes, is_truncated))
+    }
+
+    fn supporting_evidence_count(&self, assertion: &crate::model::AssertionView) -> usize {
+        assertion
             .evidence
             .iter()
             .filter(|evidence_id| {
@@ -1186,21 +1222,7 @@ impl MemoryView {
                     })
                     .unwrap_or(false)
             })
-            .count();
-        let corroboration = Corroboration {
-            independent_supports: roots.len(),
-            shared_ancestry: supporting > 1 && roots.len() == 1,
-            roots,
-        };
-        Ok(Explanation {
-            assertion,
-            workspace_revision: self.snapshot.revision,
-            decisions,
-            evidence: evidence_explanations,
-            derivations,
-            corroboration,
-            truncated: is_truncated || nodes > policy.max_explanation_nodes,
-        })
+            .count()
     }
 }
 

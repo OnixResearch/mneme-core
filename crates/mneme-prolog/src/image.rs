@@ -64,7 +64,7 @@ pub enum ImageError {
 }
 
 /// Build an immutable image from one view and selected Datalog results.
-#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn build_input_image(
     view: &mneme_memory::MemoryView,
     scope: &mneme_core::ScopeId,
@@ -78,110 +78,23 @@ pub fn build_input_image(
             actual: view.revision(),
         });
     }
-    let mut canonical = Vec::new();
-    for assertion in view
-        .assertions()
-        .map_err(|error| ImageError::Invalid(error.to_string()))?
-    {
-        if assertion.lifecycle != mneme_core::Lifecycle::Accepted {
-            continue;
-        }
-        if &assertion.record.scope != scope {
-            continue;
-        }
-        canonical.push(CanonicalFact {
-            record_id: assertion.record.record_id,
-            revision_id: assertion.record.revision_id,
-            scope: assertion.record.scope.clone(),
-            subject: assertion.subject,
-            predicate: assertion.predicate,
-            value: assertion.value,
-            valid_time: assertion.valid_time,
-        });
-    }
-    let mut relations = Vec::new();
+    let canonical = canonical_facts(view, scope)?;
+    let mut relations = Vec::with_capacity(results.len());
     let mut rule_versions = std::collections::BTreeMap::new();
     let mut rule_context: Option<(String, String)> = None;
     let mut is_all_complete = true;
     for result in results {
-        if result.context.served_revision != expected_revision
-            || result.served_revision != expected_revision
-            || result.requested_revision != expected_revision
-        {
-            return Err(ImageError::ContextMismatch(
-                "Datalog revision differs from the pinned image".to_owned(),
-            ));
-        }
-        if &result.context.scope != scope {
-            return Err(ImageError::ContextMismatch(
-                "Datalog scope differs from the pinned image".to_owned(),
-            ));
-        }
-        if result.context.eligibility_generation != expected_generation {
-            return Err(ImageError::StaleBarrier {
-                expected: expected_generation,
-                actual: result.context.eligibility_generation,
-            });
-        }
-        let context = (
-            result.context.rule_bundle_id.clone(),
-            result.context.rule_bundle_version.clone(),
-        );
-        if let Some(existing) = &rule_context {
-            if existing != &context {
-                return Err(ImageError::MixedRuleContext);
-            }
-        } else {
-            rule_context = Some(context);
-            rule_versions.insert(
-                result.context.rule_bundle_id.clone(),
-                result.context.rule_bundle_version.clone(),
-            );
-        }
-        let is_coverage_complete = result.exhaustive
-            && result
-                .coverage
-                .iter()
-                .all(|coverage| coverage.status == mneme_datalog::CoverageStatus::Complete)
-            && result.status == mneme_datalog::ExecutionStatus::Complete;
+        let is_coverage_complete = validate_result_context(
+            &result,
+            scope,
+            expected_revision,
+            expected_generation,
+            &mut rule_context,
+            &mut rule_versions,
+        )?;
         is_all_complete &= is_coverage_complete;
-        let mut rows = Vec::with_capacity(result.rows.len());
-        for row in &result.rows {
-            for support in &row.supports {
-                if support.revision != expected_revision || &support.scope != scope {
-                    return Err(ImageError::ContextMismatch(
-                        "derivation revision/scope differs from the image".to_owned(),
-                    ));
-                }
-                for premise in &support.premises {
-                    let Some(canonical_id) = premise.canonical else {
-                        continue;
-                    };
-                    let record = view
-                        .record(canonical_id)
-                        .map_err(|_| ImageError::MissingPremise(canonical_id.to_hex()))?;
-                    if &record.scope != scope {
-                        return Err(ImageError::HiddenScope(canonical_id.to_hex()));
-                    }
-                }
-            }
-            rows.push(SelectedRow {
-                values: row.values.clone(),
-                supports: row.supports.clone(),
-            });
-        }
-        let predicate = result.coverage.first().map_or_else(
-            || "unknown".to_owned(),
-            |coverage| coverage.predicate.clone(),
-        );
-        relations.push(SelectedRelation {
-            predicate,
-            rows,
-            coverage: crate::InputCoverage {
-                complete: is_coverage_complete,
-                reason: result.reason.clone(),
-            },
-        });
+        let rows = selected_rows(view, scope, expected_revision, &result)?;
+        relations.push(selected_relation(result, rows, is_coverage_complete));
     }
     let image_digest = format!(
         "sha256:{}:{}",
@@ -208,6 +121,137 @@ pub fn build_input_image(
             },
         },
     })
+}
+
+fn canonical_facts(
+    view: &mneme_memory::MemoryView,
+    scope: &mneme_core::ScopeId,
+) -> Result<Vec<CanonicalFact>, ImageError> {
+    let assertions = view
+        .assertions()
+        .map_err(|error| ImageError::Invalid(error.to_string()))?;
+    let mut canonical = Vec::with_capacity(assertions.len());
+    for assertion in assertions {
+        if assertion.lifecycle != mneme_core::Lifecycle::Accepted
+            || &assertion.record.scope != scope
+        {
+            continue;
+        }
+        canonical.push(CanonicalFact {
+            record_id: assertion.record.record_id,
+            revision_id: assertion.record.revision_id,
+            scope: assertion.record.scope.clone(),
+            subject: assertion.subject,
+            predicate: assertion.predicate,
+            value: assertion.value,
+            valid_time: assertion.valid_time,
+        });
+    }
+    Ok(canonical)
+}
+
+#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one cohesive context
+fn validate_result_context(
+    result: &mneme_datalog::QueryResult,
+    scope: &mneme_core::ScopeId,
+    expected_revision: mneme_core::WorkspaceRevisionId,
+    expected_generation: u64,
+    rule_context: &mut Option<(String, String)>,
+    rule_versions: &mut std::collections::BTreeMap<String, String>,
+) -> Result<bool, ImageError> {
+    if result.context.served_revision != expected_revision
+        || result.served_revision != expected_revision
+        || result.requested_revision != expected_revision
+    {
+        return Err(ImageError::ContextMismatch(
+            "Datalog revision differs from the pinned image".to_owned(),
+        ));
+    }
+    if &result.context.scope != scope {
+        return Err(ImageError::ContextMismatch(
+            "Datalog scope differs from the pinned image".to_owned(),
+        ));
+    }
+    if result.context.eligibility_generation != expected_generation {
+        return Err(ImageError::StaleBarrier {
+            expected: expected_generation,
+            actual: result.context.eligibility_generation,
+        });
+    }
+    let context = (
+        result.context.rule_bundle_id.clone(),
+        result.context.rule_bundle_version.clone(),
+    );
+    if let Some(existing) = rule_context.as_ref() {
+        if existing != &context {
+            return Err(ImageError::MixedRuleContext);
+        }
+    } else {
+        *rule_context = Some(context);
+        rule_versions.insert(
+            result.context.rule_bundle_id.clone(),
+            result.context.rule_bundle_version.clone(),
+        );
+    }
+    Ok(result.exhaustive
+        && result
+            .coverage
+            .iter()
+            .all(|coverage| coverage.status == mneme_datalog::CoverageStatus::Complete)
+        && result.status == mneme_datalog::ExecutionStatus::Complete)
+}
+
+fn selected_rows(
+    view: &mneme_memory::MemoryView,
+    scope: &mneme_core::ScopeId,
+    expected_revision: mneme_core::WorkspaceRevisionId,
+    result: &mneme_datalog::QueryResult,
+) -> Result<Vec<SelectedRow>, ImageError> {
+    let mut rows = Vec::with_capacity(result.rows.len());
+    for row in &result.rows {
+        for support in &row.supports {
+            if support.revision != expected_revision || &support.scope != scope {
+                return Err(ImageError::ContextMismatch(
+                    "derivation revision/scope differs from the image".to_owned(),
+                ));
+            }
+            for premise in &support.premises {
+                let Some(canonical_id) = premise.canonical else {
+                    continue;
+                };
+                let record = view
+                    .record(canonical_id)
+                    .map_err(|_| ImageError::MissingPremise(canonical_id.to_hex()))?;
+                if &record.scope != scope {
+                    return Err(ImageError::HiddenScope(canonical_id.to_hex()));
+                }
+            }
+        }
+        rows.push(SelectedRow {
+            values: row.values.clone(),
+            supports: row.supports.clone(),
+        });
+    }
+    Ok(rows)
+}
+
+fn selected_relation(
+    result: mneme_datalog::QueryResult,
+    rows: Vec<SelectedRow>,
+    is_coverage_complete: bool,
+) -> SelectedRelation {
+    let predicate = result.coverage.first().map_or_else(
+        || "unknown".to_owned(),
+        |coverage| coverage.predicate.clone(),
+    );
+    SelectedRelation {
+        predicate,
+        rows,
+        coverage: crate::InputCoverage {
+            complete: is_coverage_complete,
+            reason: result.reason,
+        },
+    }
 }
 
 #[cfg(test)]

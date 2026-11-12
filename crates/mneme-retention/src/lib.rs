@@ -344,7 +344,7 @@ impl<'w> Retention<'w> {
         ))
     }
 
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn history(
         &self,
         snapshot: &mneme_store::Snapshot,
@@ -355,15 +355,21 @@ impl<'w> Retention<'w> {
         >,
     > {
         let mut history = std::collections::BTreeMap::new();
+        let max_history_revisions = 1_000_000;
         for record in &snapshot.records {
             for revision in self.workspace.record_revisions(record.record_id)? {
+                if history.len() >= max_history_revisions {
+                    return Err(RetentionError::Invalid(
+                        "workspace history exceeds the 1M revision bound",
+                    ));
+                }
                 history.insert((revision.record_id, revision.revision_id), revision);
             }
         }
         Ok(history)
     }
 
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn cleanup(&mut self, operation: mneme_store::RetentionOperation) -> Result<RetentionResult> {
         if operation.state == mneme_store::RetentionJobState::Complete {
             return self.result(operation);
@@ -379,88 +385,7 @@ impl<'w> Retention<'w> {
             if location.state.is_terminal() {
                 continue;
             }
-            match location.location_kind.as_str() {
-                "source-blob" | "record-blob" => {
-                    match self.workspace.purge_retention_blob(
-                        &operation.operation_id,
-                        &location.location_id,
-                        &location.location_kind,
-                        &location.locator,
-                    ) {
-                        Ok(_) => {}
-                        Err(mneme_store::StoreError::InjectedFault(point)) => {
-                            return Err(mneme_store::StoreError::InjectedFault(point).into());
-                        }
-                        Err(mneme_store::StoreError::Io { .. })
-                        | Err(mneme_store::StoreError::CorruptBlob { .. }) => {
-                            self.workspace.verify_retention_location(
-                                &operation.operation_id,
-                                &location.location_id,
-                                mneme_store::RetentionLocationState::Failed,
-                                Some("payload-removal-failed"),
-                            )?;
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                "publication-intent" => {
-                    let is_suppressed = self.workspace.publication_intent_has_state(
-                        &location.locator,
-                        mneme_store::PublicationState::Suppressed,
-                    )?;
-                    self.workspace.verify_retention_location(
-                        &operation.operation_id,
-                        &location.location_id,
-                        if is_suppressed {
-                            mneme_store::RetentionLocationState::Verified
-                        } else {
-                            mneme_store::RetentionLocationState::Failed
-                        },
-                        if is_suppressed {
-                            None
-                        } else {
-                            Some("publication-not-suppressed")
-                        },
-                    )?;
-                }
-                "staging" | "temporary-exports" | "sqlite-payloads" => {
-                    self.workspace.verify_retention_location(
-                        &operation.operation_id,
-                        &location.location_id,
-                        mneme_store::RetentionLocationState::Absent,
-                        None,
-                    )?;
-                }
-                "working-file" => {
-                    match self.workspace.purge_retention_working_file(
-                        &operation.operation_id,
-                        &location.location_id,
-                        &location.locator,
-                    ) {
-                        Ok(_) => {}
-                        Err(mneme_store::StoreError::InjectedFault(point)) => {
-                            return Err(mneme_store::StoreError::InjectedFault(point).into());
-                        }
-                        Err(mneme_store::StoreError::Io { .. }) => {
-                            self.workspace.verify_retention_location(
-                                &operation.operation_id,
-                                &location.location_id,
-                                mneme_store::RetentionLocationState::Failed,
-                                Some("working-file-removal-failed"),
-                            )?;
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                _ => {
-                    self.workspace.verify_retention_location(
-                        &operation.operation_id,
-                        &location.location_id,
-                        mneme_store::RetentionLocationState::Failed,
-                        Some("unregistered-location-kind"),
-                    )?;
-                }
-            }
+            self.cleanup_location(&operation.operation_id, location)?;
         }
         let locations = self
             .workspace
@@ -482,6 +407,112 @@ impl<'w> Retention<'w> {
             .retention_operation(&operation.operation_id)?
             .ok_or(RetentionError::NotFound)?;
         self.result(operation)
+    }
+
+    fn cleanup_location(
+        &mut self,
+        operation_id: &str,
+        location: &mneme_store::RetentionLocationStateRecord,
+    ) -> Result<()> {
+        match location.location_kind.as_str() {
+            "source-blob" | "record-blob" => self.cleanup_blob(operation_id, location),
+            "publication-intent" => {
+                let is_suppressed = self.workspace.publication_intent_has_state(
+                    &location.locator,
+                    mneme_store::PublicationState::Suppressed,
+                )?;
+                self.workspace.verify_retention_location(
+                    operation_id,
+                    &location.location_id,
+                    if is_suppressed {
+                        mneme_store::RetentionLocationState::Verified
+                    } else {
+                        mneme_store::RetentionLocationState::Failed
+                    },
+                    if is_suppressed {
+                        None
+                    } else {
+                        Some("publication-not-suppressed")
+                    },
+                )?;
+                Ok(())
+            }
+            "staging" | "temporary-exports" | "sqlite-payloads" => {
+                self.workspace.verify_retention_location(
+                    operation_id,
+                    &location.location_id,
+                    mneme_store::RetentionLocationState::Absent,
+                    None,
+                )?;
+                Ok(())
+            }
+            "working-file" => self.cleanup_working_file(operation_id, location),
+            _ => {
+                self.workspace.verify_retention_location(
+                    operation_id,
+                    &location.location_id,
+                    mneme_store::RetentionLocationState::Failed,
+                    Some("unregistered-location-kind"),
+                )?;
+                Ok(())
+            }
+        }
+    }
+
+    fn cleanup_blob(
+        &mut self,
+        operation_id: &str,
+        location: &mneme_store::RetentionLocationStateRecord,
+    ) -> Result<()> {
+        match self.workspace.purge_retention_blob(
+            operation_id,
+            &location.location_id,
+            &location.location_kind,
+            &location.locator,
+        ) {
+            Ok(_) => Ok(()),
+            Err(mneme_store::StoreError::InjectedFault(point)) => {
+                Err(mneme_store::StoreError::InjectedFault(point).into())
+            }
+            Err(mneme_store::StoreError::Io { .. })
+            | Err(mneme_store::StoreError::CorruptBlob { .. }) => {
+                self.workspace.verify_retention_location(
+                    operation_id,
+                    &location.location_id,
+                    mneme_store::RetentionLocationState::Failed,
+                    Some("payload-removal-failed"),
+                )?;
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn cleanup_working_file(
+        &mut self,
+        operation_id: &str,
+        location: &mneme_store::RetentionLocationStateRecord,
+    ) -> Result<()> {
+        match self.workspace.purge_retention_working_file(
+            operation_id,
+            &location.location_id,
+            &location.locator,
+        ) {
+            Ok(_) => Ok(()),
+            Err(mneme_store::StoreError::InjectedFault(point)) => {
+                Err(mneme_store::StoreError::InjectedFault(point).into())
+            }
+            Err(mneme_store::StoreError::Io { .. }) => {
+                self.workspace.verify_retention_location(
+                    operation_id,
+                    &location.location_id,
+                    mneme_store::RetentionLocationState::Failed,
+                    Some("working-file-removal-failed"),
+                )?;
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn result(&self, operation: mneme_store::RetentionOperation) -> Result<RetentionResult> {
@@ -892,37 +923,55 @@ fn plan_pruning(
     Ok(())
 }
 
-#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn plan_forget(
     workspace: &mneme_store::Workspace,
     view: &mneme_memory::MemoryView,
     request: &RetentionRequest,
     plan: &mut RetentionPlan,
 ) -> Result<()> {
+    let max_forget_records = 1_000_000;
+    if view.snapshot().records.len() > max_forget_records {
+        return Err(RetentionError::Policy(
+            "forget plan exceeds the 1M record bound",
+        ));
+    }
     let (sources, _) = resolve_sources(view, request)?;
     let deps = dependencies_for_sources(view, &sources)?;
     authorize_dependencies(view, &deps, &request.scope)?;
-    let mut forgotten_records: std::collections::BTreeSet<mneme_core::RecordId> =
-        std::collections::BTreeSet::new();
-    let mut forgotten_revisions: std::collections::BTreeSet<(
-        mneme_core::RecordId,
-        mneme_core::RevisionId,
-    )> = std::collections::BTreeSet::new();
-    let mut suppressed_assertions: std::collections::BTreeSet<mneme_core::RecordId> =
-        std::collections::BTreeSet::new();
-    let mut suppressed_derivations: std::collections::BTreeSet<mneme_core::RecordId> =
-        std::collections::BTreeSet::new();
-    let mut revised_assertions: std::collections::BTreeSet<mneme_core::RecordId> =
-        std::collections::BTreeSet::new();
-    let mut source_digests: std::collections::BTreeMap<
-        mneme_core::RecordId,
-        mneme_core::ContentDigest,
-    > = std::collections::BTreeMap::new();
+    let mut state = ForgetState::default();
+    collect_forget_sources(view, &sources, &deps, &mut state, plan)?;
+    suppress_forget_derivations(view, &request.scope, &mut state)?;
+    revise_forget_assertions(workspace, view, &mut state, plan)?;
+    collect_forget_copies(view, &request.scope, &deps, &mut state)?;
+    record_forgotten_targets(workspace, view, request, &state, plan)?;
+    record_forgotten_revisions(workspace, &state, plan)?;
+    finish_forget_plan(request, state, plan);
+    Ok(())
+}
 
-    for source in &sources {
+#[derive(Default)]
+struct ForgetState {
+    forgotten_records: std::collections::BTreeSet<mneme_core::RecordId>,
+    forgotten_revisions: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    suppressed_assertions: std::collections::BTreeSet<mneme_core::RecordId>,
+    suppressed_derivations: std::collections::BTreeSet<mneme_core::RecordId>,
+    revised_assertions: std::collections::BTreeSet<mneme_core::RecordId>,
+    source_digests: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::ContentDigest>,
+    withdrawn: std::collections::BTreeSet<mneme_core::RecordId>,
+}
+
+fn collect_forget_sources(
+    view: &mneme_memory::MemoryView,
+    sources: &[mneme_core::RecordId],
+    deps: &Dependencies,
+    state: &mut ForgetState,
+    plan: &mut RetentionPlan,
+) -> Result<()> {
+    for source in sources {
         let source_view = view.source(*source).map_err(map_missing)?;
         if let Some(digest) = source_view.digest() {
-            source_digests.insert(*source, digest);
+            state.source_digests.insert(*source, digest);
             add_blob_location(
                 digest,
                 "source-blob",
@@ -930,9 +979,9 @@ fn plan_forget(
                 plan,
             );
         }
-        forgotten_records.insert(*source);
+        state.forgotten_records.insert(*source);
         if let Some(path) = &source_view.path_hint
-            && let Some(digest) = source_digests.get(source)
+            && let Some(digest) = state.source_digests.get(source)
         {
             plan.locations.push(mneme_store::RetentionLocationPlan {
                 location_id: format!("working-file:{}", path),
@@ -942,24 +991,28 @@ fn plan_forget(
         }
         plan.source_targets.push(*source);
     }
-    for episode in &deps.episodes {
-        forgotten_records.insert(*episode);
-    }
-    for evidence in &deps.evidence {
-        forgotten_records.insert(*evidence);
-    }
-    let withdrawn: std::collections::BTreeSet<mneme_core::RecordId> = deps.evidence.clone();
+    state
+        .forgotten_records
+        .extend(deps.episodes.iter().copied());
+    state
+        .forgotten_records
+        .extend(deps.evidence.iter().copied());
+    state.withdrawn = deps.evidence.clone();
     for assertion_id in &deps.assertions {
-        if independent_evidence_exists(view, *assertion_id, &withdrawn, None)? {
-            revised_assertions.insert(*assertion_id);
+        if independent_evidence_exists(view, *assertion_id, &state.withdrawn, None)? {
+            state.revised_assertions.insert(*assertion_id);
         } else {
-            suppressed_assertions.insert(*assertion_id);
+            state.suppressed_assertions.insert(*assertion_id);
         }
     }
+    Ok(())
+}
 
-    // A derivation is a dependent semantic copy. It is suppressed when any
-    // required premise is suppressed, when its conclusion is suppressed, or
-    // when it depends on another suppressed derivation.
+fn suppress_forget_derivations(
+    view: &mneme_memory::MemoryView,
+    scope: &mneme_core::ScopeId,
+    state: &mut ForgetState,
+) -> Result<()> {
     loop {
         let mut is_changed = false;
         for record in visible_records(view)? {
@@ -967,48 +1020,66 @@ fn plan_forget(
                 continue;
             }
             let derivation = view.derivation(record.record_id)?;
-            let is_invalid = suppressed_assertions.contains(&derivation.conclusion)
+            let is_invalid = state.suppressed_assertions.contains(&derivation.conclusion)
                 || derivation.premises.iter().any(|premise| {
-                    suppressed_assertions.contains(premise)
-                        || suppressed_derivations.contains(premise)
+                    state.suppressed_assertions.contains(premise)
+                        || state.suppressed_derivations.contains(premise)
                 });
-            if is_invalid && derivation.record.scope != request.scope {
+            if is_invalid && &derivation.record.scope != scope {
                 return Err(RetentionError::Unauthorized);
             }
-            if is_invalid && suppressed_derivations.insert(record.record_id) {
+            if is_invalid && state.suppressed_derivations.insert(record.record_id) {
                 is_changed = true;
             }
         }
-        // An assertion with no evidence of its own survives only through a
-        // derivation. Once every derivation is suppressed, the assertion is a
-        // semantic copy with no remaining proof.
-        for record in visible_records(view)? {
-            if record.kind != mneme_core::RecordKind::Assertion {
-                continue;
-            }
-            let assertion = view.assertion(record.record_id)?;
-            if assertion.evidence.is_empty() && !suppressed_assertions.contains(&record.record_id) {
-                let derivations = view.derivations_for(record.record_id)?;
-                if !derivations.is_empty()
-                    && derivations.iter().all(|derivation| {
-                        suppressed_derivations.contains(&derivation.record.record_id)
-                    })
-                {
-                    suppressed_assertions.insert(record.record_id);
-                    is_changed = true;
-                }
-            }
-        }
+        is_changed |= suppress_proofless_assertions(view, state)?;
         if !is_changed {
             break;
         }
     }
-    for assertion_id in &revised_assertions {
+    Ok(())
+}
+
+fn suppress_proofless_assertions(
+    view: &mneme_memory::MemoryView,
+    state: &mut ForgetState,
+) -> Result<bool> {
+    let mut is_changed = false;
+    for record in visible_records(view)? {
+        if record.kind != mneme_core::RecordKind::Assertion {
+            continue;
+        }
+        let assertion = view.assertion(record.record_id)?;
+        if assertion.evidence.is_empty() && !state.suppressed_assertions.contains(&record.record_id)
+        {
+            let derivations = view.derivations_for(record.record_id)?;
+            if !derivations.is_empty()
+                && derivations.iter().all(|derivation| {
+                    state
+                        .suppressed_derivations
+                        .contains(&derivation.record.record_id)
+                })
+            {
+                state.suppressed_assertions.insert(record.record_id);
+                is_changed = true;
+            }
+        }
+    }
+    Ok(is_changed)
+}
+
+fn revise_forget_assertions(
+    workspace: &mneme_store::Workspace,
+    view: &mneme_memory::MemoryView,
+    state: &mut ForgetState,
+    plan: &mut RetentionPlan,
+) -> Result<()> {
+    for assertion_id in &state.revised_assertions {
         let assertion = view.assertion(*assertion_id)?;
         let remaining: Vec<mneme_core::Reference> = assertion
             .evidence
             .iter()
-            .filter(|evidence| !withdrawn.contains(evidence))
+            .filter(|evidence| !state.withdrawn.contains(evidence))
             .map(|evidence| {
                 mneme_core::Reference::local(*evidence, mneme_core::RecordKind::Evidence)
             })
@@ -1028,21 +1099,29 @@ fn plan_forget(
             payload,
         });
         for revision in workspace.record_revisions(*assertion_id)? {
-            forgotten_revisions.insert((*assertion_id, revision.revision_id));
+            state
+                .forgotten_revisions
+                .insert((*assertion_id, revision.revision_id));
             add_record_blob_locations(view, &revision, plan)?;
         }
         plan.revised_assertions.push(*assertion_id);
         plan.surviving_assertions.push(*assertion_id);
     }
-    for assertion_id in &suppressed_assertions {
-        forgotten_records.insert(*assertion_id);
-    }
-    for derivation_id in &suppressed_derivations {
-        forgotten_records.insert(*derivation_id);
-    }
-    // Checkpoints and proposals are dependent copies when they reference any
-    // suppressed record. Records without registered ancestry are an explicit
-    // policy limitation rather than guessed at by text matching.
+    Ok(())
+}
+
+fn collect_forget_copies(
+    view: &mneme_memory::MemoryView,
+    scope: &mneme_core::ScopeId,
+    deps: &Dependencies,
+    state: &mut ForgetState,
+) -> Result<()> {
+    state
+        .forgotten_records
+        .extend(state.suppressed_assertions.iter().copied());
+    state
+        .forgotten_records
+        .extend(state.suppressed_derivations.iter().copied());
     for record in visible_records(view)? {
         if !matches!(
             record.kind,
@@ -1050,26 +1129,38 @@ fn plan_forget(
         ) {
             continue;
         }
-        let targets = forgotten_records
+        let targets = state
+            .forgotten_records
             .iter()
             .chain(deps.evidence.iter())
             .copied()
             .collect::<std::collections::BTreeSet<_>>();
         if references_any(&record.payload.to_value(), &targets) {
-            if record.scope != request.scope {
+            if &record.scope != scope {
                 return Err(RetentionError::Unauthorized);
             }
-            forgotten_records.insert(record.record_id);
+            state.forgotten_records.insert(record.record_id);
         }
     }
-    for record_id in &forgotten_records {
+    Ok(())
+}
+
+fn record_forgotten_targets(
+    workspace: &mneme_store::Workspace,
+    view: &mneme_memory::MemoryView,
+    request: &RetentionRequest,
+    state: &ForgetState,
+    plan: &mut RetentionPlan,
+) -> Result<()> {
+    for record_id in &state.forgotten_records {
         let record = view.record(*record_id)?;
         plan.suppressed.push(PlannedSuppression {
             target: *record_id,
             revision: None,
             kind: record.kind,
             mode: mneme_store::SuppressionMode::Forgotten,
-            content_digest: source_digests
+            content_digest: state
+                .source_digests
                 .get(record_id)
                 .copied()
                 .filter(|_| request.policy.block_content_replay),
@@ -1078,7 +1169,15 @@ fn plan_forget(
             add_record_blob_locations(view, &revision, plan)?;
         }
     }
-    for (assertion_id, revision) in &forgotten_revisions {
+    Ok(())
+}
+
+fn record_forgotten_revisions(
+    workspace: &mneme_store::Workspace,
+    state: &ForgetState,
+    plan: &mut RetentionPlan,
+) -> Result<()> {
+    for (assertion_id, revision) in &state.forgotten_revisions {
         let record = workspace
             .record_revisions(*assertion_id)?
             .into_iter()
@@ -1092,6 +1191,10 @@ fn plan_forget(
             content_digest: None,
         });
     }
+    Ok(())
+}
+
+fn finish_forget_plan(request: &RetentionRequest, state: ForgetState, plan: &mut RetentionPlan) {
     plan.suppressed.sort_by_key(|suppression| {
         (
             suppression.target,
@@ -1100,13 +1203,13 @@ fn plan_forget(
                 .unwrap_or(mneme_core::RevisionId::from_bytes([0; 16])),
         )
     });
-    plan.invalidated_derivations = suppressed_derivations.iter().copied().collect();
+    plan.invalidated_derivations = state.suppressed_derivations.iter().copied().collect();
     add_inventory_locations(plan);
     plan.retained_metadata.extend([
         "suppression-identity".to_owned(),
         "operation-generation".to_owned(),
     ]);
-    if request.policy.block_content_replay && !source_digests.is_empty() {
+    if request.policy.block_content_replay && !state.source_digests.is_empty() {
         plan.retained_metadata
             .push("content-replay-block".to_owned());
     }
@@ -1114,10 +1217,9 @@ fn plan_forget(
         .push("no-forensic-media-erasure-claim".to_owned());
     plan.limitations
         .push("unregistered-semantic-copies-not-inferred".to_owned());
-    Ok(())
 }
 
-#[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn resolve_sources(
     view: &mneme_memory::MemoryView,
     request: &RetentionRequest,
@@ -1137,8 +1239,13 @@ fn resolve_sources(
             Ok((vec![source], record.digest()))
         }
         Selector::Content(digest) => {
-            let mut sources = Vec::new();
-            for record in visible_records(view)? {
+            let records = visible_records(view)?;
+            let max_sources = records
+                .iter()
+                .filter(|record| record.kind == mneme_core::RecordKind::SourceRevision)
+                .count();
+            let mut sources = Vec::with_capacity(max_sources);
+            for record in records {
                 if record.kind != mneme_core::RecordKind::SourceRevision {
                     continue;
                 }
@@ -1200,7 +1307,7 @@ struct Dependencies {
     assertions: std::collections::BTreeSet<mneme_core::RecordId>,
 }
 
-#[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn dependencies_for_sources(
     view: &mneme_memory::MemoryView,
     sources: &[mneme_core::RecordId],
@@ -1209,79 +1316,93 @@ fn dependencies_for_sources(
         sources.iter().copied().collect();
     let mut deps = Dependencies::default();
     loop {
-        let mut is_changed = false;
-        let closure: std::collections::BTreeSet<mneme_core::RecordId> = targets
-            .iter()
-            .chain(deps.episodes.iter())
-            .chain(deps.evidence.iter())
-            .copied()
-            .collect();
-        for record in visible_records(view)? {
-            match record.kind {
-                mneme_core::RecordKind::Episode => {
-                    if deps.episodes.contains(&record.record_id) {
-                        continue;
-                    }
-                    let episode = view.episode(record.record_id)?;
-                    let is_linked_source = episode
-                        .source
-                        .is_some_and(|source| closure.contains(&source));
-                    let is_linked_related = episode
-                        .related
-                        .iter()
-                        .any(|related| closure.contains(related));
-                    if is_linked_source || is_linked_related {
-                        deps.episodes.insert(record.record_id);
-                        is_changed = true;
-                    }
-                }
-                mneme_core::RecordKind::Evidence => {
-                    if deps.evidence.contains(&record.record_id) {
-                        continue;
-                    }
-                    let evidence = view.evidence(record.record_id)?;
-                    if closure.contains(&evidence.source)
-                        || evidence
-                            .ancestry
-                            .iter()
-                            .any(|ancestor| closure.contains(ancestor))
-                    {
-                        deps.evidence.insert(record.record_id);
-                        is_changed = true;
-                    }
-                }
-                mneme_core::RecordKind::Assertion => {
-                    if deps.assertions.contains(&record.record_id) {
-                        continue;
-                    }
-                    let assertion = view.assertion(record.record_id)?;
-                    if assertion
-                        .evidence
-                        .iter()
-                        .any(|evidence| deps.evidence.contains(evidence))
-                    {
-                        deps.assertions.insert(record.record_id);
-                        is_changed = true;
-                    }
-                }
-                mneme_core::RecordKind::Derivation => {
-                    let derivation = view.derivation(record.record_id)?;
-                    if derivation
-                        .premises
-                        .iter()
-                        .any(|premise| deps.assertions.contains(premise))
-                        && deps.assertions.insert(derivation.conclusion)
-                    {
-                        is_changed = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if !is_changed {
+        if !extend_dependencies(view, &targets, &mut deps)? {
             return Ok(deps);
         }
     }
+}
+
+fn extend_dependencies(
+    view: &mneme_memory::MemoryView,
+    targets: &std::collections::BTreeSet<mneme_core::RecordId>,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    let closure: std::collections::BTreeSet<mneme_core::RecordId> = targets
+        .iter()
+        .chain(deps.episodes.iter())
+        .chain(deps.evidence.iter())
+        .copied()
+        .collect();
+    let mut is_changed = false;
+    for record in visible_records(view)? {
+        is_changed |= add_dependency(view, &record, &closure, deps)?;
+    }
+    Ok(is_changed)
+}
+
+fn add_dependency(
+    view: &mneme_memory::MemoryView,
+    record: &mneme_core::RecordEnvelope,
+    closure: &std::collections::BTreeSet<mneme_core::RecordId>,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    match record.kind {
+        mneme_core::RecordKind::Episode => {
+            if deps.episodes.contains(&record.record_id) {
+                return Ok(false);
+            }
+            let episode = view.episode(record.record_id)?;
+            let is_linked_source = episode
+                .source
+                .is_some_and(|source| closure.contains(&source));
+            let is_linked_related = episode
+                .related
+                .iter()
+                .any(|related| closure.contains(related));
+            if is_linked_source || is_linked_related {
+                return Ok(deps.episodes.insert(record.record_id));
+            }
+        }
+        mneme_core::RecordKind::Evidence => {
+            if deps.evidence.contains(&record.record_id) {
+                return Ok(false);
+            }
+            let evidence = view.evidence(record.record_id)?;
+            if closure.contains(&evidence.source)
+                || evidence
+                    .ancestry
+                    .iter()
+                    .any(|ancestor| closure.contains(ancestor))
+            {
+                return Ok(deps.evidence.insert(record.record_id));
+            }
+        }
+        mneme_core::RecordKind::Assertion => {
+            if deps.assertions.contains(&record.record_id) {
+                return Ok(false);
+            }
+            let assertion = view.assertion(record.record_id)?;
+            if assertion
+                .evidence
+                .iter()
+                .any(|evidence| deps.evidence.contains(evidence))
+            {
+                return Ok(deps.assertions.insert(record.record_id));
+            }
+        }
+        mneme_core::RecordKind::Derivation => {
+            let derivation = view.derivation(record.record_id)?;
+            if derivation
+                .premises
+                .iter()
+                .any(|premise| deps.assertions.contains(premise))
+            {
+                return Ok(deps.assertions.insert(derivation.conclusion));
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
 }
 
 fn independent_evidence_exists(

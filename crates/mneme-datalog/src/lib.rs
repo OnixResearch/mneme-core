@@ -408,9 +408,17 @@ impl QueryResult {
     /// Rows and derivations are intentionally omitted; their canonical values
     /// are transported separately. The summary keeps status, coverage,
     /// exhaustiveness, absence, and truncation distinguishable.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn summary_value(&self) -> mneme_core::Value {
-        let coverage = mneme_core::Value::sequence(
+        let coverage = self.coverage_value();
+        let mut entries = self.summary_header_entries();
+        entries.extend(self.summary_context_entries());
+        entries.extend(self.summary_state_entries(coverage));
+        mneme_core::Value::symbol_dictionary(entries)
+    }
+
+    fn coverage_value(&self) -> mneme_core::Value {
+        mneme_core::Value::sequence(
             self.coverage
                 .iter()
                 .map(|coverage| {
@@ -433,8 +441,11 @@ impl QueryResult {
                     mneme_core::Value::symbol_dictionary(entries)
                 })
                 .collect(),
-        );
-        let mut entries = vec![
+        )
+    }
+
+    fn summary_header_entries(&self) -> Vec<(mneme_core::Symbol, mneme_core::Value)> {
+        vec![
             (
                 mneme_core::Symbol::from("format"),
                 mneme_core::Value::symbol("mneme.datalog.query-result"),
@@ -455,6 +466,11 @@ impl QueryResult {
                 mneme_core::Symbol::from("served-revision"),
                 self.served_revision.to_value(),
             ),
+        ]
+    }
+
+    fn summary_context_entries(&self) -> Vec<(mneme_core::Symbol, mneme_core::Value)> {
+        vec![
             (
                 mneme_core::Symbol::from("scope"),
                 self.context.scope.to_value(),
@@ -479,6 +495,14 @@ impl QueryResult {
                 mneme_core::Symbol::from("eligibility-generation"),
                 mneme_core::Value::integer(self.context.eligibility_generation),
             ),
+        ]
+    }
+
+    fn summary_state_entries(
+        &self,
+        coverage: mneme_core::Value,
+    ) -> Vec<(mneme_core::Symbol, mneme_core::Value)> {
+        let mut entries = vec![
             (mneme_core::Symbol::from("coverage"), coverage),
             (
                 mneme_core::Symbol::from("row-count"),
@@ -507,7 +531,7 @@ impl QueryResult {
                 mneme_core::Value::string(reason.clone()),
             ));
         }
-        mneme_core::Value::symbol_dictionary(entries)
+        entries
     }
 }
 
@@ -552,7 +576,7 @@ impl<'w> DatalogService<'w> {
 
     /// Build a private projection and optionally publish its pointer through
     /// the workspace projection registry.
-    #[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn build(&mut self, request: BuildRequest) -> Result<DatalogBuild, DatalogError> {
         let program = request
             .bundle
@@ -583,11 +607,47 @@ impl<'w> DatalogService<'w> {
             }
             return Ok(existing);
         }
+        let max_cached_builds = 1_024;
+        if !self.builds.contains_key(&build_id) && self.builds.len() >= max_cached_builds {
+            return Err(DatalogError::Failed(
+                "Datalog build cache exceeds the 1024-entry bound".to_owned(),
+            ));
+        }
         let snapshot = self.workspace.snapshot_at(request.revision, None)?;
+        let build =
+            self.build_from_snapshot(&request, program, build_id.clone(), generation, snapshot)?;
+        if request.publish {
+            if matches!(
+                build.status,
+                ExecutionStatus::Timeout | ExecutionStatus::Cancelled | ExecutionStatus::Failed
+            ) {
+                return Err(DatalogError::Failed(
+                    "cannot publish a timed-out, cancelled, or failed projection".to_owned(),
+                ));
+            }
+            self.publish(&build)?;
+        }
+        self.builds.insert(build_id, build.clone());
+        Ok(build)
+    }
+
+    fn build_from_snapshot(
+        &mut self,
+        request: &BuildRequest,
+        program: RuleProgram,
+        build_id: String,
+        generation: u64,
+        snapshot: mneme_store::Snapshot,
+    ) -> Result<DatalogBuild, DatalogError> {
         let history = {
             let mut history = std::collections::BTreeMap::new();
             for record in &snapshot.records {
                 for revision in self.workspace.record_revisions(record.record_id)? {
+                    if history.len() >= 1_000_000 {
+                        return Err(DatalogError::Failed(
+                            "workspace history exceeds the 1M revision bound".to_owned(),
+                        ));
+                    }
                     history.insert((revision.record_id, revision.revision_id), revision);
                 }
             }
@@ -609,16 +669,16 @@ impl<'w> DatalogService<'w> {
             schema_version: program.bundle.schema_version,
             rule_bundle_id: program.bundle.id.clone(),
             rule_bundle_version: program.bundle.version.clone(),
-            projection_build_id: build_id.clone(),
+            projection_build_id: build_id,
             eligibility_generation: generation,
         };
-        let evaluated = engine::build(&view, &request, &context, &program)?;
+        let evaluated = engine::build(&view, request, &context, &program)?;
         if self.workspace.eligibility_generation()? != generation {
             return Err(DatalogError::Failed(
                 "eligibility barrier advanced during projection build".to_owned(),
             ));
         }
-        let build = DatalogBuild {
+        Ok(DatalogBuild {
             context,
             status: evaluated.status,
             coverage: evaluated.coverage,
@@ -632,20 +692,7 @@ impl<'w> DatalogService<'w> {
                 .collect(),
             arities: program.arities,
             bundle: program.bundle,
-        };
-        if request.publish {
-            if matches!(
-                build.status,
-                ExecutionStatus::Timeout | ExecutionStatus::Cancelled | ExecutionStatus::Failed
-            ) {
-                return Err(DatalogError::Failed(
-                    "cannot publish a timed-out, cancelled, or failed projection".to_owned(),
-                ));
-            }
-            self.publish(&build)?;
-        }
-        self.builds.insert(build_id, build.clone());
-        Ok(build)
+        })
     }
 
     /// Publish a previously built private projection after a fresh barrier
@@ -710,7 +757,7 @@ impl<'w> DatalogService<'w> {
         self.query_loaded(build.clone(), query)
     }
 
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn query_loaded(
         &mut self,
         build: DatalogBuild,
@@ -751,6 +798,15 @@ impl<'w> DatalogService<'w> {
                 work: 0,
             });
         }
+        self.query_cached(&build, &query, requested_revision)
+    }
+
+    fn query_cached(
+        &mut self,
+        build: &DatalogBuild,
+        query: &Query,
+        requested_revision: mneme_core::WorkspaceRevisionId,
+    ) -> Result<QueryResult, DatalogError> {
         let key = QueryCacheKey {
             build_id: build.context.projection_build_id.clone(),
             requested_revision,
@@ -762,16 +818,7 @@ impl<'w> DatalogService<'w> {
         if let Some(cached) = self.query_cache.get(&key) {
             return Ok(cached.clone());
         }
-        let arity = build
-            .arities
-            .get(&query.predicate)
-            .copied()
-            .ok_or_else(|| DatalogError::UnknownPredicate(query.predicate.clone()))?;
-        if !query.constants.is_empty() && query.constants.len() != arity {
-            return Err(DatalogError::InvalidQuery(
-                "query constant count does not match predicate arity",
-            ));
-        }
+        validate_query_arity(build, query)?;
         let coverage = build
             .coverage
             .iter()
@@ -782,62 +829,91 @@ impl<'w> DatalogService<'w> {
                 status: CoverageStatus::Unknown,
                 reason: Some("predicate is absent from this build".to_owned()),
             });
-        let mut rows = Vec::new();
-        if let Some(facts) = build.facts.get(&query.predicate) {
-            for (terms, data) in facts {
-                if (query.constants.is_empty() || query.constants.len() == terms.len())
-                    && query.constants.iter().zip(terms).all(|(constant, value)| {
-                        constant.as_ref().is_none_or(|constant| constant == value)
-                    })
-                {
-                    rows.push(QueryRow {
-                        values: terms.clone(),
-                        supports: data.supports.clone(),
-                        support_truncated: data.truncated,
-                    });
-                }
-            }
-        }
-        let total = rows.len();
-        let limit = if query.limit == 0 {
-            build.limits.max_result_rows
-        } else {
-            query.limit.min(build.limits.max_result_rows)
-        };
-        rows.truncate(limit);
-        let is_truncated = total > limit;
-        let is_terminal_failure = matches!(
-            build.status,
-            ExecutionStatus::Timeout | ExecutionStatus::Cancelled | ExecutionStatus::Failed
-        );
-        let is_exhaustive =
-            coverage.status == CoverageStatus::Complete && !is_truncated && !is_terminal_failure;
-        let is_absence_established = is_exhaustive && rows.is_empty();
-        let status = if is_exhaustive {
-            ExecutionStatus::Complete
-        } else {
-            build.status
-        };
-        let result = QueryResult {
-            context: build.context.clone(),
-            status,
-            coverage: build.coverage.clone(),
-            rows,
-            exhaustive: is_exhaustive,
-            truncated: is_truncated,
-            absence_established: is_absence_established,
-            reason: if is_absence_established {
-                Some("absence within the declared complete relation".to_owned())
-            } else if !is_exhaustive {
-                Some("result is not exhaustive for this context".to_owned())
-            } else {
-                None
-            },
-            requested_revision,
-            served_revision: build.context.served_revision,
-            work: build.work,
-        };
+        let rows = matching_query_rows(build, query);
+        let result = query_result(build, query, coverage, rows, requested_revision);
         self.query_cache.insert(key, result.clone());
         Ok(result)
+    }
+}
+
+fn validate_query_arity(build: &DatalogBuild, query: &Query) -> Result<(), DatalogError> {
+    let arity = build
+        .arities
+        .get(&query.predicate)
+        .copied()
+        .ok_or_else(|| DatalogError::UnknownPredicate(query.predicate.clone()))?;
+    if !query.constants.is_empty() && query.constants.len() != arity {
+        return Err(DatalogError::InvalidQuery(
+            "query constant count does not match predicate arity",
+        ));
+    }
+    Ok(())
+}
+
+fn matching_query_rows(build: &DatalogBuild, query: &Query) -> Vec<QueryRow> {
+    let mut rows = Vec::new();
+    if let Some(facts) = build.facts.get(&query.predicate) {
+        for (terms, data) in facts {
+            if (query.constants.is_empty() || query.constants.len() == terms.len())
+                && query.constants.iter().zip(terms).all(|(constant, value)| {
+                    constant.as_ref().is_none_or(|constant| constant == value)
+                })
+            {
+                rows.push(QueryRow {
+                    values: terms.clone(),
+                    supports: data.supports.clone(),
+                    support_truncated: data.truncated,
+                });
+            }
+        }
+    }
+    rows
+}
+
+fn query_result(
+    build: &DatalogBuild,
+    query: &Query,
+    coverage: Coverage,
+    mut rows: Vec<QueryRow>,
+    requested_revision: mneme_core::WorkspaceRevisionId,
+) -> QueryResult {
+    let total = rows.len();
+    let limit = if query.limit == 0 {
+        build.limits.max_result_rows
+    } else {
+        query.limit.min(build.limits.max_result_rows)
+    };
+    rows.truncate(limit);
+    let is_truncated = total > limit;
+    let is_terminal_failure = matches!(
+        build.status,
+        ExecutionStatus::Timeout | ExecutionStatus::Cancelled | ExecutionStatus::Failed
+    );
+    let is_exhaustive =
+        coverage.status == CoverageStatus::Complete && !is_truncated && !is_terminal_failure;
+    let is_absence_established = is_exhaustive && rows.is_empty();
+    let status = if is_exhaustive {
+        ExecutionStatus::Complete
+    } else {
+        build.status
+    };
+    QueryResult {
+        context: build.context.clone(),
+        status,
+        coverage: build.coverage.clone(),
+        rows,
+        exhaustive: is_exhaustive,
+        truncated: is_truncated,
+        absence_established: is_absence_established,
+        reason: if is_absence_established {
+            Some("absence within the declared complete relation".to_owned())
+        } else if !is_exhaustive {
+            Some("result is not exhaustive for this context".to_owned())
+        } else {
+            None
+        },
+        requested_revision,
+        served_revision: build.context.served_revision,
+        work: build.work,
     }
 }

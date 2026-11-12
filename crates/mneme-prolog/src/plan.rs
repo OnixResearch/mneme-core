@@ -154,89 +154,19 @@ impl PlanRegistry {
     }
 
     /// Record plan acceptance after all CAS/precondition checks. No action is run.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn accept(&mut self, command: PlanAcceptanceCommand) -> PlanOutcome {
-        if let Some((stored, _)) = self.acceptances.get(&command.idempotency_key) {
-            return if stored == &command {
-                PlanOutcome::PriorOutcome {
-                    plan_id: command.plan_id,
-                    detail: "plan acceptance already recorded".to_owned(),
-                }
-            } else {
-                PlanOutcome::Conflict {
-                    kind: PlanConflictKind::IdempotencyMismatch,
-                    detail: "idempotency key was reused with a different plan acceptance"
-                        .to_owned(),
-                }
-            };
+        if let Some(outcome) = self.prior_acceptance(&command) {
+            return outcome;
         }
         let Some(registered) = self.plans.get(&command.plan_id).cloned() else {
             return conflict(PlanConflictKind::MissingPlan, "plan is not registered");
         };
-        if registered.accepted.is_some() {
-            return conflict(
-                PlanConflictKind::AlreadyDecided,
-                "plan already has an acceptance decision",
-            );
-        }
-        if registered.revision != command.plan_revision {
-            return conflict(PlanConflictKind::StalePlanRevision, "plan revision changed");
-        }
-        if command.expected != registered.expected {
-            return conflict(
-                PlanConflictKind::ChangedPreconditions,
-                "acceptance state differs from the reviewed plan",
-            );
-        }
-        if self.current.base_revision != registered.expected.base_revision {
-            return conflict(PlanConflictKind::StaleBase, "base revision changed");
-        }
-        if self.current.preconditions != registered.expected.preconditions {
-            return conflict(
-                PlanConflictKind::ChangedPreconditions,
-                "plan preconditions changed",
-            );
-        }
-        for premise in &registered.plan.evidence {
-            let key = (premise.record_id, premise.revision_id);
-            if self.current.forgotten.contains(&premise.record_id)
-                || premise
-                    .ancestry_roots
-                    .iter()
-                    .any(|(record, _)| self.current.forgotten.contains(record))
-            {
-                return conflict(
-                    PlanConflictKind::ForgottenSource,
-                    "plan depends on forgotten evidence",
-                );
-            }
-            let Some(current_source) = self.current.sources.get(&key) else {
-                return conflict(PlanConflictKind::AlteredSource, "plan source is missing");
-            };
-            let Some(expected_source) = registered.expected.sources.get(&key) else {
-                return conflict(
-                    PlanConflictKind::AlteredSource,
-                    "plan source was not reviewed",
-                );
-            };
-            if current_source.digest() != expected_source.digest() {
-                return conflict(PlanConflictKind::AlteredSource, "plan source changed");
-            }
-            if matches!(current_source, PlanSourceState::Forgotten { .. }) {
-                return conflict(
-                    PlanConflictKind::ForgottenSource,
-                    "plan source was forgotten",
-                );
-            }
-            if matches!(current_source, PlanSourceState::Pruned { .. })
-                && premise.span.is_some()
-                && matches!(premise.availability, crate::PremiseAvailability::Retained)
-            {
-                return conflict(
-                    PlanConflictKind::PrunedSource,
-                    "plan requires pruned source bytes",
-                );
-            }
+        if let Some(outcome) = self
+            .validate_acceptance_state(&command, &registered)
+            .or_else(|| self.validate_acceptance_sources(&registered))
+        {
+            return outcome;
         }
         let Some(registered) = self.plans.get_mut(&command.plan_id) else {
             return conflict(PlanConflictKind::MissingPlan, "plan disappeared");
@@ -251,6 +181,114 @@ impl PlanRegistry {
         self.acceptances
             .insert(command.idempotency_key.clone(), (command, outcome.clone()));
         outcome
+    }
+
+    fn prior_acceptance(&self, command: &PlanAcceptanceCommand) -> Option<PlanOutcome> {
+        self.acceptances
+            .get(&command.idempotency_key)
+            .map(|(stored, _)| {
+                if stored == command {
+                    PlanOutcome::PriorOutcome {
+                        plan_id: command.plan_id.clone(),
+                        detail: "plan acceptance already recorded".to_owned(),
+                    }
+                } else {
+                    PlanOutcome::Conflict {
+                        kind: PlanConflictKind::IdempotencyMismatch,
+                        detail: "idempotency key was reused with a different plan acceptance"
+                            .to_owned(),
+                    }
+                }
+            })
+    }
+
+    fn validate_acceptance_state(
+        &self,
+        command: &PlanAcceptanceCommand,
+        registered: &RegisteredPlan,
+    ) -> Option<PlanOutcome> {
+        if registered.accepted.is_some() {
+            return Some(conflict(
+                PlanConflictKind::AlreadyDecided,
+                "plan already has an acceptance decision",
+            ));
+        }
+        if registered.revision != command.plan_revision {
+            return Some(conflict(
+                PlanConflictKind::StalePlanRevision,
+                "plan revision changed",
+            ));
+        }
+        if command.expected != registered.expected {
+            return Some(conflict(
+                PlanConflictKind::ChangedPreconditions,
+                "acceptance state differs from the reviewed plan",
+            ));
+        }
+        if self.current.base_revision != registered.expected.base_revision {
+            return Some(conflict(
+                PlanConflictKind::StaleBase,
+                "base revision changed",
+            ));
+        }
+        if self.current.preconditions != registered.expected.preconditions {
+            return Some(conflict(
+                PlanConflictKind::ChangedPreconditions,
+                "plan preconditions changed",
+            ));
+        }
+        None
+    }
+
+    fn validate_acceptance_sources(&self, registered: &RegisteredPlan) -> Option<PlanOutcome> {
+        for premise in &registered.plan.evidence {
+            let key = (premise.record_id, premise.revision_id);
+            if self.current.forgotten.contains(&premise.record_id)
+                || premise
+                    .ancestry_roots
+                    .iter()
+                    .any(|(record, _)| self.current.forgotten.contains(record))
+            {
+                return Some(conflict(
+                    PlanConflictKind::ForgottenSource,
+                    "plan depends on forgotten evidence",
+                ));
+            }
+            let Some(current_source) = self.current.sources.get(&key) else {
+                return Some(conflict(
+                    PlanConflictKind::AlteredSource,
+                    "plan source is missing",
+                ));
+            };
+            let Some(expected_source) = registered.expected.sources.get(&key) else {
+                return Some(conflict(
+                    PlanConflictKind::AlteredSource,
+                    "plan source was not reviewed",
+                ));
+            };
+            if current_source.digest() != expected_source.digest() {
+                return Some(conflict(
+                    PlanConflictKind::AlteredSource,
+                    "plan source changed",
+                ));
+            }
+            if matches!(current_source, PlanSourceState::Forgotten { .. }) {
+                return Some(conflict(
+                    PlanConflictKind::ForgottenSource,
+                    "plan source was forgotten",
+                ));
+            }
+            if matches!(current_source, PlanSourceState::Pruned { .. })
+                && premise.span.is_some()
+                && matches!(premise.availability, crate::PremiseAvailability::Retained)
+            {
+                return Some(conflict(
+                    PlanConflictKind::PrunedSource,
+                    "plan requires pruned source bytes",
+                ));
+            }
+        }
+        None
     }
 }
 

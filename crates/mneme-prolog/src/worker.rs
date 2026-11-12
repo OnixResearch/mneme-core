@@ -59,7 +59,7 @@ pub struct WorkerOutcome {
 ///
 /// The caller supplies an already authorized request and enabled capability.
 /// `engine` must be the pinned Scryer-compatible executable.
-#[allow(unknown_lints, ambient_clock, function_length)] // worker wall-clock budget is the process shell
+#[allow(unknown_lints, ambient_clock)] // worker wall-clock budget is the process shell
 pub fn run_worker(
     engine: &std::path::Path,
     metadata: &crate::CapabilityMetadata,
@@ -82,57 +82,10 @@ pub fn run_worker(
         ));
     }
     let started = std::time::Instant::now();
-    let workspace = WorkerDir::new()?;
-    let script = workspace.path().join("request.pl");
-    write_program(&script, request, metadata)?;
-    let stdout_path = workspace.path().join("stdout");
-    let stderr_path = workspace.path().join("stderr");
-    let stdout = std::fs::File::create(&stdout_path).map_err(|error| {
-        crate::CapabilityError::InvalidRequest(format!("cannot create worker output: {error}"))
-    })?;
-    let stderr = std::fs::File::create(&stderr_path).map_err(|error| {
-        crate::CapabilityError::InvalidRequest(format!("cannot create worker error: {error}"))
-    })?;
-    let mut child = std::process::Command::new(engine)
-        .arg("-f")
-        .arg("--no-add-history")
-        .arg(&script)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(stdout))
-        .stderr(std::process::Stdio::from(stderr))
-        .spawn()
-        .map_err(|error| {
-            crate::CapabilityError::InvalidRequest(format!("cannot start Prolog worker: {error}"))
-        })?;
+    let mut worker = start_worker(engine, metadata, request)?;
     let deadline = started + std::time::Duration::from_millis(limits.max_wall_ms);
-    let status = loop {
-        if control.is_cancelled() {
-            terminate(&mut child);
-            break WorkerStatus::Cancelled;
-        }
-        match child.try_wait() {
-            Ok(Some(exit)) => {
-                break if exit.success() {
-                    WorkerStatus::Complete
-                } else {
-                    WorkerStatus::Failed
-                };
-            }
-            Ok(None) => {}
-            Err(error) => {
-                terminate(&mut child);
-                return Err(crate::CapabilityError::InvalidRequest(format!(
-                    "worker wait failed: {error}"
-                )));
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            terminate(&mut child);
-            break WorkerStatus::Timeout;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
-    let stdout = read_bounded(&stdout_path, limits.max_output_bytes)?;
+    let status = wait_for_worker(&mut worker.child, control, deadline)?;
+    let stdout = read_bounded(&worker.stdout_path, limits.max_output_bytes)?;
     let is_output_limited = stdout.1;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).map_err(|_| {
         crate::CapabilityError::LimitExceeded(
@@ -157,6 +110,82 @@ pub fn run_worker(
             None
         },
     })
+}
+
+struct RunningWorker {
+    child: std::process::Child,
+    _workspace: WorkerDir,
+    stdout_path: std::path::PathBuf,
+}
+
+fn start_worker(
+    engine: &std::path::Path,
+    metadata: &crate::CapabilityMetadata,
+    request: &crate::PrologRequest,
+) -> Result<RunningWorker, crate::CapabilityError> {
+    let workspace = WorkerDir::new()?;
+    let script = workspace.path().join("request.pl");
+    write_program(&script, request, metadata)?;
+    let stdout_path = workspace.path().join("stdout");
+    let stderr_path = workspace.path().join("stderr");
+    let stdout = std::fs::File::create(&stdout_path).map_err(|error| {
+        crate::CapabilityError::InvalidRequest(format!("cannot create worker output: {error}"))
+    })?;
+    let stderr = std::fs::File::create(&stderr_path).map_err(|error| {
+        crate::CapabilityError::InvalidRequest(format!("cannot create worker error: {error}"))
+    })?;
+    let child = std::process::Command::new(engine)
+        .arg("-f")
+        .arg("--no-add-history")
+        .arg(&script)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(stdout))
+        .stderr(std::process::Stdio::from(stderr))
+        .spawn()
+        .map_err(|error| {
+            crate::CapabilityError::InvalidRequest(format!("cannot start Prolog worker: {error}"))
+        })?;
+    Ok(RunningWorker {
+        _workspace: workspace,
+        child,
+        stdout_path,
+    })
+}
+
+#[allow(unknown_lints, ambient_clock)] // wait-loop deadline is the worker timeout shell
+fn wait_for_worker(
+    child: &mut std::process::Child,
+    control: &WorkerControl,
+    deadline: std::time::Instant,
+) -> Result<WorkerStatus, crate::CapabilityError> {
+    let status = loop {
+        if control.is_cancelled() {
+            terminate(child);
+            break WorkerStatus::Cancelled;
+        }
+        match child.try_wait() {
+            Ok(Some(exit)) => {
+                break if exit.success() {
+                    WorkerStatus::Complete
+                } else {
+                    WorkerStatus::Failed
+                };
+            }
+            Ok(None) => {}
+            Err(error) => {
+                terminate(child);
+                return Err(crate::CapabilityError::InvalidRequest(format!(
+                    "worker wait failed: {error}"
+                )));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            terminate(child);
+            break WorkerStatus::Timeout;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    Ok(status)
 }
 
 #[allow(unknown_lints, ignored_result)] // process teardown is best-effort

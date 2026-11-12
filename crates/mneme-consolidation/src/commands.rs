@@ -187,123 +187,16 @@ impl ProposalRegistry {
     }
 
     /// Apply a compare-and-swap acceptance or report a conflict/prior outcome.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn accept(&mut self, command: AcceptanceCommand) -> CommandOutcome {
-        if let Some((stored, _)) = self.acceptances.get(&command.idempotency_key) {
-            return if stored == &command {
-                CommandOutcome::PriorOutcome {
-                    proposal_id: command.proposal_id,
-                    detail: "acceptance already recorded".to_owned(),
-                }
-            } else {
-                CommandOutcome::Conflict {
-                    kind: ConflictKind::IdempotencyMismatch,
-                    detail: "idempotency key was reused with a different acceptance".to_owned(),
-                }
-            };
+        if let Some(outcome) = self.prior_acceptance(&command) {
+            return outcome;
         }
         let Some(registered) = self.proposals.get(&command.proposal_id).cloned() else {
             return self.conflict(ConflictKind::MissingProposal, "proposal is not registered");
         };
-        if !matches!(
-            registered.proposal.disposition,
-            crate::ProposalDisposition::Pending
-        ) {
-            return CommandOutcome::Conflict {
-                kind: ConflictKind::AlreadyDecided,
-                detail: "proposal already has a terminal disposition".to_owned(),
-            };
-        }
-        if registered.proposal_revision != command.proposal_revision {
-            return self.conflict(
-                ConflictKind::StaleProposalRevision,
-                "proposal revision changed",
-            );
-        }
-        if matches!(
-            registered.proposal.operation,
-            crate::ProposalOperation::Procedure(_)
-        ) {
-            return self.conflict(
-                ConflictKind::ProcedureRequiresValidator,
-                "procedural proposal requires its separate validator command",
-            );
-        }
-        if !matches!(
-            registered.proposal.support.outcome,
-            crate::SupportOutcome::Supported
-        ) {
-            return self.conflict(
-                ConflictKind::UnsupportedAcceptance,
-                "proposal support was not accepted by review",
-            );
-        }
-        if command.expected != registered.expected {
-            return self.conflict(
-                ConflictKind::ChangedTarget,
-                "acceptance preconditions differ from the reviewed proposal",
-            );
-        }
-        if self.current.base_revision != registered.expected.base_revision {
-            return self.conflict(ConflictKind::StaleBase, "base revision changed");
-        }
-        if self.current.scope != registered.expected.scope
-            || registered.proposal.scope != self.current.scope
-        {
-            return self.conflict(
-                ConflictKind::Unauthorized,
-                "proposal is outside the current authorized scope",
-            );
-        }
-        if self.current.eligibility_generation != registered.expected.eligibility_generation {
-            return self.conflict(
-                ConflictKind::StaleGeneration,
-                "eligibility generation changed",
-            );
-        }
-        for premise in &registered.proposal.premises {
-            if self.current.forgotten.contains(&premise.record_id)
-                || premise
-                    .ancestry_roots
-                    .iter()
-                    .any(|root| self.current.forgotten.contains(&root.record_id))
-            {
-                return self.conflict(
-                    ConflictKind::ForgottenSource,
-                    "proposal depends on explicitly forgotten evidence",
-                );
-            }
-            let Some(current_source) = self.current.sources.get(&crate::InputKey {
-                record_id: premise.record_id,
-                revision_id: premise.revision_id,
-            }) else {
-                return self.conflict(ConflictKind::AlteredSource, "source is no longer present");
-            };
-            let expected_source = registered.expected.sources.get(&crate::InputKey {
-                record_id: premise.record_id,
-                revision_id: premise.revision_id,
-            });
-            if expected_source.is_none_or(|expected| expected.digest() != current_source.digest()) {
-                return self.conflict(ConflictKind::AlteredSource, "source digest changed");
-            }
-            match current_source {
-                SourceState::Forgotten { .. } => {
-                    return self.conflict(
-                        ConflictKind::ForgottenSource,
-                        "proposal source was forgotten",
-                    );
-                }
-                SourceState::Pruned { .. } if premise.span.is_some() => {
-                    return self.conflict(
-                        ConflictKind::PrunedSource,
-                        "proposal requires pruned source bytes",
-                    );
-                }
-                SourceState::Retained { .. } | SourceState::Pruned { .. } => {}
-            }
-        }
-        if self.current.targets != registered.expected.targets {
-            return self.conflict(ConflictKind::ChangedTarget, "target revision changed");
+        if let Some(outcome) = self.validate_acceptance(&command, &registered) {
+            return outcome;
         }
         let Some(registered) = self.proposals.get_mut(&command.proposal_id) else {
             return CommandOutcome::Conflict {
@@ -353,7 +246,7 @@ impl ProposalRegistry {
             };
         };
         if !matches!(
-            registered.proposal.disposition,
+            &registered.proposal.disposition,
             crate::ProposalDisposition::Pending
         ) {
             return CommandOutcome::Conflict {
@@ -390,26 +283,15 @@ impl ProposalRegistry {
     /// Validate and accept a procedural proposal through its own command.
     /// The validator inspects content only; no instruction, rule, or tool is
     /// executed and worker privileges are not mutated.
-    #[allow(unknown_lints, function_length)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn accept_procedure(
         &mut self,
         command: ProcedureAcceptanceCommand,
         validator: &dyn ProcedureValidator,
         privileges: &crate::procedure::WorkerPrivileges,
     ) -> CommandOutcome {
-        if let Some((stored, _)) = self.procedure_acceptances.get(&command.idempotency_key) {
-            return if stored == &command {
-                CommandOutcome::PriorOutcome {
-                    proposal_id: command.proposal_id,
-                    detail: "procedural acceptance already recorded".to_owned(),
-                }
-            } else {
-                CommandOutcome::Conflict {
-                    kind: ConflictKind::IdempotencyMismatch,
-                    detail: "idempotency key was reused with a different procedural acceptance"
-                        .to_owned(),
-                }
-            };
+        if let Some(outcome) = self.prior_procedure_acceptance(&command) {
+            return outcome;
         }
         let Some(registered) = self.proposals.get(&command.proposal_id).cloned() else {
             return CommandOutcome::Conflict {
@@ -417,48 +299,10 @@ impl ProposalRegistry {
                 detail: "proposal is not registered".to_owned(),
             };
         };
-        if !matches!(
-            registered.proposal.disposition,
-            crate::ProposalDisposition::Pending
-        ) {
-            return CommandOutcome::Conflict {
-                kind: ConflictKind::AlreadyDecided,
-                detail: "proposal already has a terminal disposition".to_owned(),
-            };
-        }
-        if registered.proposal_revision != command.proposal_revision {
-            return CommandOutcome::Conflict {
-                kind: ConflictKind::StaleProposalRevision,
-                detail: "proposal revision changed".to_owned(),
-            };
-        }
-        if self.current.scope != registered.expected.scope
-            || registered.proposal.scope != self.current.scope
+        if let Some(outcome) =
+            self.validate_procedure_acceptance(&command, &registered, validator, privileges)
         {
-            return self.conflict(
-                ConflictKind::Unauthorized,
-                "proposal is outside the current authorized scope",
-            );
-        }
-        if self.current.eligibility_generation != registered.expected.eligibility_generation {
-            return self.conflict(
-                ConflictKind::StaleGeneration,
-                "eligibility generation changed",
-            );
-        }
-        let validation =
-            match crate::procedure::validate_procedure(&registered.proposal, validator, privileges)
-            {
-                Ok(validation) => validation,
-                Err(error) => {
-                    return self.conflict(ConflictKind::UnsupportedAcceptance, &error);
-                }
-            };
-        if !validation.approved {
-            return self.conflict(
-                ConflictKind::UnsupportedAcceptance,
-                "procedural validator rejected the proposal",
-            );
+            return outcome;
         }
         let Some(registered) = self.proposals.get_mut(&command.proposal_id) else {
             return CommandOutcome::Conflict {
@@ -478,6 +322,224 @@ impl ProposalRegistry {
         self.procedure_acceptances
             .insert(command.idempotency_key.clone(), (command, outcome.clone()));
         outcome
+    }
+
+    fn prior_acceptance(&self, command: &AcceptanceCommand) -> Option<CommandOutcome> {
+        self.acceptances
+            .get(&command.idempotency_key)
+            .map(|(stored, _)| {
+                if stored == command {
+                    CommandOutcome::PriorOutcome {
+                        proposal_id: command.proposal_id.clone(),
+                        detail: "acceptance already recorded".to_owned(),
+                    }
+                } else {
+                    CommandOutcome::Conflict {
+                        kind: ConflictKind::IdempotencyMismatch,
+                        detail: "idempotency key was reused with a different acceptance".to_owned(),
+                    }
+                }
+            })
+    }
+
+    fn validate_acceptance(
+        &self,
+        command: &AcceptanceCommand,
+        registered: &RegisteredProposal,
+    ) -> Option<CommandOutcome> {
+        self.validate_acceptance_state(command, registered)
+            .or_else(|| self.validate_acceptance_sources(registered))
+            .or_else(|| {
+                (self.current.targets != registered.expected.targets)
+                    .then(|| self.conflict(ConflictKind::ChangedTarget, "target revision changed"))
+            })
+    }
+
+    fn validate_acceptance_state(
+        &self,
+        command: &AcceptanceCommand,
+        registered: &RegisteredProposal,
+    ) -> Option<CommandOutcome> {
+        if !matches!(
+            registered.proposal.disposition,
+            crate::ProposalDisposition::Pending
+        ) {
+            return Some(CommandOutcome::Conflict {
+                kind: ConflictKind::AlreadyDecided,
+                detail: "proposal already has a terminal disposition".to_owned(),
+            });
+        }
+        if registered.proposal_revision != command.proposal_revision {
+            return Some(self.conflict(
+                ConflictKind::StaleProposalRevision,
+                "proposal revision changed",
+            ));
+        }
+        if matches!(
+            &registered.proposal.operation,
+            crate::ProposalOperation::Procedure(_)
+        ) {
+            return Some(self.conflict(
+                ConflictKind::ProcedureRequiresValidator,
+                "procedural proposal requires its separate validator command",
+            ));
+        }
+        if !matches!(
+            &registered.proposal.support.outcome,
+            crate::SupportOutcome::Supported
+        ) {
+            return Some(self.conflict(
+                ConflictKind::UnsupportedAcceptance,
+                "proposal support was not accepted by review",
+            ));
+        }
+        if command.expected != registered.expected {
+            return Some(self.conflict(
+                ConflictKind::ChangedTarget,
+                "acceptance preconditions differ from the reviewed proposal",
+            ));
+        }
+        if self.current.base_revision != registered.expected.base_revision {
+            return Some(self.conflict(ConflictKind::StaleBase, "base revision changed"));
+        }
+        if self.current.scope != registered.expected.scope
+            || registered.proposal.scope != self.current.scope
+        {
+            return Some(self.conflict(
+                ConflictKind::Unauthorized,
+                "proposal is outside the current authorized scope",
+            ));
+        }
+        if self.current.eligibility_generation != registered.expected.eligibility_generation {
+            return Some(self.conflict(
+                ConflictKind::StaleGeneration,
+                "eligibility generation changed",
+            ));
+        }
+        None
+    }
+
+    fn validate_acceptance_sources(
+        &self,
+        registered: &RegisteredProposal,
+    ) -> Option<CommandOutcome> {
+        for premise in &registered.proposal.premises {
+            if self.current.forgotten.contains(&premise.record_id)
+                || premise
+                    .ancestry_roots
+                    .iter()
+                    .any(|root| self.current.forgotten.contains(&root.record_id))
+            {
+                return Some(self.conflict(
+                    ConflictKind::ForgottenSource,
+                    "proposal depends on explicitly forgotten evidence",
+                ));
+            }
+            let key = crate::InputKey {
+                record_id: premise.record_id,
+                revision_id: premise.revision_id,
+            };
+            let Some(current_source) = self.current.sources.get(&key) else {
+                return Some(
+                    self.conflict(ConflictKind::AlteredSource, "source is no longer present"),
+                );
+            };
+            let expected_source = registered.expected.sources.get(&key);
+            if expected_source.is_none_or(|expected| expected.digest() != current_source.digest()) {
+                return Some(self.conflict(ConflictKind::AlteredSource, "source digest changed"));
+            }
+            match current_source {
+                SourceState::Forgotten { .. } => {
+                    return Some(self.conflict(
+                        ConflictKind::ForgottenSource,
+                        "proposal source was forgotten",
+                    ));
+                }
+                SourceState::Pruned { .. } if premise.span.is_some() => {
+                    return Some(self.conflict(
+                        ConflictKind::PrunedSource,
+                        "proposal requires pruned source bytes",
+                    ));
+                }
+                SourceState::Retained { .. } | SourceState::Pruned { .. } => {}
+            }
+        }
+        None
+    }
+
+    fn prior_procedure_acceptance(
+        &self,
+        command: &ProcedureAcceptanceCommand,
+    ) -> Option<CommandOutcome> {
+        self.procedure_acceptances
+            .get(&command.idempotency_key)
+            .map(|(stored, _)| {
+                if stored == command {
+                    CommandOutcome::PriorOutcome {
+                        proposal_id: command.proposal_id.clone(),
+                        detail: "procedural acceptance already recorded".to_owned(),
+                    }
+                } else {
+                    CommandOutcome::Conflict {
+                        kind: ConflictKind::IdempotencyMismatch,
+                        detail: "idempotency key was reused with a different procedural acceptance"
+                            .to_owned(),
+                    }
+                }
+            })
+    }
+
+    fn validate_procedure_acceptance(
+        &self,
+        command: &ProcedureAcceptanceCommand,
+        registered: &RegisteredProposal,
+        validator: &dyn ProcedureValidator,
+        privileges: &crate::procedure::WorkerPrivileges,
+    ) -> Option<CommandOutcome> {
+        if !matches!(
+            &registered.proposal.disposition,
+            crate::ProposalDisposition::Pending
+        ) {
+            return Some(CommandOutcome::Conflict {
+                kind: ConflictKind::AlreadyDecided,
+                detail: "proposal already has a terminal disposition".to_owned(),
+            });
+        }
+        if registered.proposal_revision != command.proposal_revision {
+            return Some(CommandOutcome::Conflict {
+                kind: ConflictKind::StaleProposalRevision,
+                detail: "proposal revision changed".to_owned(),
+            });
+        }
+        if self.current.scope != registered.expected.scope
+            || registered.proposal.scope != self.current.scope
+        {
+            return Some(self.conflict(
+                ConflictKind::Unauthorized,
+                "proposal is outside the current authorized scope",
+            ));
+        }
+        if self.current.eligibility_generation != registered.expected.eligibility_generation {
+            return Some(self.conflict(
+                ConflictKind::StaleGeneration,
+                "eligibility generation changed",
+            ));
+        }
+        let validation =
+            match crate::procedure::validate_procedure(&registered.proposal, validator, privileges)
+            {
+                Ok(validation) => validation,
+                Err(error) => {
+                    return Some(self.conflict(ConflictKind::UnsupportedAcceptance, &error));
+                }
+            };
+        if !validation.approved {
+            return Some(self.conflict(
+                ConflictKind::UnsupportedAcceptance,
+                "procedural validator rejected the proposal",
+            ));
+        }
+        None
     }
 
     fn conflict(&self, kind: ConflictKind, detail: &str) -> CommandOutcome {

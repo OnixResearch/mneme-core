@@ -38,13 +38,12 @@ impl EditorView {
     ///
     /// The caller assigns the next revision through the workspace coordinator;
     /// this method only produces a compatible payload.
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn replace_payload(
         &self,
         envelope: &crate::envelope::RecordEnvelope,
         replacement: crate::envelope::Payload,
     ) -> Result<crate::envelope::Payload, Vec<crate::error::Diagnostic>> {
-        let mut diagnostics = Vec::new();
         if envelope.kind != self.kind {
             return Err(vec![crate::error::Diagnostic::new(
                 crate::error::Stage::Editor,
@@ -57,6 +56,8 @@ impl EditorView {
                 ),
             )]);
         }
+        let mut diagnostics =
+            Vec::with_capacity(envelope.payload.len().saturating_add(replacement.len()));
         for name in envelope.payload.names() {
             if !self.supported.contains(name) && !replacement.contains(name.as_str()) {
                 diagnostics.push(crate::error::Diagnostic::new(

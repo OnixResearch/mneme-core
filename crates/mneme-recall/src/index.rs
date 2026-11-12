@@ -7,152 +7,205 @@ pub const LEXICAL_INDEX_VERSION: &str = "mneme-lexical-token-v1";
 pub const VECTOR_INDEX_VERSION: &str = "mneme-trigram-hash-v1";
 
 /// Build a fresh index for the request's temporal selection.
-#[allow(unknown_lints, function_length, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub(crate) fn build_index(
     view: &mneme_memory::MemoryView,
     request: &crate::model::RecallRequest,
 ) -> crate::error::Result<crate::model::CachedIndex> {
     let snapshot = view.snapshot().clone();
-    let mut documents = Vec::new();
-    let mut skipped = 0_usize;
-    let mut skip_reasons = std::collections::BTreeSet::new();
-
+    let mut index = IndexBuild::default();
+    let max_documents = snapshot.records.len().saturating_mul(2);
+    index.documents.reserve(max_documents);
     let entities = entity_labels(view, &request.scope);
     for record in snapshot
         .records
         .iter()
         .filter(|record| record.scope == request.scope)
     {
-        match record.kind {
-            mneme_core::RecordKind::Entity => {
-                let label = entities
-                    .get(&record.record_id)
-                    .cloned()
-                    .unwrap_or_else(|| record.record_id.to_hex());
-                let entity_type = record
-                    .payload
-                    .get("entity-type")
-                    .map(mneme_core::text::render)
-                    .unwrap_or_default();
-                let properties = record
-                    .payload
-                    .get("properties")
-                    .map(mneme_core::text::render)
-                    .unwrap_or_default();
-                let body = format!("{label} {entity_type} {properties}");
-                documents.push(document(
-                    format!("entity:{}", record.record_id),
-                    crate::model::ContentKind::TypedField,
-                    body,
-                    "entity.label".to_owned(),
-                    None,
-                    None,
-                    None,
-                    Some(record.record_id),
-                    None,
-                    None,
-                    None,
-                    Vec::new(),
-                    std::collections::BTreeSet::new(),
-                ));
-            }
-            mneme_core::RecordKind::Episode => {
-                let episode = mneme_memory::EpisodeView::parse(record.clone())?;
-                let body = format!(
-                    "{} {} {}",
-                    episode.summary,
-                    episode.actor,
-                    episode.episode_type.name()
-                );
-                let (source, source_revision) = match episode.source {
-                    Some(source) => {
-                        let revision = view
-                            .source(source)
-                            .ok()
-                            .map(|source| source.record.revision_id);
-                        (Some(source), revision)
-                    }
-                    None => (None, None),
-                };
-                documents.push(document(
-                    format!("episode:{}", record.record_id),
-                    crate::model::ContentKind::EpisodeSummary,
-                    body,
-                    "episode.summary".to_owned(),
-                    source,
-                    source_revision,
-                    None,
-                    None,
-                    Some(record.record_id),
-                    None,
-                    None,
-                    Vec::new(),
-                    std::collections::BTreeSet::new(),
-                ));
-            }
-            mneme_core::RecordKind::SourceRevision => {
-                let source = view.source(record.record_id)?;
-                if let Some(path) = &source.path_hint {
-                    documents.push(document(
-                        format!("source-path:{}:{}", record.record_id, record.revision_id),
-                        crate::model::ContentKind::TypedField,
-                        path.clone(),
-                        "source.path-hint".to_owned(),
-                        Some(record.record_id),
-                        Some(record.revision_id),
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        Vec::new(),
-                        std::collections::BTreeSet::from([(record.record_id, record.revision_id)]),
-                    ));
-                }
-                match view.source_status_for(&source)? {
-                    mneme_memory::SourceStatus::Retained(bytes) => match String::from_utf8(bytes) {
-                        Ok(body) => {
-                            documents.push(document(
-                                format!("source:{}:{}", record.record_id, record.revision_id),
-                                crate::model::ContentKind::SourceExcerpt,
-                                body,
-                                "source.content".to_owned(),
-                                Some(record.record_id),
-                                Some(record.revision_id),
-                                None,
-                                None,
-                                None,
-                                None,
-                                None,
-                                Vec::new(),
-                                std::collections::BTreeSet::from([(
-                                    record.record_id,
-                                    record.revision_id,
-                                )]),
-                            ));
-                        }
-                        Err(_) => {
-                            skipped += 1;
-                            skip_reasons.insert("source bytes are not UTF-8 text".to_owned());
-                        }
-                    },
-                    status => {
-                        skipped += 1;
-                        skip_reasons.insert(format!(
-                            "source is {} and has no searchable bytes",
-                            status.availability().name()
-                        ));
-                    }
-                }
-            }
-            _ => {}
-        }
+        index.add_record(view, record, &entities)?;
     }
-
     let assertions = selected_assertions(view, request)?;
     for assertion in assertions {
-        let status = crate::model::ClaimStatus::from_assertion(&assertion);
-        let (evidence, roots) = evidence_refs(view, &assertion);
+        index.add_assertion(view, &entities, &assertion);
+    }
+    Ok(index.finish(view.revision()))
+}
+
+#[derive(Default)]
+struct IndexBuild {
+    documents: Vec<crate::model::IndexedDocument>,
+    skipped: usize,
+    skip_reasons: std::collections::BTreeSet<String>,
+}
+
+impl IndexBuild {
+    fn add_record(
+        &mut self,
+        view: &mneme_memory::MemoryView,
+        record: &mneme_core::RecordEnvelope,
+        entities: &std::collections::BTreeMap<mneme_core::RecordId, String>,
+    ) -> crate::error::Result<()> {
+        match record.kind {
+            mneme_core::RecordKind::Entity => self.add_entity(record, entities),
+            mneme_core::RecordKind::Episode => self.add_episode(view, record)?,
+            mneme_core::RecordKind::SourceRevision => self.add_source(view, record)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn add_entity(
+        &mut self,
+        record: &mneme_core::RecordEnvelope,
+        entities: &std::collections::BTreeMap<mneme_core::RecordId, String>,
+    ) {
+        let label = entities
+            .get(&record.record_id)
+            .cloned()
+            .unwrap_or_else(|| record.record_id.to_hex());
+        let entity_type = record
+            .payload
+            .get("entity-type")
+            .map(mneme_core::text::render)
+            .unwrap_or_default();
+        let properties = record
+            .payload
+            .get("properties")
+            .map(mneme_core::text::render)
+            .unwrap_or_default();
+        let body = format!("{label} {entity_type} {properties}");
+        self.documents.push(document(
+            format!("entity:{}", record.record_id),
+            crate::model::ContentKind::TypedField,
+            body,
+            "entity.label".to_owned(),
+            None,
+            None,
+            None,
+            Some(record.record_id),
+            None,
+            None,
+            None,
+            Vec::new(),
+            std::collections::BTreeSet::new(),
+        ));
+    }
+
+    fn add_episode(
+        &mut self,
+        view: &mneme_memory::MemoryView,
+        record: &mneme_core::RecordEnvelope,
+    ) -> crate::error::Result<()> {
+        let episode = mneme_memory::EpisodeView::parse(record.clone())?;
+        let body = format!(
+            "{} {} {}",
+            episode.summary,
+            episode.actor,
+            episode.episode_type.name()
+        );
+        let (source, source_revision) = match episode.source {
+            Some(source) => {
+                let revision = view
+                    .source(source)
+                    .ok()
+                    .map(|source| source.record.revision_id);
+                (Some(source), revision)
+            }
+            None => (None, None),
+        };
+        self.documents.push(document(
+            format!("episode:{}", record.record_id),
+            crate::model::ContentKind::EpisodeSummary,
+            body,
+            "episode.summary".to_owned(),
+            source,
+            source_revision,
+            None,
+            None,
+            Some(record.record_id),
+            None,
+            None,
+            Vec::new(),
+            std::collections::BTreeSet::new(),
+        ));
+        Ok(())
+    }
+
+    fn add_source(
+        &mut self,
+        view: &mneme_memory::MemoryView,
+        record: &mneme_core::RecordEnvelope,
+    ) -> crate::error::Result<()> {
+        let source = view.source(record.record_id)?;
+        if let Some(path) = &source.path_hint {
+            self.documents.push(document(
+                format!("source-path:{}:{}", record.record_id, record.revision_id),
+                crate::model::ContentKind::TypedField,
+                path.clone(),
+                "source.path-hint".to_owned(),
+                Some(record.record_id),
+                Some(record.revision_id),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                std::collections::BTreeSet::from([(record.record_id, record.revision_id)]),
+            ));
+        }
+        self.add_source_content(view, record, &source)?;
+        Ok(())
+    }
+
+    fn add_source_content(
+        &mut self,
+        view: &mneme_memory::MemoryView,
+        record: &mneme_core::RecordEnvelope,
+        source: &mneme_memory::SourceView,
+    ) -> crate::error::Result<()> {
+        match view.source_status_for(source)? {
+            mneme_memory::SourceStatus::Retained(bytes) => match String::from_utf8(bytes) {
+                Ok(body) => self.documents.push(document(
+                    format!("source:{}:{}", record.record_id, record.revision_id),
+                    crate::model::ContentKind::SourceExcerpt,
+                    body,
+                    "source.content".to_owned(),
+                    Some(record.record_id),
+                    Some(record.revision_id),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    std::collections::BTreeSet::from([(record.record_id, record.revision_id)]),
+                )),
+                Err(_) => {
+                    self.skipped += 1;
+                    self.skip_reasons
+                        .insert("source bytes are not UTF-8 text".to_owned());
+                }
+            },
+            status => {
+                self.skipped += 1;
+                self.skip_reasons.insert(format!(
+                    "source is {} and has no searchable bytes",
+                    status.availability().name()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn add_assertion(
+        &mut self,
+        view: &mneme_memory::MemoryView,
+        entities: &std::collections::BTreeMap<mneme_core::RecordId, String>,
+        assertion: &mneme_memory::AssertionView,
+    ) {
+        let status = crate::model::ClaimStatus::from_assertion(assertion);
+        let (evidence, roots) = evidence_refs(view, assertion);
         let subject = entities
             .get(&assertion.subject)
             .cloned()
@@ -164,7 +217,7 @@ pub(crate) fn build_index(
             subject,
             assertion.asserted_by
         );
-        documents.push(document(
+        self.documents.push(document(
             format!("assertion:{}", assertion.record.record_id),
             crate::model::ContentKind::Claim,
             body,
@@ -181,21 +234,23 @@ pub(crate) fn build_index(
         ));
     }
 
-    let indexed = documents.len();
-    let coverage = if skipped == 0 {
-        crate::model::IndexCoverage::complete(indexed)
-    } else {
-        crate::model::IndexCoverage::incomplete(
-            indexed,
-            skipped,
-            skip_reasons.into_iter().collect::<Vec<_>>().join("; "),
-        )
-    };
-    Ok(crate::model::CachedIndex {
-        revision: view.revision(),
-        coverage,
-        documents,
-    })
+    fn finish(self, revision: mneme_core::WorkspaceRevisionId) -> crate::model::CachedIndex {
+        let indexed = self.documents.len();
+        let coverage = if self.skipped == 0 {
+            crate::model::IndexCoverage::complete(indexed)
+        } else {
+            crate::model::IndexCoverage::incomplete(
+                indexed,
+                self.skipped,
+                self.skip_reasons.into_iter().collect::<Vec<_>>().join("; "),
+            )
+        };
+        crate::model::CachedIndex {
+            revision,
+            coverage,
+            documents: self.documents,
+        }
+    }
 }
 
 fn selected_assertions(

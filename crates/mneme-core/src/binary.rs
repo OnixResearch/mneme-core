@@ -280,7 +280,7 @@ impl Decoder<'_> {
         ))
     }
 
-    #[allow(unknown_lints, function_length, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn value(
         &mut self,
         path: &crate::error::Path,
@@ -294,6 +294,16 @@ impl Decoder<'_> {
                 format!("compound nesting exceeds {MAX_DEPTH} levels"),
             ));
         }
+        self.skip_annotations(path, depth)?;
+        let tag = self.next_byte(path)?;
+        self.decode_tag(tag, path, depth)
+    }
+
+    fn skip_annotations(
+        &mut self,
+        path: &crate::error::Path,
+        depth: usize,
+    ) -> Result<(), crate::error::Diagnostic> {
         loop {
             match self.peek() {
                 Some(TAG_ANNOTATION) => {
@@ -311,7 +321,7 @@ impl Decoder<'_> {
                     // fields never depend on annotation content.
                     let _annotation = self.value(path, depth + 1)?;
                 }
-                Some(_) => break,
+                Some(_) => return Ok(()),
                 None => {
                     return Err(crate::error::Diagnostic::new(
                         crate::error::Stage::Syntax,
@@ -322,94 +332,27 @@ impl Decoder<'_> {
                 }
             }
         }
-        let tag = self.next_byte(path)?;
+    }
+
+    fn decode_tag(
+        &mut self,
+        tag: u8,
+        path: &crate::error::Path,
+        depth: usize,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
         match tag {
             TAG_FALSE => Ok(crate::value::Value::Boolean(false)),
             TAG_TRUE => Ok(crate::value::Value::Boolean(true)),
-            TAG_DOUBLE => {
-                let length = self.next_byte(path)?;
-                if length != 8 {
-                    return Err(crate::error::Diagnostic::new(
-                        crate::error::Stage::Syntax,
-                        crate::error::ErrorCode::MalformedEncoding,
-                        path.clone(),
-                        format!("double length must be 8, found {length}"),
-                    ));
-                }
-                let bytes = self.take(8, path)?;
-                let mut bits = [0_u8; 8];
-                bits.copy_from_slice(bytes);
-                Ok(crate::value::Value::Double(
-                    crate::value::Double::from_bits(u64::from_be_bytes(bits)),
-                ))
-            }
-            TAG_INTEGER => {
-                let length = usize::try_from(self.varint(path)?).map_err(|_| {
-                    crate::error::Diagnostic::new(
-                        crate::error::Stage::Syntax,
-                        crate::error::ErrorCode::MalformedEncoding,
-                        path.clone(),
-                        "integer length exceeds the address space",
-                    )
-                })?;
-                let bytes = self.take(length, path)?;
-                let integer = if bytes.is_empty() {
-                    num_bigint::BigInt::from(0)
-                } else {
-                    num_bigint::BigInt::from_signed_bytes_be(bytes)
-                };
-                if minimal_signed_bytes(&integer) != bytes {
-                    return Err(crate::error::Diagnostic::new(
-                        crate::error::Stage::Syntax,
-                        crate::error::ErrorCode::NonCanonicalEncoding,
-                        path.clone(),
-                        "integer bytes are not a minimal two's-complement encoding",
-                    ));
-                }
-                Ok(crate::value::Value::SignedInteger(
-                    crate::value::SignedInteger::new(integer),
-                ))
-            }
-            TAG_STRING => {
-                let length = self.length(path)?;
-                let bytes = self.take(length, path)?;
-                let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
-                    crate::error::Diagnostic::new(
-                        crate::error::Stage::Syntax,
-                        crate::error::ErrorCode::MalformedEncoding,
-                        path.clone(),
-                        "string bytes are not valid UTF-8",
-                    )
-                })?;
-                Ok(crate::value::Value::String(text))
-            }
-            TAG_BYTESTRING => {
-                let length = self.length(path)?;
-                Ok(crate::value::Value::ByteString(
-                    crate::value::ByteString::new(self.take(length, path)?.to_vec()),
-                ))
-            }
-            TAG_SYMBOL => {
-                let length = self.length(path)?;
-                let bytes = self.take(length, path)?;
-                let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
-                    crate::error::Diagnostic::new(
-                        crate::error::Stage::Syntax,
-                        crate::error::ErrorCode::MalformedEncoding,
-                        path.clone(),
-                        "symbol bytes are not valid UTF-8",
-                    )
-                })?;
-                Ok(crate::value::Value::Symbol(crate::value::Symbol::new(text)))
-            }
+            TAG_DOUBLE => self.decode_double(path),
+            TAG_INTEGER => self.decode_integer(path),
+            TAG_STRING => self.decode_string(path),
+            TAG_BYTESTRING => self.decode_bytes(path),
+            TAG_SYMBOL => self.decode_symbol(path),
             TAG_RECORD => self.record(path, depth),
             TAG_SEQUENCE => self.sequence(path, depth),
             TAG_SET => self.set(path, depth),
             TAG_DICTIONARY => self.dictionary(path, depth),
-            TAG_EMBEDDED => {
-                let inner = self.value(&path.field("embedded"), depth + 1)?;
-                Ok(crate::value::Value::embedded(inner))
-            }
+            TAG_EMBEDDED => self.decode_embedded(path, depth),
             TAG_END => Err(crate::error::Diagnostic::new(
                 crate::error::Stage::Syntax,
                 crate::error::ErrorCode::MalformedEncoding,
@@ -425,6 +368,111 @@ impl Decoder<'_> {
         }
     }
 
+    fn decode_double(
+        &mut self,
+        path: &crate::error::Path,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
+        let length = self.next_byte(path)?;
+        if length != 8 {
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::MalformedEncoding,
+                path.clone(),
+                format!("double length must be 8, found {length}"),
+            ));
+        }
+        let bytes = self.take(8, path)?;
+        let mut bits = [0_u8; 8];
+        bits.copy_from_slice(bytes);
+        Ok(crate::value::Value::Double(
+            crate::value::Double::from_bits(u64::from_be_bytes(bits)),
+        ))
+    }
+
+    fn decode_integer(
+        &mut self,
+        path: &crate::error::Path,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
+        let length = usize::try_from(self.varint(path)?).map_err(|_| {
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::MalformedEncoding,
+                path.clone(),
+                "integer length exceeds the address space",
+            )
+        })?;
+        let bytes = self.take(length, path)?;
+        let integer = if bytes.is_empty() {
+            num_bigint::BigInt::from(0)
+        } else {
+            num_bigint::BigInt::from_signed_bytes_be(bytes)
+        };
+        if minimal_signed_bytes(&integer) != bytes {
+            return Err(crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::NonCanonicalEncoding,
+                path.clone(),
+                "integer bytes are not a minimal two's-complement encoding",
+            ));
+        }
+        Ok(crate::value::Value::SignedInteger(
+            crate::value::SignedInteger::new(integer),
+        ))
+    }
+
+    fn decode_string(
+        &mut self,
+        path: &crate::error::Path,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
+        let length = self.length(path)?;
+        let bytes = self.take(length, path)?;
+        let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::MalformedEncoding,
+                path.clone(),
+                "string bytes are not valid UTF-8",
+            )
+        })?;
+        Ok(crate::value::Value::String(text))
+    }
+
+    fn decode_bytes(
+        &mut self,
+        path: &crate::error::Path,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
+        let length = self.length(path)?;
+        Ok(crate::value::Value::ByteString(
+            crate::value::ByteString::new(self.take(length, path)?.to_vec()),
+        ))
+    }
+
+    fn decode_symbol(
+        &mut self,
+        path: &crate::error::Path,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
+        let length = self.length(path)?;
+        let bytes = self.take(length, path)?;
+        let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
+            crate::error::Diagnostic::new(
+                crate::error::Stage::Syntax,
+                crate::error::ErrorCode::MalformedEncoding,
+                path.clone(),
+                "symbol bytes are not valid UTF-8",
+            )
+        })?;
+        Ok(crate::value::Value::Symbol(crate::value::Symbol::new(text)))
+    }
+
+    fn decode_embedded(
+        &mut self,
+        path: &crate::error::Path,
+        depth: usize,
+    ) -> Result<crate::value::Value, crate::error::Diagnostic> {
+        let inner = self.value(&path.field("embedded"), depth + 1)?;
+        Ok(crate::value::Value::embedded(inner))
+    }
+
     fn length(&mut self, path: &crate::error::Path) -> Result<usize, crate::error::Diagnostic> {
         usize::try_from(self.varint(path)?).map_err(|_| {
             crate::error::Diagnostic::new(
@@ -436,7 +484,7 @@ impl Decoder<'_> {
         })
     }
 
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn record(
         &mut self,
         path: &crate::error::Path,
@@ -444,6 +492,7 @@ impl Decoder<'_> {
     ) -> Result<crate::value::Value, crate::error::Diagnostic> {
         let label = self.value(&path.field("label"), depth + 1)?;
         let mut fields = Vec::new();
+        let max_fields = self.bytes.len().saturating_sub(self.position);
         loop {
             match self.peek() {
                 Some(TAG_END) => {
@@ -451,6 +500,9 @@ impl Decoder<'_> {
                     break;
                 }
                 Some(_) => {
+                    if fields.len() >= max_fields {
+                        return Err(unterminated(path, "record"));
+                    }
                     let field = self.value(&path.index(fields.len()), depth + 1)?;
                     fields.push(field);
                 }
@@ -462,20 +514,26 @@ impl Decoder<'_> {
         )))
     }
 
-    #[allow(unknown_lints, unbounded_collection_growth)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn sequence(
         &mut self,
         path: &crate::error::Path,
         depth: usize,
     ) -> Result<crate::value::Value, crate::error::Diagnostic> {
         let mut items = Vec::new();
+        let max_items = self.bytes.len().saturating_sub(self.position);
         loop {
             match self.peek() {
                 Some(TAG_END) => {
                     self.position += 1;
                     break;
                 }
-                Some(_) => items.push(self.value(&path.index(items.len()), depth + 1)?),
+                Some(_) => {
+                    if items.len() >= max_items {
+                        return Err(unterminated(path, "sequence"));
+                    }
+                    items.push(self.value(&path.index(items.len()), depth + 1)?);
+                }
                 None => return Err(unterminated(path, "sequence")),
             }
         }
