@@ -1,5 +1,5 @@
 //! Restricted preview rendering and explicit include occurrence mapping.
-#![allow(ignored_result)] // fmt::Write to String and test cleanup cannot fail recoverably
+// fmt::Write to String and test cleanup cannot fail recoverably
 
 use std::fmt::Write;
 
@@ -94,6 +94,7 @@ pub(crate) fn render(
 }
 
 impl Renderer<'_> {
+    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_metadata(&mut self, entity: &mneme_core::RecordEnvelope) {
         let entity_type = entity
             .payload
@@ -280,6 +281,7 @@ impl Renderer<'_> {
         true
     }
 
+    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn finish_source_block(&mut self, cursor: &SourceCursor<'_>) {
         match cursor.mode {
             Block::Listing => {
@@ -321,6 +323,7 @@ impl Renderer<'_> {
         }
     }
 
+    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_source_normal_line<'line, 'context>(
         &mut self,
         line: SourceLineContext<'line, 'context>,
@@ -376,6 +379,7 @@ impl Renderer<'_> {
         true
     }
 
+    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_source_content_line<'a>(
         &mut self,
         text: &'a str,
@@ -405,6 +409,7 @@ impl Renderer<'_> {
         cursor.paragraph.push(content);
     }
 
+    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_unsupported_conditional(
         &mut self,
         content: &str,
@@ -436,6 +441,7 @@ impl Renderer<'_> {
         true
     }
 
+    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_heading_line(&mut self, content: &str, cursor: &mut SourceCursor<'_>) -> bool {
         let Some((level, heading)) = heading(content) else {
             return false;
@@ -456,6 +462,7 @@ impl Renderer<'_> {
         true
     }
 
+    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_list_line(
         &mut self,
         text: &str,
@@ -510,6 +517,7 @@ impl Renderer<'_> {
         true
     }
 
+    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_include(
         &mut self,
         source: &RenderSource,
@@ -551,6 +559,7 @@ impl Renderer<'_> {
         self.render_source(target, depth + 1);
     }
 
+    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn flush_paragraph(&mut self, paragraph: &mut Vec<&str>, pending_anchor: &mut Option<String>) {
         if paragraph.is_empty() {
             return;
@@ -704,6 +713,7 @@ fn render_inline_passthrough(
     Some(literal.len())
 }
 
+#[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
 fn render_inline_macro(
     rest: &str,
     line: usize,
@@ -811,6 +821,7 @@ fn render_inline_character(context: InlineCharacterContext<'_, '_>) {
     }
 }
 
+#[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
 fn render_xref(
     output: &mut String,
     diagnostics: &mut Vec<crate::asciidoc::Diagnostic>,
@@ -838,6 +849,7 @@ fn render_xref(
     output.push_str(&escape_html(target));
 }
 
+#[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
 fn render_link(
     output: &mut String,
     diagnostics: &mut Vec<crate::asciidoc::Diagnostic>,

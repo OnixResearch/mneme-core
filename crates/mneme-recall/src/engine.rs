@@ -72,7 +72,7 @@ impl<'w> Service<'w> {
             }))
     }
 
-    #[allow(unknown_lints, ambient_clock, nested_conditionals)] // recall wall-clock budget is the request shell; structured fallback nests match arms
+    #[allow(unknown_lints, ambient_clock)] // recall wall-clock budget is the request shell; structured fallback nests match arms
     fn recall_once(
         &mut self,
         request: &crate::model::Request,
@@ -922,7 +922,7 @@ fn fuse(
     values
 }
 
-#[allow(unknown_lints, ambient_clock)] // packing deadline is the request shell
+#[allow(unknown_lints)] // packing deadline is the request shell
 fn pack(
     candidates: &mut Vec<crate::model::Candidate>,
     request: &crate::model::Request,

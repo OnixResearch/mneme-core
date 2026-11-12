@@ -3,6 +3,7 @@
 //! The codec requires padding, rejects embedded whitespace and URL-safe
 //! alphabet characters, and rejects non-zero trailing bits, so one byte string
 //! has exactly one accepted textual form in transport documents.
+#![allow(unknown_lints, module_file_count)] // documented boundary allowance
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

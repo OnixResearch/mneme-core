@@ -360,7 +360,7 @@ pub struct Query {
     pub predicate: String,
     /// `None` leaves the position free; `Some` requires an exact value.
     pub constants: Vec<Option<mneme_core::Value>>,
-    #[allow(unknown_lints, usize_in_public_api)] // query limit mirrors collection lengths
+    #[allow(unknown_lints)] // query limit mirrors collection lengths
     pub limit: usize,
     /// Allow an older served revision when the caller explicitly requests it.
     pub allow_stale: bool,

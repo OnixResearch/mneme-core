@@ -617,7 +617,7 @@ fn resolve_import_includes(request: IncludeResolutionRequest<'_>) -> Result<Reso
     Ok(resolved)
 }
 
-#[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
+#[allow(unknown_lints)] // include deadline is the import shell
 fn resolve_include_bytes(
     resolver: &mut IncludeResolver<'_>,
     origin_path: &str,
@@ -1157,7 +1157,7 @@ impl<'w> Documents<'w> {
         Ok(outcome.revision)
     }
 
-    #[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
+    #[allow(unknown_lints)] // include deadline is the import shell
     fn prepare_source(&self, request: &ImportRequest, bytes: &[u8]) -> Result<PreparedDocument> {
         validate_import_request(request)?;
         let context = DocumentContext::load(self.workspace, Some(request.base_revision))?;
@@ -2042,7 +2042,7 @@ impl Documents<'_> {
     }
 
     /// Render a current or historical document preview.
-    #[allow(unknown_lints, ambient_clock)] // preview deadline is the render shell
+    #[allow(unknown_lints)] // preview deadline is the render shell
     pub fn preview(
         &mut self,
         document_id: mneme_core::RecordId,

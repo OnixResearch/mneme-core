@@ -779,7 +779,7 @@ struct AggregateRow {
     binding_indices: Vec<usize>,
 }
 
-#[allow(unknown_lints, fallible_int_fallback)] // row count is bounded by the result-row limit
+#[allow(unknown_lints)] // row count is bounded by the result-row limit
 fn aggregate_rows(
     head: &crate::Atom,
     output: &str,
