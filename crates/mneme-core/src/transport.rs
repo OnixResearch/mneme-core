@@ -1,4 +1,4 @@
-//! Versioned, type-tagged JSON transport for crate::value::Value values.
+//! Versioned, type-tagged JSON transport for crate::typed::Value values.
 //!
 //! Every supported value kind has an explicit tag. A symbol and a string with
 //! equal text remain distinct, integers are decimal strings of arbitrary
@@ -6,7 +6,7 @@
 //! and dictionary keys may be any encoded value. A versioned document envelope
 //! wraps the tagged value so a decoder never guesses the format. Unsupported or
 //! malformed payloads fail before any domain mutation.
-#![allow(path_segment_repetition, no_recursion)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The tagged JSON document format name.
 pub const TRANSPORT_FORMAT: &str = "mneme.preserves-tagged-json";
@@ -17,7 +17,7 @@ const TAG: &str = "t";
 const VALUE: &str = "v";
 
 /// Wrap one encoded value in the versioned transport document.
-pub fn encode_document(value: &crate::value::Value) -> serde_json::Value {
+pub fn encode_document(value: &crate::typed::Value) -> serde_json::Value {
     let mut document = serde_json::Map::new();
     document.insert(
         "format".to_owned(),
@@ -32,17 +32,17 @@ pub fn encode_document(value: &crate::value::Value) -> serde_json::Value {
 }
 
 /// Render a transport document as compact JSON text.
-pub fn encode_document_string(value: &crate::value::Value) -> String {
+pub fn encode_document_string(value: &crate::typed::Value) -> String {
     encode_document(value).to_string()
 }
 
 /// Decode a transport document from text.
-pub fn decode_document(text: &str) -> Result<crate::value::Value, crate::error::Diagnostic> {
+pub fn decode_document(text: &str) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     let json: serde_json::Value = serde_json::from_str(text).map_err(|error| {
-        crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::InvalidTaggedJson,
-            crate::error::Path::root(),
+        crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidTaggedJson,
+            crate::problem::Path::root(),
             format!("invalid JSON: {error}"),
         )
     })?;
@@ -52,26 +52,26 @@ pub fn decode_document(text: &str) -> Result<crate::value::Value, crate::error::
 /// Decode a transport document from an already parsed JSON value.
 pub fn decode_document_value(
     json: &serde_json::Value,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     let Some(document) = json.as_object() else {
-        return Err(crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::InvalidTaggedJson,
-            crate::error::Path::root(),
+        return Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidTaggedJson,
+            crate::problem::Path::root(),
             "transport document must be a JSON object",
         ));
     };
     reject_extra(
         document,
         &["format", "version", "value"],
-        &crate::error::Path::root(),
+        &crate::problem::Path::root(),
     )?;
-    let format = string_member(document, "format", &crate::error::Path::root())?;
+    let format = string_member(document, "format", &crate::problem::Path::root())?;
     if format != TRANSPORT_FORMAT {
-        return Err(crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::InvalidTaggedJson,
-            crate::error::Path::root().named("format"),
+        return Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidTaggedJson,
+            crate::problem::Path::root().named("format"),
             format!("unsupported transport format {format:?}"),
         ));
     }
@@ -79,78 +79,78 @@ pub fn decode_document_value(
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| {
-            crate::error::Diagnostic::new(
-                crate::error::Stage::Transport,
-                crate::error::ErrorCode::InvalidTaggedJson,
-                crate::error::Path::root().named("version"),
+            crate::problem::Diagnostic::new(
+                crate::problem::Stage::Transport,
+                crate::problem::ErrorCode::InvalidTaggedJson,
+                crate::problem::Path::root().named("version"),
                 "transport version must be a non-negative integer",
             )
         })?;
     if version != u64::from(TRANSPORT_VERSION) {
-        return Err(crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::InvalidTaggedJson,
-            crate::error::Path::root().named("version"),
+        return Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidTaggedJson,
+            crate::problem::Path::root().named("version"),
             format!(
                 "unsupported transport version {version}; this build reads version {TRANSPORT_VERSION}"
             ),
         ));
     }
     let value = document.get("value").ok_or_else(|| {
-        crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::InvalidTaggedJson,
-            crate::error::Path::root().named("value"),
+        crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidTaggedJson,
+            crate::problem::Path::root().named("value"),
             "transport document is missing its value",
         )
     })?;
-    decode_value(value, &crate::error::Path::root().named("value"))
+    decode_value(value, &crate::problem::Path::root().named("value"))
 }
 
-/// Encode one crate::value::Value value with explicit type tags.
-#[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
-pub fn encode_value(value: &crate::value::Value) -> serde_json::Value {
+/// Encode one crate::typed::Value value with explicit type tags.
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+pub fn encode_value(value: &crate::typed::Value) -> serde_json::Value {
     match value {
-        crate::value::Value::Boolean(boolean) => {
+        crate::typed::Value::Boolean(boolean) => {
             tagged("bool", [("v", serde_json::Value::Bool(*boolean))])
         }
-        crate::value::Value::Double(double) => tagged(
+        crate::typed::Value::Double(double) => tagged(
             "double",
             [(
                 "bits",
                 serde_json::Value::String(format!("{:016x}", double.bits())),
             )],
         ),
-        crate::value::Value::SignedInteger(integer) => tagged(
+        crate::typed::Value::SignedInteger(integer) => tagged(
             "int",
             [(
                 "v",
                 serde_json::Value::String(integer.as_bigint().to_string()),
             )],
         ),
-        crate::value::Value::String(text) => {
+        crate::typed::Value::String(text) => {
             tagged("string", [("v", serde_json::Value::String(text.clone()))])
         }
-        crate::value::Value::ByteString(bytes) => tagged(
+        crate::typed::Value::ByteString(bytes) => tagged(
             "bytes",
             [(
                 "v",
                 serde_json::Value::String(crate::base64::encode(bytes.as_slice())),
             )],
         ),
-        crate::value::Value::Symbol(symbol) => tagged(
+        crate::typed::Value::Symbol(symbol) => tagged(
             "symbol",
             [("v", serde_json::Value::String(symbol.as_str().to_owned()))],
         ),
-        crate::value::Value::Record(record) => encode_record(record),
-        crate::value::Value::Sequence(items) => encode_sequence(items),
-        crate::value::Value::Set(items) => encode_set(items),
-        crate::value::Value::Dictionary(entries) => encode_dictionary(entries),
-        crate::value::Value::Embedded(inner) => encode_embedded(inner),
+        crate::typed::Value::Record(record) => encode_record(record),
+        crate::typed::Value::Sequence(items) => encode_sequence(items),
+        crate::typed::Value::Set(items) => encode_set(items),
+        crate::typed::Value::Dictionary(entries) => encode_dictionary(entries),
+        crate::typed::Value::Embedded(inner) => encode_embedded(inner),
     }
 }
 
-fn encode_record(record: &crate::value::Record) -> serde_json::Value {
+fn encode_record(record: &crate::typed::Record) -> serde_json::Value {
     tagged(
         "record",
         [
@@ -163,7 +163,7 @@ fn encode_record(record: &crate::value::Record) -> serde_json::Value {
     )
 }
 
-fn encode_sequence(items: &[crate::value::Value]) -> serde_json::Value {
+fn encode_sequence(items: &[crate::typed::Value]) -> serde_json::Value {
     tagged(
         "sequence",
         [(
@@ -173,7 +173,7 @@ fn encode_sequence(items: &[crate::value::Value]) -> serde_json::Value {
     )
 }
 
-fn encode_set(items: &std::collections::BTreeSet<crate::value::Value>) -> serde_json::Value {
+fn encode_set(items: &std::collections::BTreeSet<crate::typed::Value>) -> serde_json::Value {
     tagged(
         "set",
         [(
@@ -184,7 +184,7 @@ fn encode_set(items: &std::collections::BTreeSet<crate::value::Value>) -> serde_
 }
 
 fn encode_dictionary(
-    entries: &std::collections::BTreeMap<crate::value::Value, crate::value::Value>,
+    entries: &std::collections::BTreeMap<crate::typed::Value, crate::typed::Value>,
 ) -> serde_json::Value {
     tagged(
         "dictionary",
@@ -205,7 +205,7 @@ fn encode_dictionary(
     )
 }
 
-fn encode_embedded(inner: &crate::value::Value) -> serde_json::Value {
+fn encode_embedded(inner: &crate::typed::Value) -> serde_json::Value {
     tagged("embedded", [("value", encode_value(inner))])
 }
 
@@ -222,8 +222,8 @@ fn tagged<const N: usize>(tag: &str, members: [(&str, serde_json::Value); N]) ->
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn decode_value(
     json: &serde_json::Value,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     let object = json
         .as_object()
         .ok_or_else(|| invalid(path, "tagged value must be a JSON object"))?;
@@ -239,9 +239,9 @@ pub fn decode_value(
         "sequence" | "set" => decode_collection(tag, object, path),
         "dictionary" => decode_dictionary(object, path),
         "embedded" => decode_embedded(object, path),
-        other => Err(crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::UnsupportedValueKind,
+        other => Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::UnsupportedValueKind,
             path.clone(),
             format!("unsupported tagged value type {other:?}"),
         )),
@@ -250,105 +250,105 @@ pub fn decode_value(
 
 fn decode_boolean(
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, VALUE], path)?;
     let is_boolean = object
         .get(VALUE)
         .and_then(serde_json::Value::as_bool)
         .ok_or_else(|| invalid(&path.named(VALUE), "bool value must be a JSON boolean"))?;
-    Ok(crate::value::Value::Boolean(is_boolean))
+    Ok(crate::typed::Value::Boolean(is_boolean))
 }
 
 fn decode_double(
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "bits"], path)?;
     let bits = string_member(object, "bits", path)?;
     if bits.len() != 16 || !bits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::InvalidFloatBits,
+        return Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidFloatBits,
             path.named("bits"),
             "double bits must be exactly 16 hexadecimal digits",
         ));
     }
     let bits = u64::from_str_radix(bits, 16).map_err(|_| {
-        crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::InvalidFloatBits,
+        crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidFloatBits,
             path.named("bits"),
             "double bits are not valid hexadecimal",
         )
     })?;
-    Ok(crate::value::Value::Double(
-        crate::value::Double::from_bits(bits),
+    Ok(crate::typed::Value::Double(
+        crate::typed::Double::from_bits(bits),
     ))
 }
 
 fn decode_integer(
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, VALUE], path)?;
     let text = string_member(object, VALUE, path)?;
     let integer = parse_decimal_integer(text).map_err(|message| {
-        crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::InvalidIntegerText,
+        crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidIntegerText,
             path.named(VALUE),
             message,
         )
     })?;
-    Ok(crate::value::Value::SignedInteger(
-        crate::value::SignedInteger::new(integer),
+    Ok(crate::typed::Value::SignedInteger(
+        crate::typed::SignedInteger::new(integer),
     ))
 }
 
 fn decode_string(
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, VALUE], path)?;
-    Ok(crate::value::Value::String(
+    Ok(crate::typed::Value::String(
         string_member(object, VALUE, path)?.to_owned(),
     ))
 }
 
 fn decode_symbol(
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, VALUE], path)?;
-    Ok(crate::value::Value::Symbol(crate::value::Symbol::new(
+    Ok(crate::typed::Value::Symbol(crate::typed::Symbol::new(
         string_member(object, VALUE, path)?.to_owned(),
     )))
 }
 
 fn decode_bytes(
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, VALUE], path)?;
     let text = string_member(object, VALUE, path)?;
     let bytes = crate::base64::decode(text).map_err(|message| {
-        crate::error::Diagnostic::new(
-            crate::error::Stage::Transport,
-            crate::error::ErrorCode::InvalidBase64,
+        crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidBase64,
             path.named(VALUE),
             message,
         )
     })?;
-    Ok(crate::value::Value::ByteString(
-        crate::value::ByteString::new(bytes),
+    Ok(crate::typed::Value::ByteString(
+        crate::typed::ByteString::new(bytes),
     ))
 }
 
 fn decode_record(
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "label", "fields"], path)?;
     let label_json = object
         .get("label")
@@ -362,7 +362,7 @@ fn decode_record(
     for (index, field) in fields_json.iter().enumerate() {
         fields.push(decode_value(field, &path.named("fields").index(index))?);
     }
-    Ok(crate::value::Value::Record(crate::value::Record::new(
+    Ok(crate::typed::Value::Record(crate::typed::Record::new(
         label, fields,
     )))
 }
@@ -370,8 +370,8 @@ fn decode_record(
 fn decode_collection(
     tag: &str,
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "items"], path)?;
     let items_json = object
         .get("items")
@@ -382,28 +382,28 @@ fn decode_collection(
         for (index, item) in items_json.iter().enumerate() {
             items.push(decode_value(item, &path.named("items").index(index))?);
         }
-        Ok(crate::value::Value::Sequence(items))
+        Ok(crate::typed::Value::Sequence(items))
     } else {
         let mut items = std::collections::BTreeSet::new();
         for (index, item) in items_json.iter().enumerate() {
             let item = decode_value(item, &path.named("items").index(index))?;
             if !items.insert(item) {
-                return Err(crate::error::Diagnostic::new(
-                    crate::error::Stage::Transport,
-                    crate::error::ErrorCode::DuplicateSetElement,
+                return Err(crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Transport,
+                    crate::problem::ErrorCode::DuplicateSetElement,
                     path.named("items").index(index),
                     "set contains a duplicate element",
                 ));
             }
         }
-        Ok(crate::value::Value::Set(items))
+        Ok(crate::typed::Value::Set(items))
     }
 }
 
 fn decode_dictionary(
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "entries"], path)?;
     let entries_json = object
         .get("entries")
@@ -431,26 +431,26 @@ fn decode_dictionary(
         let key = decode_value(key_json, &entry_path.named("key"))?;
         let value = decode_value(value_json, &entry_path.named("value"))?;
         if entries.insert(key, value).is_some() {
-            return Err(crate::error::Diagnostic::new(
-                crate::error::Stage::Transport,
-                crate::error::ErrorCode::DuplicateDictionaryKey,
+            return Err(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Transport,
+                crate::problem::ErrorCode::DuplicateDictionaryKey,
                 entry_path,
                 "dictionary contains a duplicate key",
             ));
         }
     }
-    Ok(crate::value::Value::Dictionary(entries))
+    Ok(crate::typed::Value::Dictionary(entries))
 }
 
 fn decode_embedded(
     object: &serde_json::Map<String, serde_json::Value>,
-    path: &crate::error::Path,
-) -> Result<crate::value::Value, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "value"], path)?;
     let inner = object
         .get("value")
         .ok_or_else(|| invalid(&path.named("value"), "embedded value is missing"))?;
-    Ok(crate::value::Value::embedded(decode_value(
+    Ok(crate::typed::Value::embedded(decode_value(
         inner,
         &path.named("value"),
     )?))
@@ -471,10 +471,10 @@ fn parse_decimal_integer(text: &str) -> Result<num_bigint::BigInt, &'static str>
         .map_err(|_| "integer text is out of range")
 }
 
-fn invalid(path: &crate::error::Path, message: &'static str) -> crate::error::Diagnostic {
-    crate::error::Diagnostic::new(
-        crate::error::Stage::Transport,
-        crate::error::ErrorCode::InvalidTaggedJson,
+fn invalid(path: &crate::problem::Path, message: &'static str) -> crate::problem::Diagnostic {
+    crate::problem::Diagnostic::new(
+        crate::problem::Stage::Transport,
+        crate::problem::ErrorCode::InvalidTaggedJson,
         path.clone(),
         message,
     )
@@ -483,15 +483,15 @@ fn invalid(path: &crate::error::Path, message: &'static str) -> crate::error::Di
 fn string_member<'a>(
     object: &'a serde_json::Map<String, serde_json::Value>,
     name: &str,
-    path: &crate::error::Path,
-) -> Result<&'a str, crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<&'a str, crate::problem::Diagnostic> {
     object
         .get(name)
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            crate::error::Diagnostic::new(
-                crate::error::Stage::Transport,
-                crate::error::ErrorCode::InvalidTaggedJson,
+            crate::problem::Diagnostic::new(
+                crate::problem::Stage::Transport,
+                crate::problem::ErrorCode::InvalidTaggedJson,
                 path.named(name),
                 format!("member {name:?} must be a string"),
             )
@@ -501,13 +501,13 @@ fn string_member<'a>(
 fn reject_extra(
     object: &serde_json::Map<String, serde_json::Value>,
     allowed: &[&str],
-    path: &crate::error::Path,
-) -> Result<(), crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Result<(), crate::problem::Diagnostic> {
     for key in object.keys() {
         if !allowed.contains(&key.as_str()) {
-            return Err(crate::error::Diagnostic::new(
-                crate::error::Stage::Transport,
-                crate::error::ErrorCode::InvalidTaggedJson,
+            return Err(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Transport,
+                crate::problem::ErrorCode::InvalidTaggedJson,
                 path.named(key.clone()),
                 format!("unexpected member {key:?}"),
             ));
@@ -520,7 +520,7 @@ fn reject_extra(
 mod tests {
     use super::*;
 
-    fn roundtrip(value: crate::value::Value) -> crate::value::Value {
+    fn roundtrip(value: crate::typed::Value) -> crate::typed::Value {
         let document = encode_document_string(&value);
         decode_document(&document).expect("roundtrip")
     }
@@ -528,60 +528,60 @@ mod tests {
     #[test]
     fn rich_values_survive_the_json_boundary() {
         let values = [
-            crate::value::Value::symbol("same-text"),
-            crate::value::Value::string("same-text"),
-            crate::value::Value::integer(
+            crate::typed::Value::symbol("same-text"),
+            crate::typed::Value::string("same-text"),
+            crate::typed::Value::integer(
                 "1234567890123456789012345678901234567890"
                     .parse::<num_bigint::BigInt>()
                     .expect("valid integer"),
             ),
-            crate::value::Value::double(-0.0),
-            crate::value::Value::double(f64::NAN),
-            crate::value::Value::double(1.202e300),
-            crate::value::Value::bytes([0_u8, 1, 2, 250, 255]),
-            crate::value::Value::record_named(
+            crate::typed::Value::double(-0.0),
+            crate::typed::Value::double(f64::NAN),
+            crate::typed::Value::double(1.202e300),
+            crate::typed::Value::bytes([0_u8, 1, 2, 250, 255]),
+            crate::typed::Value::record_named(
                 "capture",
-                vec![crate::value::Value::sequence(vec![
-                    crate::value::Value::symbol("nested"),
+                vec![crate::typed::Value::sequence(vec![
+                    crate::typed::Value::symbol("nested"),
                 ])],
             ),
-            crate::value::Value::set([
-                crate::value::Value::integer(2_i64),
-                crate::value::Value::integer(1_i64),
+            crate::typed::Value::set([
+                crate::typed::Value::integer(2_i64),
+                crate::typed::Value::integer(1_i64),
             ]),
-            crate::value::Value::dictionary([
+            crate::typed::Value::dictionary([
                 (
-                    crate::value::Value::integer(1_i64),
-                    crate::value::Value::string("integer key"),
+                    crate::typed::Value::integer(1_i64),
+                    crate::typed::Value::string("integer key"),
                 ),
                 (
-                    crate::value::Value::bytes([9_u8]),
-                    crate::value::Value::symbol("byte key"),
+                    crate::typed::Value::bytes([9_u8]),
+                    crate::typed::Value::symbol("byte key"),
                 ),
             ]),
-            crate::value::Value::embedded(crate::value::Value::symbol("marker")),
-            crate::value::Value::Boolean(false),
+            crate::typed::Value::embedded(crate::typed::Value::symbol("marker")),
+            crate::typed::Value::Boolean(false),
         ];
         for value in values {
             assert_eq!(roundtrip(value.clone()), value);
         }
         // Symbols and strings with equal text remain distinguishable.
         assert_ne!(
-            crate::value::Value::symbol("x"),
-            crate::value::Value::string("x")
+            crate::typed::Value::symbol("x"),
+            crate::typed::Value::string("x")
         );
         // Exact NaN payloads survive.
         let nan_bits = f64::NAN.to_bits();
-        let decoded = roundtrip(crate::value::Value::double(f64::from_bits(nan_bits)));
+        let decoded = roundtrip(crate::typed::Value::double(f64::from_bits(nan_bits)));
         assert_eq!(
-            decoded.as_double().map(crate::value::Double::bits),
+            decoded.as_double().map(crate::typed::Double::bits),
             Some(nan_bits)
         );
     }
 
     #[test]
     fn document_envelope_is_versioned_and_strict() {
-        let document = encode_document(&crate::value::Value::integer(1_i64));
+        let document = encode_document(&crate::typed::Value::integer(1_i64));
         assert_eq!(
             document.get("format").and_then(serde_json::Value::as_str),
             Some(TRANSPORT_FORMAT)
@@ -595,7 +595,7 @@ mod tests {
             ("version".to_owned(), serde_json::Value::from(1)),
             (
                 "value".to_owned(),
-                encode_value(&crate::value::Value::Boolean(true)),
+                encode_value(&crate::typed::Value::Boolean(true)),
             ),
         ]));
         assert!(decode_document_value(&wrong_format).is_err());
@@ -608,14 +608,14 @@ mod tests {
             ("version".to_owned(), serde_json::Value::from(2)),
             (
                 "value".to_owned(),
-                encode_value(&crate::value::Value::Boolean(true)),
+                encode_value(&crate::typed::Value::Boolean(true)),
             ),
         ]));
         assert_eq!(
             decode_document_value(&wrong_version)
                 .expect_err("version")
                 .code,
-            crate::error::ErrorCode::InvalidTaggedJson
+            crate::problem::ErrorCode::InvalidTaggedJson
         );
 
         assert!(decode_document("not json").is_err());
@@ -626,52 +626,53 @@ mod tests {
         for (json, code) in [
             (
                 serde_json::json!({"t": "mystery"}),
-                crate::error::ErrorCode::UnsupportedValueKind,
+                crate::problem::ErrorCode::UnsupportedValueKind,
             ),
             (
                 serde_json::json!({"t": "string"}),
-                crate::error::ErrorCode::InvalidTaggedJson,
+                crate::problem::ErrorCode::InvalidTaggedJson,
             ),
             (
                 serde_json::json!({"t": "int", "v": "+1"}),
-                crate::error::ErrorCode::InvalidIntegerText,
+                crate::problem::ErrorCode::InvalidIntegerText,
             ),
             (
                 serde_json::json!({"t": "int", "v": "01"}),
-                crate::error::ErrorCode::InvalidIntegerText,
+                crate::problem::ErrorCode::InvalidIntegerText,
             ),
             (
                 serde_json::json!({"t": "int", "v": "-0"}),
-                crate::error::ErrorCode::InvalidIntegerText,
+                crate::problem::ErrorCode::InvalidIntegerText,
             ),
             (
                 serde_json::json!({"t": "double", "bits": "zz"}),
-                crate::error::ErrorCode::InvalidFloatBits,
+                crate::problem::ErrorCode::InvalidFloatBits,
             ),
             (
                 serde_json::json!({"t": "bytes", "v": "!!!"}),
-                crate::error::ErrorCode::InvalidBase64,
+                crate::problem::ErrorCode::InvalidBase64,
             ),
             (
                 serde_json::json!({"t": "set", "items": [
                     {"t": "int", "v": "1"},
                     {"t": "int", "v": "1"}
                 ]}),
-                crate::error::ErrorCode::DuplicateSetElement,
+                crate::problem::ErrorCode::DuplicateSetElement,
             ),
             (
                 serde_json::json!({"t": "dictionary", "entries": [
                     {"t": "entry", "key": {"t": "string", "v": "k"}, "value": {"t": "int", "v": "1"}},
                     {"t": "entry", "key": {"t": "string", "v": "k"}, "value": {"t": "int", "v": "2"}}
                 ]}),
-                crate::error::ErrorCode::DuplicateDictionaryKey,
+                crate::problem::ErrorCode::DuplicateDictionaryKey,
             ),
             (
                 serde_json::json!({"t": "bool", "v": true, "extra": 1}),
-                crate::error::ErrorCode::InvalidTaggedJson,
+                crate::problem::ErrorCode::InvalidTaggedJson,
             ),
         ] {
-            let error = decode_value(&json, &crate::error::Path::root()).expect_err("must reject");
+            let error =
+                decode_value(&json, &crate::problem::Path::root()).expect_err("must reject");
             assert_eq!(error.code, code, "{json}");
         }
     }
@@ -679,9 +680,9 @@ mod tests {
     #[test]
     fn user_data_cannot_impersonate_codec_control_members() {
         // A user dictionary is itself a tagged value; its members are data.
-        let value = crate::value::Value::dictionary([(
-            crate::value::Value::symbol("t"),
-            crate::value::Value::string("string"),
+        let value = crate::typed::Value::dictionary([(
+            crate::typed::Value::symbol("t"),
+            crate::typed::Value::string("string"),
         )]);
         let encoded = encode_value(&value);
         assert_eq!(
@@ -689,7 +690,7 @@ mod tests {
             Some("dictionary")
         );
         assert_eq!(
-            decode_value(&encoded, &crate::error::Path::root()).expect("decode"),
+            decode_value(&encoded, &crate::problem::Path::root()).expect("decode"),
             value
         );
     }

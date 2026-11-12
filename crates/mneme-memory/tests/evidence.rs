@@ -27,7 +27,7 @@ fn batch(
     key: &str,
     records: Vec<mneme_store::RecordDraft>,
     sources: Vec<mneme_store::SourceBlobDraft>,
-) -> mneme_memory::MemoryBatch {
+) -> mneme_memory::Batch {
     batch_in(&scope(), key, records, sources)
 }
 
@@ -36,8 +36,8 @@ fn batch_in(
     key: &str,
     records: Vec<mneme_store::RecordDraft>,
     sources: Vec<mneme_store::SourceBlobDraft>,
-) -> mneme_memory::MemoryBatch {
-    mneme_memory::MemoryBatch {
+) -> mneme_memory::Batch {
+    mneme_memory::Batch {
         actor: "test-author".to_owned(),
         scope: scope.clone(),
         idempotency_key: key.to_owned(),
@@ -66,7 +66,7 @@ fn setup() -> (tempfile::TempDir, mneme_store::Workspace) {
     let temp = tempfile::tempdir().expect("temp");
     let mut workspace = mneme_store::Workspace::create(temp.path(), config()).expect("create");
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch(
                 "entity",
@@ -178,7 +178,7 @@ fn propose(
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(workspace);
+        let mut memory = mneme_memory::Engine::new(workspace);
         memory
             .commit(batch_in(scope, key, vec![evidence, assertion], Vec::new()))
             .expect("proposal commit");
@@ -233,7 +233,7 @@ fn decide(workspace: &mut mneme_store::Workspace, key: &str, input: DecisionInpu
         mneme_core::Reference::local(decision_id, mneme_core::RecordKind::Decision),
         None,
     );
-    let mut memory = mneme_memory::Memory::new(workspace);
+    let mut memory = mneme_memory::Engine::new(workspace);
     memory
         .commit(batch(key, vec![decision, revision], Vec::new()))
         .expect("decision commit");
@@ -268,7 +268,7 @@ fn proposed_assertion_is_not_promoted_by_retrieval_or_explanation() {
         include_disputed: false,
     };
     {
-        let memory = mneme_memory::Memory::new(&mut workspace);
+        let memory = mneme_memory::Engine::new(&mut workspace);
         assert!(memory.beliefs(&view).expect("beliefs").is_empty());
         let explanation = memory
             .explain(
@@ -340,7 +340,7 @@ fn invalid_span_rejects_the_whole_batch() {
         },
     );
     let error = {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch("bad-span", vec![evidence, assertion], Vec::new()))
             .expect_err("span beyond source")
@@ -381,7 +381,7 @@ fn acceptance_requires_a_matching_decision() {
         None,
     );
     let error = {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch(
                 "missing-decision",
@@ -407,7 +407,7 @@ fn acceptance_requires_a_matching_decision() {
         },
     );
     let at = mneme_core::Timestamp::parse("2026-11-10T00:00:00Z").expect("time");
-    let memory = mneme_memory::Memory::new(&mut workspace);
+    let memory = mneme_memory::Engine::new(&mut workspace);
     let beliefs = memory
         .beliefs(&mneme_memory::BeliefView {
             scope: scope(),
@@ -482,7 +482,7 @@ fn source_change_after_extraction_keeps_the_pinned_citation() {
     .expect("source");
     source.predecessor = Some(SOURCE_REV);
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch("source-v2", vec![source], vec![blob]))
             .expect("source change");
@@ -539,7 +539,7 @@ fn propose_bare(
             superseded_by: None,
         },
     );
-    let mut memory = mneme_memory::Memory::new(workspace);
+    let mut memory = mneme_memory::Engine::new(workspace);
     memory
         .commit(batch_in(scope, key, vec![assertion], Vec::new()))
         .expect("bare proposal");
@@ -615,7 +615,7 @@ fn future_and_unknown_validity_do_not_answer_the_current_view() {
         },
     );
 
-    let memory = mneme_memory::Memory::new(&mut workspace);
+    let memory = mneme_memory::Engine::new(&mut workspace);
     let today = mneme_memory::BeliefView {
         scope: scope(),
         at: mneme_core::Timestamp::parse("2026-11-10T00:00:00Z").expect("today"),
@@ -661,7 +661,7 @@ fn hypothesis_scope_is_isolated_and_promotion_is_explicit() {
         include_hypothetical: false,
         include_disputed: false,
     };
-    let memory = mneme_memory::Memory::new(&mut workspace);
+    let memory = mneme_memory::Engine::new(&mut workspace);
     assert!(memory.beliefs(&today).expect("project view").is_empty());
     assert!(
         memory
@@ -703,7 +703,7 @@ fn hypothesis_scope_is_isolated_and_promotion_is_explicit() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch("promote", vec![decision, accepted], Vec::new()))
             .expect("promotion");
@@ -786,7 +786,7 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
         include_hypothetical: false,
         include_disputed: true,
     };
-    let memory = mneme_memory::Memory::new(&mut workspace);
+    let memory = mneme_memory::Engine::new(&mut workspace);
     let conflicts = memory.conflicts(&view).expect("conflicts");
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].assertions.len(), 2);
@@ -849,7 +849,7 @@ fn conflicts_remain_visible_and_resolution_is_recorded() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch(
                 "resolve-conflict",
@@ -953,7 +953,7 @@ fn disjoint_validity_does_not_create_a_conflict() {
         include_hypothetical: false,
         include_disputed: false,
     };
-    let memory = mneme_memory::Memory::new(&mut workspace);
+    let memory = mneme_memory::Engine::new(&mut workspace);
     assert!(memory.conflicts(&view).expect("conflicts").is_empty());
 }
 
@@ -1115,7 +1115,7 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch(
                 "derivations",
@@ -1145,7 +1145,7 @@ fn derivations_offer_independent_alternatives_and_survive_one_withdrawal() {
             related: &[],
         },
     );
-    let memory = mneme_memory::Memory::new(&mut workspace);
+    let memory = mneme_memory::Engine::new(&mut workspace);
     let view = memory.view().expect("view");
     assert!(view.assertion_eligible(conclusion));
     let alternatives = view
@@ -1246,7 +1246,7 @@ fn cyclic_derivations_are_never_eligible() {
             completeness: "complete",
         },
     );
-    let mut memory = mneme_memory::Memory::new(&mut workspace);
+    let mut memory = mneme_memory::Engine::new(&mut workspace);
     memory
         .commit(batch(
             "cycle-derivations",
@@ -1342,7 +1342,7 @@ fn corroboration_counts_distinct_sources_not_record_copies() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch(
                 "corroboration",
@@ -1365,7 +1365,7 @@ fn corroboration_counts_distinct_sources_not_record_copies() {
             related: &[],
         },
     );
-    let memory = mneme_memory::Memory::new(&mut workspace);
+    let memory = mneme_memory::Engine::new(&mut workspace);
     let corroboration = memory
         .view()
         .expect("view")
@@ -1436,7 +1436,7 @@ fn cyclic_evidence_ancestry_is_rejected() {
         },
     );
     let error = {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch(
                 "cyclic-ancestry",
@@ -1510,7 +1510,7 @@ fn pruned_source_is_reported_without_inventing_an_excerpt() {
     );
     pruned.predecessor = Some(SOURCE_REV);
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch("prune", vec![pruned], Vec::new()))
             .expect("prune");
@@ -1609,7 +1609,7 @@ fn correction_retraction_and_history_do_not_assert_the_opposite() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch(
                 "correct",
@@ -1661,7 +1661,7 @@ fn correction_retraction_and_history_do_not_assert_the_opposite() {
             related: &[],
         },
     );
-    let memory = mneme_memory::Memory::new(&mut workspace);
+    let memory = mneme_memory::Engine::new(&mut workspace);
     assert!(
         memory
             .beliefs(&mneme_memory::BeliefView {
@@ -1718,7 +1718,7 @@ fn action_intent_without_an_observed_outcome_cannot_be_completed() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch("episodes", vec![intent, attempt], Vec::new()))
             .expect("episodes");
@@ -1763,7 +1763,7 @@ fn action_intent_without_an_observed_outcome_cannot_be_completed() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         let error = memory
             .commit(batch(
                 "false-completion",
@@ -1791,7 +1791,7 @@ fn action_intent_without_an_observed_outcome_cannot_be_completed() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch("outcome", vec![outcome], Vec::new()))
             .expect("outcome");
@@ -1854,7 +1854,7 @@ fn action_intent_without_an_observed_outcome_cannot_be_completed() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch(
                 "observed-completion",
@@ -1887,7 +1887,7 @@ fn accepted_absence_requires_an_explicit_completeness_basis() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch("absence", vec![assertion.clone()], Vec::new()))
             .expect("proposed absence");
@@ -1918,7 +1918,7 @@ fn accepted_absence_requires_an_explicit_completeness_basis() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         let error = memory
             .commit(batch(
                 "accept-absence",
@@ -1937,7 +1937,7 @@ fn accepted_absence_requires_an_explicit_completeness_basis() {
     assertion.revision_id = rev(0x23);
     assertion.predecessor = Some(rev(0x21));
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch("declared-absence", vec![assertion], Vec::new()))
             .expect("declared complete basis");
@@ -1967,7 +1967,7 @@ fn accepted_absence_requires_an_explicit_completeness_basis() {
             related: &[],
         },
     );
-    let mut memory = mneme_memory::Memory::new(&mut workspace);
+    let mut memory = mneme_memory::Engine::new(&mut workspace);
     memory
         .commit(batch(
             "accept-declared-absence",
@@ -2077,7 +2077,7 @@ fn supersession_is_explicit_and_preserves_the_prior_revision() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch("supersede", vec![decision, superseded], Vec::new()))
             .expect("supersession");
@@ -2135,7 +2135,7 @@ fn mismatched_source_revision_and_stale_decision_are_refused() {
         },
     );
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         let error = memory
             .commit(batch(
                 "pinned-mismatch",
@@ -2167,7 +2167,7 @@ fn mismatched_source_revision_and_stale_decision_are_refused() {
     // Advance the workspace so the decision's input revision is stale.
     let mut workspace = workspace;
     {
-        let mut memory = mneme_memory::Memory::new(&mut workspace);
+        let mut memory = mneme_memory::Engine::new(&mut workspace);
         memory
             .commit(batch(
                 "advance",
@@ -2216,7 +2216,7 @@ fn mismatched_source_revision_and_stale_decision_are_refused() {
             related: &[],
         },
     );
-    let mut memory = mneme_memory::Memory::new(&mut workspace);
+    let mut memory = mneme_memory::Engine::new(&mut workspace);
     let error = memory
         .commit(batch(
             "stale-decision",
@@ -2279,7 +2279,7 @@ fn erased_and_inaccessible_sources_are_labelled_without_text() {
         );
         replacement.predecessor = Some(SOURCE_REV);
         {
-            let mut memory = mneme_memory::Memory::new(&mut workspace);
+            let mut memory = mneme_memory::Engine::new(&mut workspace);
             memory
                 .commit(batch("unavailable", vec![replacement], Vec::new()))
                 .expect("source state");
@@ -2342,7 +2342,7 @@ fn memory_explanation_rechecks_the_current_eligibility_generation() {
     );
     let generation = workspace.eligibility_generation().expect("generation");
     workspace.advance_eligibility_barrier().expect("barrier");
-    let memory = mneme_memory::Memory::new(&mut workspace);
+    let memory = mneme_memory::Engine::new(&mut workspace);
     let error = memory
         .explain_at(
             assertion,
@@ -2355,6 +2355,6 @@ fn memory_explanation_rechecks_the_current_eligibility_generation() {
         .expect_err("stale generation");
     assert!(matches!(
         error,
-        mneme_memory::MemoryError::Store(mneme_store::StoreError::BarrierAdvanced { .. })
+        mneme_memory::EvidenceError::Store(mneme_store::Failure::BarrierAdvanced { .. })
     ));
 }

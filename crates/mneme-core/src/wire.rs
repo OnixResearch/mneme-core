@@ -5,7 +5,7 @@
 //! and typed payload. Validation has distinct syntax, envelope, and domain
 //! stages, reports field-addressed diagnostics, and never changes an assertion's
 //! epistemic lifecycle.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The label of a durable Mneme record envelope.
 pub const RECORD_LABEL: &str = "mneme-record";
@@ -15,13 +15,13 @@ pub const PRODUCTION_SCHEMA_VERSION: u32 = 1;
 /// A typed payload: an ordinary dictionary keyed by declared field symbols.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Payload {
-    fields: std::collections::BTreeMap<crate::value::Symbol, crate::value::Value>,
+    fields: std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
 }
 
 impl Payload {
     /// Construct from symbol-keyed entries.
     pub fn new(
-        entries: impl IntoIterator<Item = (crate::value::Symbol, crate::value::Value)>,
+        entries: impl IntoIterator<Item = (crate::typed::Symbol, crate::typed::Value)>,
     ) -> Self {
         Payload {
             fields: entries.into_iter().collect(),
@@ -29,27 +29,27 @@ impl Payload {
     }
 
     /// A payload field by name.
-    pub fn get(&self, name: &str) -> Option<&crate::value::Value> {
-        self.fields.get(&crate::value::Symbol::from(name))
+    pub fn get(&self, name: &str) -> Option<&crate::typed::Value> {
+        self.fields.get(&crate::typed::Symbol::from(name))
     }
 
     /// Whether a field is present.
     pub fn contains(&self, name: &str) -> bool {
-        self.fields.contains_key(&crate::value::Symbol::from(name))
+        self.fields.contains_key(&crate::typed::Symbol::from(name))
     }
 
     /// Insert or replace a field.
     pub fn insert(
         &mut self,
-        name: impl Into<crate::value::Symbol>,
-        value: crate::value::Value,
-    ) -> Option<crate::value::Value> {
+        name: impl Into<crate::typed::Symbol>,
+        value: crate::typed::Value,
+    ) -> Option<crate::typed::Value> {
         self.fields.insert(name.into(), value)
     }
 
     /// Remove a field.
-    pub fn remove(&mut self, name: &str) -> Option<crate::value::Value> {
-        self.fields.remove(&crate::value::Symbol::from(name))
+    pub fn remove(&mut self, name: &str) -> Option<crate::typed::Value> {
+        self.fields.remove(&crate::typed::Symbol::from(name))
     }
 
     /// The number of fields.
@@ -64,34 +64,34 @@ impl Payload {
     }
 
     /// The sorted fields.
-    pub fn as_map(&self) -> &std::collections::BTreeMap<crate::value::Symbol, crate::value::Value> {
+    pub fn as_map(&self) -> &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value> {
         &self.fields
     }
 
     /// Field names in canonical order.
-    pub fn names(&self) -> impl Iterator<Item = &crate::value::Symbol> {
+    pub fn names(&self) -> impl Iterator<Item = &crate::typed::Symbol> {
         self.fields.keys()
     }
 
     /// Encode as a symbol-keyed dictionary.
-    pub fn to_value(&self) -> crate::value::Value {
-        crate::value::Value::dictionary(
+    pub fn to_value(&self) -> crate::typed::Value {
+        crate::typed::Value::dictionary(
             self.fields
                 .iter()
-                .map(|(key, value)| (crate::value::Value::Symbol(key.clone()), value.clone())),
+                .map(|(key, value)| (crate::typed::Value::Symbol(key.clone()), value.clone())),
         )
     }
 
     /// Decode a symbol-keyed dictionary.
     #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn from_value(
-        value: &crate::value::Value,
-        path: &crate::error::Path,
-    ) -> Result<Self, crate::error::Diagnostic> {
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let type_error = || {
-            crate::error::Diagnostic::new(
-                crate::error::Stage::Envelope,
-                crate::error::ErrorCode::TypeMismatch,
+            crate::problem::Diagnostic::new(
+                crate::problem::Stage::Envelope,
+                crate::problem::ErrorCode::TypeMismatch,
                 path.clone(),
                 "payload must be a dictionary with symbol field names",
             )
@@ -101,9 +101,9 @@ impl Payload {
         let max_payload_fields = entries.len();
         for (key, item) in entries {
             let Some(symbol) = key.as_symbol() else {
-                return Err(crate::error::Diagnostic::new(
-                    crate::error::Stage::Envelope,
-                    crate::error::ErrorCode::TypeMismatch,
+                return Err(crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Envelope,
+                    crate::problem::ErrorCode::TypeMismatch,
                     path.clone(),
                     "payload field names must be declared symbols",
                 ));
@@ -113,9 +113,9 @@ impl Payload {
                 continue;
             }
             if fields.len() >= max_payload_fields {
-                return Err(crate::error::Diagnostic::new(
-                    crate::error::Stage::Envelope,
-                    crate::error::ErrorCode::TypeMismatch,
+                return Err(crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Envelope,
+                    crate::problem::ErrorCode::TypeMismatch,
                     path.clone(),
                     "payload field count exceeds its input bound",
                 ));
@@ -130,26 +130,26 @@ impl Payload {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordEnvelope {
     pub schema_version: u32,
-    pub kind: crate::schema::RecordKind,
+    pub kind: crate::fields::RecordKind,
     pub record_id: crate::ids::RecordId,
     pub revision_id: crate::ids::RevisionId,
     pub predecessor: Option<crate::ids::RevisionId>,
-    pub scope: crate::scope::ScopeId,
-    pub recorded: crate::time::RecordedTime,
+    pub scope: crate::tenancy::ScopeId,
+    pub recorded: crate::clock::RecordedTime,
     pub payload: Payload,
 }
 
 impl RecordEnvelope {
     /// Encode the envelope as `<mneme-record …>`.
-    pub fn to_value(&self) -> crate::value::Value {
+    pub fn to_value(&self) -> crate::typed::Value {
         let predecessor = match self.predecessor {
             Some(revision) => revision.to_value(),
-            None => crate::value::Value::symbol("none"),
+            None => crate::typed::Value::symbol("none"),
         };
-        crate::value::Value::record_named(
+        crate::typed::Value::record_named(
             RECORD_LABEL,
             vec![
-                crate::value::Value::integer(i64::from(self.schema_version)),
+                crate::typed::Value::integer(i64::from(self.schema_version)),
                 self.kind.to_value(),
                 self.record_id.to_value(),
                 self.revision_id.to_value(),
@@ -164,7 +164,9 @@ impl RecordEnvelope {
     /// Decode envelope structure. Schema and domain validation follow in
     /// [`validate_record`].
     #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-    pub fn from_value(value: &crate::value::Value) -> Result<Self, Vec<crate::error::Diagnostic>> {
+    pub fn from_value(
+        value: &crate::typed::Value,
+    ) -> Result<Self, Vec<crate::problem::Diagnostic>> {
         let record = envelope_record(value)?;
         let mut diagnostics = Vec::new();
         let (schema_version, kind, record_id, revision_id, predecessor) =
@@ -202,59 +204,59 @@ impl RecordEnvelope {
     }
 
     /// The assertion lifecycle, when this is an assertion carrying one.
-    pub fn assertion_lifecycle(&self) -> Option<crate::schema::Lifecycle> {
-        if self.kind != crate::schema::RecordKind::Assertion {
+    pub fn assertion_lifecycle(&self) -> Option<crate::fields::Lifecycle> {
+        if self.kind != crate::fields::RecordKind::Assertion {
             return None;
         }
         self.payload
             .get("lifecycle")
-            .and_then(crate::value::Value::as_symbol)
-            .and_then(|symbol| crate::schema::Lifecycle::parse(symbol.as_str()))
+            .and_then(crate::typed::Value::as_symbol)
+            .and_then(|symbol| crate::fields::Lifecycle::parse(symbol.as_str()))
     }
 
     /// Digest of the complete envelope, including identity and provenance.
-    pub fn full_digest(&self) -> crate::digest::ContentDigest {
-        crate::digest::ContentDigest::of_full_record(&self.to_value())
+    pub fn full_digest(&self) -> crate::hashing::ContentDigest {
+        crate::hashing::ContentDigest::of_full_record(&self.to_value())
     }
 
     /// Digest of only the payload.
-    pub fn payload_digest(&self) -> crate::digest::ContentDigest {
-        crate::digest::ContentDigest::of_payload(&self.payload.to_value())
+    pub fn payload_digest(&self) -> crate::hashing::ContentDigest {
+        crate::hashing::ContentDigest::of_payload(&self.payload.to_value())
     }
 }
 
 fn envelope_record(
-    value: &crate::value::Value,
-) -> Result<&crate::value::Record, Vec<crate::error::Diagnostic>> {
+    value: &crate::typed::Value,
+) -> Result<&crate::typed::Record, Vec<crate::problem::Diagnostic>> {
     let Some(record) = value.as_record() else {
-        return Err(vec![crate::error::Diagnostic::new(
-            crate::error::Stage::Envelope,
-            crate::error::ErrorCode::TypeMismatch,
-            crate::error::Path::root(),
+        return Err(vec![crate::problem::Diagnostic::new(
+            crate::problem::Stage::Envelope,
+            crate::problem::ErrorCode::TypeMismatch,
+            crate::problem::Path::root(),
             format!("expected <{RECORD_LABEL} …>"),
         )]);
     };
-    if record.label() != &crate::value::Value::symbol(RECORD_LABEL) {
-        return Err(vec![crate::error::Diagnostic::new(
-            crate::error::Stage::Envelope,
-            crate::error::ErrorCode::TypeMismatch,
-            crate::error::Path::root(),
+    if record.label() != &crate::typed::Value::symbol(RECORD_LABEL) {
+        return Err(vec![crate::problem::Diagnostic::new(
+            crate::problem::Stage::Envelope,
+            crate::problem::ErrorCode::TypeMismatch,
+            crate::problem::Path::root(),
             format!("expected <{RECORD_LABEL} …>"),
         )]);
     }
     if value.contains_embedded() {
-        return Err(vec![crate::error::Diagnostic::new(
-            crate::error::Stage::Envelope,
-            crate::error::ErrorCode::EmbeddedValueNotDurable,
-            crate::error::Path::root(),
+        return Err(vec![crate::problem::Diagnostic::new(
+            crate::problem::Stage::Envelope,
+            crate::problem::ErrorCode::EmbeddedValueNotDurable,
+            crate::problem::Path::root(),
             "durable records must not contain live embedded values",
         )]);
     }
     if record.fields().len() != 8 {
-        return Err(vec![crate::error::Diagnostic::new(
-            crate::error::Stage::Envelope,
-            crate::error::ErrorCode::MalformedEncoding,
-            crate::error::Path::root(),
+        return Err(vec![crate::problem::Diagnostic::new(
+            crate::problem::Stage::Envelope,
+            crate::problem::ErrorCode::MalformedEncoding,
+            crate::problem::Path::root(),
             format!(
                 "envelope must have 8 fields, found {}",
                 record.fields().len()
@@ -266,42 +268,42 @@ fn envelope_record(
 
 type EnvelopeIdentity = (
     u32,
-    Option<crate::schema::RecordKind>,
+    Option<crate::fields::RecordKind>,
     Option<crate::ids::RecordId>,
     Option<crate::ids::RevisionId>,
     Option<Option<crate::ids::RevisionId>>,
 );
 
 fn parse_envelope_identity(
-    record: &crate::value::Record,
-    diagnostics: &mut Vec<crate::error::Diagnostic>,
+    record: &crate::typed::Record,
+    diagnostics: &mut Vec<crate::problem::Diagnostic>,
 ) -> EnvelopeIdentity {
     let schema_version = match unsigned(&record.fields()[0]) {
         Some(version) => match u32::try_from(version) {
             Ok(version) => version,
             Err(_) => {
-                diagnostics.push(crate::error::Diagnostic::new(
-                    crate::error::Stage::Envelope,
-                    crate::error::ErrorCode::UnsupportedSchemaVersion,
-                    crate::error::Path::root().field("schema-version"),
+                diagnostics.push(crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Envelope,
+                    crate::problem::ErrorCode::UnsupportedSchemaVersion,
+                    crate::problem::Path::root().field("schema-version"),
                     "schema version exceeds the supported integer range",
                 ));
                 0
             }
         },
         None => {
-            diagnostics.push(crate::error::Diagnostic::new(
-                crate::error::Stage::Envelope,
-                crate::error::ErrorCode::UnsupportedSchemaVersion,
-                crate::error::Path::root().field("schema-version"),
+            diagnostics.push(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Envelope,
+                crate::problem::ErrorCode::UnsupportedSchemaVersion,
+                crate::problem::Path::root().field("schema-version"),
                 "schema version must be a non-negative integer",
             ));
             0
         }
     };
-    let kind = match crate::schema::RecordKind::from_value(
+    let kind = match crate::fields::RecordKind::from_value(
         &record.fields()[1],
-        &crate::error::Path::root().field("kind"),
+        &crate::problem::Path::root().field("kind"),
     ) {
         Ok(kind) => Some(kind),
         Err(diagnostic) => {
@@ -312,22 +314,22 @@ fn parse_envelope_identity(
     let record_id = push_id(
         crate::ids::RecordId::from_value(
             &record.fields()[2],
-            &crate::error::Path::root().field("record-id"),
+            &crate::problem::Path::root().field("record-id"),
         ),
         diagnostics,
     );
     let revision_id = push_id(
         crate::ids::RevisionId::from_value(
             &record.fields()[3],
-            &crate::error::Path::root().field("revision-id"),
+            &crate::problem::Path::root().field("revision-id"),
         ),
         diagnostics,
     );
     let predecessor = match &record.fields()[4] {
-        crate::value::Value::Symbol(symbol) if symbol.as_str() == "none" => Some(None),
+        crate::typed::Value::Symbol(symbol) if symbol.as_str() == "none" => Some(None),
         other => match crate::ids::RevisionId::from_value(
             other,
-            &crate::error::Path::root().field("predecessor"),
+            &crate::problem::Path::root().field("predecessor"),
         ) {
             Ok(revision) => Some(Some(revision)),
             Err(diagnostic) => {
@@ -340,31 +342,31 @@ fn parse_envelope_identity(
 }
 
 fn parse_envelope_contents(
-    record: &crate::value::Record,
-    diagnostics: &mut Vec<crate::error::Diagnostic>,
+    record: &crate::typed::Record,
+    diagnostics: &mut Vec<crate::problem::Diagnostic>,
 ) -> (
-    Option<crate::scope::ScopeId>,
-    Option<crate::time::RecordedTime>,
+    Option<crate::tenancy::ScopeId>,
+    Option<crate::clock::RecordedTime>,
     Option<Payload>,
 ) {
     let scope = push_id(
-        crate::scope::ScopeId::from_value(
+        crate::tenancy::ScopeId::from_value(
             &record.fields()[5],
-            &crate::error::Path::root().field("scope"),
+            &crate::problem::Path::root().field("scope"),
         ),
         diagnostics,
     );
     let recorded = push_id(
-        crate::time::RecordedTime::from_value(
+        crate::clock::RecordedTime::from_value(
             &record.fields()[6],
-            &crate::error::Path::root().field("recorded-time"),
+            &crate::problem::Path::root().field("recorded-time"),
         ),
         diagnostics,
     );
     let payload = push_id(
         Payload::from_value(
             &record.fields()[7],
-            &crate::error::Path::root().field("payload"),
+            &crate::problem::Path::root().field("payload"),
         ),
         diagnostics,
     );
@@ -372,8 +374,8 @@ fn parse_envelope_contents(
 }
 
 fn push_id<T>(
-    result: Result<T, crate::error::Diagnostic>,
-    diagnostics: &mut Vec<crate::error::Diagnostic>,
+    result: Result<T, crate::problem::Diagnostic>,
+    diagnostics: &mut Vec<crate::problem::Diagnostic>,
 ) -> Option<T> {
     match result {
         Ok(value) => Some(value),
@@ -384,7 +386,7 @@ fn push_id<T>(
     }
 }
 
-fn unsigned(value: &crate::value::Value) -> Option<u64> {
+fn unsigned(value: &crate::typed::Value) -> Option<u64> {
     use num_traits::ToPrimitive;
     value
         .as_integer()
@@ -398,14 +400,14 @@ fn unsigned(value: &crate::value::Value) -> Option<u64> {
 /// replacement lineage. Both are absent when only structure is checked.
 #[derive(Clone, Copy, Debug)]
 pub struct RecordContext<'a> {
-    pub registry: &'a crate::schema::SchemaRegistry,
-    pub resolution: Option<&'a crate::reference::SnapshotIndex>,
-    pub prior: Option<&'a crate::reference::SnapshotIndex>,
+    pub registry: &'a crate::fields::SchemaRegistry,
+    pub resolution: Option<&'a crate::pointer::SnapshotIndex>,
+    pub prior: Option<&'a crate::pointer::SnapshotIndex>,
 }
 
 impl<'a> RecordContext<'a> {
     /// Context for validating one record in isolation.
-    pub fn isolated(registry: &'a crate::schema::SchemaRegistry) -> Self {
+    pub fn isolated(registry: &'a crate::fields::SchemaRegistry) -> Self {
         RecordContext {
             registry,
             resolution: None,
@@ -415,8 +417,8 @@ impl<'a> RecordContext<'a> {
 
     /// Context for validating one record against an existing snapshot.
     pub fn against(
-        registry: &'a crate::schema::SchemaRegistry,
-        snapshot: &'a crate::reference::SnapshotIndex,
+        registry: &'a crate::fields::SchemaRegistry,
+        snapshot: &'a crate::pointer::SnapshotIndex,
     ) -> Self {
         RecordContext {
             registry,
@@ -431,15 +433,15 @@ impl<'a> RecordContext<'a> {
 pub fn validate_record(
     envelope: &RecordEnvelope,
     context: &RecordContext<'_>,
-    path: &crate::error::Path,
-) -> Vec<crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
     let mut diagnostics = Vec::new();
     validate_predecessor(envelope, context.prior, path, &mut diagnostics);
 
     let Some(schema) = context.registry.schema(envelope.schema_version) else {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Envelope,
-            crate::error::ErrorCode::UnsupportedSchemaVersion,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Envelope,
+            crate::problem::ErrorCode::UnsupportedSchemaVersion,
             path.field("schema-version"),
             format!(
                 "schema version {} is not registered; supported versions: {:?}",
@@ -450,9 +452,9 @@ pub fn validate_record(
         return diagnostics;
     };
     let Some(kind_schema) = schema.kind(envelope.kind) else {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Envelope,
-            crate::error::ErrorCode::UnknownRecordKind,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Envelope,
+            crate::problem::ErrorCode::UnknownRecordKind,
             path.field("kind"),
             format!(
                 "record kind {} is not declared by schema version {}",
@@ -469,7 +471,7 @@ pub fn validate_record(
         path,
         &mut diagnostics,
     );
-    diagnostics.extend(crate::schema::validate_domain(
+    diagnostics.extend(crate::fields::validate_domain(
         envelope.kind,
         envelope.payload.as_map(),
         &path.field("payload"),
@@ -479,14 +481,14 @@ pub fn validate_record(
 
 fn validate_predecessor(
     envelope: &RecordEnvelope,
-    prior: Option<&crate::reference::SnapshotIndex>,
-    path: &crate::error::Path,
-    diagnostics: &mut Vec<crate::error::Diagnostic>,
+    prior: Option<&crate::pointer::SnapshotIndex>,
+    path: &crate::problem::Path,
+    diagnostics: &mut Vec<crate::problem::Diagnostic>,
 ) {
     if envelope.predecessor == Some(envelope.revision_id) {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Envelope,
-            crate::error::ErrorCode::InvalidPredecessor,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Envelope,
+            crate::problem::ErrorCode::InvalidPredecessor,
             path.field("predecessor"),
             "a revision cannot be its own predecessor",
         ));
@@ -495,9 +497,9 @@ fn validate_predecessor(
         match prior.get(&envelope.record_id) {
             Some(entry) => {
                 if entry.kind != envelope.kind {
-                    diagnostics.push(crate::error::Diagnostic::new(
-                        crate::error::Stage::Envelope,
-                        crate::error::ErrorCode::InvalidPredecessor,
+                    diagnostics.push(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Envelope,
+                        crate::problem::ErrorCode::InvalidPredecessor,
                         path.field("kind"),
                         format!(
                             "record kind cannot change between revisions ({} became {})",
@@ -507,9 +509,9 @@ fn validate_predecessor(
                     ));
                 }
                 if envelope.predecessor != Some(entry.revision) {
-                    diagnostics.push(crate::error::Diagnostic::new(
-                        crate::error::Stage::Envelope,
-                        crate::error::ErrorCode::InvalidPredecessor,
+                    diagnostics.push(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Envelope,
+                        crate::problem::ErrorCode::InvalidPredecessor,
                         path.field("predecessor"),
                         format!(
                             "replacement must name predecessor revision {}",
@@ -520,9 +522,9 @@ fn validate_predecessor(
             }
             None => {
                 if envelope.predecessor.is_some() {
-                    diagnostics.push(crate::error::Diagnostic::new(
-                        crate::error::Stage::Envelope,
-                        crate::error::ErrorCode::InvalidPredecessor,
+                    diagnostics.push(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Envelope,
+                        crate::problem::ErrorCode::InvalidPredecessor,
                         path.field("predecessor"),
                         "a new record cannot name a predecessor revision",
                     ));
@@ -534,22 +536,22 @@ fn validate_predecessor(
 
 fn validate_payload_fields(
     envelope: &RecordEnvelope,
-    kind_schema: &crate::schema::KindSchema,
-    resolution: Option<&crate::reference::SnapshotIndex>,
-    path: &crate::error::Path,
-    diagnostics: &mut Vec<crate::error::Diagnostic>,
+    kind_schema: &crate::fields::KindSchema,
+    resolution: Option<&crate::pointer::SnapshotIndex>,
+    path: &crate::problem::Path,
+    diagnostics: &mut Vec<crate::problem::Diagnostic>,
 ) {
     for field in kind_schema.fields() {
         let field_path = path.field("payload").field(field.name);
         match envelope.payload.get(field.name) {
-            None if field.required => diagnostics.push(crate::error::Diagnostic::new(
-                crate::error::Stage::Domain,
-                crate::error::ErrorCode::MissingField,
+            None if field.required => diagnostics.push(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Domain,
+                crate::problem::ErrorCode::MissingField,
                 field_path,
                 format!("required field {} is absent", field.name),
             )),
             None => {}
-            Some(value) => diagnostics.extend(crate::schema::validate_field(
+            Some(value) => diagnostics.extend(crate::fields::validate_field(
                 field.ty,
                 value,
                 &field_path,
@@ -557,12 +559,12 @@ fn validate_payload_fields(
             )),
         }
     }
-    if kind_schema.extensions() == crate::schema::ExtensionPolicy::Refuse {
+    if kind_schema.extensions() == crate::fields::ExtensionPolicy::Refuse {
         for name in envelope.payload.names() {
             if kind_schema.field(name.as_str()).is_none() {
-                diagnostics.push(crate::error::Diagnostic::new(
-                    crate::error::Stage::Domain,
-                    crate::error::ErrorCode::UnsupportedExtension,
+                diagnostics.push(crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Domain,
+                    crate::problem::ErrorCode::UnsupportedExtension,
                     path.field("payload").named(name.as_str()),
                     format!("field {} is not declared and extensions are refused", name),
                 ));
@@ -573,16 +575,16 @@ fn validate_payload_fields(
 
 /// Validate one encoded envelope value.
 pub fn validate_record_value(
-    value: &crate::value::Value,
-    registry: &crate::schema::SchemaRegistry,
-    index: Option<&crate::reference::SnapshotIndex>,
-) -> Result<RecordEnvelope, Vec<crate::error::Diagnostic>> {
+    value: &crate::typed::Value,
+    registry: &crate::fields::SchemaRegistry,
+    index: Option<&crate::pointer::SnapshotIndex>,
+) -> Result<RecordEnvelope, Vec<crate::problem::Diagnostic>> {
     let envelope = RecordEnvelope::from_value(value)?;
     let context = match index {
         Some(snapshot) => RecordContext::against(registry, snapshot),
         None => RecordContext::isolated(registry),
     };
-    let diagnostics = validate_record(&envelope, &context, &crate::error::Path::root());
+    let diagnostics = validate_record(&envelope, &context, &crate::problem::Path::root());
     if diagnostics.is_empty() {
         Ok(envelope)
     } else {
@@ -594,7 +596,7 @@ pub fn validate_record_value(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedBatch {
     pub records: Vec<RecordEnvelope>,
-    pub index: crate::reference::SnapshotIndex,
+    pub index: crate::pointer::SnapshotIndex,
 }
 
 /// Validate a batch as one committed snapshot.
@@ -604,10 +606,10 @@ pub struct ValidatedBatch {
 /// replacements: they must name the indexed revision as their predecessor.
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate_batch(
-    values: &[crate::value::Value],
-    registry: &crate::schema::SchemaRegistry,
-    external_index: Option<&crate::reference::SnapshotIndex>,
-) -> Result<ValidatedBatch, Vec<crate::error::Diagnostic>> {
+    values: &[crate::typed::Value],
+    registry: &crate::fields::SchemaRegistry,
+    external_index: Option<&crate::pointer::SnapshotIndex>,
+) -> Result<ValidatedBatch, Vec<crate::problem::Diagnostic>> {
     let envelopes = decode_batch_envelopes(values)?;
     validate_unique_batch_ids(&envelopes)?;
 
@@ -615,10 +617,10 @@ pub fn validate_batch(
     let max_index_entries = index.len().saturating_add(envelopes.len());
     for envelope in &envelopes {
         if index.get(&envelope.record_id).is_none() && index.len() >= max_index_entries {
-            return Err(vec![crate::error::Diagnostic::new(
-                crate::error::Stage::Envelope,
-                crate::error::ErrorCode::TypeMismatch,
-                crate::error::Path::root(),
+            return Err(vec![crate::problem::Diagnostic::new(
+                crate::problem::Stage::Envelope,
+                crate::problem::ErrorCode::TypeMismatch,
+                crate::problem::Path::root(),
                 "record index exceeds its batch input bound",
             )]);
         }
@@ -644,15 +646,15 @@ pub fn validate_batch(
 }
 
 fn decode_batch_envelopes(
-    values: &[crate::value::Value],
-) -> Result<Vec<RecordEnvelope>, Vec<crate::error::Diagnostic>> {
+    values: &[crate::typed::Value],
+) -> Result<Vec<RecordEnvelope>, Vec<crate::problem::Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut envelopes = Vec::with_capacity(values.len());
     for (position, value) in values.iter().enumerate() {
         match RecordEnvelope::from_value(value) {
             Ok(envelope) => envelopes.push(envelope),
             Err(record_diagnostics) => {
-                let prefix = crate::error::Path::root().index(position);
+                let prefix = crate::problem::Path::root().index(position);
                 diagnostics.reserve(record_diagnostics.len());
                 diagnostics.extend(record_diagnostics.into_iter().map(|mut diagnostic| {
                     diagnostic.path = rebase(diagnostic.path, &prefix);
@@ -669,16 +671,16 @@ fn decode_batch_envelopes(
 
 fn validate_unique_batch_ids(
     envelopes: &[RecordEnvelope],
-) -> Result<(), Vec<crate::error::Diagnostic>> {
+) -> Result<(), Vec<crate::problem::Diagnostic>> {
     let mut diagnostics = Vec::with_capacity(envelopes.len().saturating_mul(2));
     let mut revision_ids = std::collections::BTreeSet::new();
     let mut seen_records = std::collections::BTreeSet::new();
     for (position, envelope) in envelopes.iter().enumerate() {
-        let prefix = crate::error::Path::root().index(position);
+        let prefix = crate::problem::Path::root().index(position);
         if !seen_records.insert(envelope.record_id) {
-            diagnostics.push(crate::error::Diagnostic::new(
-                crate::error::Stage::Envelope,
-                crate::error::ErrorCode::DuplicateRecordId,
+            diagnostics.push(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Envelope,
+                crate::problem::ErrorCode::DuplicateRecordId,
                 prefix.clone().field("record-id"),
                 format!(
                     "record {} appears more than once in one batch",
@@ -687,9 +689,9 @@ fn validate_unique_batch_ids(
             ));
         }
         if !revision_ids.insert(envelope.revision_id) {
-            diagnostics.push(crate::error::Diagnostic::new(
-                crate::error::Stage::Envelope,
-                crate::error::ErrorCode::DuplicateRevisionId,
+            diagnostics.push(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Envelope,
+                crate::problem::ErrorCode::DuplicateRevisionId,
                 prefix.clone().field("revision-id"),
                 format!(
                     "revision {} appears more than once in one batch",
@@ -707,10 +709,10 @@ fn validate_unique_batch_ids(
 fn validate_batch_records(
     envelopes: &[RecordEnvelope],
     context: &RecordContext<'_>,
-) -> Vec<crate::error::Diagnostic> {
+) -> Vec<crate::problem::Diagnostic> {
     let mut diagnostics = Vec::new();
     for (position, envelope) in envelopes.iter().enumerate() {
-        let prefix = crate::error::Path::root().index(position);
+        let prefix = crate::problem::Path::root().index(position);
         let record_diagnostics = validate_record(envelope, context, &prefix);
         diagnostics.reserve(record_diagnostics.len());
         diagnostics.extend(record_diagnostics);
@@ -718,10 +720,10 @@ fn validate_batch_records(
     diagnostics
 }
 
-fn rebase(path: crate::error::Path, prefix: &crate::error::Path) -> crate::error::Path {
+fn rebase(path: crate::problem::Path, prefix: &crate::problem::Path) -> crate::problem::Path {
     let mut segments = prefix.segments().to_vec();
     segments.extend_from_slice(path.segments());
-    crate::error::Path::from_segments(segments)
+    crate::problem::Path::from_segments(segments)
 }
 
 #[cfg(test)]
@@ -736,18 +738,18 @@ mod tests {
         crate::ids::RevisionId::from_bytes([byte; 16])
     }
 
-    fn scope() -> crate::scope::ScopeId {
-        crate::scope::ScopeId::new(crate::scope::ScopeClass::Project, "cedar").expect("scope")
+    fn scope() -> crate::tenancy::ScopeId {
+        crate::tenancy::ScopeId::new(crate::tenancy::ScopeClass::Project, "cedar").expect("scope")
     }
 
-    fn recorded() -> crate::time::RecordedTime {
-        crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(1_000), 1)
+    fn recorded() -> crate::clock::RecordedTime {
+        crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(1_000), 1)
     }
 
     fn entity() -> RecordEnvelope {
         RecordEnvelope {
             schema_version: 1,
-            kind: crate::schema::RecordKind::Entity,
+            kind: crate::fields::RecordKind::Entity,
             record_id: record_id(1),
             revision_id: revision_id(1),
             predecessor: None,
@@ -755,16 +757,16 @@ mod tests {
             recorded: recorded(),
             payload: Payload::new([
                 (
-                    crate::value::Symbol::from("entity-type"),
-                    crate::value::Value::symbol("project"),
+                    crate::typed::Symbol::from("entity-type"),
+                    crate::typed::Value::symbol("project"),
                 ),
                 (
-                    crate::value::Symbol::from("label"),
-                    crate::value::Value::string("Cedar Notes"),
+                    crate::typed::Symbol::from("label"),
+                    crate::typed::Value::string("Cedar Notes"),
                 ),
                 (
-                    crate::value::Symbol::from("properties"),
-                    crate::value::Value::dictionary([]),
+                    crate::typed::Symbol::from("properties"),
+                    crate::typed::Value::dictionary([]),
                 ),
             ]),
         }
@@ -773,7 +775,7 @@ mod tests {
     fn source_revision() -> RecordEnvelope {
         RecordEnvelope {
             schema_version: 1,
-            kind: crate::schema::RecordKind::SourceRevision,
+            kind: crate::fields::RecordKind::SourceRevision,
             record_id: record_id(2),
             revision_id: revision_id(2),
             predecessor: None,
@@ -781,10 +783,10 @@ mod tests {
             recorded: recorded(),
             payload: Payload::new([
                 (
-                    crate::value::Symbol::from("content"),
+                    crate::typed::Symbol::from("content"),
                     crate::payload::SourceContent::Retained(
                         crate::payload::RetainedSource::new(
-                            crate::digest::ContentDigest::of_source_bytes(b"= Cedar Notes\n"),
+                            crate::hashing::ContentDigest::of_source_bytes(b"= Cedar Notes\n"),
                             14,
                             "text/asciidoc",
                         )
@@ -793,8 +795,8 @@ mod tests {
                     .to_value(),
                 ),
                 (
-                    crate::value::Symbol::from("acquisition"),
-                    crate::value::Value::symbol("authored"),
+                    crate::typed::Symbol::from("acquisition"),
+                    crate::typed::Value::symbol("authored"),
                 ),
             ]),
         }
@@ -803,7 +805,7 @@ mod tests {
     fn assertion(lifecycle: &str) -> RecordEnvelope {
         RecordEnvelope {
             schema_version: 1,
-            kind: crate::schema::RecordKind::Assertion,
+            kind: crate::fields::RecordKind::Assertion,
             record_id: record_id(3),
             revision_id: revision_id(3),
             predecessor: None,
@@ -811,62 +813,62 @@ mod tests {
             recorded: recorded(),
             payload: Payload::new([
                 (
-                    crate::value::Symbol::from("subject"),
-                    crate::reference::Reference::local(
+                    crate::typed::Symbol::from("subject"),
+                    crate::pointer::Reference::local(
                         record_id(1),
-                        crate::schema::RecordKind::Entity,
+                        crate::fields::RecordKind::Entity,
                     )
                     .to_value(),
                 ),
                 (
-                    crate::value::Symbol::from("predicate"),
-                    crate::value::Value::symbol("storage-engine"),
+                    crate::typed::Symbol::from("predicate"),
+                    crate::typed::Value::symbol("storage-engine"),
                 ),
                 (
-                    crate::value::Symbol::from("value"),
-                    crate::value::Value::string("SQLite"),
+                    crate::typed::Symbol::from("value"),
+                    crate::typed::Value::string("SQLite"),
                 ),
                 (
-                    crate::value::Symbol::from("stance"),
-                    crate::value::Value::symbol("affirm"),
+                    crate::typed::Symbol::from("stance"),
+                    crate::typed::Value::symbol("affirm"),
                 ),
                 (
-                    crate::value::Symbol::from("lifecycle"),
-                    crate::value::Value::symbol(lifecycle),
+                    crate::typed::Symbol::from("lifecycle"),
+                    crate::typed::Value::symbol(lifecycle),
                 ),
                 (
-                    crate::value::Symbol::from("origin"),
-                    crate::value::Value::symbol("authored-statement"),
+                    crate::typed::Symbol::from("origin"),
+                    crate::typed::Value::symbol("authored-statement"),
                 ),
                 (
-                    crate::value::Symbol::from("asserted-by"),
-                    crate::value::Value::string("synthetic author"),
+                    crate::typed::Symbol::from("asserted-by"),
+                    crate::typed::Value::string("synthetic author"),
                 ),
                 (
-                    crate::value::Symbol::from("valid-time"),
-                    crate::time::ValidTime::Unknown.to_value(),
+                    crate::typed::Symbol::from("valid-time"),
+                    crate::clock::ValidTime::Unknown.to_value(),
                 ),
                 (
-                    crate::value::Symbol::from("evidence"),
-                    crate::value::Value::set([]),
+                    crate::typed::Symbol::from("evidence"),
+                    crate::typed::Value::set([]),
                 ),
             ]),
         }
     }
 
-    fn batch(records: &[RecordEnvelope]) -> Vec<crate::value::Value> {
+    fn batch(records: &[RecordEnvelope]) -> Vec<crate::typed::Value> {
         records.iter().map(RecordEnvelope::to_value).collect()
     }
 
     #[test]
     fn valid_batch_resolves_references_and_keeps_proposed_lifecycle() {
         let values = batch(&[entity(), source_revision(), assertion("proposed")]);
-        let validated = validate_batch(&values, &crate::schema::SchemaRegistry::v1(), None)
+        let validated = validate_batch(&values, &crate::fields::SchemaRegistry::v1(), None)
             .expect("valid batch");
         let assertion = &validated.records[2];
         assert_eq!(
             assertion.assertion_lifecycle(),
-            Some(crate::schema::Lifecycle::Proposed)
+            Some(crate::fields::Lifecycle::Proposed)
         );
         assert!(!validated.index.is_empty());
     }
@@ -877,11 +879,11 @@ mod tests {
         let accepted = assertion("accepted");
         assert_eq!(
             proposed.assertion_lifecycle(),
-            Some(crate::schema::Lifecycle::Proposed)
+            Some(crate::fields::Lifecycle::Proposed)
         );
         assert_eq!(
             accepted.assertion_lifecycle(),
-            Some(crate::schema::Lifecycle::Accepted)
+            Some(crate::fields::Lifecycle::Accepted)
         );
         assert_ne!(proposed.full_digest(), accepted.full_digest());
     }
@@ -892,34 +894,34 @@ mod tests {
         record.schema_version = 99;
         let error = validate_record_value(
             &record.to_value(),
-            &crate::schema::SchemaRegistry::v1(),
+            &crate::fields::SchemaRegistry::v1(),
             None,
         )
         .expect_err("unsupported version");
         assert_eq!(
             error[0].code,
-            crate::error::ErrorCode::UnsupportedSchemaVersion
+            crate::problem::ErrorCode::UnsupportedSchemaVersion
         );
         assert_eq!(error[0].path.to_string(), "$.schema-version");
     }
 
     #[test]
     fn unknown_kind_is_refused_at_the_kind_field() {
-        let value = crate::value::Value::record_named(
+        let value = crate::typed::Value::record_named(
             RECORD_LABEL,
             vec![
-                crate::value::Value::integer(1_i64),
-                crate::value::Value::symbol("tenant"),
+                crate::typed::Value::integer(1_i64),
+                crate::typed::Value::symbol("tenant"),
                 record_id(1).to_value(),
                 revision_id(1).to_value(),
-                crate::value::Value::symbol("none"),
+                crate::typed::Value::symbol("none"),
                 scope().to_value(),
                 recorded().to_value(),
                 Payload::default().to_value(),
             ],
         );
         let error = RecordEnvelope::from_value(&value).expect_err("unknown kind");
-        assert_eq!(error[0].code, crate::error::ErrorCode::UnknownRecordKind);
+        assert_eq!(error[0].code, crate::problem::ErrorCode::UnknownRecordKind);
         assert_eq!(error[0].path.to_string(), "$.kind");
     }
 
@@ -927,20 +929,21 @@ mod tests {
     fn invalid_reference_kind_fails_the_batch() {
         let mut record = assertion("proposed");
         record.payload.insert(
-            crate::value::Symbol::from("subject"),
-            crate::reference::Reference::local(record_id(1), crate::schema::RecordKind::Document)
+            crate::typed::Symbol::from("subject"),
+            crate::pointer::Reference::local(record_id(1), crate::fields::RecordKind::Document)
                 .to_value(),
         );
         let error = validate_batch(
             &batch(&[entity(), record]),
-            &crate::schema::SchemaRegistry::v1(),
+            &crate::fields::SchemaRegistry::v1(),
             None,
         )
         .expect_err("kind mismatch");
         assert!(
             error
                 .iter()
-                .any(|diagnostic| diagnostic.code == crate::error::ErrorCode::ReferenceKindMismatch)
+                .any(|diagnostic| diagnostic.code
+                    == crate::problem::ErrorCode::ReferenceKindMismatch)
         );
     }
 
@@ -948,20 +951,21 @@ mod tests {
     fn unresolved_reference_fails_the_batch() {
         let mut record = assertion("proposed");
         record.payload.insert(
-            crate::value::Symbol::from("subject"),
-            crate::reference::Reference::local(record_id(9), crate::schema::RecordKind::Entity)
+            crate::typed::Symbol::from("subject"),
+            crate::pointer::Reference::local(record_id(9), crate::fields::RecordKind::Entity)
                 .to_value(),
         );
         let error = validate_batch(
             &batch(&[record]),
-            &crate::schema::SchemaRegistry::v1(),
+            &crate::fields::SchemaRegistry::v1(),
             None,
         )
         .expect_err("unresolved");
         assert!(
             error
                 .iter()
-                .any(|diagnostic| diagnostic.code == crate::error::ErrorCode::UnresolvedReference)
+                .any(|diagnostic| diagnostic.code
+                    == crate::problem::ErrorCode::UnresolvedReference)
         );
     }
 
@@ -969,39 +973,39 @@ mod tests {
     fn embedded_values_are_refused_in_durable_records() {
         let mut record = entity();
         record.payload.insert(
-            crate::value::Symbol::from("properties"),
-            crate::value::Value::embedded(crate::value::Value::string("live object")),
+            crate::typed::Symbol::from("properties"),
+            crate::typed::Value::embedded(crate::typed::Value::string("live object")),
         );
         let error = validate_record_value(
             &record.to_value(),
-            &crate::schema::SchemaRegistry::v1(),
+            &crate::fields::SchemaRegistry::v1(),
             None,
         )
         .expect_err("embedded");
         assert_eq!(
             error[0].code,
-            crate::error::ErrorCode::EmbeddedValueNotDurable
+            crate::problem::ErrorCode::EmbeddedValueNotDurable
         );
     }
 
     #[test]
     fn replacement_requires_the_indexed_predecessor() {
         let original = entity();
-        let mut index = crate::reference::SnapshotIndex::new();
+        let mut index = crate::pointer::SnapshotIndex::new();
         assert!(index.insert(original.record_id, original.kind, original.revision_id));
         let mut replacement = entity();
         replacement.revision_id = revision_id(7);
         replacement.predecessor = None;
-        let registry = crate::schema::SchemaRegistry::v1();
+        let registry = crate::fields::SchemaRegistry::v1();
         let context = RecordContext::against(&registry, &index);
-        let error = validate_record(&replacement, &context, &crate::error::Path::root());
+        let error = validate_record(&replacement, &context, &crate::problem::Path::root());
         assert!(
             error
                 .iter()
-                .any(|diagnostic| diagnostic.code == crate::error::ErrorCode::InvalidPredecessor)
+                .any(|diagnostic| diagnostic.code == crate::problem::ErrorCode::InvalidPredecessor)
         );
         replacement.predecessor = Some(original.revision_id);
-        let validated = validate_record(&replacement, &context, &crate::error::Path::root());
+        let validated = validate_record(&replacement, &context, &crate::problem::Path::root());
         assert!(validated.is_empty(), "{validated:?}");
     }
 
@@ -1010,8 +1014,8 @@ mod tests {
         let original = entity();
         let mut renamed = original.clone();
         renamed.payload.insert(
-            crate::value::Symbol::from("label"),
-            crate::value::Value::string("Cedar Notes v2"),
+            crate::typed::Symbol::from("label"),
+            crate::typed::Value::string("Cedar Notes v2"),
         );
         assert_ne!(original.payload_digest(), renamed.payload_digest());
         assert_ne!(original.full_digest(), renamed.full_digest());
@@ -1028,7 +1032,7 @@ mod tests {
             equal_payload_other_identity.full_digest()
         );
         assert_eq!(
-            crate::digest::ContentDigest::of_full_record(&original.to_value()),
+            crate::hashing::ContentDigest::of_full_record(&original.to_value()),
             original.full_digest()
         );
     }
@@ -1037,12 +1041,12 @@ mod tests {
     fn extension_fields_are_retained_by_version_one() {
         let mut record = entity();
         record.payload.insert(
-            crate::value::Symbol::from("unrecognized-extension"),
-            crate::value::Value::set([crate::value::Value::integer(1_i64)]),
+            crate::typed::Symbol::from("unrecognized-extension"),
+            crate::typed::Value::set([crate::typed::Value::integer(1_i64)]),
         );
         let validated = validate_record_value(
             &record.to_value(),
-            &crate::schema::SchemaRegistry::v1(),
+            &crate::fields::SchemaRegistry::v1(),
             None,
         )
         .expect("retained");
@@ -1054,8 +1058,8 @@ mod tests {
         let base = assertion("proposed");
         let mut other_author = base.clone();
         other_author.payload.insert(
-            crate::value::Symbol::from("asserted-by"),
-            crate::value::Value::string("different attributed author"),
+            crate::typed::Symbol::from("asserted-by"),
+            crate::typed::Value::string("different attributed author"),
         );
         assert_eq!(
             base.payload.get("value"),
@@ -1067,7 +1071,7 @@ mod tests {
 
         let mut later_recording = base.clone();
         later_recording.recorded =
-            crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(9_999), 42);
+            crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(9_999), 42);
         assert_eq!(
             base.payload_digest(),
             later_recording.payload_digest(),
@@ -1084,18 +1088,18 @@ mod tests {
 
     #[test]
     fn synthetic_version_two_requires_the_new_field() {
-        let registry = crate::schema::SchemaRegistry::v1()
-            .with_version(crate::schema::RecordSchema::synthetic_migration_v2());
+        let registry = crate::fields::SchemaRegistry::v1()
+            .with_version(crate::fields::RecordSchema::synthetic_migration_v2());
         let mut v2 = assertion("proposed");
         v2.schema_version = 2;
         let error = validate_record_value(&v2.to_value(), &registry, None)
             .expect_err("missing synthetic v2 field");
         assert!(error.iter().any(|diagnostic| diagnostic.code
-            == crate::error::ErrorCode::MissingField
+            == crate::problem::ErrorCode::MissingField
             && diagnostic.path.to_string() == "$.payload.extraction"));
         v2.payload.insert(
-            crate::value::Symbol::from("extraction"),
-            crate::value::Value::string("synthetic"),
+            crate::typed::Symbol::from("extraction"),
+            crate::typed::Value::string("synthetic"),
         );
         validate_record_value(&v2.to_value(), &registry, None).expect("v2 assertion");
 

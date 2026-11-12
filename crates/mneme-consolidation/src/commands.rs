@@ -5,7 +5,7 @@
 //! with the same idempotency key returns its prior outcome; a different key
 //! after a terminal decision is an explicit conflict.
 
-use crate::procedure::ProcedureValidator;
+use crate::flow::ProcedureValidator;
 
 /// Current workspace state used by acceptance preconditions.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,7 +39,7 @@ impl SourceState {
 /// A registered proposal plus the state it was reviewed against.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegisteredProposal {
-    pub proposal: crate::ConsolidationProposal,
+    pub proposal: crate::Proposal,
     pub proposal_revision: u64,
     pub expected: AcceptanceState,
 }
@@ -47,7 +47,7 @@ pub struct RegisteredProposal {
 /// Read-only proposal inspection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProposalInspection {
-    pub proposal: crate::ConsolidationProposal,
+    pub proposal: crate::Proposal,
     pub proposal_revision: u64,
     pub expected: AcceptanceState,
     pub current: AcceptanceState,
@@ -147,7 +147,7 @@ impl ProposalRegistry {
 
     pub fn register(
         &mut self,
-        proposal: crate::ConsolidationProposal,
+        proposal: crate::Proposal,
         proposal_revision: u64,
         expected: AcceptanceState,
     ) -> Result<(), String> {
@@ -288,7 +288,7 @@ impl ProposalRegistry {
         &mut self,
         command: ProcedureAcceptanceCommand,
         validator: &dyn ProcedureValidator,
-        privileges: &crate::procedure::WorkerPrivileges,
+        privileges: &crate::flow::WorkerPrivileges,
     ) -> CommandOutcome {
         if let Some(outcome) = self.prior_procedure_acceptance(&command) {
             return outcome;
@@ -494,7 +494,7 @@ impl ProposalRegistry {
         command: &ProcedureAcceptanceCommand,
         registered: &RegisteredProposal,
         validator: &dyn ProcedureValidator,
-        privileges: &crate::procedure::WorkerPrivileges,
+        privileges: &crate::flow::WorkerPrivileges,
     ) -> Option<CommandOutcome> {
         if !matches!(
             &registered.proposal.disposition,
@@ -526,8 +526,7 @@ impl ProposalRegistry {
             ));
         }
         let validation =
-            match crate::procedure::validate_procedure(&registered.proposal, validator, privileges)
-            {
+            match crate::flow::validate_procedure(&registered.proposal, validator, privileges) {
                 Ok(validation) => validation,
                 Err(error) => {
                     return Some(self.conflict(ConflictKind::UnsupportedAcceptance, &error));
@@ -830,15 +829,15 @@ mod tests {
         }
 
         fn supports(&self, kind: crate::ProcedureKind) -> bool {
-            kind == crate::ProcedureKind::PrologRule
+            kind == crate::ProcedureKind::Rule
         }
 
         fn validate(
             &self,
             _procedure: &crate::ProcedureProposal,
-            _privileges: &crate::procedure::WorkerPrivileges,
-        ) -> Result<crate::procedure::ProcedureValidation, String> {
-            Ok(crate::procedure::ProcedureValidation {
+            _privileges: &crate::flow::WorkerPrivileges,
+        ) -> Result<crate::flow::ProcedureValidation, String> {
+            Ok(crate::flow::ProcedureValidation {
                 validator: self.identity().to_owned(),
                 approved: self.approved,
                 rationale: "content inspected as data".to_owned(),
@@ -891,7 +890,7 @@ mod tests {
             executed: false,
             effects: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
-        let privileges = crate::procedure::WorkerPrivileges {
+        let privileges = crate::flow::WorkerPrivileges {
             allowed_tools: std::collections::BTreeSet::from(["recall".to_owned()]),
             may_install_procedures: false,
         };
@@ -927,7 +926,7 @@ mod tests {
     #[test]
     fn rejected_or_executing_validators_cannot_accept_procedure() {
         let mut rejected = procedure_registry();
-        let privileges = crate::procedure::WorkerPrivileges {
+        let privileges = crate::flow::WorkerPrivileges {
             allowed_tools: std::collections::BTreeSet::new(),
             may_install_procedures: false,
         };

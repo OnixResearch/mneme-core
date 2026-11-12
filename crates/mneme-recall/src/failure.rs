@@ -1,9 +1,9 @@
 //! Recall failures that prevent constructing a qualified response.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A recall infrastructure or request failure.
 #[derive(Debug, thiserror::Error)]
-pub enum RecallError {
+pub enum QueryError {
     #[error("invalid recall request: {0}")]
     InvalidRequest(String),
     #[error("requested revision {requested} is not the current revision {current}")]
@@ -16,12 +16,12 @@ pub enum RecallError {
     #[error("requested mode {mode} is unavailable and fallback is disabled: {reason}")]
     ModeUnavailable { mode: String, reason: String },
     #[error("workspace: {0}")]
-    Store(#[from] mneme_store::StoreError),
+    Store(#[from] mneme_store::Failure),
     #[error("memory: {0}")]
-    Memory(#[from] mneme_memory::MemoryError),
+    Engine(#[from] mneme_memory::EvidenceError),
     #[error("datalog: {0}")]
-    Datalog(#[from] mneme_datalog::DatalogError),
+    Datalog(#[from] mneme_datalog::Error),
 }
 
 /// Recall result type.
-pub type Result<T> = std::result::Result<T, RecallError>;
+pub type Result<T> = std::result::Result<T, QueryError>;

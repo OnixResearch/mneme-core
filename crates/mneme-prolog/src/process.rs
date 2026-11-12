@@ -4,7 +4,7 @@
 //! enforces wall-clock/output limits and cancellation; the child is killed and
 //! reaped before an outcome is returned. No workspace lock is held by the
 //! worker, and reset means discarding the child and temporary directory.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use std::io::{Read, Write};
 
@@ -63,7 +63,7 @@ pub struct WorkerOutcome {
 pub fn run_worker(
     engine: &std::path::Path,
     metadata: &crate::CapabilityMetadata,
-    request: &crate::PrologRequest,
+    request: &crate::Request,
     control: &WorkerControl,
     limits: WorkerLimits,
 ) -> Result<WorkerOutcome, crate::CapabilityError> {
@@ -121,7 +121,7 @@ struct RunningWorker {
 fn start_worker(
     engine: &std::path::Path,
     metadata: &crate::CapabilityMetadata,
-    request: &crate::PrologRequest,
+    request: &crate::Request,
 ) -> Result<RunningWorker, crate::CapabilityError> {
     let workspace = WorkerDir::new()?;
     let script = workspace.path().join("request.pl");
@@ -214,7 +214,7 @@ fn read_bounded(
 
 fn write_program(
     path: &std::path::Path,
-    request: &crate::PrologRequest,
+    request: &crate::Request,
     metadata: &crate::CapabilityMetadata,
 ) -> Result<(), crate::CapabilityError> {
     let mut file = std::fs::File::create(path).map_err(|error| {
@@ -313,8 +313,8 @@ mod tests {
         }
     }
 
-    fn request() -> crate::PrologRequest {
-        crate::PrologRequest {
+    fn request() -> crate::Request {
+        crate::Request {
             actor: "agent".to_owned(),
             scope: mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar")
                 .expect("scope"),
@@ -351,7 +351,7 @@ mod tests {
     fn run_worker(
         engine: &std::path::Path,
         metadata: &crate::CapabilityMetadata,
-        request: &crate::PrologRequest,
+        request: &crate::Request,
         control: &WorkerControl,
         limits: WorkerLimits,
     ) -> Result<WorkerOutcome, crate::CapabilityError> {
@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn completes_and_resets_with_a_fresh_process() {
+    fn completes_and_resets_with_fresh_state() {
         let (_temp, engine) = script("printf 'ok'");
         let outcome = run_worker(
             &engine,
@@ -474,7 +474,7 @@ mod tests {
         meta.allowed_predicates.insert("loop".to_owned());
         meta.limits.max_output_bytes = 64;
         let mut req = request();
-        req.rules = vec![crate::PrologRule {
+        req.rules = vec![crate::Rule {
             id: "path-fact".to_owned(),
             version: "1".to_owned(),
             head: crate::Atom {
@@ -504,7 +504,7 @@ mod tests {
             predicate: "loop".to_owned(),
             terms: Vec::new(),
         };
-        looping.rules = vec![crate::PrologRule {
+        looping.rules = vec![crate::Rule {
             id: "loop".to_owned(),
             version: "1".to_owned(),
             head: looping.goal.clone(),

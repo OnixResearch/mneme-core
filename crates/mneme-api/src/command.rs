@@ -26,7 +26,7 @@ pub struct LocalSession {
 }
 
 impl LocalSession {
-    pub fn load(path: &std::path::Path) -> crate::error::ApiResult<Self> {
+    pub fn load(path: &std::path::Path) -> crate::error::CallResult<Self> {
         let text = std::fs::read_to_string(path).map_err(|error| {
             crate::error::ApiError::invalid(format!("cannot read session file: {error}"))
         })?;
@@ -49,7 +49,7 @@ impl LocalSession {
         })
     }
 
-    pub fn authorize(&self, scope: &mneme_core::ScopeId) -> crate::error::ApiResult<()> {
+    pub fn authorize(&self, scope: &mneme_core::ScopeId) -> crate::error::CallResult<()> {
         if self.scopes.contains(scope) {
             Ok(())
         } else {
@@ -92,7 +92,7 @@ pub enum ApiCommand {
         query: String,
         at: mneme_core::Timestamp,
         temporal: mneme_recall::TemporalMode,
-        modes: std::collections::BTreeSet<mneme_recall::RecallMode>,
+        modes: std::collections::BTreeSet<mneme_recall::Mode>,
         allow_stale: bool,
         allow_fallback: bool,
         allow_partial: bool,
@@ -197,7 +197,7 @@ impl ApiCommand {
         }
     }
 
-    pub fn from_value(value: &mneme_core::Value) -> crate::error::ApiResult<Self> {
+    pub fn from_value(value: &mneme_core::Value) -> crate::error::CallResult<Self> {
         let envelope = Fields::new(value)?;
         if envelope.text("format")? != COMMAND_FORMAT {
             return Err(crate::error::ApiError::new(
@@ -243,7 +243,7 @@ fn record(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand,
         .ok_or_else(|| crate::error::ApiError::invalid("records must be a sequence"))?
         .iter()
         .map(parse_record)
-        .collect::<crate::error::ApiResult<Vec<_>>>()?;
+        .collect::<crate::error::CallResult<Vec<_>>>()?;
     let sources = match fields.optional("sources") {
         Some(value) => parse_sources(value)?,
         None => Vec::new(),
@@ -278,7 +278,7 @@ fn recall(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand,
     let fields = Fields::new(payload)?;
     let modes = match fields.optional("modes") {
         Some(value) => parse_modes(value)?,
-        None => std::collections::BTreeSet::from([mneme_recall::RecallMode::Lexical]),
+        None => std::collections::BTreeSet::from([mneme_recall::Mode::Lexical]),
     };
     Ok(ApiCommand::Recall {
         request_id,
@@ -361,14 +361,14 @@ fn proposal_inspect(
     })
 }
 
-fn parse_record(value: &mneme_core::Value) -> crate::error::ApiResult<mneme_core::RecordEnvelope> {
+fn parse_record(value: &mneme_core::Value) -> crate::error::CallResult<mneme_core::RecordEnvelope> {
     mneme_core::validate_record_value(value, &mneme_core::SchemaRegistry::production(), None)
         .map_err(crate::error::ApiError::diagnostics)
 }
 
 fn parse_sources(
     value: &mneme_core::Value,
-) -> crate::error::ApiResult<Vec<mneme_store::SourceBlobDraft>> {
+) -> crate::error::CallResult<Vec<mneme_store::SourceBlobDraft>> {
     let sequence = value
         .as_sequence()
         .ok_or_else(|| crate::error::ApiError::invalid("sources must be a sequence"))?;
@@ -394,7 +394,7 @@ fn parse_sources(
 
 fn parse_modes(
     value: &mneme_core::Value,
-) -> crate::error::ApiResult<std::collections::BTreeSet<mneme_recall::RecallMode>> {
+) -> crate::error::CallResult<std::collections::BTreeSet<mneme_recall::Mode>> {
     let sequence = value
         .as_sequence()
         .ok_or_else(|| crate::error::ApiError::invalid("modes must be a sequence"))?;
@@ -402,16 +402,16 @@ fn parse_modes(
         .iter()
         .map(
             |value| match value.as_symbol().map(|symbol| symbol.as_str()) {
-                Some("lexical") => Ok(mneme_recall::RecallMode::Lexical),
-                Some("structured") => Ok(mneme_recall::RecallMode::Structured),
-                Some("vector") => Ok(mneme_recall::RecallMode::Vector),
+                Some("lexical") => Ok(mneme_recall::Mode::Lexical),
+                Some("structured") => Ok(mneme_recall::Mode::Structured),
+                Some("vector") => Ok(mneme_recall::Mode::Vector),
                 _ => Err(crate::error::ApiError::invalid("unknown recall mode")),
             },
         )
         .collect()
 }
 
-fn parse_temporal(value: &str) -> crate::error::ApiResult<mneme_recall::TemporalMode> {
+fn parse_temporal(value: &str) -> crate::error::CallResult<mneme_recall::TemporalMode> {
     match value {
         "current" => Ok(mneme_recall::TemporalMode::Current),
         "historical" => Ok(mneme_recall::TemporalMode::Historical),
@@ -420,7 +420,7 @@ fn parse_temporal(value: &str) -> crate::error::ApiResult<mneme_recall::Temporal
     }
 }
 
-fn parse_action(value: &str) -> crate::error::ApiResult<ReviseAction> {
+fn parse_action(value: &str) -> crate::error::CallResult<ReviseAction> {
     match value {
         "supersede" | "correct" => Ok(ReviseAction::Supersede),
         "dispute" => Ok(ReviseAction::Dispute),
@@ -429,7 +429,9 @@ fn parse_action(value: &str) -> crate::error::ApiResult<ReviseAction> {
     }
 }
 
-fn parse_selector(value: &mneme_core::Value) -> crate::error::ApiResult<mneme_retention::Selector> {
+fn parse_selector(
+    value: &mneme_core::Value,
+) -> crate::error::CallResult<mneme_retention::Selector> {
     let fields = Fields::new(value)?;
     match fields.symbol("kind")? {
         "source" => Ok(mneme_retention::Selector::Source(fields.record("target")?)),
@@ -451,7 +453,7 @@ fn parse_selector(value: &mneme_core::Value) -> crate::error::ApiResult<mneme_re
     }
 }
 
-fn parse_scope_text(text: &str) -> crate::error::ApiResult<mneme_core::ScopeId> {
+fn parse_scope_text(text: &str) -> crate::error::CallResult<mneme_core::ScopeId> {
     let (class, local) = text
         .split_once(':')
         .ok_or_else(|| crate::error::ApiError::invalid("scope must be class:local"))?;
@@ -465,14 +467,14 @@ struct Fields<'a> {
 }
 
 impl<'a> Fields<'a> {
-    fn new(value: &'a mneme_core::Value) -> crate::error::ApiResult<Self> {
+    fn new(value: &'a mneme_core::Value) -> crate::error::CallResult<Self> {
         let values = value
             .as_dictionary()
             .ok_or_else(|| crate::error::ApiError::invalid("expected an object"))?;
         Ok(Fields { values })
     }
 
-    fn field(&self, name: &str) -> crate::error::ApiResult<&'a mneme_core::Value> {
+    fn field(&self, name: &str) -> crate::error::CallResult<&'a mneme_core::Value> {
         self.values
             .get(&mneme_core::Value::symbol(name))
             .ok_or_else(|| crate::error::ApiError::invalid(format!("missing field {name}")))
@@ -482,20 +484,20 @@ impl<'a> Fields<'a> {
         self.values.get(&mneme_core::Value::symbol(name))
     }
 
-    fn text(&self, name: &str) -> crate::error::ApiResult<&'a str> {
+    fn text(&self, name: &str) -> crate::error::CallResult<&'a str> {
         self.field(name)?
             .as_string()
             .ok_or_else(|| crate::error::ApiError::invalid(format!("{name} must be text")))
     }
 
-    fn symbol(&self, name: &str) -> crate::error::ApiResult<&'a str> {
+    fn symbol(&self, name: &str) -> crate::error::CallResult<&'a str> {
         self.field(name)?
             .as_symbol()
             .map(|symbol| symbol.as_str())
             .ok_or_else(|| crate::error::ApiError::invalid(format!("{name} must be a symbol")))
     }
 
-    fn integer(&self, name: &str) -> crate::error::ApiResult<i64> {
+    fn integer(&self, name: &str) -> crate::error::CallResult<i64> {
         self.field(name)?
             .as_integer()
             .and_then(|integer| integer.to_i64())
@@ -508,7 +510,7 @@ impl<'a> Fields<'a> {
             .unwrap_or(default)
     }
 
-    fn usize_or(&self, name: &str, default: usize) -> crate::error::ApiResult<usize> {
+    fn usize_or(&self, name: &str, default: usize) -> crate::error::CallResult<usize> {
         match self.optional(name) {
             Some(value) => value
                 .as_integer()
@@ -523,7 +525,7 @@ impl<'a> Fields<'a> {
         }
     }
 
-    fn u128_or(&self, name: &str, default: u128) -> crate::error::ApiResult<u128> {
+    fn u128_or(&self, name: &str, default: u128) -> crate::error::CallResult<u128> {
         match self.optional(name) {
             Some(value) => value
                 .as_integer()
@@ -538,12 +540,15 @@ impl<'a> Fields<'a> {
         }
     }
 
-    fn record(&self, name: &str) -> crate::error::ApiResult<mneme_core::RecordId> {
+    fn record(&self, name: &str) -> crate::error::CallResult<mneme_core::RecordId> {
         mneme_core::RecordId::from_value(self.field(name)?, &mneme_core::Path::root())
             .map_err(crate::error::ApiError::from_diagnostic)
     }
 
-    fn optional_record(&self, name: &str) -> crate::error::ApiResult<Option<mneme_core::RecordId>> {
+    fn optional_record(
+        &self,
+        name: &str,
+    ) -> crate::error::CallResult<Option<mneme_core::RecordId>> {
         self.optional(name)
             .map(|value| {
                 mneme_core::RecordId::from_value(value, &mneme_core::Path::root())
@@ -552,7 +557,7 @@ impl<'a> Fields<'a> {
             .transpose()
     }
 
-    fn revision(&self, name: &str) -> crate::error::ApiResult<mneme_core::WorkspaceRevisionId> {
+    fn revision(&self, name: &str) -> crate::error::CallResult<mneme_core::WorkspaceRevisionId> {
         mneme_core::WorkspaceRevisionId::from_value(self.field(name)?, &mneme_core::Path::root())
             .map_err(crate::error::ApiError::from_diagnostic)
     }
@@ -560,7 +565,7 @@ impl<'a> Fields<'a> {
     fn optional_revision(
         &self,
         name: &str,
-    ) -> crate::error::ApiResult<Option<mneme_core::WorkspaceRevisionId>> {
+    ) -> crate::error::CallResult<Option<mneme_core::WorkspaceRevisionId>> {
         self.optional(name)
             .map(|value| {
                 mneme_core::WorkspaceRevisionId::from_value(value, &mneme_core::Path::root())
@@ -569,12 +574,12 @@ impl<'a> Fields<'a> {
             .transpose()
     }
 
-    fn revision_id(&self, name: &str) -> crate::error::ApiResult<mneme_core::RevisionId> {
+    fn revision_id(&self, name: &str) -> crate::error::CallResult<mneme_core::RevisionId> {
         mneme_core::RevisionId::from_value(self.field(name)?, &mneme_core::Path::root())
             .map_err(crate::error::ApiError::from_diagnostic)
     }
 
-    fn scope(&self, name: &str) -> crate::error::ApiResult<mneme_core::ScopeId> {
+    fn scope(&self, name: &str) -> crate::error::CallResult<mneme_core::ScopeId> {
         let value = self.field(name)?;
         if let Some(text) = value.as_string() {
             return parse_scope_text(text);
@@ -583,7 +588,7 @@ impl<'a> Fields<'a> {
             .map_err(crate::error::ApiError::from_diagnostic)
     }
 
-    fn timestamp(&self, name: &str) -> crate::error::ApiResult<mneme_core::Timestamp> {
+    fn timestamp(&self, name: &str) -> crate::error::CallResult<mneme_core::Timestamp> {
         let text = self.text(name)?;
         mneme_core::Timestamp::parse(text)
             .map_err(|message| crate::error::ApiError::invalid(format!("{name}: {message}")))
@@ -592,7 +597,7 @@ impl<'a> Fields<'a> {
     fn optional_timestamp(
         &self,
         name: &str,
-    ) -> crate::error::ApiResult<Option<mneme_core::Timestamp>> {
+    ) -> crate::error::CallResult<Option<mneme_core::Timestamp>> {
         self.optional(name)
             .map(|value| {
                 value
@@ -622,7 +627,7 @@ pub fn record_draft(record: mneme_core::RecordEnvelope) -> mneme_store::RecordDr
 }
 
 /// Decode a tagged JSON command document.
-pub fn decode(text: &str) -> crate::error::ApiResult<ApiCommand> {
+pub fn decode(text: &str) -> crate::error::CallResult<ApiCommand> {
     let value =
         mneme_core::decode_document(text).map_err(crate::error::ApiError::from_diagnostic)?;
     ApiCommand::from_value(&value)

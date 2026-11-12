@@ -129,11 +129,11 @@ impl<'a> Evaluation<'a> {
 
 #[allow(unknown_lints, ambient_clock)] // one evaluation start time for the bounded build
 pub(crate) fn build(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     request: &crate::BuildRequest,
     context: &crate::BuildContext,
     program: &crate::RuleProgram,
-) -> Result<BuildFacts, crate::DatalogError> {
+) -> Result<BuildFacts, crate::Error> {
     let mut evaluation = Evaluation {
         bundle: &request.bundle,
         context,
@@ -176,11 +176,11 @@ pub(crate) fn build(
 
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn load_base_facts(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     scope: &mneme_core::ScopeId,
     evaluation: &mut Evaluation<'_>,
     incomplete_extents: &std::collections::BTreeSet<String>,
-) -> Result<(), crate::DatalogError> {
+) -> Result<(), crate::Error> {
     initialize_base_coverage(evaluation, incomplete_extents);
     for record in &view.snapshot().records {
         if record.scope != *scope {
@@ -236,7 +236,7 @@ fn initialize_base_coverage(
 }
 
 fn load_record_facts(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
@@ -302,7 +302,7 @@ fn load_relation_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Eval
 }
 
 fn load_assertion_fact(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
@@ -332,7 +332,7 @@ fn load_assertion_fact(
 }
 
 fn load_evidence_fact(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
@@ -385,7 +385,7 @@ fn load_document_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Eval
 }
 
 fn load_source_fact(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
@@ -443,7 +443,7 @@ fn load_derivation_facts(record: &mneme_core::RecordEnvelope, evaluation: &mut E
 fn evaluate_rules(
     evaluation: &mut Evaluation<'_>,
     rule_strata: &std::collections::BTreeMap<String, usize>,
-) -> Result<(), crate::DatalogError> {
+) -> Result<(), crate::Error> {
     let mut strata: std::collections::BTreeMap<usize, Vec<&crate::Rule>> =
         std::collections::BTreeMap::new();
     for rule in &evaluation.bundle.rules {
@@ -500,7 +500,7 @@ struct AggregateSpec {
 fn evaluate_rule(
     evaluation: &mut Evaluation<'_>,
     rule: &crate::Rule,
-) -> Result<RuleOutcome, crate::DatalogError> {
+) -> Result<RuleOutcome, crate::Error> {
     let Some(is_body_complete) = body_is_complete(evaluation, rule) else {
         return Ok(RuleOutcome::Skipped);
     };
@@ -615,7 +615,7 @@ fn evaluate_aggregate_rule(
     rule: &crate::Rule,
     aggregate: AggregateSpec,
     bindings: &RuleBindings,
-) -> Result<RuleOutcome, crate::DatalogError> {
+) -> Result<RuleOutcome, crate::Error> {
     let grouped = aggregate_rows(
         &rule.head,
         &aggregate.output,
@@ -647,7 +647,7 @@ fn evaluate_ordinary_rule(
     evaluation: &mut Evaluation<'_>,
     rule: &crate::Rule,
     bindings: &RuleBindings,
-) -> Result<RuleOutcome, crate::DatalogError> {
+) -> Result<RuleOutcome, crate::Error> {
     let mut is_changed = false;
     for binding in bindings {
         let terms = head_terms(&rule.head, binding)?;
@@ -763,13 +763,12 @@ fn compare(op: crate::CompareOp, left: &mneme_core::Value, right: &mneme_core::V
 fn head_terms(
     head: &crate::Atom,
     binding: &std::collections::BTreeMap<String, mneme_core::Value>,
-) -> Result<Vec<mneme_core::Value>, crate::DatalogError> {
+) -> Result<Vec<mneme_core::Value>, crate::Error> {
     head.terms
         .iter()
         .map(|term| {
-            term_value(term, binding).ok_or_else(|| {
-                crate::DatalogError::Failed("rule head has an unbound variable".to_owned())
-            })
+            term_value(term, binding)
+                .ok_or_else(|| crate::Error::Failed("rule head has an unbound variable".to_owned()))
         })
         .collect()
 }
@@ -787,7 +786,7 @@ fn aggregate_rows(
     function: crate::AggregateFunction,
     input: &crate::Term,
     bindings: &[std::collections::BTreeMap<String, mneme_core::Value>],
-) -> Result<Vec<AggregateRow>, crate::DatalogError> {
+) -> Result<Vec<AggregateRow>, crate::Error> {
     let group_variables = aggregate_group_variables(head, output);
     let groups = collect_aggregate_groups(&group_variables, input, bindings)?;
     let mut output_rows = Vec::with_capacity(groups.len());
@@ -828,19 +827,19 @@ fn collect_aggregate_groups(
     group_variables: &std::collections::BTreeSet<String>,
     input: &crate::Term,
     bindings: &[std::collections::BTreeMap<String, mneme_core::Value>],
-) -> Result<AggregateGroups, crate::DatalogError> {
+) -> Result<AggregateGroups, crate::Error> {
     let mut groups: AggregateGroups = std::collections::BTreeMap::new();
     for (index, binding) in bindings.iter().enumerate() {
         let key = group_variables
             .iter()
             .map(|name| {
                 binding.get(name).cloned().ok_or_else(|| {
-                    crate::DatalogError::Failed("aggregate group variable is unbound".to_owned())
+                    crate::Error::Failed("aggregate group variable is unbound".to_owned())
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let value = term_value(input, binding)
-            .ok_or_else(|| crate::DatalogError::Failed("aggregate input is unbound".to_owned()))?;
+            .ok_or_else(|| crate::Error::Failed("aggregate input is unbound".to_owned()))?;
         let entry = groups.entry(key).or_default();
         entry.0.push(index);
         entry.1.push(value);
@@ -851,12 +850,11 @@ fn collect_aggregate_groups(
 fn aggregate_value(
     function: crate::AggregateFunction,
     values: Vec<mneme_core::Value>,
-) -> Result<mneme_core::Value, crate::DatalogError> {
+) -> Result<mneme_core::Value, crate::Error> {
     match function {
         crate::AggregateFunction::Count => Ok(mneme_core::Value::integer(
-            i64::try_from(values.len()).map_err(|_| {
-                crate::DatalogError::Failed("aggregate count exceeds i64".to_owned())
-            })?,
+            i64::try_from(values.len())
+                .map_err(|_| crate::Error::Failed("aggregate count exceeds i64".to_owned()))?,
         )),
         crate::AggregateFunction::Sum => aggregate_sum(&values),
         crate::AggregateFunction::Min => Ok(values
@@ -870,16 +868,16 @@ fn aggregate_value(
     }
 }
 
-fn aggregate_sum(values: &[mneme_core::Value]) -> Result<mneme_core::Value, crate::DatalogError> {
+fn aggregate_sum(values: &[mneme_core::Value]) -> Result<mneme_core::Value, crate::Error> {
     let mut total = 0_u64;
     for value in values {
         let Some(integer) = value.as_integer().and_then(|integer| integer.to_i64()) else {
-            return Err(crate::DatalogError::Failed(
+            return Err(crate::Error::Failed(
                 "sum aggregate requires integer values".to_owned(),
             ));
         };
         let integer = u64::try_from(integer).map_err(|_| {
-            crate::DatalogError::Failed("sum aggregate requires non-negative values".to_owned())
+            crate::Error::Failed("sum aggregate requires non-negative values".to_owned())
         })?;
         total = total.saturating_add(integer);
     }
@@ -892,7 +890,7 @@ fn aggregate_head_row(
     first: &std::collections::BTreeMap<String, mneme_core::Value>,
     value: mneme_core::Value,
     indices: Vec<usize>,
-) -> Result<AggregateRow, crate::DatalogError> {
+) -> Result<AggregateRow, crate::Error> {
     let head_terms = head
         .terms
         .iter()
@@ -902,9 +900,7 @@ fn aggregate_head_row(
             crate::Term::Variable(name) => first.get(name).cloned(),
         })
         .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| {
-            crate::DatalogError::Failed("aggregate head variable is unbound".to_owned())
-        })?;
+        .ok_or_else(|| crate::Error::Failed("aggregate head variable is unbound".to_owned()))?;
     Ok(AggregateRow {
         head_terms,
         binding_indices: indices,
@@ -1050,7 +1046,7 @@ fn canonical_support_with_availability(
 }
 
 fn assertion_sources(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     assertion: &mneme_memory::AssertionView,
 ) -> (std::collections::BTreeSet<crate::SourceKey>, Option<String>) {
     let mut sources = std::collections::BTreeSet::new();

@@ -5,7 +5,7 @@
 //! without promoting an assertion's epistemic lifecycle or rewriting payloads.
 //! Unknown extension fields are retained under the version 1 compatibility
 //! rule; an editor that cannot preserve one must refuse the edit instead.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The record kinds declared by the version 1 application schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -73,27 +73,27 @@ impl RecordKind {
     }
 
     /// Encode this kind as its schema symbol.
-    pub fn to_value(self) -> crate::value::Value {
-        crate::value::Value::symbol(self.symbol())
+    pub fn to_value(self) -> crate::typed::Value {
+        crate::typed::Value::symbol(self.symbol())
     }
 
     /// Decode and require a declared kind.
     pub fn from_value(
-        value: &crate::value::Value,
-        path: &crate::error::Path,
-    ) -> Result<Self, crate::error::Diagnostic> {
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let Some(symbol) = value.as_symbol() else {
-            return Err(crate::error::Diagnostic::new(
-                crate::error::Stage::Envelope,
-                crate::error::ErrorCode::UnknownRecordKind,
+            return Err(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Envelope,
+                crate::problem::ErrorCode::UnknownRecordKind,
                 path.clone(),
                 "record kind must be a declared symbol",
             ));
         };
         RecordKind::parse(symbol.as_str()).ok_or_else(|| {
-            crate::error::Diagnostic::new(
-                crate::error::Stage::Envelope,
-                crate::error::ErrorCode::UnknownRecordKind,
+            crate::problem::Diagnostic::new(
+                crate::problem::Stage::Envelope,
+                crate::problem::ErrorCode::UnknownRecordKind,
                 path.clone(),
                 format!("unknown record kind {symbol}"),
             )
@@ -141,21 +141,21 @@ impl Lifecycle {
 
     /// Decode and require a declared lifecycle value.
     pub fn from_value(
-        value: &crate::value::Value,
-        path: &crate::error::Path,
-    ) -> Result<Self, crate::error::Diagnostic> {
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let Some(symbol) = value.as_symbol() else {
-            return Err(crate::error::Diagnostic::new(
-                crate::error::Stage::Domain,
-                crate::error::ErrorCode::TypeMismatch,
+            return Err(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Domain,
+                crate::problem::ErrorCode::TypeMismatch,
                 path.clone(),
                 "assertion lifecycle must be a symbol",
             ));
         };
         Lifecycle::parse(symbol.as_str()).ok_or_else(|| {
-            crate::error::Diagnostic::new(
-                crate::error::Stage::Domain,
-                crate::error::ErrorCode::TypeMismatch,
+            crate::problem::Diagnostic::new(
+                crate::problem::Stage::Domain,
+                crate::problem::ErrorCode::TypeMismatch,
                 path.clone(),
                 format!("unknown assertion lifecycle {symbol}"),
             )
@@ -682,10 +682,10 @@ impl SchemaRegistry {
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate_field(
     ty: FieldType,
-    value: &crate::value::Value,
-    path: &crate::error::Path,
-    index: Option<&crate::reference::SnapshotIndex>,
-) -> Vec<crate::error::Diagnostic> {
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+    index: Option<&crate::pointer::SnapshotIndex>,
+) -> Vec<crate::problem::Diagnostic> {
     match ty {
         FieldType::Symbol
         | FieldType::Text
@@ -697,7 +697,7 @@ pub fn validate_field(
             kind,
             allow_external,
             allow_unresolved,
-        } => match crate::reference::Reference::from_value(value, path) {
+        } => match crate::pointer::Reference::from_value(value, path) {
             Err(diagnostic) => vec![diagnostic],
             Ok(reference) => validate_reference(
                 &reference,
@@ -726,7 +726,7 @@ pub fn validate_field(
         ),
         FieldType::ValidTime => validate_valid_time_field(value, path),
         FieldType::Digest => {
-            validate_parsed_field(crate::digest::ContentDigest::from_value(value, path))
+            validate_parsed_field(crate::hashing::ContentDigest::from_value(value, path))
         }
         FieldType::Span => {
             validate_parsed_field(crate::payload::SourceSpan::from_value(value, path))
@@ -742,9 +742,9 @@ pub fn validate_field(
 
 fn validate_scalar_field(
     ty: FieldType,
-    value: &crate::value::Value,
-    path: &crate::error::Path,
-) -> Vec<crate::error::Diagnostic> {
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
     match ty {
         FieldType::Symbol => expect(value.as_symbol().is_some(), value, path, "symbol"),
         FieldType::Text => expect(value.as_string().is_some(), value, path, "string"),
@@ -757,18 +757,18 @@ fn validate_scalar_field(
 }
 
 fn validate_reference_set_field(
-    value: &crate::value::Value,
-    path: &crate::error::Path,
-    index: Option<&crate::reference::SnapshotIndex>,
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+    index: Option<&crate::pointer::SnapshotIndex>,
     kind: Option<RecordKind>,
     validation: ReferenceValidation,
-) -> Vec<crate::error::Diagnostic> {
+) -> Vec<crate::problem::Diagnostic> {
     let Some(items) = value.as_set() else {
         return type_mismatch(value, path, "set of references");
     };
     let mut diagnostics = Vec::with_capacity(items.len().saturating_mul(2));
     for (position, item) in items.iter().enumerate() {
-        match crate::reference::Reference::from_value(item, &path.index(position)) {
+        match crate::pointer::Reference::from_value(item, &path.index(position)) {
             Err(diagnostic) => diagnostics.push(diagnostic),
             Ok(reference) => diagnostics.extend(validate_reference(
                 &reference,
@@ -783,10 +783,10 @@ fn validate_reference_set_field(
 }
 
 fn validate_valid_time_field(
-    value: &crate::value::Value,
-    path: &crate::error::Path,
-) -> Vec<crate::error::Diagnostic> {
-    match crate::time::ValidTime::from_value(value, path) {
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    match crate::clock::ValidTime::from_value(value, path) {
         Err(diagnostic) => vec![diagnostic],
         Ok(valid_time) => match valid_time.validate(path) {
             Ok(()) => Vec::new(),
@@ -796,8 +796,8 @@ fn validate_valid_time_field(
 }
 
 fn validate_parsed_field<T>(
-    result: Result<T, crate::error::Diagnostic>,
-) -> Vec<crate::error::Diagnostic> {
+    result: Result<T, crate::problem::Diagnostic>,
+) -> Vec<crate::problem::Diagnostic> {
     match result {
         Ok(_) => Vec::new(),
         Err(diagnostic) => vec![diagnostic],
@@ -811,19 +811,19 @@ struct ReferenceValidation {
 }
 
 fn validate_reference(
-    reference: &crate::reference::Reference,
+    reference: &crate::pointer::Reference,
     expected: Option<RecordKind>,
     validation: ReferenceValidation,
-    path: &crate::error::Path,
-    index: Option<&crate::reference::SnapshotIndex>,
-) -> Vec<crate::error::Diagnostic> {
+    path: &crate::problem::Path,
+    index: Option<&crate::pointer::SnapshotIndex>,
+) -> Vec<crate::problem::Diagnostic> {
     let mut diagnostics = Vec::new();
     if let Some(expected) = expected
         && reference.kind() != expected
     {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Domain,
-            crate::error::ErrorCode::ReferenceKindMismatch,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::ReferenceKindMismatch,
             path.clone(),
             format!(
                 "reference names kind {} where {} is required",
@@ -833,18 +833,18 @@ fn validate_reference(
         ));
     }
     if reference.is_external() && !validation.allow_external {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Domain,
-            crate::error::ErrorCode::ExternalReferenceRefused,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::ExternalReferenceRefused,
             path.clone(),
             "this field does not permit an external reference",
         ));
         return diagnostics;
     }
     if reference.is_unresolved() && !validation.allow_unresolved {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Domain,
-            crate::error::ErrorCode::UnresolvedReference,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::UnresolvedReference,
             path.clone(),
             "this field does not permit a typed unresolved reference",
         ));
@@ -864,10 +864,10 @@ fn validate_reference(
 
 fn expect(
     present: bool,
-    value: &crate::value::Value,
-    path: &crate::error::Path,
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
     expected: &'static str,
-) -> Vec<crate::error::Diagnostic> {
+) -> Vec<crate::problem::Diagnostic> {
     if present {
         Vec::new()
     } else {
@@ -876,13 +876,13 @@ fn expect(
 }
 
 fn type_mismatch(
-    value: &crate::value::Value,
-    path: &crate::error::Path,
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
     expected: &'static str,
-) -> Vec<crate::error::Diagnostic> {
-    vec![crate::error::Diagnostic::new(
-        crate::error::Stage::Domain,
-        crate::error::ErrorCode::TypeMismatch,
+) -> Vec<crate::problem::Diagnostic> {
+    vec![crate::problem::Diagnostic::new(
+        crate::problem::Stage::Domain,
+        crate::problem::ErrorCode::TypeMismatch,
         path.clone(),
         format!("expected {expected}, found {}", value.kind_name()),
     )]
@@ -892,9 +892,9 @@ fn type_mismatch(
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate_domain(
     kind: RecordKind,
-    payload: &std::collections::BTreeMap<crate::value::Symbol, crate::value::Value>,
-    path: &crate::error::Path,
-) -> Vec<crate::error::Diagnostic> {
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
     match kind {
         RecordKind::Assertion => validate_assertion_domain(payload, path),
         RecordKind::Evidence => validate_evidence_domain(payload, path),
@@ -903,19 +903,19 @@ pub fn validate_domain(
 }
 
 fn validate_assertion_domain(
-    payload: &std::collections::BTreeMap<crate::value::Symbol, crate::value::Value>,
-    path: &crate::error::Path,
-) -> Vec<crate::error::Diagnostic> {
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
     let mut diagnostics = Vec::new();
-    if let Some(value) = payload.get(&crate::value::Symbol::from("lifecycle")) {
+    if let Some(value) = payload.get(&crate::typed::Symbol::from("lifecycle")) {
         match Lifecycle::from_value(value, &path.field("lifecycle")) {
             Err(diagnostic) => diagnostics.push(diagnostic),
             Ok(Lifecycle::Superseded)
-                if !payload.contains_key(&crate::value::Symbol::from("superseded-by")) =>
+                if !payload.contains_key(&crate::typed::Symbol::from("superseded-by")) =>
             {
-                diagnostics.push(crate::error::Diagnostic::new(
-                    crate::error::Stage::Domain,
-                    crate::error::ErrorCode::MissingField,
+                diagnostics.push(crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Domain,
+                    crate::problem::ErrorCode::MissingField,
                     path.field("superseded-by"),
                     "a superseded assertion must name its replacement",
                 ));
@@ -923,28 +923,28 @@ fn validate_assertion_domain(
             Ok(_) => {}
         }
     }
-    if let Some(value) = payload.get(&crate::value::Symbol::from("stance"))
+    if let Some(value) = payload.get(&crate::typed::Symbol::from("stance"))
         && !matches!(
-            value.as_symbol().map(crate::value::Symbol::as_str),
+            value.as_symbol().map(crate::typed::Symbol::as_str),
             Some("affirm" | "deny" | "hypothesis")
         )
     {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Domain,
-            crate::error::ErrorCode::TypeMismatch,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::TypeMismatch,
             path.field("stance"),
             "stance must be affirm, deny, or hypothesis",
         ));
     }
-    if let Some(value) = payload.get(&crate::value::Symbol::from("origin"))
+    if let Some(value) = payload.get(&crate::typed::Symbol::from("origin"))
         && value
             .as_symbol()
             .and_then(|symbol| Origin::parse(symbol.as_str()))
             .is_none()
     {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Domain,
-            crate::error::ErrorCode::TypeMismatch,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::TypeMismatch,
             path.field("origin"),
             "origin must be observation, authored-statement, model-extraction, inference, or import",
         ));
@@ -953,29 +953,29 @@ fn validate_assertion_domain(
 }
 
 fn validate_evidence_domain(
-    payload: &std::collections::BTreeMap<crate::value::Symbol, crate::value::Value>,
-    path: &crate::error::Path,
-) -> Vec<crate::error::Diagnostic> {
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
     let mut diagnostics = Vec::new();
-    let has_span = payload.contains_key(&crate::value::Symbol::from("span"));
-    let has_anchor = payload.contains_key(&crate::value::Symbol::from("anchor"));
+    let has_span = payload.contains_key(&crate::typed::Symbol::from("span"));
+    let has_anchor = payload.contains_key(&crate::typed::Symbol::from("anchor"));
     if !has_span && !has_anchor {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Domain,
-            crate::error::ErrorCode::MissingField,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::MissingField,
             path.clone(),
             "evidence requires an exact span or a stable anchor",
         ));
     }
-    if let Some(value) = payload.get(&crate::value::Symbol::from("relation"))
+    if let Some(value) = payload.get(&crate::typed::Symbol::from("relation"))
         && !matches!(
-            value.as_symbol().map(crate::value::Symbol::as_str),
+            value.as_symbol().map(crate::typed::Symbol::as_str),
             Some("supports" | "challenges")
         )
     {
-        diagnostics.push(crate::error::Diagnostic::new(
-            crate::error::Stage::Domain,
-            crate::error::ErrorCode::TypeMismatch,
+        diagnostics.push(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::TypeMismatch,
             path.field("relation"),
             "evidence relation must be supports or challenges",
         ));
@@ -988,7 +988,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn version_one_declares_every_core_kind() {
+    fn version_one_declares_every_kind() {
         let schema = RecordSchema::v1();
         assert_eq!(schema.version(), 1);
         let later = [

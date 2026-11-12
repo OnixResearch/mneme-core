@@ -1,9 +1,9 @@
 //! Shared execution of validated agent-memory commands.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A transport-neutral response. `value` is a versioned tagged JSON document.
 #[derive(Clone, Debug)]
-pub struct ApiResponse {
+pub struct CallResponse {
     pub value: mneme_core::Value,
     pub ok: bool,
 }
@@ -24,14 +24,14 @@ impl ApiService {
     }
 
     /// Execute one command and always return a structured transport document.
-    pub fn execute(&self, command: &crate::command::ApiCommand) -> ApiResponse {
+    pub fn execute(&self, command: &crate::command::ApiCommand) -> CallResponse {
         if let Some(scope) = command.scope()
             && let Err(error) = self.session.authorize(scope)
         {
             return response_for_error(command, error, None);
         }
         match self.dispatch(command) {
-            Ok((value, context)) => ApiResponse {
+            Ok((value, context)) => CallResponse {
                 value: response_envelope(command, "ok", context.as_ref(), value, None),
                 ok: true,
             },
@@ -43,7 +43,7 @@ impl ApiService {
     fn dispatch(
         &self,
         command: &crate::command::ApiCommand,
-    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
+    ) -> crate::error::CallResult<(mneme_core::Value, Option<Context>)> {
         match command {
             crate::command::ApiCommand::Capabilities { .. } => Ok((capabilities_value(), None)),
             crate::command::ApiCommand::Record { .. } => self.dispatch_record(command),
@@ -62,7 +62,7 @@ impl ApiService {
     fn dispatch_record(
         &self,
         command: &crate::command::ApiCommand,
-    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
+    ) -> crate::error::CallResult<(mneme_core::Value, Option<Context>)> {
         let crate::command::ApiCommand::Record {
             scope,
             base,
@@ -84,7 +84,7 @@ impl ApiService {
             }
         }
         let mut workspace = self.open()?;
-        let batch = mneme_memory::MemoryBatch {
+        let batch = mneme_memory::Batch {
             actor: self.session.principal.clone(),
             scope: scope.clone(),
             idempotency_key: key.clone(),
@@ -96,7 +96,7 @@ impl ApiService {
             source_blobs: sources.clone(),
             publications: Vec::new(),
         };
-        let outcome = mneme_memory::Memory::new(&mut workspace)
+        let outcome = mneme_memory::Engine::new(&mut workspace)
             .commit_at_base(batch, *base)
             .map_err(crate::error::ApiError::from_memory)?;
         Ok((commit_value(&outcome), Some(self.context(scope, &outcome))))
@@ -105,7 +105,7 @@ impl ApiService {
     fn dispatch_accept(
         &self,
         command: &crate::command::ApiCommand,
-    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
+    ) -> crate::error::CallResult<(mneme_core::Value, Option<Context>)> {
         let crate::command::ApiCommand::Accept {
             scope,
             base,
@@ -148,7 +148,7 @@ impl ApiService {
             mneme_core::Reference::local(*decision, mneme_core::RecordKind::Decision),
             None,
         );
-        let batch = mneme_memory::MemoryBatch {
+        let batch = mneme_memory::Batch {
             actor: self.session.principal.clone(),
             scope: scope.clone(),
             idempotency_key: key.clone(),
@@ -156,7 +156,7 @@ impl ApiService {
             source_blobs: Vec::new(),
             publications: Vec::new(),
         };
-        let outcome = mneme_memory::Memory::new(&mut workspace)
+        let outcome = mneme_memory::Engine::new(&mut workspace)
             .commit_at_base(batch, *base)
             .map_err(crate::error::ApiError::from_memory)?;
         Ok((commit_value(&outcome), Some(self.context(scope, &outcome))))
@@ -165,7 +165,7 @@ impl ApiService {
     fn dispatch_recall(
         &self,
         command: &crate::command::ApiCommand,
-    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
+    ) -> crate::error::CallResult<(mneme_core::Value, Option<Context>)> {
         let crate::command::ApiCommand::Recall {
             scope,
             revision,
@@ -195,7 +195,7 @@ impl ApiService {
                 .current_revision()
                 .map_err(crate::error::ApiError::from_store)?,
         );
-        let request = mneme_recall::RecallRequest {
+        let request = mneme_recall::Request {
             actor: self.session.principal.clone(),
             scope: scope.clone(),
             revision,
@@ -215,7 +215,7 @@ impl ApiService {
             max_time_ms: *max_time_ms,
             cancellation: None,
         };
-        let response = mneme_recall::RecallService::new(&mut workspace)
+        let response = mneme_recall::Service::new(&mut workspace)
             .recall(request)
             .map_err(crate::error::ApiError::from_recall)?;
         let context = Context {
@@ -229,7 +229,7 @@ impl ApiService {
     fn dispatch_explain(
         &self,
         command: &crate::command::ApiCommand,
-    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
+    ) -> crate::error::CallResult<(mneme_core::Value, Option<Context>)> {
         let crate::command::ApiCommand::Explain {
             scope,
             assertion,
@@ -288,8 +288,8 @@ impl ApiService {
         scope: &mneme_core::ScopeId,
         max_nodes: usize,
         max_excerpt_bytes: usize,
-    ) -> crate::error::ApiResult<mneme_memory::Explanation> {
-        let memory = mneme_memory::Memory::new(workspace);
+    ) -> crate::error::CallResult<mneme_memory::Explanation> {
+        let memory = mneme_memory::Engine::new(workspace);
         let view = memory.view().map_err(crate::error::ApiError::from_memory)?;
         let record = view
             .record(assertion)
@@ -311,7 +311,7 @@ impl ApiService {
     fn dispatch_revise(
         &self,
         command: &crate::command::ApiCommand,
-    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
+    ) -> crate::error::CallResult<(mneme_core::Value, Option<Context>)> {
         let crate::command::ApiCommand::Revise {
             scope,
             base,
@@ -358,7 +358,7 @@ impl ApiService {
             mneme_core::Reference::local(*decision, mneme_core::RecordKind::Decision),
             superseded,
         );
-        let batch = mneme_memory::MemoryBatch {
+        let batch = mneme_memory::Batch {
             actor: self.session.principal.clone(),
             scope: scope.clone(),
             idempotency_key: key.clone(),
@@ -366,7 +366,7 @@ impl ApiService {
             source_blobs: Vec::new(),
             publications: Vec::new(),
         };
-        let outcome = mneme_memory::Memory::new(&mut workspace)
+        let outcome = mneme_memory::Engine::new(&mut workspace)
             .commit_at_base(batch, *base)
             .map_err(crate::error::ApiError::from_memory)?;
         Ok((commit_value(&outcome), Some(self.context(scope, &outcome))))
@@ -375,7 +375,7 @@ impl ApiService {
     fn dispatch_resume(
         &self,
         command: &crate::command::ApiCommand,
-    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
+    ) -> crate::error::CallResult<(mneme_core::Value, Option<Context>)> {
         let crate::command::ApiCommand::Resume {
             scope, checkpoint, ..
         } = command
@@ -414,7 +414,7 @@ impl ApiService {
     fn dispatch_forget(
         &self,
         command: &crate::command::ApiCommand,
-    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
+    ) -> crate::error::CallResult<(mneme_core::Value, Option<Context>)> {
         let crate::command::ApiCommand::Forget {
             scope,
             base,
@@ -429,7 +429,7 @@ impl ApiService {
             ));
         };
         let mut workspace = self.open()?;
-        let request = mneme_retention::RetentionRequest {
+        let request = mneme_retention::Request {
             actor: self.session.principal.clone(),
             scope: scope.clone(),
             base_revision: *base,
@@ -437,14 +437,14 @@ impl ApiService {
             operation: mneme_retention::OperationKind::Forget,
             selector: selector.clone(),
             effective: *effective,
-            policy: mneme_retention::RetentionPolicy {
+            policy: mneme_retention::Policy {
                 version: mneme_retention::POLICY_VERSION.to_owned(),
                 retain_assertion_after_prune: true,
                 block_content_replay: true,
                 retain_withdrawn_evidence_metadata: true,
             },
         };
-        let result = mneme_retention::Retention::new(&mut workspace)
+        let result = mneme_retention::Engine::new(&mut workspace)
             .execute(request)
             .map_err(crate::error::ApiError::from_retention)?;
         let generation = result.generation;
@@ -464,7 +464,7 @@ impl ApiService {
     fn dispatch_proposal_inspect(
         &self,
         command: &crate::command::ApiCommand,
-    ) -> crate::error::ApiResult<(mneme_core::Value, Option<Context>)> {
+    ) -> crate::error::CallResult<(mneme_core::Value, Option<Context>)> {
         let crate::command::ApiCommand::ProposalInspect {
             scope, assertion, ..
         } = command
@@ -474,7 +474,7 @@ impl ApiService {
             ));
         };
         let mut workspace = self.open()?;
-        let memory = mneme_memory::Memory::new(&mut workspace);
+        let memory = mneme_memory::Engine::new(&mut workspace);
         let view = memory.view().map_err(crate::error::ApiError::from_memory)?;
         let record = view
             .record(*assertion)
@@ -497,7 +497,7 @@ impl ApiService {
         ))
     }
 
-    fn open(&self) -> crate::error::ApiResult<mneme_store::Workspace> {
+    fn open(&self) -> crate::error::CallResult<mneme_store::Workspace> {
         mneme_store::Workspace::open(
             &self.session.workspace_root,
             mneme_store::WorkspaceConfig::new(
@@ -558,7 +558,7 @@ fn current_assertion(
     workspace: &mneme_store::Workspace,
     assertion: mneme_core::RecordId,
     scope: &mneme_core::ScopeId,
-) -> crate::error::ApiResult<mneme_core::RecordEnvelope> {
+) -> crate::error::CallResult<mneme_core::RecordEnvelope> {
     let snapshot = workspace
         .snapshot()
         .map_err(crate::error::ApiError::from_store)?;
@@ -585,8 +585,8 @@ fn response_for_error(
     command: &crate::command::ApiCommand,
     error: crate::error::ApiError,
     context: Option<&Context>,
-) -> ApiResponse {
-    ApiResponse {
+) -> CallResponse {
+    CallResponse {
         value: response_envelope(
             command,
             error.code.as_str(),
@@ -804,7 +804,7 @@ fn assertion_value(assertion: &mneme_memory::AssertionView) -> mneme_core::Value
 }
 
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-fn recall_value(response: &mneme_recall::RecallResponse) -> mneme_core::Value {
+fn recall_value(response: &mneme_recall::Response) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("context"),
@@ -853,7 +853,7 @@ fn recall_value(response: &mneme_recall::RecallResponse) -> mneme_core::Value {
     ])
 }
 
-fn recall_context_value(response: &mneme_recall::RecallResponse) -> mneme_core::Value {
+fn recall_context_value(response: &mneme_recall::Response) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("scope"),
@@ -893,7 +893,7 @@ fn recall_context_value(response: &mneme_recall::RecallResponse) -> mneme_core::
     ])
 }
 
-fn recall_omissions_value(response: &mneme_recall::RecallResponse) -> mneme_core::Value {
+fn recall_omissions_value(response: &mneme_recall::Response) -> mneme_core::Value {
     mneme_core::Value::sequence(
         response
             .omissions
@@ -914,7 +914,7 @@ fn recall_omissions_value(response: &mneme_recall::RecallResponse) -> mneme_core
     )
 }
 
-fn recall_boundary_value(response: &mneme_recall::RecallResponse) -> mneme_core::Value {
+fn recall_boundary_value(response: &mneme_recall::Response) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("kind"),
@@ -975,7 +975,7 @@ fn mode_value(mode: &mneme_recall::ModeReport) -> mneme_core::Value {
 }
 
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-fn candidate_value(candidate: &mneme_recall::RecallCandidate) -> mneme_core::Value {
+fn candidate_value(candidate: &mneme_recall::Candidate) -> mneme_core::Value {
     let (source, source_revision, span) = candidate_source_values(candidate);
     let (origins, evidence, derivations) = candidate_provenance_values(candidate);
     let ancestry_roots = candidate_ancestry_roots_value(candidate);
@@ -1037,7 +1037,7 @@ fn candidate_value(candidate: &mneme_recall::RecallCandidate) -> mneme_core::Val
 }
 
 fn candidate_source_values(
-    candidate: &mneme_recall::RecallCandidate,
+    candidate: &mneme_recall::Candidate,
 ) -> (mneme_core::Value, mneme_core::Value, mneme_core::Value) {
     (
         candidate
@@ -1056,7 +1056,7 @@ fn candidate_source_values(
 }
 
 fn candidate_provenance_values(
-    candidate: &mneme_recall::RecallCandidate,
+    candidate: &mneme_recall::Candidate,
 ) -> (mneme_core::Value, mneme_core::Value, mneme_core::Value) {
     let origins = mneme_core::Value::sequence(
         candidate
@@ -1077,7 +1077,7 @@ fn candidate_provenance_values(
     (origins, evidence, derivations)
 }
 
-fn candidate_ancestry_roots_value(candidate: &mneme_recall::RecallCandidate) -> mneme_core::Value {
+fn candidate_ancestry_roots_value(candidate: &mneme_recall::Candidate) -> mneme_core::Value {
     mneme_core::Value::sequence(
         candidate
             .ancestry_roots
@@ -1089,7 +1089,7 @@ fn candidate_ancestry_roots_value(candidate: &mneme_recall::RecallCandidate) -> 
     )
 }
 
-fn recall_evidence_value(evidence: &mneme_recall::RecallEvidence) -> mneme_core::Value {
+fn recall_evidence_value(evidence: &mneme_recall::Evidence) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("evidence"),
@@ -1300,8 +1300,8 @@ fn resume_value(
     workspace: &mut mneme_store::Workspace,
     checkpoint: mneme_core::RecordId,
     scope: &mneme_core::ScopeId,
-) -> crate::error::ApiResult<mneme_core::Value> {
-    let memory = mneme_memory::Memory::new(workspace);
+) -> crate::error::CallResult<mneme_core::Value> {
+    let memory = mneme_memory::Engine::new(workspace);
     let view = memory.view().map_err(crate::error::ApiError::from_memory)?;
     let record = view
         .record(checkpoint)
@@ -1360,10 +1360,10 @@ struct ResumePayload<'a> {
 }
 
 fn resume_collections(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     episode_ids: &std::collections::BTreeSet<mneme_core::RecordId>,
     scope: &mneme_core::ScopeId,
-) -> crate::error::ApiResult<ResumeCollections> {
+) -> crate::error::CallResult<ResumeCollections> {
     let mut collections = ResumeCollections {
         episodes: Vec::with_capacity(episode_ids.len()),
         attempts: Vec::with_capacity(episode_ids.len()),
@@ -1486,7 +1486,7 @@ fn episode_value(episode: &mneme_memory::EpisodeView) -> mneme_core::Value {
     ])
 }
 
-fn forget_value(result: &mneme_retention::RetentionResult) -> mneme_core::Value {
+fn forget_value(result: &mneme_retention::Outcome) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("operation-id"),
@@ -1577,13 +1577,10 @@ fn capabilities_value() -> mneme_core::Value {
         (
             mneme_core::Symbol::from("recall-modes"),
             mneme_core::Value::sequence(
-                [
-                    mneme_recall::RecallMode::Lexical,
-                    mneme_recall::RecallMode::Vector,
-                ]
-                .into_iter()
-                .map(|mode| mneme_core::Value::symbol(mode.name()))
-                .collect(),
+                [mneme_recall::Mode::Lexical, mneme_recall::Mode::Vector]
+                    .into_iter()
+                    .map(|mode| mneme_core::Value::symbol(mode.name()))
+                    .collect(),
             ),
         ),
         (

@@ -13,45 +13,45 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-pub mod adapter;
 pub mod base64;
 pub mod binary;
-pub mod digest;
+pub mod clock;
 pub mod editing;
-pub mod envelope;
-pub mod error;
+pub mod fields;
 pub mod fixtures;
+pub mod hashing;
 pub mod ids;
-pub mod migration;
 pub mod payload;
-pub mod reference;
-pub mod schema;
-pub mod scope;
-#[allow(unknown_lints, underscore_in_module_filename)] // public transport module path
-pub mod tagged_json;
+pub mod pointer;
+pub mod problem;
+pub mod projection;
+pub mod tenancy;
 pub mod text;
-pub mod time;
-pub mod value;
+#[allow(unknown_lints, underscore_in_module_filename)] // public transport module path
+pub mod transport;
+pub mod typed;
+pub mod upgrade;
+pub mod wire;
 
-pub use adapter::{AdapterCapabilities, ValueKind, project_value};
 pub use binary::{decode, decode_canonical, encode};
-pub use digest::{ContentDigest, EncodingProfile, HashAlgorithm, ValueBoundary};
-pub use envelope::{
-    Payload, RECORD_LABEL, RecordContext, RecordEnvelope, ValidatedBatch, validate_batch,
-    validate_record, validate_record_value,
-};
-pub use error::{Diagnostic, ErrorCode, Path, Stage, render_diagnostics};
-pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
-pub use payload::{RetainedSource, SourceContent, SourceSpan};
-pub use reference::{Reference, RevisionEntry, SnapshotIndex};
-pub use schema::{
+pub use clock::{RecordedTime, Timestamp, ValidTime};
+pub use fields::{
     ExtensionPolicy, FieldSpec, FieldType, KindSchema, Lifecycle, Origin, RecordKind, RecordSchema,
     SchemaRegistry,
 };
-pub use scope::{ScopeClass, ScopeId};
-pub use tagged_json::{
+pub use hashing::{ContentDigest, EncodingProfile, HashAlgorithm, ValueBoundary};
+pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
+pub use payload::{RetainedSource, SourceContent, SourceSpan};
+pub use pointer::{Reference, RevisionEntry, SnapshotIndex};
+pub use problem::{Diagnostic, ErrorCode, Path, Stage, render_diagnostics};
+pub use projection::{AdapterCapabilities, ValueKind, project_value};
+pub use tenancy::{ScopeClass, ScopeId};
+pub use transport::{
     decode_document, decode_document_value, decode_value, encode_document, encode_document_string,
     encode_value,
 };
-pub use time::{RecordedTime, Timestamp, ValidTime};
-pub use value::{ByteString, Double, Record, SignedInteger, Symbol, Value};
+pub use typed::{ByteString, Double, Record, SignedInteger, Symbol, Value};
+pub use wire::{
+    Payload, RECORD_LABEL, RecordContext, RecordEnvelope, ValidatedBatch, validate_batch,
+    validate_record, validate_record_value,
+};

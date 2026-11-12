@@ -79,7 +79,7 @@ impl Harness {
     }
 
     fn write_file(&self, path: &str, bytes: &[u8]) {
-        mneme_store::blob::publish_working_file(self.temp.path(), path, bytes)
+        mneme_store::payload::publish_working_file(self.temp.path(), path, bytes)
             .expect("working file");
     }
 
@@ -331,7 +331,7 @@ fn stale_candidate_conflicts_and_preserves_newer_document() {
     };
     assert!(matches!(
         error,
-        mneme_doc::DocumentError::Store(mneme_store::StoreError::StaleBase { .. })
+        mneme_doc::DocumentError::Store(mneme_store::Failure::StaleBase { .. })
     ));
     assert_eq!(
         mneme_doc::Documents::new(&mut harness.workspace)
@@ -662,7 +662,7 @@ fn publication_recovery_does_not_overwrite_an_external_edit() {
     };
     assert!(matches!(
         error,
-        mneme_doc::DocumentError::Store(mneme_store::StoreError::InjectedFault(_))
+        mneme_doc::DocumentError::Store(mneme_store::Failure::InjectedFault(_))
     ));
     harness.reopen_with(Box::new(mneme_store::NoFaults));
     let committed = harness
@@ -687,7 +687,7 @@ fn publication_recovery_does_not_overwrite_an_external_edit() {
         mneme_store::PublicationState::Diverged
     );
     assert_eq!(
-        mneme_store::blob::read_working_file(harness.temp.path(), "docs/publish.adoc")
+        mneme_store::payload::read_working_file(harness.temp.path(), "docs/publish.adoc")
             .expect("file"),
         Some(external.to_vec())
     );
@@ -770,7 +770,7 @@ fn unavailable_root_and_include_sources_are_reported_without_substitution() {
         .expect("lookup")
         .expect("part");
     let digest = mneme_core::ContentDigest::of_source_bytes(b"= Part\n\nincluded text\n");
-    assert!(mneme_store::blob::blob_path(harness.temp.path(), digest).exists());
+    assert!(mneme_store::payload::blob_path(harness.temp.path(), digest).exists());
     // Mark the included source unavailable while the root remains committed.
     let mut unavailable = mneme_memory::build_unavailable_source_with_digest(
         part_view.source.source,
@@ -939,8 +939,8 @@ fn evidence_keeps_a_pinned_document_span_after_the_document_changes() {
             superseded_by: None,
         },
     );
-    mneme_memory::Memory::new(&mut harness.workspace)
-        .commit(mneme_memory::MemoryBatch {
+    mneme_memory::Engine::new(&mut harness.workspace)
+        .commit(mneme_memory::Batch {
             actor: "doc-author".to_owned(),
             scope: scope(),
             idempotency_key: "evidence".to_owned(),
@@ -957,7 +957,7 @@ fn evidence_keeps_a_pinned_document_span_after_the_document_changes() {
         "docs/evidence.adoc",
         None,
     ));
-    let memory = mneme_memory::Memory::new(&mut harness.workspace);
+    let memory = mneme_memory::Engine::new(&mut harness.workspace);
     let view = memory.view().expect("view");
     let old_source = view
         .source_at(imported.source.source, imported.source.revision)

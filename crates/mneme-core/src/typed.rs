@@ -9,7 +9,7 @@
 //! Annotations are not part of the value model. Mneme's decoding profile skips
 //! them before building a value, and its encoder never emits them; no
 //! authoritative field may depend on annotation content.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use num_traits::{ToPrimitive, Zero};
 

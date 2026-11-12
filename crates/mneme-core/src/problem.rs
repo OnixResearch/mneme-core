@@ -5,7 +5,7 @@
 //! exact location in the encoded or decoded structure. Stages are kept
 //! separate so a caller can distinguish malformed syntax from a schema or
 //! domain refusal.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use serde::Serialize;
 use serde::ser::Serializer;

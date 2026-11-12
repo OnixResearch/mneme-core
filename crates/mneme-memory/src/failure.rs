@@ -1,11 +1,11 @@
 //! Evidence-policy failures.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A memory-layer failure.
 #[derive(Debug, thiserror::Error)]
-pub enum MemoryError {
+pub enum EvidenceError {
     #[error(transparent)]
-    Store(#[from] mneme_store::StoreError),
+    Store(#[from] mneme_store::Failure),
 
     #[error("record {record} has an invalid {kind} payload: {message}")]
     InvalidRecord {
@@ -30,14 +30,14 @@ pub enum MemoryError {
     Truncated,
 }
 
-impl MemoryError {
+impl EvidenceError {
     /// A typed payload failure.
     pub fn invalid(
         record: mneme_core::RecordId,
         kind: &'static str,
         message: impl Into<String>,
     ) -> Self {
-        MemoryError::InvalidRecord {
+        EvidenceError::InvalidRecord {
             record,
             kind,
             message: message.into(),
@@ -46,9 +46,9 @@ impl MemoryError {
 
     /// A policy refusal.
     pub fn policy(message: impl Into<String>) -> Self {
-        MemoryError::Policy(message.into())
+        EvidenceError::Policy(message.into())
     }
 }
 
 /// A memory result.
-pub type Result<T, E = MemoryError> = std::result::Result<T, E>;
+pub type Result<T, E = EvidenceError> = std::result::Result<T, E>;

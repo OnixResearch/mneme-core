@@ -1,14 +1,14 @@
 //! Recording and explanation services over the workspace coordinator.
 //!
-//! Builders construct typed drafts; [`Memory::commit`] validates evidence spans,
+//! Builders construct typed drafts; [`Engine::commit`] validates evidence spans,
 //! lifecycle decisions, ancestry, and action outcomes before submitting the
 //! normal workspace command. No draft can promote a claim without an explicit
 //! decision record in the same batch.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A memory batch submitted through the workspace coordinator.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemoryBatch {
+pub struct Batch {
     pub actor: String,
     pub scope: mneme_core::ScopeId,
     pub idempotency_key: String,
@@ -18,18 +18,18 @@ pub struct MemoryBatch {
 }
 
 /// The memory service over one mutable workspace handle.
-pub struct Memory<'w> {
+pub struct Engine<'w> {
     workspace: &'w mut mneme_store::Workspace,
 }
 
-impl<'w> Memory<'w> {
+impl<'w> Engine<'w> {
     /// Wrap a workspace.
     pub fn new(workspace: &'w mut mneme_store::Workspace) -> Self {
-        Memory { workspace }
+        Engine { workspace }
     }
 
     /// The current pinned view.
-    pub fn view(&self) -> crate::error::Result<crate::policy::MemoryView> {
+    pub fn view(&self) -> crate::failure::Result<crate::beliefs::View> {
         self.view_at(None)
     }
 
@@ -37,13 +37,13 @@ impl<'w> Memory<'w> {
     pub fn view_at(
         &self,
         pinned_generation: Option<u64>,
-    ) -> crate::error::Result<crate::policy::MemoryView> {
+    ) -> crate::failure::Result<crate::beliefs::View> {
         let revision = self.workspace.current_revision()?;
         let snapshot = self.workspace.snapshot_at(revision, pinned_generation)?;
         let history = load_history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
         let suppressions = self.workspace.active_suppressions()?;
-        Ok(crate::policy::MemoryView::with_retention(
+        Ok(crate::beliefs::View::with_retention(
             snapshot,
             self.workspace.root(),
             history,
@@ -56,7 +56,7 @@ impl<'w> Memory<'w> {
     pub fn revisions(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<Vec<mneme_core::RecordEnvelope>> {
+    ) -> crate::failure::Result<Vec<mneme_core::RecordEnvelope>> {
         Ok(self.workspace.record_revisions(record)?)
     }
 
@@ -64,8 +64,8 @@ impl<'w> Memory<'w> {
     pub fn explain(
         &self,
         assertion: mneme_core::RecordId,
-        policy: crate::policy::Policy,
-    ) -> crate::error::Result<crate::policy::Explanation> {
+        policy: crate::beliefs::Policy,
+    ) -> crate::failure::Result<crate::beliefs::Explanation> {
         self.explain_at(assertion, None, policy)
     }
 
@@ -74,32 +74,29 @@ impl<'w> Memory<'w> {
         &self,
         assertion: mneme_core::RecordId,
         pinned_generation: Option<u64>,
-        policy: crate::policy::Policy,
-    ) -> crate::error::Result<crate::policy::Explanation> {
+        policy: crate::beliefs::Policy,
+    ) -> crate::failure::Result<crate::beliefs::Explanation> {
         self.view_at(pinned_generation)?.explain(assertion, policy)
     }
 
     /// Current beliefs under an explicit scope and effective-time policy.
     pub fn beliefs(
         &self,
-        view: &crate::policy::BeliefView,
-    ) -> crate::error::Result<Vec<crate::model::AssertionView>> {
+        view: &crate::beliefs::BeliefView,
+    ) -> crate::failure::Result<Vec<crate::model::AssertionView>> {
         self.view()?.current_beliefs(view)
     }
 
     /// Conflicts among currently eligible claims.
     pub fn conflicts(
         &self,
-        view: &crate::policy::BeliefView,
-    ) -> crate::error::Result<Vec<crate::policy::ConflictGroup>> {
+        view: &crate::beliefs::BeliefView,
+    ) -> crate::failure::Result<Vec<crate::beliefs::ConflictGroup>> {
         self.view()?.conflicts(view)
     }
 
     /// Validate and commit a memory batch.
-    pub fn commit(
-        &mut self,
-        batch: MemoryBatch,
-    ) -> crate::error::Result<mneme_store::CommitOutcome> {
+    pub fn commit(&mut self, batch: Batch) -> crate::failure::Result<mneme_store::CommitOutcome> {
         let base = self.workspace.current_revision()?;
         self.commit_at_base(batch, base)
     }
@@ -109,9 +106,9 @@ impl<'w> Memory<'w> {
     /// idempotency rules.
     pub fn commit_at_base(
         &mut self,
-        batch: MemoryBatch,
+        batch: Batch,
         base: mneme_core::WorkspaceRevisionId,
-    ) -> crate::error::Result<mneme_store::CommitOutcome> {
+    ) -> crate::failure::Result<mneme_store::CommitOutcome> {
         let snapshot = self.workspace.snapshot()?;
         let history = load_history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
@@ -143,7 +140,7 @@ impl<'w> Memory<'w> {
 fn load_history(
     workspace: &mneme_store::Workspace,
     snapshot: &mneme_store::Snapshot,
-) -> crate::error::Result<
+) -> crate::failure::Result<
     std::collections::BTreeMap<
         (mneme_core::RecordId, mneme_core::RevisionId),
         mneme_core::RecordEnvelope,
@@ -154,7 +151,7 @@ fn load_history(
     for record in &snapshot.records {
         for revision in workspace.record_revisions(record.record_id)? {
             if history.len() >= max_history_revisions {
-                return Err(crate::error::MemoryError::policy(
+                return Err(crate::failure::EvidenceError::policy(
                     "workspace history exceeds the 1M revision bound",
                 ));
             }
@@ -165,7 +162,7 @@ fn load_history(
 }
 
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::error::Result<()> {
+fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::failure::Result<()> {
     let BatchValidationInputs {
         snapshot,
         root,
@@ -178,7 +175,7 @@ fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::error::Result<()>
     if snapshot.records.len().saturating_add(batch.records.len()) > max_batch_records
         || batch.source_blobs.len() > max_batch_records
     {
-        return Err(crate::error::MemoryError::policy(
+        return Err(crate::failure::EvidenceError::policy(
             "memory batch exceeds the 1M record or source bound",
         ));
     }
@@ -195,19 +192,19 @@ fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::error::Result<()>
         if !supplied_sources.contains_key(&source.digest())
             && supplied_sources.len() >= max_supplied_sources
         {
-            return Err(crate::error::MemoryError::policy(
+            return Err(crate::failure::EvidenceError::policy(
                 "supplied source map exceeds its batch input bound",
             ));
         }
         if supplied_sources.len() >= max_supplied_sources {
-            return Err(crate::error::MemoryError::policy(
+            return Err(crate::failure::EvidenceError::policy(
                 "supplied source map exceeds its batch input bound",
             ));
         }
         supplied_sources.insert(source.digest(), source.bytes.clone());
     }
     extend_batch_records(&mut combined, batch)?;
-    let view = batch_memory_view(BatchMemoryViewInputs {
+    let view = batch_view(BatchViewInputs {
         snapshot,
         root,
         combined: &combined,
@@ -235,7 +232,7 @@ fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::error::Result<()>
 struct BatchValidationInputs<'a> {
     snapshot: &'a mneme_store::Snapshot,
     root: &'a std::path::Path,
-    batch: &'a MemoryBatch,
+    batch: &'a Batch,
     history: &'a std::collections::BTreeMap<
         (mneme_core::RecordId, mneme_core::RevisionId),
         mneme_core::RecordEnvelope,
@@ -246,15 +243,15 @@ struct BatchValidationInputs<'a> {
 
 fn extend_batch_records(
     combined: &mut std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
-    batch: &MemoryBatch,
-) -> crate::error::Result<()> {
+    batch: &Batch,
+) -> crate::failure::Result<()> {
     for draft in &batch.records {
         let envelope = draft.clone().into_envelope(mneme_core::RecordedTime::new(
             mneme_core::Timestamp::from_nanos(0),
             0,
         ));
         if envelope.scope != batch.scope {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "record {} scope {} differs from batch scope {}",
                 envelope.record_id, envelope.scope, batch.scope
             )));
@@ -265,8 +262,8 @@ fn extend_batch_records(
 }
 
 #[allow(unknown_lints)] // Octet structural exception: parameter group mirrors one cohesive context
-fn batch_memory_view(inputs: BatchMemoryViewInputs<'_>) -> crate::policy::MemoryView {
-    let BatchMemoryViewInputs {
+fn batch_view(inputs: BatchViewInputs<'_>) -> crate::beliefs::View {
+    let BatchViewInputs {
         snapshot,
         root,
         combined,
@@ -287,7 +284,7 @@ fn batch_memory_view(inputs: BatchMemoryViewInputs<'_>) -> crate::policy::Memory
         records: combined.values().cloned().collect(),
         index,
     };
-    crate::policy::MemoryView::with_retention(
+    crate::beliefs::View::with_retention(
         virtual_snapshot,
         root,
         history.clone(),
@@ -296,7 +293,7 @@ fn batch_memory_view(inputs: BatchMemoryViewInputs<'_>) -> crate::policy::Memory
     )
 }
 
-struct BatchMemoryViewInputs<'a> {
+struct BatchViewInputs<'a> {
     snapshot: &'a mneme_store::Snapshot,
     root: &'a std::path::Path,
     combined: &'a std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
@@ -313,13 +310,13 @@ struct BatchValidation<'a> {
     root: &'a std::path::Path,
     combined: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
     supplied_sources: std::collections::BTreeMap<mneme_core::ContentDigest, Vec<u8>>,
-    view: crate::policy::MemoryView,
+    view: crate::beliefs::View,
 }
 
 fn validate_record(
     envelope: &mneme_core::RecordEnvelope,
     context: &BatchValidation<'_>,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     match envelope.kind {
         mneme_core::RecordKind::Evidence => validate_evidence(envelope, context),
         mneme_core::RecordKind::Assertion => validate_assertion(envelope, context),
@@ -334,20 +331,20 @@ fn validate_record(
 fn validate_evidence(
     envelope: &mneme_core::RecordEnvelope,
     context: &BatchValidation<'_>,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     let evidence = crate::model::EvidenceView::parse(envelope.clone())?;
     if context
         .view
         .suppression_for(envelope)
         .is_some_and(|suppression| suppression.mode == mneme_store::SuppressionMode::Withdrawn)
     {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "evidence {} is withdrawn and cannot be newly cited",
             evidence.record.record_id
         )));
     }
     let source = context.view.evidence_source(&evidence).map_err(|_| {
-        crate::error::MemoryError::policy(format!(
+        crate::failure::EvidenceError::policy(format!(
             "evidence {} references missing source {}",
             evidence.record.record_id, evidence.source
         ))
@@ -355,7 +352,7 @@ fn validate_evidence(
     if let mneme_core::Reference::Pinned { revision, .. } = evidence.source_reference
         && revision != source.record.revision_id
     {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "evidence {} pins source revision {revision}, but the source record is {}",
             evidence.record.record_id, source.record.revision_id
         )));
@@ -370,16 +367,16 @@ fn validate_evidence(
 fn validate_evidence_extent(
     evidence: &crate::model::EvidenceView,
     bytes: &[u8],
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     if evidence.span.is_none() && evidence.anchor.is_none() {
-        return Err(crate::error::MemoryError::policy(
+        return Err(crate::failure::EvidenceError::policy(
             "evidence requires an exact span or a stable anchor",
         ));
     }
     if let Some(span) = evidence.span
         && span.end() >= bytes.len() as u64
     {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "evidence {} span ends at byte {} beyond {} retained bytes",
             evidence.record.record_id,
             span.end(),
@@ -389,7 +386,7 @@ fn validate_evidence_extent(
     if let Some(anchor) = &evidence.anchor
         && anchor.trim().is_empty()
     {
-        return Err(crate::error::MemoryError::policy(
+        return Err(crate::failure::EvidenceError::policy(
             "evidence anchor must not be empty",
         ));
     }
@@ -399,10 +396,10 @@ fn validate_evidence_extent(
 fn validate_evidence_ancestry(
     evidence: &crate::model::EvidenceView,
     combined: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     for ancestor in &evidence.ancestry {
         if !combined.contains_key(ancestor) {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "evidence {} ancestry names missing record {ancestor}",
                 evidence.record.record_id
             )));
@@ -414,26 +411,26 @@ fn validate_evidence_ancestry(
 fn validate_assertion(
     envelope: &mneme_core::RecordEnvelope,
     context: &BatchValidation<'_>,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     let assertion = crate::model::AssertionView::parse(envelope.clone())?;
     validate_assertion_evidence(&assertion, context)?;
     if !context.view.lifecycle_decision_valid(&assertion)? {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "assertion {} lifecycle {} lacks a matching decision",
             assertion.record.record_id,
             assertion.lifecycle.symbol()
         )));
     }
     if assertion.origin == mneme_core::Origin::ModelExtraction && assertion.extraction.is_none() {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "model-extracted assertion {} must retain extraction lineage",
             assertion.record.record_id
         )));
     }
-    if assertion.predicate == crate::policy::ACTION_COMPLETED_PREDICATE
+    if assertion.predicate == crate::beliefs::ACTION_COMPLETED_PREDICATE
         && !context.view.has_observed_outcome(&assertion)?
     {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "completed-action assertion {} has no observed outcome episode",
             assertion.record.record_id
         )));
@@ -441,7 +438,7 @@ fn validate_assertion(
     validate_negative_assertion(&assertion)?;
     for evidence in &assertion.evidence {
         if !context.combined.contains_key(evidence) {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "assertion {} evidence reference {evidence} is missing",
                 assertion.record.record_id
             )));
@@ -453,7 +450,7 @@ fn validate_assertion(
 fn validate_assertion_evidence(
     assertion: &crate::model::AssertionView,
     context: &BatchValidation<'_>,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     for evidence_id in &assertion.evidence {
         if let Ok(evidence_record) = context.view.envelope(*evidence_id)
             && context
@@ -463,7 +460,7 @@ fn validate_assertion_evidence(
                     suppression.mode == mneme_store::SuppressionMode::Withdrawn
                 })
         {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "assertion {} cites withdrawn evidence {evidence_id}",
                 assertion.record.record_id
             )));
@@ -474,7 +471,7 @@ fn validate_assertion_evidence(
 
 fn validate_negative_assertion(
     assertion: &crate::model::AssertionView,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     if assertion.lifecycle == mneme_core::Lifecycle::Accepted
         && assertion.stance == crate::model::Stance::Deny
     {
@@ -486,7 +483,7 @@ fn validate_negative_assertion(
             .map(|symbol| symbol.as_str() == "declared-complete")
             .unwrap_or(false);
         if !is_complete {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "accepted negative assertion {} lacks a declared-complete basis",
                 assertion.record.record_id
             )));
@@ -498,22 +495,22 @@ fn validate_negative_assertion(
 fn validate_decision(
     envelope: &mneme_core::RecordEnvelope,
     context: &BatchValidation<'_>,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     let decision = crate::model::DecisionView::parse(envelope.clone())?;
     if decision.actor.trim().is_empty() || decision.policy.trim().is_empty() {
-        return Err(crate::error::MemoryError::policy(
+        return Err(crate::failure::EvidenceError::policy(
             "decision actor and policy must be non-empty",
         ));
     }
     if decision.input_revision != context.snapshot.revision {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "decision {} evaluates revision {}, not the current base {}",
             decision.record.record_id, decision.input_revision, context.snapshot.revision
         )));
     }
     let target = decision_target(&decision, &context.combined)?;
     if target.decision != Some(decision.record.record_id) {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "decision {} is not linked from its target assertion",
             decision.record.record_id
         )));
@@ -521,7 +518,7 @@ fn validate_decision(
     validate_decision_outcome(&decision, &target)?;
     for evidence in &decision.evidence {
         if !context.combined.contains_key(evidence) {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "decision {} evidence {evidence} is missing",
                 decision.record.record_id
             )));
@@ -533,10 +530,10 @@ fn validate_decision(
 fn decision_target(
     decision: &crate::model::DecisionView,
     combined: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
-) -> crate::error::Result<crate::model::AssertionView> {
+) -> crate::failure::Result<crate::model::AssertionView> {
     let envelope = combined
         .get(&decision.target)
-        .ok_or(crate::error::MemoryError::policy(format!(
+        .ok_or(crate::failure::EvidenceError::policy(format!(
             "decision {} targets missing assertion {}",
             decision.record.record_id, decision.target
         )))?;
@@ -546,7 +543,7 @@ fn decision_target(
 fn validate_decision_outcome(
     decision: &crate::model::DecisionView,
     target: &crate::model::AssertionView,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     let expected = match decision.decision_kind {
         crate::model::DecisionKind::Acceptance => (mneme_core::Lifecycle::Accepted, "accepted"),
         crate::model::DecisionKind::Retraction => (mneme_core::Lifecycle::Retracted, "retracted"),
@@ -557,13 +554,13 @@ fn validate_decision_outcome(
             (mneme_core::Lifecycle::Disputed, "disputed")
         }
         crate::model::DecisionKind::Other(_) => {
-            return Err(crate::error::MemoryError::policy(
+            return Err(crate::failure::EvidenceError::policy(
                 "unknown decision kind cannot be committed",
             ));
         }
     };
     if target.lifecycle != expected.0 || decision.outcome != expected.1 {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "decision {} outcome {} does not match target lifecycle {}",
             decision.record.record_id,
             decision.outcome,
@@ -576,23 +573,23 @@ fn validate_decision_outcome(
 fn validate_derivation(
     envelope: &mneme_core::RecordEnvelope,
     context: &BatchValidation<'_>,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     let derivation = crate::model::DerivationView::parse(envelope.clone())?;
     if derivation.evaluation_revision != context.snapshot.revision {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "derivation {} evaluates revision {}, not the current base {}",
             derivation.record.record_id, derivation.evaluation_revision, context.snapshot.revision
         )));
     }
     if !context.combined.contains_key(&derivation.conclusion) {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "derivation {} conclusion {} is missing",
             derivation.record.record_id, derivation.conclusion
         )));
     }
     for premise in &derivation.premises {
         if !context.combined.contains_key(premise) {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "derivation {} premise {premise} is missing",
                 derivation.record.record_id
             )));
@@ -604,11 +601,11 @@ fn validate_derivation(
 fn validate_episode(
     envelope: &mneme_core::RecordEnvelope,
     context: &BatchValidation<'_>,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     let episode = crate::model::EpisodeView::parse(envelope.clone())?;
     for related in &episode.related {
         if !context.combined.contains_key(related) {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "episode {} related record {related} is missing",
                 episode.record.record_id
             )));
@@ -620,17 +617,17 @@ fn validate_episode(
 fn validate_checkpoint(
     envelope: &mneme_core::RecordEnvelope,
     context: &BatchValidation<'_>,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     let (revision, episodes, verified) = context.view.checkpoint_revision(envelope.record_id)?;
     if revision != context.snapshot.revision {
-        return Err(crate::error::MemoryError::policy(format!(
+        return Err(crate::failure::EvidenceError::policy(format!(
             "checkpoint {} references revision {revision}, not the current base {}",
             envelope.record_id, context.snapshot.revision
         )));
     }
     for linked in episodes.iter().chain(verified.iter()) {
         if !context.combined.contains_key(linked) {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "checkpoint {} references missing record {linked}",
                 envelope.record_id
             )));
@@ -643,22 +640,24 @@ fn source_bytes(
     source: &crate::model::SourceView,
     supplied: &std::collections::BTreeMap<mneme_core::ContentDigest, Vec<u8>>,
     root: &std::path::Path,
-) -> crate::error::Result<Vec<u8>> {
+) -> crate::failure::Result<Vec<u8>> {
     let Some(digest) = source.digest() else {
-        return Err(crate::error::MemoryError::policy(
+        return Err(crate::failure::EvidenceError::policy(
             "new evidence requires retained source bytes",
         ));
     };
     if let Some(bytes) = supplied.get(&digest) {
         return Ok(bytes.clone());
     }
-    match mneme_store::blob::read(root, digest) {
+    match mneme_store::payload::read(root, digest) {
         Ok(bytes) => Ok(bytes),
-        Err(mneme_store::StoreError::MissingBlob { .. }) => Err(crate::error::MemoryError::policy(
-            "new evidence cites a source whose committed bytes are missing",
-        )),
-        Err(mneme_store::StoreError::CorruptBlob { reason, .. }) => {
-            Err(crate::error::MemoryError::policy(format!(
+        Err(mneme_store::Failure::MissingBlob { .. }) => {
+            Err(crate::failure::EvidenceError::policy(
+                "new evidence cites a source whose committed bytes are missing",
+            ))
+        }
+        Err(mneme_store::Failure::CorruptBlob { reason, .. }) => {
+            Err(crate::failure::EvidenceError::policy(format!(
                 "new evidence cites corrupt source bytes: {reason}"
             )))
         }
@@ -720,7 +719,7 @@ pub fn build_source(
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
     options: SourceOptions<'_>,
-) -> crate::error::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
+) -> crate::failure::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
     let SourceOptions {
         bytes,
         media_type,
@@ -732,7 +731,7 @@ pub fn build_source(
         bytes.len() as u64,
         media_type,
     )
-    .map_err(|message| crate::error::MemoryError::policy(message.to_owned()))?;
+    .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
     let mut entries = vec![
         (
             mneme_core::Symbol::from("content"),

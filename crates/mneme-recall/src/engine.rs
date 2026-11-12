@@ -1,5 +1,5 @@
 //! Bounded recall service over one mutable workspace handle.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Ranking/fusion policy version.
 pub const FUSION_POLICY_VERSION: &str = "rrf-k60-v1";
@@ -18,25 +18,25 @@ struct IndexKey {
 }
 
 /// A recall service with a generation-fenced in-memory index cache.
-fn failure_execution(allow_partial: bool) -> crate::model::RecallExecution {
+fn failure_execution(allow_partial: bool) -> crate::model::Execution {
     if allow_partial {
-        crate::model::RecallExecution::Partial
+        crate::model::Execution::Partial
     } else {
-        crate::model::RecallExecution::Failed
+        crate::model::Execution::Failed
     }
 }
 
 /// Recall service over a committed workspace revision.
-pub struct RecallService<'w> {
+pub struct Service<'w> {
     workspace: &'w mut mneme_store::Workspace,
     indexes: std::collections::BTreeMap<IndexKey, crate::model::CachedIndex>,
     cached_generation: Option<u64>,
 }
 
-impl<'w> RecallService<'w> {
+impl<'w> Service<'w> {
     /// Wrap one mutable workspace.
     pub fn new(workspace: &'w mut mneme_store::Workspace) -> Self {
-        RecallService {
+        Service {
             workspace,
             indexes: std::collections::BTreeMap::new(),
             cached_generation: None,
@@ -47,13 +47,13 @@ impl<'w> RecallService<'w> {
     /// barrier advances during candidate generation or packing.
     pub fn recall(
         &mut self,
-        request: crate::model::RecallRequest,
-    ) -> crate::error::Result<crate::model::RecallResponse> {
+        request: crate::model::Request,
+    ) -> crate::failure::Result<crate::model::Response> {
         validate(&request)?;
         let mut last_barrier = None;
         for attempt in 0..2 {
             match self.recall_once(&request) {
-                Err(crate::error::RecallError::BarrierAdvanced { pinned, current })
+                Err(crate::failure::QueryError::BarrierAdvanced { pinned, current })
                     if attempt == 0 =>
                 {
                     last_barrier = Some((pinned, current));
@@ -64,17 +64,19 @@ impl<'w> RecallService<'w> {
             }
         }
         Err(last_barrier
-            .map(|(pinned, current)| crate::error::RecallError::BarrierAdvanced { pinned, current })
+            .map(
+                |(pinned, current)| crate::failure::QueryError::BarrierAdvanced { pinned, current },
+            )
             .unwrap_or_else(|| {
-                crate::error::RecallError::InvalidRequest("recall retry exhausted".to_owned())
+                crate::failure::QueryError::InvalidRequest("recall retry exhausted".to_owned())
             }))
     }
 
     #[allow(unknown_lints, ambient_clock, nested_conditionals)] // recall wall-clock budget is the request shell; structured fallback nests match arms
     fn recall_once(
         &mut self,
-        request: &crate::model::RecallRequest,
-    ) -> crate::error::Result<crate::model::RecallResponse> {
+        request: &crate::model::Request,
+    ) -> crate::failure::Result<crate::model::Response> {
         let (started, generation) = (
             std::time::Instant::now(),
             self.workspace.eligibility_generation()?,
@@ -88,16 +90,14 @@ impl<'w> RecallService<'w> {
         }
         let view = self.pinned_view(request, generation)?;
         let served_revision = view.revision();
-        let is_requested_structured = request
-            .modes
-            .contains(&crate::model::RecallMode::Structured);
+        let is_requested_structured = request.modes.contains(&crate::model::Mode::Structured);
         if is_requested_structured && request.structured.is_none() && !request.allow_fallback {
-            return Err(crate::error::RecallError::ModeUnavailable {
-                mode: crate::model::RecallMode::Structured.name().to_owned(),
+            return Err(crate::failure::QueryError::ModeUnavailable {
+                mode: crate::model::Mode::Structured.name().to_owned(),
                 reason: "no structured request was supplied".to_owned(),
             });
         }
-        let modes = recall_modes(request, is_requested_structured)?;
+        let modes = modes(request, is_requested_structured)?;
         if cancelled(request) {
             return Ok(cancelled_response(request, generation));
         }
@@ -107,7 +107,7 @@ impl<'w> RecallService<'w> {
             None
         };
         self.require_generation(generation)?;
-        let mut progress = RecallProgress::default();
+        let mut progress = Progress::default();
         if modes.use_lexical {
             progress.add_lexical(index.as_ref(), request, modes.fallback_lexical)?;
         }
@@ -126,20 +126,20 @@ impl<'w> RecallService<'w> {
             &mut progress.execution,
             &mut progress.reasons,
         );
-        if progress.execution == crate::model::RecallExecution::Failed && !request.allow_partial {
+        if progress.execution == crate::model::Execution::Failed && !request.allow_partial {
             returned.clear();
             omissions.clear();
         }
         self.require_generation(generation)?;
-        finish_recall_response(
-            RecallCompletionContext {
+        finish_response(
+            CompletionContext {
                 request,
                 started,
                 served_revision,
                 generation,
             },
             progress,
-            RecallPacked {
+            Packed {
                 returned,
                 omissions,
                 truncated,
@@ -149,12 +149,12 @@ impl<'w> RecallService<'w> {
 
     fn pinned_view(
         &self,
-        request: &crate::model::RecallRequest,
+        request: &crate::model::Request,
         generation: u64,
-    ) -> crate::error::Result<mneme_memory::MemoryView> {
+    ) -> crate::failure::Result<mneme_memory::View> {
         let current_revision = self.workspace.current_revision()?;
         if current_revision != request.revision && !request.allow_stale {
-            return Err(crate::error::RecallError::StaleRevision {
+            return Err(crate::failure::QueryError::StaleRevision {
                 requested: request.revision,
                 current: current_revision,
             });
@@ -164,10 +164,10 @@ impl<'w> RecallService<'w> {
 
     fn cached_index(
         &mut self,
-        view: &mneme_memory::MemoryView,
-        request: &crate::model::RecallRequest,
+        view: &mneme_memory::View,
+        request: &crate::model::Request,
         generation: u64,
-    ) -> crate::error::Result<crate::model::CachedIndex> {
+    ) -> crate::failure::Result<crate::model::CachedIndex> {
         let key = IndexKey {
             revision: request.revision,
             scope: request.scope.clone(),
@@ -180,7 +180,7 @@ impl<'w> RecallService<'w> {
         let index = if let Some(cached) = self.indexes.get(&key) {
             cached.clone()
         } else {
-            let built = crate::index::build_index(view, request)?;
+            let built = crate::lookup::build_index(view, request)?;
             self.indexes.insert(key, built.clone());
             built
         };
@@ -189,15 +189,15 @@ impl<'w> RecallService<'w> {
 
     fn add_structured_mode(
         &mut self,
-        request: &crate::model::RecallRequest,
+        request: &crate::model::Request,
         served_revision: mneme_core::WorkspaceRevisionId,
         is_use_lexical: bool,
-        progress: &mut RecallProgress,
-    ) -> crate::error::Result<()> {
+        progress: &mut Progress,
+    ) -> crate::failure::Result<()> {
         match request.structured.as_ref() {
             None => {
                 progress.mode_reports.push(crate::model::ModeReport {
-                    mode: crate::model::RecallMode::Structured,
+                    mode: crate::model::Mode::Structured,
                     status: crate::model::ModeStatus::Unavailable,
                     index_version: None,
                     revision: Some(served_revision),
@@ -211,19 +211,19 @@ impl<'w> RecallService<'w> {
                     reason: Some("structured mode was not configured".to_owned()),
                 });
                 if !request.allow_fallback && !is_use_lexical {
-                    return Err(crate::error::RecallError::ModeUnavailable {
-                        mode: crate::model::RecallMode::Structured.name().to_owned(),
+                    return Err(crate::failure::QueryError::ModeUnavailable {
+                        mode: crate::model::Mode::Structured.name().to_owned(),
                         reason: "structured mode has no request and fallback is disabled"
                             .to_owned(),
                     });
                 }
-                progress.execution = crate::model::RecallExecution::Partial;
+                progress.execution = crate::model::Execution::Partial;
                 progress
                     .reasons
                     .push("structured mode unavailable".to_owned());
             }
             Some(structured) => {
-                let build = mneme_datalog::DatalogService::new(self.workspace).build(
+                let build = mneme_datalog::Service::new(self.workspace).build(
                     mneme_datalog::BuildRequest {
                         actor: request.actor.clone(),
                         scope: request.scope.clone(),
@@ -259,13 +259,13 @@ impl<'w> RecallService<'w> {
 
     fn add_structured_query(
         &mut self,
-        request: &crate::model::RecallRequest,
+        request: &crate::model::Request,
         served_revision: mneme_core::WorkspaceRevisionId,
         structured: &crate::model::StructuredRequest,
-        build: &mneme_datalog::DatalogBuild,
-        progress: &mut RecallProgress,
+        build: &mneme_datalog::Build,
+        progress: &mut Progress,
     ) {
-        let rows = mneme_datalog::DatalogService::new(self.workspace)
+        let rows = mneme_datalog::Service::new(self.workspace)
             .query_build(build, structured.query.clone());
         match rows {
             Err(error) => progress.structured_query_failed(request, served_revision, build, error),
@@ -279,12 +279,12 @@ impl<'w> RecallService<'w> {
         &self,
         revision: mneme_core::WorkspaceRevisionId,
         generation: u64,
-    ) -> crate::error::Result<mneme_memory::MemoryView> {
+    ) -> crate::failure::Result<mneme_memory::View> {
         let snapshot = self.workspace.snapshot_at(revision, Some(generation))?;
         let history = history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
         let suppressions = self.workspace.active_suppressions()?;
-        Ok(mneme_memory::MemoryView::with_retention(
+        Ok(mneme_memory::View::with_retention(
             snapshot,
             self.workspace.root(),
             history,
@@ -293,10 +293,10 @@ impl<'w> RecallService<'w> {
         ))
     }
 
-    fn require_generation(&self, generation: u64) -> crate::error::Result<()> {
+    fn require_generation(&self, generation: u64) -> crate::failure::Result<()> {
         let current = self.workspace.eligibility_generation()?;
         if current != generation {
-            return Err(crate::error::RecallError::BarrierAdvanced {
+            return Err(crate::failure::QueryError::BarrierAdvanced {
                 pinned: generation,
                 current,
             });
@@ -305,65 +305,65 @@ impl<'w> RecallService<'w> {
     }
 }
 
-struct RecallModes {
+struct Modes {
     fallback_lexical: bool,
     use_lexical: bool,
     use_vector: bool,
 }
 
-fn recall_modes(
-    request: &crate::model::RecallRequest,
+fn modes(
+    request: &crate::model::Request,
     is_requested_structured: bool,
-) -> crate::error::Result<RecallModes> {
+) -> crate::failure::Result<Modes> {
     let is_fallback_lexical = is_requested_structured
         && request.structured.is_none()
         && request.allow_fallback
-        && !request.modes.contains(&crate::model::RecallMode::Lexical);
+        && !request.modes.contains(&crate::model::Mode::Lexical);
     let is_lexical_used =
-        request.modes.contains(&crate::model::RecallMode::Lexical) || is_fallback_lexical;
-    let is_vector_used = request.modes.contains(&crate::model::RecallMode::Vector);
+        request.modes.contains(&crate::model::Mode::Lexical) || is_fallback_lexical;
+    let is_vector_used = request.modes.contains(&crate::model::Mode::Vector);
     if !is_lexical_used && !is_vector_used && request.structured.is_none() {
-        return Err(crate::error::RecallError::ModeUnavailable {
+        return Err(crate::failure::QueryError::ModeUnavailable {
             mode: "all requested modes".to_owned(),
             reason: "no candidate mode can execute".to_owned(),
         });
     }
-    Ok(RecallModes {
+    Ok(Modes {
         fallback_lexical: is_fallback_lexical,
         use_lexical: is_lexical_used,
         use_vector: is_vector_used,
     })
 }
 
-struct RecallProgress {
+struct Progress {
     mode_reports: Vec<crate::model::ModeReport>,
-    ranking: Vec<(crate::model::RecallMode, Vec<(String, f64)>)>,
-    candidates: std::collections::BTreeMap<String, crate::model::RecallCandidate>,
-    execution: crate::model::RecallExecution,
+    ranking: Vec<(crate::model::Mode, Vec<(String, f64)>)>,
+    candidates: std::collections::BTreeMap<String, crate::model::Candidate>,
+    execution: crate::model::Execution,
     reasons: Vec<String>,
 }
 
-impl Default for RecallProgress {
+impl Default for Progress {
     fn default() -> Self {
         Self {
             mode_reports: Vec::new(),
             ranking: Vec::new(),
             candidates: std::collections::BTreeMap::new(),
-            execution: crate::model::RecallExecution::Complete,
+            execution: crate::model::Execution::Complete,
             reasons: Vec::new(),
         }
     }
 }
 
-impl RecallProgress {
+impl Progress {
     fn add_lexical(
         &mut self,
         index: Option<&crate::model::CachedIndex>,
-        request: &crate::model::RecallRequest,
+        request: &crate::model::Request,
         is_fallback: bool,
-    ) -> crate::error::Result<()> {
+    ) -> crate::failure::Result<()> {
         let index = index.ok_or_else(|| {
-            crate::error::RecallError::InvalidRequest("lexical index was not built".to_owned())
+            crate::failure::QueryError::InvalidRequest("lexical index was not built".to_owned())
         })?;
         let entries = lexical_rank(index, request);
         for (id, document, score) in &entries {
@@ -373,22 +373,22 @@ impl RecallProgress {
             add_candidate(
                 &mut self.candidates,
                 candidate,
-                crate::model::RecallMode::Lexical,
+                crate::model::Mode::Lexical,
                 *score,
                 id,
             );
         }
         self.ranking.push((
-            crate::model::RecallMode::Lexical,
+            crate::model::Mode::Lexical,
             entries
                 .iter()
                 .map(|(id, _, score)| (id.clone(), *score))
                 .collect(),
         ));
         self.mode_reports.push(crate::model::ModeReport {
-            mode: crate::model::RecallMode::Lexical,
+            mode: crate::model::Mode::Lexical,
             status: crate::model::ModeStatus::Used,
-            index_version: Some(crate::index::LEXICAL_INDEX_VERSION.to_owned()),
+            index_version: Some(crate::lookup::LEXICAL_INDEX_VERSION.to_owned()),
             revision: Some(index.revision),
             coverage: index.coverage.clone(),
             candidates: entries.len(),
@@ -405,10 +405,10 @@ impl RecallProgress {
     fn add_vector(
         &mut self,
         index: Option<&crate::model::CachedIndex>,
-        request: &crate::model::RecallRequest,
-    ) -> crate::error::Result<()> {
+        request: &crate::model::Request,
+    ) -> crate::failure::Result<()> {
         let index = index.ok_or_else(|| {
-            crate::error::RecallError::InvalidRequest("vector index was not built".to_owned())
+            crate::failure::QueryError::InvalidRequest("vector index was not built".to_owned())
         })?;
         let entries = vector_rank(index, request);
         for (id, document, score) in &entries {
@@ -418,22 +418,22 @@ impl RecallProgress {
             add_candidate(
                 &mut self.candidates,
                 candidate,
-                crate::model::RecallMode::Vector,
+                crate::model::Mode::Vector,
                 *score,
                 id,
             );
         }
         self.ranking.push((
-            crate::model::RecallMode::Vector,
+            crate::model::Mode::Vector,
             entries
                 .iter()
                 .map(|(id, _, score)| (id.clone(), *score))
                 .collect(),
         ));
         self.mode_reports.push(crate::model::ModeReport {
-            mode: crate::model::RecallMode::Vector,
+            mode: crate::model::Mode::Vector,
             status: crate::model::ModeStatus::Used,
-            index_version: Some(crate::index::VECTOR_INDEX_VERSION.to_owned()),
+            index_version: Some(crate::lookup::VECTOR_INDEX_VERSION.to_owned()),
             revision: Some(index.revision),
             coverage: index.coverage.clone(),
             candidates: entries.len(),
@@ -448,14 +448,14 @@ impl RecallProgress {
 
     fn structured_build_failed(
         &mut self,
-        request: &crate::model::RecallRequest,
+        request: &crate::model::Request,
         served_revision: mneme_core::WorkspaceRevisionId,
         structured: &crate::model::StructuredRequest,
-        error: mneme_datalog::DatalogError,
+        error: mneme_datalog::Error,
     ) {
         let reason = error.to_string();
         self.mode_reports.push(crate::model::ModeReport {
-            mode: crate::model::RecallMode::Structured,
+            mode: crate::model::Mode::Structured,
             status: crate::model::ModeStatus::Failed,
             index_version: Some(format!(
                 "datalog:{}:{}",
@@ -474,14 +474,14 @@ impl RecallProgress {
 
     fn structured_query_failed(
         &mut self,
-        request: &crate::model::RecallRequest,
+        request: &crate::model::Request,
         served_revision: mneme_core::WorkspaceRevisionId,
-        build: &mneme_datalog::DatalogBuild,
-        error: mneme_datalog::DatalogError,
+        build: &mneme_datalog::Build,
+        error: mneme_datalog::Error,
     ) {
         let reason = error.to_string();
         self.mode_reports.push(crate::model::ModeReport {
-            mode: crate::model::RecallMode::Structured,
+            mode: crate::model::Mode::Structured,
             status: crate::model::ModeStatus::Failed,
             index_version: Some(datalog_version(build)),
             revision: Some(served_revision),
@@ -497,10 +497,10 @@ impl RecallProgress {
 
     fn add_structured_rows(
         &mut self,
-        request: &crate::model::RecallRequest,
+        request: &crate::model::Request,
         served_revision: mneme_core::WorkspaceRevisionId,
         structured: &crate::model::StructuredRequest,
-        build: &mneme_datalog::DatalogBuild,
+        build: &mneme_datalog::Build,
         rows: mneme_datalog::QueryResult,
     ) {
         let coverage = structured_coverage(build, &rows, &structured.query.predicate);
@@ -511,14 +511,14 @@ impl RecallProgress {
             add_candidate(
                 &mut self.candidates,
                 candidate,
-                crate::model::RecallMode::Structured,
+                crate::model::Mode::Structured,
                 1.0,
                 &id,
             );
             structured_ranking.push((id, 1.0));
         }
         self.ranking
-            .push((crate::model::RecallMode::Structured, structured_ranking));
+            .push((crate::model::Mode::Structured, structured_ranking));
         let status = structured_mode_status(rows.status);
         if !matches!(status, crate::model::ModeStatus::Used) {
             self.execution = failure_execution(request.allow_partial);
@@ -526,7 +526,7 @@ impl RecallProgress {
                 .push(format!("structured mode finished with {:?}", rows.status));
         }
         self.mode_reports.push(crate::model::ModeReport {
-            mode: crate::model::RecallMode::Structured,
+            mode: crate::model::Mode::Structured,
             status,
             index_version: Some(datalog_version(build)),
             revision: Some(served_revision),
@@ -542,7 +542,7 @@ fn structured_candidate(
     predicate: &str,
     row: &mneme_datalog::QueryRow,
     id: String,
-) -> crate::model::RecallCandidate {
+) -> crate::model::Candidate {
     let body = format!(
         "{} {}",
         predicate,
@@ -557,7 +557,7 @@ fn structured_candidate(
         .iter()
         .flat_map(|support| support.sources.iter().copied())
         .collect::<std::collections::BTreeSet<_>>();
-    crate::model::RecallCandidate {
+    crate::model::Candidate {
         id,
         content_kind: crate::model::ContentKind::StructuredRow,
         text: body,
@@ -592,45 +592,45 @@ fn structured_mode_status(status: mneme_datalog::ExecutionStatus) -> crate::mode
     }
 }
 
-struct RecallPacked {
-    returned: Vec<crate::model::RecallCandidate>,
+struct Packed {
+    returned: Vec<crate::model::Candidate>,
     omissions: Vec<crate::model::Omission>,
     truncated: bool,
 }
 
-struct RecallCompletionContext<'a> {
-    request: &'a crate::model::RecallRequest,
+struct CompletionContext<'a> {
+    request: &'a crate::model::Request,
     started: std::time::Instant,
     served_revision: mneme_core::WorkspaceRevisionId,
     generation: u64,
 }
 
 #[allow(unknown_lints, ambient_clock)]
-fn finish_recall_response(
-    context: RecallCompletionContext<'_>,
-    mut progress: RecallProgress,
-    mut packed: RecallPacked,
-) -> crate::error::Result<crate::model::RecallResponse> {
-    let RecallCompletionContext {
+fn finish_response(
+    context: CompletionContext<'_>,
+    mut progress: Progress,
+    mut packed: Packed,
+) -> crate::failure::Result<crate::model::Response> {
+    let CompletionContext {
         request,
         started,
         served_revision,
         generation,
     } = context;
     if cancelled(request) {
-        progress.execution = crate::model::RecallExecution::Cancelled;
+        progress.execution = crate::model::Execution::Cancelled;
         packed.returned.clear();
         progress.reasons.push("recall cancelled".to_owned());
     }
     let max_time_ms = u64::try_from(request.max_time_ms).map_err(|_| {
-        crate::error::RecallError::InvalidRequest(
+        crate::failure::QueryError::InvalidRequest(
             "recall time budget exceeds u64 milliseconds".to_owned(),
         )
     })?;
     if started.elapsed() > std::time::Duration::from_millis(max_time_ms)
-        && progress.execution == crate::model::RecallExecution::Complete
+        && progress.execution == crate::model::Execution::Complete
     {
-        progress.execution = crate::model::RecallExecution::Timeout;
+        progress.execution = crate::model::Execution::Timeout;
         progress
             .reasons
             .push("recall exceeded its time budget".to_owned());
@@ -645,8 +645,8 @@ fn finish_recall_response(
             _ => None,
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    Ok(crate::model::RecallResponse {
-        context: crate::model::RecallContext {
+    Ok(crate::model::Response {
+        context: crate::model::Context {
             schema_version: crate::INDEX_SCHEMA_VERSION,
             scope: request.scope.clone(),
             requested_revision: request.revision,
@@ -672,38 +672,34 @@ fn finish_recall_response(
     })
 }
 
-fn validate(request: &crate::model::RecallRequest) -> crate::error::Result<()> {
+fn validate(request: &crate::model::Request) -> crate::failure::Result<()> {
     if request.actor.trim().is_empty() {
-        return Err(crate::error::RecallError::InvalidRequest(
+        return Err(crate::failure::QueryError::InvalidRequest(
             "actor must not be empty".to_owned(),
         ));
     }
     if request.modes.is_empty() {
-        return Err(crate::error::RecallError::InvalidRequest(
+        return Err(crate::failure::QueryError::InvalidRequest(
             "at least one recall mode is required".to_owned(),
         ));
     }
-    if request.structured.is_some()
-        && !request
-            .modes
-            .contains(&crate::model::RecallMode::Structured)
-    {
-        return Err(crate::error::RecallError::InvalidRequest(
+    if request.structured.is_some() && !request.modes.contains(&crate::model::Mode::Structured) {
+        return Err(crate::failure::QueryError::InvalidRequest(
             "a structured request requires the structured mode".to_owned(),
         ));
     }
     if request.max_items == 0 {
-        return Err(crate::error::RecallError::InvalidRequest(
+        return Err(crate::failure::QueryError::InvalidRequest(
             "max_items must be greater than zero".to_owned(),
         ));
     }
     if request.max_context_bytes < MIN_ITEM_BYTES {
-        return Err(crate::error::RecallError::InvalidRequest(
+        return Err(crate::failure::QueryError::InvalidRequest(
             "max_context_bytes is too small for attribution".to_owned(),
         ));
     }
     if request.max_quote_bytes == 0 {
-        return Err(crate::error::RecallError::InvalidRequest(
+        return Err(crate::failure::QueryError::InvalidRequest(
             "max_quote_bytes must be greater than zero".to_owned(),
         ));
     }
@@ -714,7 +710,7 @@ fn validate(request: &crate::model::RecallRequest) -> crate::error::Result<()> {
 fn history(
     workspace: &mneme_store::Workspace,
     snapshot: &mneme_store::Snapshot,
-) -> crate::error::Result<
+) -> crate::failure::Result<
     std::collections::BTreeMap<
         (mneme_core::RecordId, mneme_core::RevisionId),
         mneme_core::RecordEnvelope,
@@ -725,7 +721,7 @@ fn history(
     for record in &snapshot.records {
         for revision in workspace.record_revisions(record.record_id)? {
             if history.len() >= max_history_revisions {
-                return Err(crate::error::RecallError::InvalidRequest(
+                return Err(crate::failure::QueryError::InvalidRequest(
                     "workspace history exceeds the 1M revision bound".to_owned(),
                 ));
             }
@@ -735,19 +731,16 @@ fn history(
     Ok(history)
 }
 
-fn cancelled(request: &crate::model::RecallRequest) -> bool {
+fn cancelled(request: &crate::model::Request) -> bool {
     request
         .cancellation
         .as_ref()
         .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-fn cancelled_response(
-    request: &crate::model::RecallRequest,
-    generation: u64,
-) -> crate::model::RecallResponse {
-    crate::model::RecallResponse {
-        context: crate::model::RecallContext {
+fn cancelled_response(request: &crate::model::Request, generation: u64) -> crate::model::Response {
+    crate::model::Response {
+        context: crate::model::Context {
             schema_version: crate::INDEX_SCHEMA_VERSION,
             scope: request.scope.clone(),
             requested_revision: request.revision,
@@ -757,7 +750,7 @@ fn cancelled_response(
             index_versions: std::collections::BTreeMap::new(),
             fusion_policy: FUSION_POLICY_VERSION.to_owned(),
         },
-        status: crate::model::RecallExecution::Cancelled,
+        status: crate::model::Execution::Cancelled,
         modes: Vec::new(),
         candidates: Vec::new(),
         exhaustive: false,
@@ -771,9 +764,9 @@ fn cancelled_response(
 
 fn lexical_rank(
     index: &crate::model::CachedIndex,
-    request: &crate::model::RecallRequest,
+    request: &crate::model::Request,
 ) -> Vec<(String, crate::model::IndexedDocument, f64)> {
-    let query_terms = crate::index::tokenize(&request.query.to_lowercase());
+    let query_terms = crate::lookup::tokenize(&request.query.to_lowercase());
     if query_terms.is_empty() {
         return Vec::new();
     }
@@ -797,9 +790,9 @@ fn lexical_rank(
 
 fn vector_rank(
     index: &crate::model::CachedIndex,
-    request: &crate::model::RecallRequest,
+    request: &crate::model::Request,
 ) -> Vec<(String, crate::model::IndexedDocument, f64)> {
-    let query_vector = crate::index::trigram_counts(&request.query.to_lowercase());
+    let query_vector = crate::lookup::trigram_counts(&request.query.to_lowercase());
     if query_vector.is_empty() {
         return Vec::new();
     }
@@ -846,17 +839,17 @@ fn sort_rank(entries: &mut [(String, crate::model::IndexedDocument, f64)]) {
 
 fn candidate_from_document(
     document: &crate::model::IndexedDocument,
-    request: &crate::model::RecallRequest,
+    request: &crate::model::Request,
     _vector_score: f64,
-) -> Option<crate::model::RecallCandidate> {
+) -> Option<crate::model::Candidate> {
     let (body, span) = if document.kind == crate::model::ContentKind::SourceExcerpt {
         let (body, span) =
-            crate::index::source_excerpt(&document.text, &request.query, request.max_quote_bytes)?;
+            crate::lookup::source_excerpt(&document.text, &request.query, request.max_quote_bytes)?;
         (body, Some(span))
     } else {
         (document.text.clone(), document.span)
     };
-    Some(crate::model::RecallCandidate {
+    Some(crate::model::Candidate {
         id: document.id.clone(),
         content_kind: document.kind,
         text: body,
@@ -881,9 +874,9 @@ fn candidate_from_document(
 }
 
 fn add_candidate(
-    candidates: &mut std::collections::BTreeMap<String, crate::model::RecallCandidate>,
-    candidate: crate::model::RecallCandidate,
-    mode: crate::model::RecallMode,
+    candidates: &mut std::collections::BTreeMap<String, crate::model::Candidate>,
+    candidate: crate::model::Candidate,
+    mode: crate::model::Mode,
     score: f64,
     id: &str,
 ) {
@@ -904,9 +897,9 @@ fn add_candidate(
 }
 
 fn fuse(
-    candidates: std::collections::BTreeMap<String, crate::model::RecallCandidate>,
-    rankings: &[(crate::model::RecallMode, Vec<(String, f64)>)],
-) -> Vec<crate::model::RecallCandidate> {
+    candidates: std::collections::BTreeMap<String, crate::model::Candidate>,
+    rankings: &[(crate::model::Mode, Vec<(String, f64)>)],
+) -> Vec<crate::model::Candidate> {
     let mut fused = candidates;
     for (mode, ranking) in rankings {
         for (rank, (id, _raw)) in ranking.iter().enumerate() {
@@ -931,13 +924,13 @@ fn fuse(
 
 #[allow(unknown_lints, ambient_clock)] // packing deadline is the request shell
 fn pack(
-    candidates: &mut Vec<crate::model::RecallCandidate>,
-    request: &crate::model::RecallRequest,
+    candidates: &mut Vec<crate::model::Candidate>,
+    request: &crate::model::Request,
     started: std::time::Instant,
-    execution: &mut crate::model::RecallExecution,
+    execution: &mut crate::model::Execution,
     reasons: &mut Vec<String>,
 ) -> (
-    Vec<crate::model::RecallCandidate>,
+    Vec<crate::model::Candidate>,
     Vec<crate::model::Omission>,
     bool,
 ) {
@@ -951,7 +944,7 @@ fn pack(
     let max_time_ms = match u64::try_from(request.max_time_ms) {
         Ok(value) => value,
         Err(_) => {
-            *execution = crate::model::RecallExecution::Timeout;
+            *execution = crate::model::Execution::Timeout;
             reasons.push("recall time budget exceeds u64 milliseconds".to_owned());
             return packed.into_parts();
         }
@@ -974,7 +967,7 @@ fn pack(
 }
 
 struct PackedCandidates {
-    returned: Vec<crate::model::RecallCandidate>,
+    returned: Vec<crate::model::Candidate>,
     omissions: Vec<crate::model::Omission>,
     is_truncated: bool,
     remaining: usize,
@@ -984,7 +977,7 @@ impl PackedCandidates {
     fn into_parts(
         self,
     ) -> (
-        Vec<crate::model::RecallCandidate>,
+        Vec<crate::model::Candidate>,
         Vec<crate::model::Omission>,
         bool,
     ) {
@@ -992,9 +985,7 @@ impl PackedCandidates {
     }
 }
 
-fn order_by_independence(
-    values: Vec<crate::model::RecallCandidate>,
-) -> Vec<crate::model::RecallCandidate> {
+fn order_by_independence(values: Vec<crate::model::Candidate>) -> Vec<crate::model::Candidate> {
     let mut ordered = Vec::with_capacity(values.len());
     let mut duplicates = Vec::with_capacity(values.len());
     let mut seen_roots = std::collections::BTreeSet::new();
@@ -1019,19 +1010,16 @@ fn order_by_independence(
 }
 
 struct CandidatePackingContext<'a> {
-    request: &'a crate::model::RecallRequest,
+    request: &'a crate::model::Request,
     started: std::time::Instant,
     deadline: std::time::Duration,
     packed: &'a mut PackedCandidates,
-    execution: &'a mut crate::model::RecallExecution,
+    execution: &'a mut crate::model::Execution,
     reasons: &'a mut Vec<String>,
 }
 
 #[allow(unknown_lints, ambient_clock)]
-fn pack_candidate(
-    candidate: crate::model::RecallCandidate,
-    context: &mut CandidatePackingContext<'_>,
-) {
+fn pack_candidate(candidate: crate::model::Candidate, context: &mut CandidatePackingContext<'_>) {
     let request = context.request;
     let started = context.started;
     let deadline = context.deadline;
@@ -1039,13 +1027,13 @@ fn pack_candidate(
     let execution = &mut *context.execution;
     let reasons = &mut *context.reasons;
     if cancelled(request) {
-        *execution = crate::model::RecallExecution::Cancelled;
+        *execution = crate::model::Execution::Cancelled;
         reasons.push("recall cancelled during packing".to_owned());
         omit_candidate(candidate, "cancelled", packed);
         return;
     }
     if started.elapsed() > deadline {
-        *execution = crate::model::RecallExecution::Timeout;
+        *execution = crate::model::Execution::Timeout;
         reasons.push("recall timed out during packing".to_owned());
         omit_candidate(candidate, "time-budget", packed);
         return;
@@ -1075,10 +1063,10 @@ fn pack_candidate(
 }
 
 fn truncate_candidate(
-    mut candidate: crate::model::RecallCandidate,
+    mut candidate: crate::model::Candidate,
     cap: usize,
     packed: &mut PackedCandidates,
-) -> Option<crate::model::RecallCandidate> {
+) -> Option<crate::model::Candidate> {
     if candidate.text.len() > cap {
         let end = floor_boundary(&candidate.text, cap);
         if end == 0 {
@@ -1098,11 +1086,7 @@ fn truncate_candidate(
     Some(candidate)
 }
 
-fn omit_candidate(
-    candidate: crate::model::RecallCandidate,
-    reason: &str,
-    packed: &mut PackedCandidates,
-) {
+fn omit_candidate(candidate: crate::model::Candidate, reason: &str, packed: &mut PackedCandidates) {
     packed.omissions.push(crate::model::Omission {
         candidate: candidate.id,
         reason: reason.to_owned(),
@@ -1117,7 +1101,7 @@ fn floor_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
-fn datalog_version(build: &mneme_datalog::DatalogBuild) -> String {
+fn datalog_version(build: &mneme_datalog::Build) -> String {
     format!(
         "datalog:{}:{}:{}",
         build.context.rule_bundle_id,
@@ -1127,7 +1111,7 @@ fn datalog_version(build: &mneme_datalog::DatalogBuild) -> String {
 }
 
 fn structured_coverage(
-    build: &mneme_datalog::DatalogBuild,
+    build: &mneme_datalog::Build,
     result: &mneme_datalog::QueryResult,
     predicate: &str,
 ) -> crate::model::IndexCoverage {

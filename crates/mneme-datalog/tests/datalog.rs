@@ -21,7 +21,7 @@ fn rev(byte: u8) -> mneme_core::RevisionId {
 struct Harness {
     temp: tempfile::TempDir,
     workspace: mneme_store::Workspace,
-    builds: std::collections::BTreeMap<String, mneme_datalog::DatalogBuild>,
+    builds: std::collections::BTreeMap<String, mneme_datalog::Build>,
 }
 
 impl Harness {
@@ -114,13 +114,9 @@ impl Harness {
         );
     }
 
-    fn build(
-        &mut self,
-        bundle: mneme_datalog::RuleBundle,
-        publish: bool,
-    ) -> mneme_datalog::DatalogBuild {
+    fn build(&mut self, bundle: mneme_datalog::RuleBundle, publish: bool) -> mneme_datalog::Build {
         let revision = self.workspace.current_revision().expect("revision");
-        let mut service = mneme_datalog::DatalogService::new(&mut self.workspace);
+        let mut service = mneme_datalog::Service::new(&mut self.workspace);
         let build = service
             .build(mneme_datalog::BuildRequest {
                 actor: "datalog-test".to_owned(),
@@ -155,7 +151,7 @@ impl Harness {
             .get(build_id)
             .cloned()
             .expect("build in harness");
-        let mut service = mneme_datalog::DatalogService::new(&mut self.workspace);
+        let mut service = mneme_datalog::Service::new(&mut self.workspace);
         service
             .query_build(
                 &build,
@@ -423,7 +419,7 @@ fn completeness_gates_negation_and_absent_results() {
     assert_eq!(result.status, mneme_datalog::ExecutionStatus::Complete);
 
     let revision = harness.workspace.current_revision().expect("revision");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let incomplete = service
         .build(mneme_datalog::BuildRequest {
             actor: "datalog-test".to_owned(),
@@ -502,7 +498,7 @@ fn cancellation_timeout_and_row_caps_never_establish_absence() {
     add_graph(&mut harness);
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let revision = harness.workspace.current_revision().expect("revision");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let build = service
         .build(mneme_datalog::BuildRequest {
             actor: "datalog-test".to_owned(),
@@ -532,7 +528,7 @@ fn cancellation_timeout_and_row_caps_never_establish_absence() {
     assert!(!result.absence_established);
 
     let revision = harness.workspace.current_revision().expect("revision");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let timed_out = service
         .build(mneme_datalog::BuildRequest {
             actor: "datalog-test".to_owned(),
@@ -592,12 +588,9 @@ fn stale_builds_require_explicit_permission_and_publication_is_registered() {
             .is_some()
     );
     harness.add_entity("entity-d", rid(0x13), &scope(), "D");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let stale = service.query_build(&build, mneme_datalog::Query::all("path", 10));
-    assert!(matches!(
-        stale,
-        Err(mneme_datalog::DatalogError::Stale { .. })
-    ));
+    assert!(matches!(stale, Err(mneme_datalog::Error::Stale { .. })));
     let stale_ok = service
         .query_build(
             &build,
@@ -616,7 +609,7 @@ fn stale_builds_require_explicit_permission_and_publication_is_registered() {
     drop(service);
     harness.add_entity("entity-e", rid(0x14), &scope(), "E");
     let current = harness.workspace.current_revision().expect("current");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let stale_again = service
         .query_build(
             &build,
@@ -821,7 +814,7 @@ fn retraction_pruning_and_forget_update_datalog_support() {
     assert_eq!(result.rows[0].supports[0].sources.len(), 2);
 
     // Withdraw source A's support through the retention service.
-    let request = mneme_retention::RetentionRequest {
+    let request = mneme_retention::Request {
         actor: "datalog-test".to_owned(),
         scope: scope(),
         base_revision: harness.workspace.current_revision().expect("base"),
@@ -829,14 +822,14 @@ fn retraction_pruning_and_forget_update_datalog_support() {
         operation: mneme_retention::OperationKind::AssertionRetraction,
         selector: mneme_retention::Selector::SourceSupport(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy {
+        policy: mneme_retention::Policy {
             version: mneme_retention::POLICY_VERSION.to_owned(),
             retain_assertion_after_prune: true,
             block_content_replay: true,
             retain_withdrawn_evidence_metadata: true,
         },
     };
-    mneme_retention::Retention::new(&mut harness.workspace)
+    mneme_retention::Engine::new(&mut harness.workspace)
         .execute(request)
         .expect("withdraw");
     let build = harness.build(bundle.clone(), false);
@@ -853,7 +846,7 @@ fn retraction_pruning_and_forget_update_datalog_support() {
 
     // Withdraw the final support: the conclusion disappears and absence is not
     // claimed until the relation coverage is complete.
-    let request = mneme_retention::RetentionRequest {
+    let request = mneme_retention::Request {
         actor: "datalog-test".to_owned(),
         scope: scope(),
         base_revision: harness.workspace.current_revision().expect("base"),
@@ -861,14 +854,14 @@ fn retraction_pruning_and_forget_update_datalog_support() {
         operation: mneme_retention::OperationKind::AssertionRetraction,
         selector: mneme_retention::Selector::SourceSupport(rid(0x22)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy {
+        policy: mneme_retention::Policy {
             version: mneme_retention::POLICY_VERSION.to_owned(),
             retain_assertion_after_prune: true,
             block_content_replay: true,
             retain_withdrawn_evidence_metadata: true,
         },
     };
-    mneme_retention::Retention::new(&mut harness.workspace)
+    mneme_retention::Engine::new(&mut harness.workspace)
         .execute(request)
         .expect("withdraw b");
     let build = harness.build(bundle, false);
@@ -889,7 +882,7 @@ fn retraction_pruning_and_forget_update_datalog_support() {
     // Source pruning leaves the claim eligible but marks the source unavailable.
     let mut harness = Harness::new();
     add_assertion_support(&mut harness, false);
-    let prune = mneme_retention::RetentionRequest {
+    let prune = mneme_retention::Request {
         actor: "datalog-test".to_owned(),
         scope: scope(),
         base_revision: harness.workspace.current_revision().expect("base"),
@@ -897,18 +890,18 @@ fn retraction_pruning_and_forget_update_datalog_support() {
         operation: mneme_retention::OperationKind::SourcePruning,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy {
+        policy: mneme_retention::Policy {
             version: mneme_retention::POLICY_VERSION.to_owned(),
             retain_assertion_after_prune: true,
             block_content_replay: true,
             retain_withdrawn_evidence_metadata: true,
         },
     };
-    let source_blob = mneme_store::blob::blob_path(
+    let source_blob = mneme_store::payload::blob_path(
         harness.temp.path(),
         mneme_core::ContentDigest::of_source_bytes(b"= Source A\n\nExact source A.\n"),
     );
-    mneme_retention::Retention::new(&mut harness.workspace)
+    mneme_retention::Engine::new(&mut harness.workspace)
         .execute(prune)
         .expect("prune");
     assert_missing(&source_blob);
@@ -956,7 +949,7 @@ fn query_row_limit_is_non_exhaustive() {
     let mut harness = Harness::new();
     add_graph(&mut harness);
     let build = harness.build(path_bundle(), false);
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let result = service
         .query_build(
             &build,
@@ -1011,7 +1004,7 @@ fn explicit_forget_invalidates_builds_and_prevents_replay_rows() {
     );
     assert_eq!(result.rows.len(), 1);
 
-    let request = mneme_retention::RetentionRequest {
+    let request = mneme_retention::Request {
         actor: "datalog-test".to_owned(),
         scope: scope(),
         base_revision: harness.workspace.current_revision().expect("base"),
@@ -1019,14 +1012,14 @@ fn explicit_forget_invalidates_builds_and_prevents_replay_rows() {
         operation: mneme_retention::OperationKind::Forget,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy {
+        policy: mneme_retention::Policy {
             version: mneme_retention::POLICY_VERSION.to_owned(),
             retain_assertion_after_prune: true,
             block_content_replay: true,
             retain_withdrawn_evidence_metadata: true,
         },
     };
-    mneme_retention::Retention::new(&mut harness.workspace)
+    mneme_retention::Engine::new(&mut harness.workspace)
         .execute(request)
         .expect("forget");
     let build = harness.build(bundle, false);
@@ -1041,18 +1034,18 @@ fn explicit_forget_invalidates_builds_and_prevents_replay_rows() {
     assert!(result.rows.is_empty());
     assert!(result.absence_established);
 
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     assert!(matches!(
         service.publish_build(&old_build),
-        Err(mneme_datalog::DatalogError::Store(
-            mneme_store::StoreError::BarrierAdvanced { .. }
+        Err(mneme_datalog::Error::Store(
+            mneme_store::Failure::BarrierAdvanced { .. }
         ))
     ));
     let stale = service.query_build(&old_build, mneme_datalog::Query::all("claim", 100));
     assert!(matches!(
         stale,
-        Err(mneme_datalog::DatalogError::Store(
-            mneme_store::StoreError::BarrierAdvanced { .. }
+        Err(mneme_datalog::Error::Store(
+            mneme_store::Failure::BarrierAdvanced { .. }
         ))
     ));
 }
@@ -1065,7 +1058,7 @@ fn support_budget_truncation_is_explicit() {
     harness.add_relation("first", rid(0x20), &scope(), rid(0x10), rid(0x11));
     harness.add_relation("second", rid(0x21), &scope(), rid(0x10), rid(0x11));
     let revision = harness.workspace.current_revision().expect("revision");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let build = service
         .build(mneme_datalog::BuildRequest {
             actor: "datalog-test".to_owned(),
@@ -1129,7 +1122,7 @@ fn query_build_returns_explicit_context_and_no_absence_on_unrelated_partial_buil
         &["relation"],
     );
     let revision = harness.workspace.current_revision().expect("revision");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let build = service
         .build(mneme_datalog::BuildRequest {
             actor: "datalog-test".to_owned(),
@@ -1173,7 +1166,7 @@ fn query_summary_serialization_distinguishes_complete_incomplete_and_truncated()
             .get(&complete_build.context.projection_build_id)
             .cloned()
             .expect("cached build");
-        let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+        let mut service = mneme_datalog::Service::new(&mut harness.workspace);
         service
             .query_build(&build, mneme_datalog::Query::all("path", 1))
             .expect("truncated query")
@@ -1195,7 +1188,7 @@ fn query_summary_serialization_distinguishes_complete_incomplete_and_truncated()
     );
     let rules = bundle(vec![negation_rule], &["relation"]);
     let revision = harness.workspace.current_revision().expect("revision");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let incomplete = service
         .build(mneme_datalog::BuildRequest {
             actor: "datalog-test".to_owned(),
@@ -1264,7 +1257,7 @@ fn invalid_or_stale_publication_never_replaces_the_registered_projection() {
     );
     let revision = harness.workspace.current_revision().expect("revision");
     {
-        let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+        let mut service = mneme_datalog::Service::new(&mut harness.workspace);
         let invalid = service.build(mneme_datalog::BuildRequest {
             actor: "datalog-test".to_owned(),
             scope: scope(),
@@ -1283,7 +1276,7 @@ fn invalid_or_stale_publication_never_replaces_the_registered_projection() {
         });
         assert!(matches!(
             invalid,
-            Err(mneme_datalog::DatalogError::InvalidBundle(_))
+            Err(mneme_datalog::Error::InvalidBundle(_))
         ));
     }
     assert!(
@@ -1294,7 +1287,7 @@ fn invalid_or_stale_publication_never_replaces_the_registered_projection() {
             .is_none()
     );
     let build = {
-        let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+        let mut service = mneme_datalog::Service::new(&mut harness.workspace);
         let build = service
             .build(mneme_datalog::BuildRequest {
                 actor: "datalog-test".to_owned(),
@@ -1334,11 +1327,11 @@ fn invalid_or_stale_publication_never_replaces_the_registered_projection() {
         .advance_eligibility_barrier()
         .expect("advance barrier");
     {
-        let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+        let mut service = mneme_datalog::Service::new(&mut harness.workspace);
         assert!(matches!(
             service.publish_build(&build),
-            Err(mneme_datalog::DatalogError::Store(
-                mneme_store::StoreError::BarrierAdvanced { .. }
+            Err(mneme_datalog::Error::Store(
+                mneme_store::Failure::BarrierAdvanced { .. }
             ))
         ));
     }
@@ -1355,7 +1348,7 @@ fn recursion_depth_exhaustion_is_partial_and_non_exhaustive() {
     let mut harness = Harness::new();
     add_graph(&mut harness);
     let revision = harness.workspace.current_revision().expect("revision");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let build = service
         .build(mneme_datalog::BuildRequest {
             actor: "datalog-test".to_owned(),
@@ -1393,7 +1386,7 @@ fn build_identity_binds_limits_and_incomplete_extents() {
     let mut harness = Harness::new();
     add_graph(&mut harness);
     let revision = harness.workspace.current_revision().expect("revision");
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let request = |limits: mneme_datalog::Limits,
                    incomplete: std::collections::BTreeSet<String>| {
         mneme_datalog::BuildRequest {
@@ -1466,7 +1459,7 @@ fn terminal_failures_are_recomputed_and_never_published() {
     add_graph(&mut harness);
     let revision = harness.workspace.current_revision().expect("revision");
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let mut service = mneme_datalog::DatalogService::new(&mut harness.workspace);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
     let build_request =
         |publish: bool, cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>| {
             mneme_datalog::BuildRequest {
@@ -1496,7 +1489,7 @@ fn terminal_failures_are_recomputed_and_never_published() {
     assert_eq!(retried.status, mneme_datalog::ExecutionStatus::Complete);
     assert!(matches!(
         service.build(build_request(true, Some(cancelled))),
-        Err(mneme_datalog::DatalogError::Failed(_))
+        Err(mneme_datalog::Error::Failed(_))
     ));
     drop(service);
     assert!(

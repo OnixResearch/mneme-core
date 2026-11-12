@@ -5,7 +5,7 @@
 //! file, verifies it, then renames it into place and flushes the directory.
 //! Working files are replaced through a temporary file in the same directory,
 //! so a reader never observes a partially written payload.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use std::io::Write;
 
@@ -36,14 +36,14 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
 pub fn random_bytes() -> crate::error::Result<[u8; 16]> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes)
-        .map_err(|error| crate::error::StoreError::Random(error.to_string()))?;
+        .map_err(|error| crate::error::Failure::Random(error.to_string()))?;
     Ok(bytes)
 }
 
 /// Random lowercase hexadecimal text of `bytes` bytes.
 pub fn random_hex(bytes: u32) -> crate::error::Result<String> {
     let capacity = usize::try_from(bytes).map_err(|_| {
-        crate::error::StoreError::InvalidCommand("hex output length exceeds usize".to_owned())
+        crate::error::Failure::InvalidCommand("hex output length exceeds usize".to_owned())
     })?;
     let mut output = String::with_capacity(capacity * 2);
     for _ in 0..bytes {
@@ -62,7 +62,7 @@ pub fn validate_relative_path(text: &str) -> crate::error::Result<std::path::Pat
             .components()
             .any(|component| !matches!(component, std::path::Component::Normal(_)))
     {
-        return Err(crate::error::StoreError::PathEscapes(text.to_owned()));
+        return Err(crate::error::Failure::PathEscapes(text.to_owned()));
     }
     Ok(path.to_path_buf())
 }
@@ -83,7 +83,7 @@ pub fn stage(
     bytes: &[u8],
 ) -> crate::error::Result<StagedBlob> {
     if sha256(bytes) != *digest.as_bytes() {
-        return Err(crate::error::StoreError::CorruptBlob {
+        return Err(crate::error::Failure::CorruptBlob {
             digest: digest.to_hex(),
             reason: "staged bytes do not hash to the declared digest".to_owned(),
         });
@@ -98,17 +98,17 @@ pub fn stage(
     }
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|error| crate::error::StoreError::io(parent, error))?;
+            .map_err(|error| crate::error::Failure::io(parent, error))?;
     }
     let staging = root.join(STAGING_DIRECTORY);
     std::fs::create_dir_all(&staging)
-        .map_err(|error| crate::error::StoreError::io(&staging, error))?;
+        .map_err(|error| crate::error::Failure::io(&staging, error))?;
     let temporary = staging.join(format!("{TEMP_PREFIX}{}", random_hex(8)?));
     write_flushed(&temporary, bytes)?;
     std::fs::rename(&temporary, &target)
-        .map_err(|error| crate::error::StoreError::io(&target, error))?;
+        .map_err(|error| crate::error::Failure::io(&target, error))?;
     flush_directory(target.parent().ok_or_else(|| {
-        crate::error::StoreError::InvalidCommand("blob path has no parent".to_owned())
+        crate::error::Failure::InvalidCommand("blob path has no parent".to_owned())
     })?)?;
     Ok(StagedBlob {
         digest,
@@ -124,15 +124,15 @@ pub fn read(
     let path = blob_path(root, digest);
     let bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            crate::error::StoreError::MissingBlob {
+            crate::error::Failure::MissingBlob {
                 digest: digest.to_hex(),
             }
         } else {
-            crate::error::StoreError::io(&path, error)
+            crate::error::Failure::io(&path, error)
         }
     })?;
     if sha256(&bytes) != *digest.as_bytes() {
-        return Err(crate::error::StoreError::CorruptBlob {
+        return Err(crate::error::Failure::CorruptBlob {
             digest: digest.to_hex(),
             reason: "stored bytes do not hash to the committed digest".to_owned(),
         });
@@ -148,7 +148,7 @@ pub fn verify(
 ) -> crate::error::Result<()> {
     let bytes = read(root, digest)?;
     if bytes.len() as u64 != expected_length {
-        return Err(crate::error::StoreError::CorruptBlob {
+        return Err(crate::error::Failure::CorruptBlob {
             digest: digest.to_hex(),
             reason: format!(
                 "stored length {} differs from declared {expected_length}",
@@ -168,37 +168,37 @@ pub fn publish_working_file(
     let relative = validate_relative_path(relative)?;
     let working = root.join(WORKING_DIRECTORY);
     std::fs::create_dir_all(&working)
-        .map_err(|error| crate::error::StoreError::io(&working, error))?;
+        .map_err(|error| crate::error::Failure::io(&working, error))?;
     let working_root = std::fs::canonicalize(&working)
-        .map_err(|error| crate::error::StoreError::io(&working, error))?;
+        .map_err(|error| crate::error::Failure::io(&working, error))?;
     let target = working.join(&relative);
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|error| crate::error::StoreError::io(parent, error))?;
+            .map_err(|error| crate::error::Failure::io(parent, error))?;
         let canonical_parent = std::fs::canonicalize(parent)
-            .map_err(|error| crate::error::StoreError::io(parent, error))?;
+            .map_err(|error| crate::error::Failure::io(parent, error))?;
         if !canonical_parent.starts_with(&working_root) {
-            return Err(crate::error::StoreError::PathEscapes(
+            return Err(crate::error::Failure::PathEscapes(
                 relative.to_string_lossy().into_owned(),
             ));
         }
     }
     if target.exists() {
         let canonical_target = std::fs::canonicalize(&target)
-            .map_err(|error| crate::error::StoreError::io(&target, error))?;
+            .map_err(|error| crate::error::Failure::io(&target, error))?;
         if !canonical_target.starts_with(&working_root) {
-            return Err(crate::error::StoreError::PathEscapes(
+            return Err(crate::error::Failure::PathEscapes(
                 relative.to_string_lossy().into_owned(),
             ));
         }
     }
     let parent = target.parent().ok_or_else(|| {
-        crate::error::StoreError::InvalidCommand("working path has no parent".to_owned())
+        crate::error::Failure::InvalidCommand("working path has no parent".to_owned())
     })?;
     let temporary = parent.join(format!("{TEMP_PREFIX}{}", random_hex(8)?));
     write_flushed(&temporary, bytes)?;
     std::fs::rename(&temporary, &target)
-        .map_err(|error| crate::error::StoreError::io(&target, error))?;
+        .map_err(|error| crate::error::Failure::io(&target, error))?;
     flush_directory(parent)?;
     Ok(())
 }
@@ -213,11 +213,11 @@ pub fn read_working_file(
     if path.exists() {
         let working = root.join(WORKING_DIRECTORY);
         let working_root = std::fs::canonicalize(&working)
-            .map_err(|error| crate::error::StoreError::io(&working, error))?;
+            .map_err(|error| crate::error::Failure::io(&working, error))?;
         let canonical = std::fs::canonicalize(&path)
-            .map_err(|error| crate::error::StoreError::io(&path, error))?;
+            .map_err(|error| crate::error::Failure::io(&path, error))?;
         if !canonical.starts_with(&working_root) {
-            return Err(crate::error::StoreError::PathEscapes(
+            return Err(crate::error::Failure::PathEscapes(
                 relative.to_string_lossy().into_owned(),
             ));
         }
@@ -225,7 +225,7 @@ pub fn read_working_file(
     match std::fs::read(&path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(crate::error::StoreError::io(&path, error)),
+        Err(error) => Err(crate::error::Failure::io(&path, error)),
     }
 }
 
@@ -239,16 +239,16 @@ pub fn cleanup_orphans(
     let staging = root.join(STAGING_DIRECTORY);
     if staging.is_dir() {
         for entry in std::fs::read_dir(&staging)
-            .map_err(|error| crate::error::StoreError::io(&staging, error))?
+            .map_err(|error| crate::error::Failure::io(&staging, error))?
         {
-            let entry = entry.map_err(|error| crate::error::StoreError::io(&staging, error))?;
+            let entry = entry.map_err(|error| crate::error::Failure::io(&staging, error))?;
             if entry
                 .file_type()
                 .map(|kind| kind.is_file())
                 .unwrap_or(false)
             {
                 std::fs::remove_file(entry.path())
-                    .map_err(|error| crate::error::StoreError::io(entry.path(), error))?;
+                    .map_err(|error| crate::error::Failure::io(entry.path(), error))?;
                 staged += 1;
             }
         }
@@ -259,7 +259,7 @@ pub fn cleanup_orphans(
         for (path, digest) in blob_files(&blob_root)? {
             if !known.contains(&digest) {
                 std::fs::remove_file(&path)
-                    .map_err(|error| crate::error::StoreError::io(&path, error))?;
+                    .map_err(|error| crate::error::Failure::io(&path, error))?;
                 blobs += 1;
             }
         }
@@ -278,24 +278,33 @@ pub fn cleanup_working_temporaries(root: &std::path::Path) -> crate::error::Resu
     Ok(removed)
 }
 
-#[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn cleanup_temporaries_in(directory: &std::path::Path) -> crate::error::Result<usize> {
     let mut removed = 0;
-    for entry in std::fs::read_dir(directory)
-        .map_err(|error| crate::error::StoreError::io(directory, error))?
-    {
-        let entry = entry.map_err(|error| crate::error::StoreError::io(directory, error))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|error| crate::error::StoreError::io(entry.path(), error))?;
-        if file_type.is_dir() {
-            removed += cleanup_temporaries_in(&entry.path())?;
-        } else if file_type.is_file()
-            && entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX)
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)
+            .map_err(|error| crate::error::Failure::io(&directory, error))?
         {
-            std::fs::remove_file(entry.path())
-                .map_err(|error| crate::error::StoreError::io(entry.path(), error))?;
-            removed += 1;
+            let entry = entry.map_err(|error| crate::error::Failure::io(&directory, error))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| crate::error::Failure::io(entry.path(), error))?;
+            if file_type.is_dir() {
+                if pending.len() >= 100_000 {
+                    return Err(crate::error::Failure::io(
+                        &directory,
+                        std::io::Error::other("temporary cleanup exceeds its directory bound"),
+                    ));
+                }
+                pending.push(entry.path());
+            } else if file_type.is_file()
+                && entry.file_name().to_string_lossy().starts_with(TEMP_PREFIX)
+            {
+                std::fs::remove_file(entry.path())
+                    .map_err(|error| crate::error::Failure::io(entry.path(), error))?;
+                removed += 1;
+            }
         }
     }
     Ok(removed)
@@ -307,11 +316,10 @@ fn blob_files(
 ) -> crate::error::Result<Vec<(std::path::PathBuf, [u8; 32])>> {
     let mut output = Vec::new();
     let max_blob_files = 1_000_000;
-    for algorithm in std::fs::read_dir(blob_root)
-        .map_err(|error| crate::error::StoreError::io(blob_root, error))?
+    for algorithm in
+        std::fs::read_dir(blob_root).map_err(|error| crate::error::Failure::io(blob_root, error))?
     {
-        let algorithm =
-            algorithm.map_err(|error| crate::error::StoreError::io(blob_root, error))?;
+        let algorithm = algorithm.map_err(|error| crate::error::Failure::io(blob_root, error))?;
         if !algorithm
             .file_type()
             .map(|kind| kind.is_dir())
@@ -320,18 +328,17 @@ fn blob_files(
             continue;
         }
         for shard in std::fs::read_dir(algorithm.path())
-            .map_err(|error| crate::error::StoreError::io(algorithm.path(), error))?
+            .map_err(|error| crate::error::Failure::io(algorithm.path(), error))?
         {
             let shard =
-                shard.map_err(|error| crate::error::StoreError::io(algorithm.path(), error))?;
+                shard.map_err(|error| crate::error::Failure::io(algorithm.path(), error))?;
             if !shard.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
                 continue;
             }
             for file in std::fs::read_dir(shard.path())
-                .map_err(|error| crate::error::StoreError::io(shard.path(), error))?
+                .map_err(|error| crate::error::Failure::io(shard.path(), error))?
             {
-                let file =
-                    file.map_err(|error| crate::error::StoreError::io(shard.path(), error))?;
+                let file = file.map_err(|error| crate::error::Failure::io(shard.path(), error))?;
                 if !file.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
                     continue;
                 }
@@ -340,7 +347,7 @@ fn blob_files(
                     continue;
                 };
                 if output.len() >= max_blob_files {
-                    return Err(crate::error::StoreError::UnsupportedLayout(
+                    return Err(crate::error::Failure::UnsupportedLayout(
                         "blob inventory exceeds the 1M file bound".to_owned(),
                     ));
                 }
@@ -375,11 +382,11 @@ fn write_flushed(path: &std::path::Path, bytes: &[u8]) -> crate::error::Result<(
         .create_new(true)
         .write(true)
         .open(path)
-        .map_err(|error| crate::error::StoreError::io(path, error))?;
+        .map_err(|error| crate::error::Failure::io(path, error))?;
     file.write_all(bytes)
-        .map_err(|error| crate::error::StoreError::io(path, error))?;
+        .map_err(|error| crate::error::Failure::io(path, error))?;
     file.sync_all()
-        .map_err(|error| crate::error::StoreError::io(path, error))?;
+        .map_err(|error| crate::error::Failure::io(path, error))?;
     Ok(())
 }
 
@@ -388,7 +395,7 @@ fn flush_directory(path: &std::path::Path) -> crate::error::Result<()> {
     if let Ok(directory) = std::fs::File::open(path) {
         directory
             .sync_all()
-            .map_err(|error| crate::error::StoreError::io(path, error))?;
+            .map_err(|error| crate::error::Failure::io(path, error))?;
     }
     Ok(())
 }
@@ -418,7 +425,7 @@ mod tests {
         std::fs::write(&path, b"tampered").expect("tamper");
         assert!(matches!(
             read(root.path(), digest),
-            Err(crate::error::StoreError::CorruptBlob { .. })
+            Err(crate::error::Failure::CorruptBlob { .. })
         ));
     }
 

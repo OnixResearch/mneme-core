@@ -43,14 +43,14 @@ pub struct SourceView {
 
 impl SourceView {
     /// Parse a source-revision envelope.
-    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
         expect_kind(&record, mneme_core::RecordKind::SourceRevision)?;
         let content = mneme_core::SourceContent::from_value(
             required(&record, "content")?,
             &mneme_core::Path::root().field("content"),
         )
         .map_err(|diagnostic| {
-            crate::error::MemoryError::invalid(
+            crate::failure::EvidenceError::invalid(
                 record.record_id,
                 "source-revision",
                 diagnostic.to_string(),
@@ -86,7 +86,7 @@ impl SourceView {
                     &mneme_core::Path::root().field("content-digest"),
                 )
                 .map_err(|diagnostic| {
-                    crate::error::MemoryError::invalid(
+                    crate::failure::EvidenceError::invalid(
                         record.record_id,
                         "source-revision",
                         diagnostic.to_string(),
@@ -188,7 +188,7 @@ pub struct EpisodeView {
 
 impl EpisodeView {
     /// Parse an episode envelope.
-    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
         expect_kind(&record, mneme_core::RecordKind::Episode)?;
         Ok(EpisodeView {
             actor: required_text(&record, "actor")?,
@@ -227,13 +227,13 @@ pub struct EvidenceView {
 
 impl EvidenceView {
     /// Parse an evidence envelope.
-    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
         expect_kind(&record, mneme_core::RecordKind::Evidence)?;
         let relation = match required_symbol_text(&record, "relation")?.as_str() {
             "supports" => SupportRelation::Supports,
             "challenges" => SupportRelation::Challenges,
             other => {
-                return Err(crate::error::MemoryError::invalid(
+                return Err(crate::failure::EvidenceError::invalid(
                     record.record_id,
                     "evidence",
                     format!("unknown support relation {other}"),
@@ -242,7 +242,11 @@ impl EvidenceView {
         };
         let origin = mneme_core::Origin::parse(&required_symbol_text(&record, "origin")?)
             .ok_or_else(|| {
-                crate::error::MemoryError::invalid(record.record_id, "evidence", "unknown origin")
+                crate::failure::EvidenceError::invalid(
+                    record.record_id,
+                    "evidence",
+                    "unknown origin",
+                )
             })?;
         Ok(EvidenceView {
             assertion: required_reference_target(&record, "assertion")?,
@@ -252,7 +256,7 @@ impl EvidenceView {
                 &mneme_core::Path::root().field("source"),
             )
             .map_err(|diagnostic| {
-                crate::error::MemoryError::invalid(
+                crate::failure::EvidenceError::invalid(
                     record.record_id,
                     "evidence",
                     diagnostic.to_string(),
@@ -265,7 +269,7 @@ impl EvidenceView {
                         &mneme_core::Path::root().field("span"),
                     )
                     .map_err(|diagnostic| {
-                        crate::error::MemoryError::invalid(
+                        crate::failure::EvidenceError::invalid(
                             record.record_id,
                             "evidence",
                             diagnostic.to_string(),
@@ -319,14 +323,14 @@ pub struct AssertionView {
 
 impl AssertionView {
     /// Parse an assertion envelope.
-    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
         expect_kind(&record, mneme_core::RecordKind::Assertion)?;
         let stance = match required_symbol_text(&record, "stance")?.as_str() {
             "affirm" => Stance::Affirm,
             "deny" => Stance::Deny,
             "hypothesis" => Stance::Hypothesis,
             other => {
-                return Err(crate::error::MemoryError::invalid(
+                return Err(crate::failure::EvidenceError::invalid(
                     record.record_id,
                     "assertion",
                     format!("unknown stance {other}"),
@@ -334,11 +338,19 @@ impl AssertionView {
             }
         };
         let lifecycle = record.assertion_lifecycle().ok_or_else(|| {
-            crate::error::MemoryError::invalid(record.record_id, "assertion", "missing lifecycle")
+            crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "assertion",
+                "missing lifecycle",
+            )
         })?;
         let origin = mneme_core::Origin::parse(&required_symbol_text(&record, "origin")?)
             .ok_or_else(|| {
-                crate::error::MemoryError::invalid(record.record_id, "assertion", "unknown origin")
+                crate::failure::EvidenceError::invalid(
+                    record.record_id,
+                    "assertion",
+                    "unknown origin",
+                )
             })?;
         Ok(AssertionView {
             subject: required_reference_target(&record, "subject")?,
@@ -366,12 +378,12 @@ impl AssertionView {
 
 fn parse_extraction(
     record: &mneme_core::RecordEnvelope,
-) -> crate::error::Result<Option<Extraction>> {
+) -> crate::failure::Result<Option<Extraction>> {
     let Some(value) = record.payload.get("extraction") else {
         return Ok(None);
     };
     let Some(extraction) = value.as_record() else {
-        return Err(crate::error::MemoryError::invalid(
+        return Err(crate::failure::EvidenceError::invalid(
             record.record_id,
             "assertion",
             "extraction must be a record",
@@ -380,17 +392,17 @@ fn parse_extraction(
     if extraction.label() != &mneme_core::Value::symbol("extraction")
         || extraction.fields().len() != 2
     {
-        return Err(crate::error::MemoryError::invalid(
+        return Err(crate::failure::EvidenceError::invalid(
             record.record_id,
             "assertion",
             "expected <extraction model prompt>",
         ));
     }
     let model = extraction.fields()[0].as_string().ok_or_else(|| {
-        crate::error::MemoryError::invalid(record.record_id, "assertion", "model must be text")
+        crate::failure::EvidenceError::invalid(record.record_id, "assertion", "model must be text")
     })?;
     let prompt = extraction.fields()[1].as_string().ok_or_else(|| {
-        crate::error::MemoryError::invalid(record.record_id, "assertion", "prompt must be text")
+        crate::failure::EvidenceError::invalid(record.record_id, "assertion", "prompt must be text")
     })?;
     Ok(Some(Extraction {
         model: model.to_owned(),
@@ -412,7 +424,7 @@ pub struct DerivationView {
 
 impl DerivationView {
     /// Parse a derivation envelope.
-    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
         expect_kind(&record, mneme_core::RecordKind::Derivation)?;
         let rule_version = required_integer(&record, "rule-version")?;
         let evaluation_revision = mneme_core::WorkspaceRevisionId::from_value(
@@ -420,7 +432,7 @@ impl DerivationView {
             &mneme_core::Path::root().field("evaluation-revision"),
         )
         .map_err(|diagnostic| {
-            crate::error::MemoryError::invalid(
+            crate::failure::EvidenceError::invalid(
                 record.record_id,
                 "derivation",
                 diagnostic.to_string(),
@@ -488,14 +500,18 @@ pub struct DecisionView {
 
 impl DecisionView {
     /// Parse a decision envelope.
-    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::error::Result<Self> {
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
         expect_kind(&record, mneme_core::RecordKind::Decision)?;
         let input_revision = mneme_core::WorkspaceRevisionId::from_value(
             required(&record, "input-revision")?,
             &mneme_core::Path::root().field("input-revision"),
         )
         .map_err(|diagnostic| {
-            crate::error::MemoryError::invalid(record.record_id, "decision", diagnostic.to_string())
+            crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "decision",
+                diagnostic.to_string(),
+            )
         })?;
         Ok(DecisionView {
             decision_kind: DecisionKind::parse(&required_symbol_text(&record, "decision-kind")?),
@@ -515,11 +531,11 @@ impl DecisionView {
 fn expect_kind(
     record: &mneme_core::RecordEnvelope,
     kind: mneme_core::RecordKind,
-) -> crate::error::Result<()> {
+) -> crate::failure::Result<()> {
     if record.kind == kind {
         Ok(())
     } else {
-        Err(crate::error::MemoryError::invalid(
+        Err(crate::failure::EvidenceError::invalid(
             record.record_id,
             kind.symbol(),
             format!("found kind {}", record.kind.symbol()),
@@ -530,9 +546,9 @@ fn expect_kind(
 pub(crate) fn required<'a>(
     record: &'a mneme_core::RecordEnvelope,
     name: &str,
-) -> crate::error::Result<&'a mneme_core::Value> {
+) -> crate::failure::Result<&'a mneme_core::Value> {
     record.payload.get(name).ok_or_else(|| {
-        crate::error::MemoryError::invalid(
+        crate::failure::EvidenceError::invalid(
             record.record_id,
             record.kind.symbol(),
             format!("missing field {name}"),
@@ -543,12 +559,12 @@ pub(crate) fn required<'a>(
 pub(crate) fn required_text(
     record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> crate::error::Result<String> {
+) -> crate::failure::Result<String> {
     required(record, name)?
         .as_string()
         .map(str::to_owned)
         .ok_or_else(|| {
-            crate::error::MemoryError::invalid(
+            crate::failure::EvidenceError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 format!("{name} must be text"),
@@ -559,12 +575,12 @@ pub(crate) fn required_text(
 pub(crate) fn required_symbol_text(
     record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> crate::error::Result<String> {
+) -> crate::failure::Result<String> {
     required(record, name)?
         .as_symbol()
         .map(|symbol| symbol.as_str().to_owned())
         .ok_or_else(|| {
-            crate::error::MemoryError::invalid(
+            crate::failure::EvidenceError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 format!("{name} must be a symbol"),
@@ -575,12 +591,12 @@ pub(crate) fn required_symbol_text(
 pub(crate) fn required_integer(
     record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> crate::error::Result<i64> {
+) -> crate::failure::Result<i64> {
     required(record, name)?
         .as_integer()
         .and_then(|integer| integer.to_i64())
         .ok_or_else(|| {
-            crate::error::MemoryError::invalid(
+            crate::failure::EvidenceError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 format!("{name} must be an integer"),
@@ -591,13 +607,13 @@ pub(crate) fn required_integer(
 pub(crate) fn required_valid_time(
     record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> crate::error::Result<mneme_core::ValidTime> {
+) -> crate::failure::Result<mneme_core::ValidTime> {
     mneme_core::ValidTime::from_value(
         required(record, name)?,
         &mneme_core::Path::root().field("valid-time"),
     )
     .map_err(|diagnostic| {
-        crate::error::MemoryError::invalid(
+        crate::failure::EvidenceError::invalid(
             record.record_id,
             record.kind.symbol(),
             diagnostic.to_string(),
@@ -608,10 +624,10 @@ pub(crate) fn required_valid_time(
 pub(crate) fn required_reference_target(
     record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> crate::error::Result<mneme_core::RecordId> {
+) -> crate::failure::Result<mneme_core::RecordId> {
     reference_target(record, required(record, name)?).and_then(|target| {
         target.ok_or_else(|| {
-            crate::error::MemoryError::invalid(
+            crate::failure::EvidenceError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 format!("{name} must name a local record"),
@@ -623,7 +639,7 @@ pub(crate) fn required_reference_target(
 pub(crate) fn optional_reference_target(
     record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> crate::error::Result<Option<mneme_core::RecordId>> {
+) -> crate::failure::Result<Option<mneme_core::RecordId>> {
     match record.payload.get(name) {
         Some(value) => reference_target(record, value),
         None => Ok(None),
@@ -633,10 +649,10 @@ pub(crate) fn optional_reference_target(
 pub(crate) fn required_reference_set(
     record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> crate::error::Result<std::collections::BTreeSet<mneme_core::RecordId>> {
+) -> crate::failure::Result<std::collections::BTreeSet<mneme_core::RecordId>> {
     let values = required(record, name)?;
     let set = values.as_set().ok_or_else(|| {
-        crate::error::MemoryError::invalid(
+        crate::failure::EvidenceError::invalid(
             record.record_id,
             record.kind.symbol(),
             format!("{name} must be a set of references"),
@@ -654,7 +670,7 @@ pub(crate) fn required_reference_set(
 pub(crate) fn optional_reference_set(
     record: &mneme_core::RecordEnvelope,
     name: &str,
-) -> crate::error::Result<std::collections::BTreeSet<mneme_core::RecordId>> {
+) -> crate::failure::Result<std::collections::BTreeSet<mneme_core::RecordId>> {
     if record.payload.get(name).is_some() {
         required_reference_set(record, name)
     } else {
@@ -665,10 +681,10 @@ pub(crate) fn optional_reference_set(
 fn reference_target(
     record: &mneme_core::RecordEnvelope,
     value: &mneme_core::Value,
-) -> crate::error::Result<Option<mneme_core::RecordId>> {
+) -> crate::failure::Result<Option<mneme_core::RecordId>> {
     let reference = mneme_core::Reference::from_value(value, &mneme_core::Path::root()).map_err(
         |diagnostic| {
-            crate::error::MemoryError::invalid(
+            crate::failure::EvidenceError::invalid(
                 record.record_id,
                 record.kind.symbol(),
                 diagnostic.to_string(),
@@ -676,12 +692,12 @@ fn reference_target(
         },
     )?;
     match &reference {
-        mneme_core::Reference::External { .. } => Err(crate::error::MemoryError::invalid(
+        mneme_core::Reference::External { .. } => Err(crate::failure::EvidenceError::invalid(
             record.record_id,
             record.kind.symbol(),
             "memory references cannot be external",
         )),
-        mneme_core::Reference::Unresolved { .. } => Err(crate::error::MemoryError::invalid(
+        mneme_core::Reference::Unresolved { .. } => Err(crate::failure::EvidenceError::invalid(
             record.record_id,
             record.kind.symbol(),
             "memory references cannot be unresolved",

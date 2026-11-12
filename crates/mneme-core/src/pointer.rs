@@ -5,7 +5,7 @@
 //! unresolved state when the owning schema permits one. Validation against a
 //! snapshot index rejects missing targets, kind mismatches, and pinned
 //! revisions the snapshot does not contain.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 const LOCAL_REF: &str = "local-ref";
 const PINNED_REF: &str = "pinned-ref";
@@ -15,7 +15,7 @@ const UNRESOLVED_REF: &str = "unresolved-ref";
 /// The current kind and revision of one record in a validated snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RevisionEntry {
-    pub kind: crate::schema::RecordKind,
+    pub kind: crate::fields::RecordKind,
     pub revision: crate::ids::RevisionId,
 }
 
@@ -37,7 +37,7 @@ impl SnapshotIndex {
     pub fn insert(
         &mut self,
         record: crate::ids::RecordId,
-        kind: crate::schema::RecordKind,
+        kind: crate::fields::RecordKind,
         revision: crate::ids::RevisionId,
     ) -> bool {
         if self.current.contains_key(&record) {
@@ -54,7 +54,7 @@ impl SnapshotIndex {
     pub fn upsert(
         &mut self,
         record: crate::ids::RecordId,
-        kind: crate::schema::RecordKind,
+        kind: crate::fields::RecordKind,
         revision: crate::ids::RevisionId,
     ) -> Option<RevisionEntry> {
         let previous = self
@@ -113,30 +113,30 @@ pub enum Reference {
     /// A target resolved within the pinned snapshot, without a revision pin.
     Local {
         target: crate::ids::RecordId,
-        kind: crate::schema::RecordKind,
+        kind: crate::fields::RecordKind,
     },
     /// A target pinned to one immutable record revision.
     Pinned {
         target: crate::ids::RecordId,
         revision: crate::ids::RevisionId,
-        kind: crate::schema::RecordKind,
+        kind: crate::fields::RecordKind,
     },
     /// A target outside the local workspace, explicitly marked external.
     External {
         locator: String,
-        kind: crate::schema::RecordKind,
+        kind: crate::fields::RecordKind,
     },
     /// A typed unresolved state permitted only where the schema says so.
     Unresolved {
         target: crate::ids::RecordId,
-        kind: crate::schema::RecordKind,
+        kind: crate::fields::RecordKind,
         reason: String,
     },
 }
 
 impl Reference {
     /// A snapshot-local reference.
-    pub fn local(target: crate::ids::RecordId, kind: crate::schema::RecordKind) -> Self {
+    pub fn local(target: crate::ids::RecordId, kind: crate::fields::RecordKind) -> Self {
         Reference::Local { target, kind }
     }
 
@@ -144,7 +144,7 @@ impl Reference {
     pub fn pinned(
         target: crate::ids::RecordId,
         revision: crate::ids::RevisionId,
-        kind: crate::schema::RecordKind,
+        kind: crate::fields::RecordKind,
     ) -> Self {
         Reference::Pinned {
             target,
@@ -156,7 +156,7 @@ impl Reference {
     /// An explicitly external reference.
     pub fn external(
         locator: impl Into<String>,
-        kind: crate::schema::RecordKind,
+        kind: crate::fields::RecordKind,
     ) -> Result<Self, &'static str> {
         let locator = locator.into();
         if locator.trim().is_empty() {
@@ -168,7 +168,7 @@ impl Reference {
     /// A typed unresolved reference with an explicit reason.
     pub fn unresolved(
         target: crate::ids::RecordId,
-        kind: crate::schema::RecordKind,
+        kind: crate::fields::RecordKind,
         reason: impl Into<String>,
     ) -> Result<Self, &'static str> {
         let reason = reason.into();
@@ -183,7 +183,7 @@ impl Reference {
     }
 
     /// The referenced kind.
-    pub const fn kind(&self) -> crate::schema::RecordKind {
+    pub const fn kind(&self) -> crate::fields::RecordKind {
         match self {
             Reference::Local { kind, .. }
             | Reference::Pinned { kind, .. }
@@ -213,9 +213,9 @@ impl Reference {
     }
 
     /// Encode as one of the declared reference records.
-    pub fn to_value(&self) -> crate::value::Value {
+    pub fn to_value(&self) -> crate::typed::Value {
         match self {
-            Reference::Local { target, kind } => crate::value::Value::record_named(
+            Reference::Local { target, kind } => crate::typed::Value::record_named(
                 LOCAL_REF,
                 vec![target.to_value(), kind.to_value()],
             ),
@@ -223,14 +223,14 @@ impl Reference {
                 target,
                 revision,
                 kind,
-            } => crate::value::Value::record_named(
+            } => crate::typed::Value::record_named(
                 PINNED_REF,
                 vec![target.to_value(), revision.to_value(), kind.to_value()],
             ),
-            Reference::External { locator, kind } => crate::value::Value::record_named(
+            Reference::External { locator, kind } => crate::typed::Value::record_named(
                 EXTERNAL_REF,
                 vec![
-                    crate::value::Value::string(locator.clone()),
+                    crate::typed::Value::string(locator.clone()),
                     kind.to_value(),
                 ],
             ),
@@ -238,12 +238,12 @@ impl Reference {
                 target,
                 kind,
                 reason,
-            } => crate::value::Value::record_named(
+            } => crate::typed::Value::record_named(
                 UNRESOLVED_REF,
                 vec![
                     target.to_value(),
                     kind.to_value(),
-                    crate::value::Value::string(reason.clone()),
+                    crate::typed::Value::string(reason.clone()),
                 ],
             ),
         }
@@ -251,13 +251,13 @@ impl Reference {
 
     /// Decode a reference record.
     pub fn from_value(
-        value: &crate::value::Value,
-        path: &crate::error::Path,
-    ) -> Result<Self, crate::error::Diagnostic> {
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let type_error = || {
-            crate::error::Diagnostic::new(
-                crate::error::Stage::Domain,
-                crate::error::ErrorCode::TypeMismatch,
+            crate::problem::Diagnostic::new(
+                crate::problem::Stage::Domain,
+                crate::problem::ErrorCode::TypeMismatch,
                 path.clone(),
                 "expected a declared reference record",
             )
@@ -270,7 +270,7 @@ impl Reference {
             LOCAL_REF if record.fields().len() == 2 => {
                 let target = crate::ids::RecordId::from_value(&record.fields()[0], &path.index(0))?;
                 let kind =
-                    crate::schema::RecordKind::from_value(&record.fields()[1], &path.index(1))?;
+                    crate::fields::RecordKind::from_value(&record.fields()[1], &path.index(1))?;
                 Ok(Reference::local(target, kind))
             }
             PINNED_REF if record.fields().len() == 3 => {
@@ -278,17 +278,17 @@ impl Reference {
                 let revision =
                     crate::ids::RevisionId::from_value(&record.fields()[1], &path.index(1))?;
                 let kind =
-                    crate::schema::RecordKind::from_value(&record.fields()[2], &path.index(2))?;
+                    crate::fields::RecordKind::from_value(&record.fields()[2], &path.index(2))?;
                 Ok(Reference::pinned(target, revision, kind))
             }
             EXTERNAL_REF if record.fields().len() == 2 => {
                 let locator = record.fields()[0].as_string().ok_or_else(type_error)?;
                 let kind =
-                    crate::schema::RecordKind::from_value(&record.fields()[1], &path.index(1))?;
+                    crate::fields::RecordKind::from_value(&record.fields()[1], &path.index(1))?;
                 Reference::external(locator, kind).map_err(|message| {
-                    crate::error::Diagnostic::new(
-                        crate::error::Stage::Domain,
-                        crate::error::ErrorCode::InvalidIdentifier,
+                    crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Domain,
+                        crate::problem::ErrorCode::InvalidIdentifier,
                         path.clone(),
                         message,
                     )
@@ -297,12 +297,12 @@ impl Reference {
             UNRESOLVED_REF if record.fields().len() == 3 => {
                 let target = crate::ids::RecordId::from_value(&record.fields()[0], &path.index(0))?;
                 let kind =
-                    crate::schema::RecordKind::from_value(&record.fields()[1], &path.index(1))?;
+                    crate::fields::RecordKind::from_value(&record.fields()[1], &path.index(1))?;
                 let reason = record.fields()[2].as_string().ok_or_else(type_error)?;
                 Reference::unresolved(target, kind, reason).map_err(|message| {
-                    crate::error::Diagnostic::new(
-                        crate::error::Stage::Domain,
-                        crate::error::ErrorCode::InvalidIdentifier,
+                    crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Domain,
+                        crate::problem::ErrorCode::InvalidIdentifier,
                         path.clone(),
                         message,
                     )
@@ -316,8 +316,8 @@ impl Reference {
     pub fn validate(
         &self,
         index: &SnapshotIndex,
-        path: &crate::error::Path,
-    ) -> Result<(), crate::error::Diagnostic> {
+        path: &crate::problem::Path,
+    ) -> Result<(), crate::problem::Diagnostic> {
         match self {
             Reference::Local { target, kind } => {
                 resolve(index, *target, *kind, path)?;
@@ -329,9 +329,9 @@ impl Reference {
             } => {
                 let entry = resolve(index, *target, *kind, path)?;
                 if entry.revision != *revision && !index.knows_revision(target, revision) {
-                    return Err(crate::error::Diagnostic::new(
-                        crate::error::Stage::Domain,
-                        crate::error::ErrorCode::UnresolvedReference,
+                    return Err(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Domain,
+                        crate::problem::ErrorCode::UnresolvedReference,
                         path.clone(),
                         format!(
                             "pinned revision {revision} is not present in the validated snapshot"
@@ -348,21 +348,21 @@ impl Reference {
 fn resolve<'a>(
     index: &'a SnapshotIndex,
     target: crate::ids::RecordId,
-    kind: crate::schema::RecordKind,
-    path: &crate::error::Path,
-) -> Result<&'a RevisionEntry, crate::error::Diagnostic> {
+    kind: crate::fields::RecordKind,
+    path: &crate::problem::Path,
+) -> Result<&'a RevisionEntry, crate::problem::Diagnostic> {
     let entry = index.get(&target).ok_or_else(|| {
-        crate::error::Diagnostic::new(
-            crate::error::Stage::Domain,
-            crate::error::ErrorCode::UnresolvedReference,
+        crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::UnresolvedReference,
             path.clone(),
             format!("reference target {target} is not present in the validated snapshot"),
         )
     })?;
     if entry.kind != kind {
-        return Err(crate::error::Diagnostic::new(
-            crate::error::Stage::Domain,
-            crate::error::ErrorCode::ReferenceKindMismatch,
+        return Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::ReferenceKindMismatch,
             path.clone(),
             format!(
                 "reference expects kind {}, but {target} is {}",
@@ -389,19 +389,19 @@ mod tests {
     #[test]
     fn all_reference_forms_roundtrip() {
         let references = [
-            Reference::local(id(1), crate::schema::RecordKind::Entity),
-            Reference::pinned(id(2), revision(3), crate::schema::RecordKind::Assertion),
+            Reference::local(id(1), crate::fields::RecordKind::Entity),
+            Reference::pinned(id(2), revision(3), crate::fields::RecordKind::Assertion),
             Reference::external(
                 "https://example.invalid/doc",
-                crate::schema::RecordKind::Document,
+                crate::fields::RecordKind::Document,
             )
             .expect("locator"),
-            Reference::unresolved(id(4), crate::schema::RecordKind::Entity, "merge pending")
+            Reference::unresolved(id(4), crate::fields::RecordKind::Entity, "merge pending")
                 .expect("reason"),
         ];
         for reference in references {
             assert_eq!(
-                Reference::from_value(&reference.to_value(), &crate::error::Path::root())
+                Reference::from_value(&reference.to_value(), &crate::problem::Path::root())
                     .expect("decode"),
                 reference
             );
@@ -411,65 +411,65 @@ mod tests {
     #[test]
     fn local_reference_requires_a_present_target_of_the_declared_kind() {
         let mut index = SnapshotIndex::new();
-        assert!(index.insert(id(1), crate::schema::RecordKind::Entity, revision(10)));
-        let good = Reference::local(id(1), crate::schema::RecordKind::Entity);
-        good.validate(&index, &crate::error::Path::root())
+        assert!(index.insert(id(1), crate::fields::RecordKind::Entity, revision(10)));
+        let good = Reference::local(id(1), crate::fields::RecordKind::Entity);
+        good.validate(&index, &crate::problem::Path::root())
             .expect("resolves");
-        let mismatch = Reference::local(id(1), crate::schema::RecordKind::Assertion);
+        let mismatch = Reference::local(id(1), crate::fields::RecordKind::Assertion);
         assert_eq!(
             mismatch
-                .validate(&index, &crate::error::Path::root())
+                .validate(&index, &crate::problem::Path::root())
                 .expect_err("kind mismatch")
                 .code,
-            crate::error::ErrorCode::ReferenceKindMismatch
+            crate::problem::ErrorCode::ReferenceKindMismatch
         );
-        let missing = Reference::local(id(9), crate::schema::RecordKind::Entity);
+        let missing = Reference::local(id(9), crate::fields::RecordKind::Entity);
         assert_eq!(
             missing
-                .validate(&index, &crate::error::Path::root())
+                .validate(&index, &crate::problem::Path::root())
                 .expect_err("missing")
                 .code,
-            crate::error::ErrorCode::UnresolvedReference
+            crate::problem::ErrorCode::UnresolvedReference
         );
     }
 
     #[test]
     fn pinned_revision_must_be_known() {
         let mut index = SnapshotIndex::new();
-        assert!(index.insert(id(1), crate::schema::RecordKind::Document, revision(10)));
+        assert!(index.insert(id(1), crate::fields::RecordKind::Document, revision(10)));
         index.record_revision(id(1), revision(9));
-        Reference::pinned(id(1), revision(10), crate::schema::RecordKind::Document)
-            .validate(&index, &crate::error::Path::root())
+        Reference::pinned(id(1), revision(10), crate::fields::RecordKind::Document)
+            .validate(&index, &crate::problem::Path::root())
             .expect("current revision");
-        Reference::pinned(id(1), revision(9), crate::schema::RecordKind::Document)
-            .validate(&index, &crate::error::Path::root())
+        Reference::pinned(id(1), revision(9), crate::fields::RecordKind::Document)
+            .validate(&index, &crate::problem::Path::root())
             .expect("retained revision");
         assert_eq!(
-            Reference::pinned(id(1), revision(8), crate::schema::RecordKind::Document)
-                .validate(&index, &crate::error::Path::root())
+            Reference::pinned(id(1), revision(8), crate::fields::RecordKind::Document)
+                .validate(&index, &crate::problem::Path::root())
                 .expect_err("unknown revision")
                 .code,
-            crate::error::ErrorCode::UnresolvedReference
+            crate::problem::ErrorCode::UnresolvedReference
         );
     }
 
     #[test]
     fn external_and_unresolved_references_carry_explicit_state() {
         assert!(
-            Reference::external("", crate::schema::RecordKind::Entity).is_err(),
+            Reference::external("", crate::fields::RecordKind::Entity).is_err(),
             "empty locators are invalid"
         );
         assert!(
-            Reference::unresolved(id(1), crate::schema::RecordKind::Entity, " ").is_err(),
+            Reference::unresolved(id(1), crate::fields::RecordKind::Entity, " ").is_err(),
             "empty reasons are invalid"
         );
         assert!(
-            Reference::external("urn:example:thing", crate::schema::RecordKind::Entity)
+            Reference::external("urn:example:thing", crate::fields::RecordKind::Entity)
                 .expect("locator")
                 .is_external()
         );
         assert!(
-            Reference::unresolved(id(1), crate::schema::RecordKind::Entity, "pending")
+            Reference::unresolved(id(1), crate::fields::RecordKind::Entity, "pending")
                 .expect("reason")
                 .is_unresolved()
         );

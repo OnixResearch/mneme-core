@@ -3,7 +3,7 @@
 //! A plan is data. This registry rechecks base revision, preconditions, evidence
 //! digests, forgotten support, and idempotency before recording acceptance. It
 //! never executes actions or applies canonical effects.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Current source availability and digest for one plan premise.
 #[derive(Clone, Debug, PartialEq, Eq)]

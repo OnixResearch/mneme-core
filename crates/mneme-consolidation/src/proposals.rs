@@ -4,7 +4,7 @@
 //! span bounds, and quoted bytes. They do not establish semantic entailment:
 //! generated proposals begin with an unsupported-hypothesis support review and
 //! require a separate attributed review before acceptance.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Exact text associated with one reviewed input unit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,10 +38,10 @@ impl DeterministicGenerator {
     /// Generate one source-linked summary proposal per reviewed input.
     pub fn generate(
         &self,
-        job: &crate::ConsolidationJob,
+        job: &crate::Job,
         batch: &crate::InputBatch,
         inputs: &[GeneratorInput],
-    ) -> Result<Vec<crate::ConsolidationProposal>, String> {
+    ) -> Result<Vec<crate::Proposal>, String> {
         if job.batch != *batch {
             return Err("generator batch does not belong to the job".to_owned());
         }
@@ -51,7 +51,7 @@ impl DeterministicGenerator {
             if input.text.trim().is_empty() {
                 return Err(format!("input {} has no text", input.key.record_id));
             }
-            proposals.push(crate::ConsolidationProposal {
+            proposals.push(crate::Proposal {
                 proposal_id: format!("{}-summary-{}", job.job_id, input.key.record_id.to_hex()),
                 job_id: job.job_id.clone(),
                 recorded_at: job.recorded_at,
@@ -80,11 +80,11 @@ impl DeterministicGenerator {
 
 /// Generate assertion proposals from an optional extractor.
 pub fn generate_extracted(
-    job: &crate::ConsolidationJob,
+    job: &crate::Job,
     batch: &crate::InputBatch,
     inputs: &[GeneratorInput],
     extractor: &dyn Extractor,
-) -> Result<Vec<crate::ConsolidationProposal>, String> {
+) -> Result<Vec<crate::Proposal>, String> {
     if job.batch != *batch {
         return Err("generator batch does not belong to the job".to_owned());
     }
@@ -102,7 +102,7 @@ pub fn generate_extracted(
                     claim.claim_id
                 ));
             }
-            proposals.push(crate::ConsolidationProposal {
+            proposals.push(crate::Proposal {
                 proposal_id: format!("{}-{}", job.job_id, claim.claim_id),
                 job_id: job.job_id.clone(),
                 recorded_at: job.recorded_at,
@@ -136,7 +136,7 @@ pub fn generate_extracted(
 
 /// Record a separate attributed semantic-support review.
 pub fn record_support_review(
-    proposal: &mut crate::ConsolidationProposal,
+    proposal: &mut crate::Proposal,
     review: crate::SupportReview,
 ) -> Result<(), String> {
     review.validate()?;
@@ -231,7 +231,7 @@ mod tests {
         }
     }
 
-    fn input_and_job() -> (GeneratorInput, crate::ConsolidationJob, crate::InputBatch) {
+    fn input_and_job() -> (GeneratorInput, crate::Job, crate::InputBatch) {
         let fixture = crate::fixture().expect("fixture");
         let input = GeneratorInput {
             key: crate::InputKey {

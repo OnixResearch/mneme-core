@@ -2,7 +2,7 @@
 //!
 //! The ledger contains minimal identity and status metadata. It never stores
 //! forgotten source text, quotations, or human-readable storage errors.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Whether a suppression is inspectable but ineligible, or payload-hidden.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

@@ -41,39 +41,39 @@ impl SourceSpan {
     }
 
     /// Encode as `<span start end>`.
-    pub fn to_value(self) -> crate::value::Value {
-        crate::value::Value::record_named(
+    pub fn to_value(self) -> crate::typed::Value {
+        crate::typed::Value::record_named(
             "span",
             vec![
-                crate::value::Value::integer(self.start),
-                crate::value::Value::integer(self.end),
+                crate::typed::Value::integer(self.start),
+                crate::typed::Value::integer(self.end),
             ],
         )
     }
 
     /// Decode and validate `<span start end>`.
     pub fn from_value(
-        value: &crate::value::Value,
-        path: &crate::error::Path,
-    ) -> Result<Self, crate::error::Diagnostic> {
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let type_error = || {
-            crate::error::Diagnostic::new(
-                crate::error::Stage::Domain,
-                crate::error::ErrorCode::TypeMismatch,
+            crate::problem::Diagnostic::new(
+                crate::problem::Stage::Domain,
+                crate::problem::ErrorCode::TypeMismatch,
                 path.clone(),
                 "expected <span start end> with non-negative byte offsets",
             )
         };
         let record = value.as_record().ok_or_else(type_error)?;
-        if record.label() != &crate::value::Value::symbol("span") || record.fields().len() != 2 {
+        if record.label() != &crate::typed::Value::symbol("span") || record.fields().len() != 2 {
             return Err(type_error());
         }
         let start = unsigned(&record.fields()[0]).ok_or_else(type_error)?;
         let end = unsigned(&record.fields()[1]).ok_or_else(type_error)?;
         Self::new(start, end).map_err(|message| {
-            crate::error::Diagnostic::new(
-                crate::error::Stage::Domain,
-                crate::error::ErrorCode::InvalidInterval,
+            crate::problem::Diagnostic::new(
+                crate::problem::Stage::Domain,
+                crate::problem::ErrorCode::InvalidInterval,
                 path.clone(),
                 message,
             )
@@ -84,20 +84,20 @@ impl SourceSpan {
 /// A retained source payload with exact content identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetainedSource {
-    digest: crate::digest::ContentDigest,
+    digest: crate::hashing::ContentDigest,
     byte_length: u64,
-    media_type: crate::value::Symbol,
+    media_type: crate::typed::Symbol,
 }
 
 impl RetainedSource {
     /// Construct a retained source description.
     pub fn new(
-        digest: crate::digest::ContentDigest,
+        digest: crate::hashing::ContentDigest,
         byte_length: u64,
-        media_type: impl Into<crate::value::Symbol>,
+        media_type: impl Into<crate::typed::Symbol>,
     ) -> Result<Self, &'static str> {
-        if digest.profile() != crate::digest::EncodingProfile::RawBytesV1
-            || digest.boundary() != crate::digest::ValueBoundary::SourceBytes
+        if digest.profile() != crate::hashing::EncodingProfile::RawBytesV1
+            || digest.boundary() != crate::hashing::ValueBoundary::SourceBytes
         {
             return Err("retained source content requires a raw source-byte digest");
         }
@@ -109,7 +109,7 @@ impl RetainedSource {
     }
 
     /// Exact source-byte digest.
-    pub const fn digest(&self) -> crate::digest::ContentDigest {
+    pub const fn digest(&self) -> crate::hashing::ContentDigest {
         self.digest
     }
 
@@ -119,7 +119,7 @@ impl RetainedSource {
     }
 
     /// Declared media type.
-    pub fn media_type(&self) -> &crate::value::Symbol {
+    pub fn media_type(&self) -> &crate::typed::Symbol {
         &self.media_type
     }
 }
@@ -135,22 +135,22 @@ pub enum SourceContent {
 
 impl SourceContent {
     /// Encode as `<source-content …>`.
-    pub fn to_value(&self) -> crate::value::Value {
+    pub fn to_value(&self) -> crate::typed::Value {
         match self {
-            SourceContent::Retained(retained) => crate::value::Value::record_named(
+            SourceContent::Retained(retained) => crate::typed::Value::record_named(
                 "source-content",
                 vec![
-                    crate::value::Value::symbol("retained"),
+                    crate::typed::Value::symbol("retained"),
                     retained.digest.to_value(),
-                    crate::value::Value::integer(retained.byte_length),
-                    crate::value::Value::symbol(retained.media_type.as_str().to_owned()),
+                    crate::typed::Value::integer(retained.byte_length),
+                    crate::typed::Value::symbol(retained.media_type.as_str().to_owned()),
                 ],
             ),
-            SourceContent::Unavailable { reason } => crate::value::Value::record_named(
+            SourceContent::Unavailable { reason } => crate::typed::Value::record_named(
                 "source-content",
                 vec![
-                    crate::value::Value::symbol("unavailable"),
-                    crate::value::Value::string(reason.clone()),
+                    crate::typed::Value::symbol("unavailable"),
+                    crate::typed::Value::string(reason.clone()),
                 ],
             ),
         }
@@ -158,25 +158,25 @@ impl SourceContent {
 
     /// Decode and validate `<source-content …>`.
     pub fn from_value(
-        value: &crate::value::Value,
-        path: &crate::error::Path,
-    ) -> Result<Self, crate::error::Diagnostic> {
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let type_error = || {
-            crate::error::Diagnostic::new(
-                crate::error::Stage::Domain,
-                crate::error::ErrorCode::TypeMismatch,
+            crate::problem::Diagnostic::new(
+                crate::problem::Stage::Domain,
+                crate::problem::ErrorCode::TypeMismatch,
                 path.clone(),
                 "expected <source-content retained …> or <source-content unavailable \"reason\">",
             )
         };
         let record = value.as_record().ok_or_else(type_error)?;
-        if record.label() != &crate::value::Value::symbol("source-content") {
+        if record.label() != &crate::typed::Value::symbol("source-content") {
             return Err(type_error());
         }
         let Some(state) = record
             .fields()
             .first()
-            .and_then(crate::value::Value::as_symbol)
+            .and_then(crate::typed::Value::as_symbol)
         else {
             return Err(type_error());
         };
@@ -186,7 +186,7 @@ impl SourceContent {
                     return Err(type_error());
                 }
                 let digest =
-                    crate::digest::ContentDigest::from_value(&record.fields()[1], &path.index(1))?;
+                    crate::hashing::ContentDigest::from_value(&record.fields()[1], &path.index(1))?;
                 let Some(byte_length) = unsigned(&record.fields()[2]) else {
                     return Err(type_error());
                 };
@@ -195,9 +195,9 @@ impl SourceContent {
                 };
                 let retained = RetainedSource::new(digest, byte_length, media_type.clone())
                     .map_err(|message| {
-                        crate::error::Diagnostic::new(
-                            crate::error::Stage::Domain,
-                            crate::error::ErrorCode::UnsupportedEncodingProfile,
+                        crate::problem::Diagnostic::new(
+                            crate::problem::Stage::Domain,
+                            crate::problem::ErrorCode::UnsupportedEncodingProfile,
                             path.clone(),
                             message,
                         )
@@ -210,9 +210,9 @@ impl SourceContent {
                 }
                 let reason = record.fields()[1].as_string().ok_or_else(type_error)?;
                 if reason.trim().is_empty() {
-                    return Err(crate::error::Diagnostic::new(
-                        crate::error::Stage::Domain,
-                        crate::error::ErrorCode::MissingField,
+                    return Err(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Domain,
+                        crate::problem::ErrorCode::MissingField,
                         path.clone(),
                         "an unavailable source must state a reason",
                     ));
@@ -226,7 +226,7 @@ impl SourceContent {
     }
 }
 
-fn unsigned(value: &crate::value::Value) -> Option<u64> {
+fn unsigned(value: &crate::typed::Value) -> Option<u64> {
     use num_traits::ToPrimitive;
     value
         .as_integer()
@@ -241,32 +241,33 @@ mod tests {
     fn span_roundtrips_and_rejects_inverted_offsets() {
         let span = SourceSpan::new(3, 9).expect("valid");
         assert_eq!(
-            SourceSpan::from_value(&span.to_value(), &crate::error::Path::root()).expect("decode"),
+            SourceSpan::from_value(&span.to_value(), &crate::problem::Path::root())
+                .expect("decode"),
             span
         );
         assert_eq!(span.length(), 7);
-        let inverted = crate::value::Value::record_named(
+        let inverted = crate::typed::Value::record_named(
             "span",
             vec![
-                crate::value::Value::integer(9_i64),
-                crate::value::Value::integer(3_i64),
+                crate::typed::Value::integer(9_i64),
+                crate::typed::Value::integer(3_i64),
             ],
         );
         assert_eq!(
-            SourceSpan::from_value(&inverted, &crate::error::Path::root())
+            SourceSpan::from_value(&inverted, &crate::problem::Path::root())
                 .expect_err("inverted")
                 .code,
-            crate::error::ErrorCode::InvalidInterval
+            crate::problem::ErrorCode::InvalidInterval
         );
     }
 
     #[test]
     fn retained_source_requires_a_raw_byte_digest() {
-        let raw = crate::digest::ContentDigest::of_source_bytes(b"exact");
+        let raw = crate::hashing::ContentDigest::of_source_bytes(b"exact");
         let retained = RetainedSource::new(raw, 5, "text/asciidoc").expect("valid");
         assert!(
             RetainedSource::new(
-                crate::digest::ContentDigest::of_payload(&crate::value::Value::string("exact")),
+                crate::hashing::ContentDigest::of_payload(&crate::typed::Value::string("exact")),
                 5,
                 "text/asciidoc"
             )
@@ -274,7 +275,7 @@ mod tests {
         );
         let content = SourceContent::Retained(retained);
         assert_eq!(
-            SourceContent::from_value(&content.to_value(), &crate::error::Path::root())
+            SourceContent::from_value(&content.to_value(), &crate::problem::Path::root())
                 .expect("decode"),
             content
         );
@@ -286,7 +287,7 @@ mod tests {
             reason: "raw bytes pruned under policy".to_owned(),
         };
         assert_eq!(
-            SourceContent::from_value(&content.to_value(), &crate::error::Path::root())
+            SourceContent::from_value(&content.to_value(), &crate::problem::Path::root())
                 .expect("decode"),
             content
         );
@@ -294,10 +295,10 @@ mod tests {
             reason: "  ".to_owned(),
         };
         assert_eq!(
-            SourceContent::from_value(&empty.to_value(), &crate::error::Path::root())
+            SourceContent::from_value(&empty.to_value(), &crate::problem::Path::root())
                 .expect_err("empty reason")
                 .code,
-            crate::error::ErrorCode::MissingField
+            crate::problem::ErrorCode::MissingField
         );
     }
 }

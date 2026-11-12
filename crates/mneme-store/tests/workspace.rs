@@ -174,12 +174,12 @@ fn stale_base_cannot_replace_the_winner() {
         bytes: b"loser bytes".to_vec(),
     }];
     let error = workspace.commit(loser).expect_err("stale");
-    assert!(matches!(error, mneme_store::StoreError::StaleBase { .. }));
+    assert!(matches!(error, mneme_store::Failure::StaleBase { .. }));
     let after = workspace.snapshot().expect("still valid");
     assert_eq!(after.revision, winner.revision);
     assert_eq!(after.records, winner.records);
     assert!(
-        mneme_store::blob::read_working_file(temp.path(), "project.adoc")
+        mneme_store::payload::read_working_file(temp.path(), "project.adoc")
             .expect("working")
             .is_none(),
         "a stale command must not publish files"
@@ -211,7 +211,7 @@ fn idempotent_retry_returns_the_original_revision_and_conflicts_on_changed_conte
     let error = reopened.commit(changed).expect_err("conflicting content");
     assert!(matches!(
         error,
-        mneme_store::StoreError::IdempotencyConflict { .. }
+        mneme_store::Failure::IdempotencyConflict { .. }
     ));
     let status = reopened.status().expect("status");
     assert_eq!(status.sequence, 1);
@@ -248,7 +248,7 @@ fn external_import_candidate_must_match_existing_bytes_and_bindings() {
     let base = workspace.current_revision().expect("current");
 
     let edited = format!("{}\n// external edit\n", mneme_core::fixtures::SOURCE_TEXT);
-    mneme_store::blob::publish_working_file(temp.path(), "project.adoc", edited.as_bytes())
+    mneme_store::payload::publish_working_file(temp.path(), "project.adoc", edited.as_bytes())
         .expect("edit file");
     let revision = mneme_core::RevisionId::from_bytes([0x21; 16]);
     let replacement = source_draft(SourceDraftInput {
@@ -284,8 +284,12 @@ fn external_import_candidate_must_match_existing_bytes_and_bindings() {
 
     // A candidate whose bytes no longer match the working file is refused and
     // leaves the committed snapshot untouched.
-    mneme_store::blob::publish_working_file(temp.path(), "project.adoc", b"newer external bytes")
-        .expect("second edit");
+    mneme_store::payload::publish_working_file(
+        temp.path(),
+        "project.adoc",
+        b"newer external bytes",
+    )
+    .expect("second edit");
     let second_revision = mneme_core::RevisionId::from_bytes([0x22; 16]);
     let stale = mneme_store::CommitCommand {
         base: workspace.current_revision().expect("current"),
@@ -311,14 +315,14 @@ fn external_import_candidate_must_match_existing_bytes_and_bindings() {
     let error = workspace.commit(stale).expect_err("stale candidate");
     assert!(matches!(
         error,
-        mneme_store::StoreError::InvalidCandidate { .. }
+        mneme_store::Failure::InvalidCandidate { .. }
     ));
     assert_eq!(
         workspace.snapshot().expect("snapshot").revision,
         snapshot.revision
     );
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "project.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "project.adoc").expect("read"),
         Some(b"newer external bytes".to_vec())
     );
 }
@@ -386,7 +390,7 @@ fn conflicting_source_binding_is_rejected_before_commit() {
             retention: None,
         })
         .expect_err("binding conflict");
-    assert!(matches!(error, mneme_store::StoreError::BindingConflict(_)));
+    assert!(matches!(error, mneme_store::Failure::BindingConflict(_)));
 }
 
 #[test]
@@ -404,10 +408,10 @@ fn missing_or_corrupt_record_blob_is_an_explicit_integrity_failure() {
         .find(|record| record.record_id == mneme_core::fixtures::assertion_id())
         .expect("assertion");
     let digest = assertion.full_digest();
-    let path = mneme_store::blob::blob_path(temp.path(), digest);
+    let path = mneme_store::payload::blob_path(temp.path(), digest);
     std::fs::remove_file(&path).expect("remove blob");
     let error = workspace.snapshot().expect_err("integrity");
-    assert!(matches!(error, mneme_store::StoreError::Integrity { .. }));
+    assert!(matches!(error, mneme_store::Failure::Integrity { .. }));
     let mut reopened = open(temp.path(), 2_000);
     assert!(
         reopened.recover().is_err(),
@@ -431,7 +435,7 @@ fn fault_before_commit_leaves_the_previous_revision_and_recovery_cleans_orphans(
         let error = workspace
             .commit(fixture_command(genesis, "fault"))
             .expect_err("injected");
-        assert!(matches!(error, mneme_store::StoreError::InjectedFault(p) if p == point));
+        assert!(matches!(error, mneme_store::Failure::InjectedFault(p) if p == point));
         assert_eq!(workspace.current_revision().expect("current"), genesis);
         assert_eq!(workspace.status().expect("status").record_count, 0);
         drop(workspace);
@@ -485,13 +489,13 @@ fn fault_after_commit_leaves_a_pending_publication_for_recovery() {
     let error = workspace.commit(command).expect_err("crash after commit");
     assert!(matches!(
         error,
-        mneme_store::StoreError::InjectedFault(mneme_store::FaultPoint::AfterCommit)
+        mneme_store::Failure::InjectedFault(mneme_store::FaultPoint::AfterCommit)
     ));
     let status = workspace.status().expect("status");
     assert_eq!(status.sequence, 1, "commit is visible before publication");
     assert_eq!(status.pending_publications, 1);
     assert!(
-        mneme_store::blob::read_working_file(temp.path(), "project.adoc")
+        mneme_store::payload::read_working_file(temp.path(), "project.adoc")
             .expect("working")
             .is_none()
     );
@@ -505,7 +509,7 @@ fn fault_after_commit_leaves_a_pending_publication_for_recovery() {
         mneme_store::PublicationState::Published
     );
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "project.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "project.adoc").expect("read"),
         Some(mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec())
     );
     assert_eq!(reopened.status().expect("status").pending_publications, 0);
@@ -537,11 +541,11 @@ fn external_edit_during_pending_publication_is_preserved_and_reported() {
         mneme_store::PublicationState::Published
     );
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "notes.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "notes.adoc").expect("read"),
         Some(b"version one".to_vec())
     );
 
-    mneme_store::blob::publish_working_file(temp.path(), "notes.adoc", b"external edit")
+    mneme_store::payload::publish_working_file(temp.path(), "notes.adoc", b"external edit")
         .expect("external edit");
     let second = mneme_store::CommitCommand {
         base: workspace.current_revision().expect("current"),
@@ -564,14 +568,14 @@ fn external_edit_during_pending_publication_is_preserved_and_reported() {
         mneme_store::PublicationState::Diverged
     );
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "notes.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "notes.adoc").expect("read"),
         Some(b"external edit".to_vec()),
         "the external edit is preserved"
     );
     // The committed desired payload remains available separately.
     let desired = mneme_core::ContentDigest::of_source_bytes(b"version two");
     assert_eq!(
-        mneme_store::blob::read(temp.path(), desired).expect("committed payload"),
+        mneme_store::payload::read(temp.path(), desired).expect("committed payload"),
         b"version two"
     );
 }
@@ -617,7 +621,7 @@ fn metadata_only_update_preserves_exact_source_bytes() {
         .iter()
         .find(|record| record.record_id == mneme_core::fixtures::source_revision_id())
         .expect("source");
-    mneme_store::blob::publish_working_file(
+    mneme_store::payload::publish_working_file(
         temp.path(),
         "project.adoc",
         b"external edit after commit",
@@ -660,12 +664,12 @@ fn metadata_only_update_preserves_exact_source_bytes() {
     assert_eq!(source_after.revision_id, source_before.revision_id);
     assert_eq!(source_after.full_digest(), source_before.full_digest());
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "project.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "project.adoc").expect("read"),
         Some(b"external edit after commit".to_vec()),
         "a metadata-only update neither rewrites prose nor overwrites an external edit"
     );
     assert_eq!(
-        mneme_store::blob::read(
+        mneme_store::payload::read(
             temp.path(),
             mneme_core::ContentDigest::of_source_bytes(source_bytes)
         )
@@ -710,17 +714,17 @@ fn barrier_advance_suppresses_publication_and_pinned_reads() {
         workspace
             .snapshot_at(pinned.revision, Some(pinned.eligibility_generation))
             .expect_err("barrier"),
-        mneme_store::StoreError::BarrierAdvanced { .. }
+        mneme_store::Failure::BarrierAdvanced { .. }
     ));
     assert!(matches!(
         workspace.recheck(&pinned).expect_err("barrier"),
-        mneme_store::StoreError::BarrierAdvanced { .. }
+        mneme_store::Failure::BarrierAdvanced { .. }
     ));
     let outcomes = workspace.publish_pending().expect("publish");
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].state, mneme_store::PublicationState::Suppressed);
     assert!(
-        mneme_store::blob::read_working_file(temp.path(), "suppressed.adoc")
+        mneme_store::payload::read_working_file(temp.path(), "suppressed.adoc")
             .expect("working")
             .is_none()
     );
@@ -762,7 +766,7 @@ fn commit_rechecks_the_generation_before_committing() {
         .expect_err("barrier wins");
     assert!(matches!(
         error,
-        mneme_store::StoreError::BarrierAdvanced { .. }
+        mneme_store::Failure::BarrierAdvanced { .. }
     ));
     assert_eq!(workspace.current_revision().expect("current"), genesis);
     drop(workspace);
@@ -782,7 +786,7 @@ fn invalid_commands_are_refused_without_mutation() {
         mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "other").expect("scope");
     assert!(matches!(
         workspace.commit(wrong_scope).expect_err("scope"),
-        mneme_store::StoreError::ScopeMismatch { .. }
+        mneme_store::Failure::ScopeMismatch { .. }
     ));
 
     let mut duplicate_publications = fixture_command(genesis, "paths");
@@ -800,7 +804,7 @@ fn invalid_commands_are_refused_without_mutation() {
     ];
     assert!(matches!(
         workspace.commit(duplicate_publications).expect_err("paths"),
-        mneme_store::StoreError::InvalidCommand(_)
+        mneme_store::Failure::InvalidCommand(_)
     ));
 
     let mut unreferenced_source = fixture_command(genesis, "source");
@@ -814,7 +818,7 @@ fn invalid_commands_are_refused_without_mutation() {
         workspace
             .commit(unreferenced_source)
             .expect_err("unused source"),
-        mneme_store::StoreError::InvalidCommand(_)
+        mneme_store::Failure::InvalidCommand(_)
     ));
     assert_eq!(workspace.current_revision().expect("current"), genesis);
 }
@@ -866,7 +870,7 @@ fn lost_commit_response_retries_to_the_same_revision_after_restart() {
         mneme_store::PublicationState::Published
     );
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "recovered.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "recovered.adoc").expect("read"),
         Some(b"published after retry".to_vec())
     );
 }
@@ -953,10 +957,10 @@ fn fault_after_file_replace_recovers_without_rewriting() {
         .expect_err("crash after replacement");
     assert!(matches!(
         error,
-        mneme_store::StoreError::InjectedFault(mneme_store::FaultPoint::AfterFileReplace)
+        mneme_store::Failure::InjectedFault(mneme_store::FaultPoint::AfterFileReplace)
     ));
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "after-replace.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "after-replace.adoc").expect("read"),
         Some(b"already there".to_vec())
     );
     assert_eq!(workspace.status().expect("status").pending_publications, 1);
@@ -969,7 +973,7 @@ fn fault_after_file_replace_recovers_without_rewriting() {
         mneme_store::PublicationState::Published
     );
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "after-replace.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "after-replace.adoc").expect("read"),
         Some(b"already there".to_vec())
     );
 }
@@ -988,13 +992,13 @@ fn corrupt_blob_content_is_an_explicit_integrity_failure() {
         .iter()
         .find(|record| record.record_id == mneme_core::fixtures::assertion_id())
         .expect("assertion");
-    let path = mneme_store::blob::blob_path(temp.path(), assertion.full_digest());
+    let path = mneme_store::payload::blob_path(temp.path(), assertion.full_digest());
     let length =
         usize::try_from(std::fs::metadata(&path).expect("metadata").len()).expect("file length");
     std::fs::write(&path, vec![0x5a_u8; length]).expect("tamper");
     assert!(matches!(
         workspace.snapshot().expect_err("corrupt"),
-        mneme_store::StoreError::Integrity { .. }
+        mneme_store::Failure::Integrity { .. }
     ));
 }
 
@@ -1054,7 +1058,7 @@ fn declared_source_length_mismatch_is_rejected() {
         .expect_err("length mismatch");
     assert!(matches!(
         error,
-        mneme_store::StoreError::SourceLengthMismatch { .. }
+        mneme_store::Failure::SourceLengthMismatch { .. }
     ));
     assert_eq!(workspace.current_revision().expect("current"), genesis);
 }
@@ -1081,9 +1085,9 @@ fn publication_path_escape_is_rejected() {
             retention: None,
         })
         .expect_err("escape");
-    assert!(matches!(error, mneme_store::StoreError::PathEscapes(_)));
+    assert!(matches!(error, mneme_store::Failure::PathEscapes(_)));
     assert!(
-        mneme_store::blob::read_working_file(temp.path(), "escape.adoc")
+        mneme_store::payload::read_working_file(temp.path(), "escape.adoc")
             .expect("working")
             .is_none()
     );
@@ -1095,12 +1099,12 @@ fn create_and_open_refuse_an_unsupported_layout() {
     std::fs::write(temp.path().join("existing"), b"x").expect("nonempty");
     assert!(matches!(
         mneme_store::Workspace::create(temp.path(), config(1_000)).expect_err("nonempty"),
-        mneme_store::StoreError::UnsupportedLayout(_)
+        mneme_store::Failure::UnsupportedLayout(_)
     ));
     let empty = tempfile::tempdir().expect("empty");
     assert!(matches!(
         mneme_store::Workspace::open(empty.path(), config(1_000)).expect_err("no ledger"),
-        mneme_store::StoreError::UnsupportedLayout(_)
+        mneme_store::Failure::UnsupportedLayout(_)
     ));
 }
 
@@ -1261,10 +1265,10 @@ fn fault_before_file_replace_leaves_the_intent_pending_and_no_file() {
         .expect_err("crash before replacement");
     assert!(matches!(
         error,
-        mneme_store::StoreError::InjectedFault(mneme_store::FaultPoint::BeforeFileReplace)
+        mneme_store::Failure::InjectedFault(mneme_store::FaultPoint::BeforeFileReplace)
     ));
     assert!(
-        mneme_store::blob::read_working_file(temp.path(), "not-written.adoc")
+        mneme_store::payload::read_working_file(temp.path(), "not-written.adoc")
             .expect("working")
             .is_none()
     );
@@ -1277,7 +1281,7 @@ fn fault_before_file_replace_leaves_the_intent_pending_and_no_file() {
         mneme_store::PublicationState::Published
     );
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "not-written.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "not-written.adoc").expect("read"),
         Some(b"pending".to_vec())
     );
 }
@@ -1302,7 +1306,7 @@ fn malformed_import_candidate_is_refused_and_keeps_the_prior_snapshot() {
         .expect("base commit");
     let before = workspace.snapshot().expect("snapshot");
     let candidate_bytes = b"candidate bytes";
-    mneme_store::blob::publish_working_file(temp.path(), "project.adoc", candidate_bytes)
+    mneme_store::payload::publish_working_file(temp.path(), "project.adoc", candidate_bytes)
         .expect("file");
     // The record claims a retained source whose bytes do not match the file.
     let wrong = source_draft(SourceDraftInput {
@@ -1331,14 +1335,14 @@ fn malformed_import_candidate_is_refused_and_keeps_the_prior_snapshot() {
         .expect_err("malformed candidate");
     assert!(matches!(
         error,
-        mneme_store::StoreError::InvalidCandidate { .. }
+        mneme_store::Failure::InvalidCandidate { .. }
     ));
     assert_eq!(
         workspace.snapshot().expect("snapshot").revision,
         before.revision
     );
     assert_eq!(
-        mneme_store::blob::read_working_file(temp.path(), "project.adoc").expect("read"),
+        mneme_store::payload::read_working_file(temp.path(), "project.adoc").expect("read"),
         Some(candidate_bytes.to_vec())
     );
 }

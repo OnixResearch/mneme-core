@@ -5,11 +5,11 @@
 //! builds a new immutable revision whose predecessor is the source, validates
 //! the target under its own schema version, and returns the lineage. Any failure
 //! leaves the committed source readable and reports the failed transformation.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A payload transformation for one migration step.
 pub type PayloadTransform = Box<
-    dyn Fn(&crate::envelope::Payload) -> Result<crate::envelope::Payload, crate::error::Diagnostic>
+    dyn Fn(&crate::wire::Payload) -> Result<crate::wire::Payload, crate::problem::Diagnostic>
         + Send
         + Sync,
 >;
@@ -40,8 +40,8 @@ impl Migration {
         from_version: u32,
         to_version: u32,
         transform: impl Fn(
-            &crate::envelope::Payload,
-        ) -> Result<crate::envelope::Payload, crate::error::Diagnostic>
+            &crate::wire::Payload,
+        ) -> Result<crate::wire::Payload, crate::problem::Diagnostic>
         + Send
         + Sync
         + 'static,
@@ -72,17 +72,17 @@ impl Migration {
     /// Plan this migration for one record without transforming it.
     pub fn plan(
         &self,
-        source: &crate::envelope::RecordEnvelope,
+        source: &crate::wire::RecordEnvelope,
     ) -> Result<MigrationPlan, MigrationFailure> {
         if source.schema_version != self.from_version {
             return Err(MigrationFailure {
                 migration: self.name.clone(),
                 source_record: source.record_id,
                 source_revision: source.revision_id,
-                diagnostics: vec![crate::error::Diagnostic::new(
-                    crate::error::Stage::Migration,
-                    crate::error::ErrorCode::MigrationFailed,
-                    crate::error::Path::root().field("schema-version"),
+                diagnostics: vec![crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Migration,
+                    crate::problem::ErrorCode::MigrationFailed,
+                    crate::problem::Path::root().field("schema-version"),
                     format!(
                         "migration {} expects schema version {}, found {}",
                         self.name, self.from_version, source.schema_version
@@ -95,10 +95,10 @@ impl Migration {
                 migration: self.name.clone(),
                 source_record: source.record_id,
                 source_revision: source.revision_id,
-                diagnostics: vec![crate::error::Diagnostic::new(
-                    crate::error::Stage::Migration,
-                    crate::error::ErrorCode::MigrationFailed,
-                    crate::error::Path::root(),
+                diagnostics: vec![crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Migration,
+                    crate::problem::ErrorCode::MigrationFailed,
+                    crate::problem::Path::root(),
                     "migration target version must be newer than its source version",
                 )],
             });
@@ -115,10 +115,10 @@ impl Migration {
     /// Execute this migration into a new validated record revision.
     pub fn execute(
         &self,
-        registry: &crate::schema::SchemaRegistry,
-        source: &crate::envelope::RecordEnvelope,
+        registry: &crate::fields::SchemaRegistry,
+        source: &crate::wire::RecordEnvelope,
         target_revision: crate::ids::RevisionId,
-        recorded: crate::time::RecordedTime,
+        recorded: crate::clock::RecordedTime,
     ) -> Result<MigrationOutcome, MigrationFailure> {
         self.plan(source)?;
         if registry.schema(self.to_version).is_none() {
@@ -126,10 +126,10 @@ impl Migration {
                 migration: self.name.clone(),
                 source_record: source.record_id,
                 source_revision: source.revision_id,
-                diagnostics: vec![crate::error::Diagnostic::new(
-                    crate::error::Stage::Migration,
-                    crate::error::ErrorCode::UnsupportedSchemaVersion,
-                    crate::error::Path::root().field("schema-version"),
+                diagnostics: vec![crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Migration,
+                    crate::problem::ErrorCode::UnsupportedSchemaVersion,
+                    crate::problem::Path::root().field("schema-version"),
                     format!(
                         "migration target version {} is not registered",
                         self.to_version
@@ -143,7 +143,7 @@ impl Migration {
             source_revision: source.revision_id,
             diagnostics: vec![diagnostic],
         })?;
-        let target = crate::envelope::RecordEnvelope {
+        let target = crate::wire::RecordEnvelope {
             schema_version: self.to_version,
             kind: source.kind,
             record_id: source.record_id,
@@ -153,9 +153,9 @@ impl Migration {
             recorded,
             payload,
         };
-        let context = crate::envelope::RecordContext::isolated(registry);
+        let context = crate::wire::RecordContext::isolated(registry);
         let diagnostics =
-            crate::envelope::validate_record(&target, &context, &crate::error::Path::root());
+            crate::wire::validate_record(&target, &context, &crate::problem::Path::root());
         if !diagnostics.is_empty() {
             return Err(MigrationFailure {
                 migration: self.name.clone(),
@@ -205,7 +205,7 @@ pub struct MigrationLineage {
 pub struct MigrationOutcome {
     pub source_record: crate::ids::RecordId,
     pub source_revision: crate::ids::RevisionId,
-    pub target: crate::envelope::RecordEnvelope,
+    pub target: crate::wire::RecordEnvelope,
     pub lineage: MigrationLineage,
 }
 
@@ -215,7 +215,7 @@ pub struct MigrationFailure {
     pub migration: String,
     pub source_record: crate::ids::RecordId,
     pub source_revision: crate::ids::RevisionId,
-    pub diagnostics: Vec<crate::error::Diagnostic>,
+    pub diagnostics: Vec<crate::problem::Diagnostic>,
 }
 
 impl std::fmt::Display for MigrationFailure {
@@ -226,7 +226,7 @@ impl std::fmt::Display for MigrationFailure {
             self.migration,
             self.source_record,
             self.source_revision,
-            crate::error::render_diagnostics(&self.diagnostics)
+            crate::problem::render_diagnostics(&self.diagnostics)
         )
     }
 }
@@ -237,73 +237,73 @@ impl std::error::Error for MigrationFailure {}
 mod tests {
     use super::*;
 
-    fn assertion() -> crate::envelope::RecordEnvelope {
-        crate::envelope::RecordEnvelope {
+    fn assertion() -> crate::wire::RecordEnvelope {
+        crate::wire::RecordEnvelope {
             schema_version: 1,
-            kind: crate::schema::RecordKind::Assertion,
+            kind: crate::fields::RecordKind::Assertion,
             record_id: crate::ids::RecordId::from_bytes([1; 16]),
             revision_id: crate::ids::RevisionId::from_bytes([1; 16]),
             predecessor: None,
-            scope: crate::scope::ScopeId::new(crate::scope::ScopeClass::Project, "cedar")
+            scope: crate::tenancy::ScopeId::new(crate::tenancy::ScopeClass::Project, "cedar")
                 .expect("scope"),
-            recorded: crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(1), 1),
-            payload: crate::envelope::Payload::new([
+            recorded: crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(1), 1),
+            payload: crate::wire::Payload::new([
                 (
-                    crate::value::Symbol::from("subject"),
-                    crate::reference::Reference::local(
+                    crate::typed::Symbol::from("subject"),
+                    crate::pointer::Reference::local(
                         crate::ids::RecordId::from_bytes([2; 16]),
-                        crate::schema::RecordKind::Entity,
+                        crate::fields::RecordKind::Entity,
                     )
                     .to_value(),
                 ),
                 (
-                    crate::value::Symbol::from("predicate"),
-                    crate::value::Value::symbol("storage-engine"),
+                    crate::typed::Symbol::from("predicate"),
+                    crate::typed::Value::symbol("storage-engine"),
                 ),
                 (
-                    crate::value::Symbol::from("value"),
-                    crate::value::Value::string("SQLite"),
+                    crate::typed::Symbol::from("value"),
+                    crate::typed::Value::string("SQLite"),
                 ),
                 (
-                    crate::value::Symbol::from("stance"),
-                    crate::value::Value::symbol("affirm"),
+                    crate::typed::Symbol::from("stance"),
+                    crate::typed::Value::symbol("affirm"),
                 ),
                 (
-                    crate::value::Symbol::from("lifecycle"),
-                    crate::value::Value::symbol("proposed"),
+                    crate::typed::Symbol::from("lifecycle"),
+                    crate::typed::Value::symbol("proposed"),
                 ),
                 (
-                    crate::value::Symbol::from("origin"),
-                    crate::value::Value::symbol("authored-statement"),
+                    crate::typed::Symbol::from("origin"),
+                    crate::typed::Value::symbol("authored-statement"),
                 ),
                 (
-                    crate::value::Symbol::from("asserted-by"),
-                    crate::value::Value::string("author"),
+                    crate::typed::Symbol::from("asserted-by"),
+                    crate::typed::Value::string("author"),
                 ),
                 (
-                    crate::value::Symbol::from("valid-time"),
-                    crate::time::ValidTime::Unknown.to_value(),
+                    crate::typed::Symbol::from("valid-time"),
+                    crate::clock::ValidTime::Unknown.to_value(),
                 ),
                 (
-                    crate::value::Symbol::from("evidence"),
-                    crate::value::Value::set([]),
+                    crate::typed::Symbol::from("evidence"),
+                    crate::typed::Value::set([]),
                 ),
             ]),
         }
     }
 
-    fn registry() -> crate::schema::SchemaRegistry {
-        crate::schema::SchemaRegistry::v1()
-            .with_version(crate::schema::RecordSchema::synthetic_migration_v2())
+    fn registry() -> crate::fields::SchemaRegistry {
+        crate::fields::SchemaRegistry::v1()
+            .with_version(crate::fields::RecordSchema::synthetic_migration_v2())
     }
 
     fn add_extraction(
-        payload: &crate::envelope::Payload,
-    ) -> Result<crate::envelope::Payload, crate::error::Diagnostic> {
+        payload: &crate::wire::Payload,
+    ) -> Result<crate::wire::Payload, crate::problem::Diagnostic> {
         let mut output = payload.clone();
         output.insert(
-            crate::value::Symbol::from("extraction"),
-            crate::value::Value::string("synthetic-v2"),
+            crate::typed::Symbol::from("extraction"),
+            crate::typed::Value::string("synthetic-v2"),
         );
         Ok(output)
     }
@@ -318,7 +318,7 @@ mod tests {
                 &registry(),
                 &source,
                 crate::ids::RevisionId::from_bytes([9; 16]),
-                crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(2), 2),
+                crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(2), 2),
             )
             .expect("migration");
         assert_eq!(source, original, "source revision is immutable");
@@ -329,9 +329,9 @@ mod tests {
         assert_eq!(outcome.lineage.target_revision, outcome.target.revision_id);
         assert_eq!(
             outcome.target.assertion_lifecycle(),
-            Some(crate::schema::Lifecycle::Proposed)
+            Some(crate::fields::Lifecycle::Proposed)
         );
-        crate::envelope::validate_record_value(&outcome.target.to_value(), &registry(), None)
+        crate::wire::validate_record_value(&outcome.target.to_value(), &registry(), None)
             .expect("target validates under version 2");
     }
 
@@ -340,10 +340,10 @@ mod tests {
         let source = assertion();
         let original = source.clone();
         let migration = Migration::new("synthetic-failure", 1, 2, |_payload| {
-            Err(crate::error::Diagnostic::new(
-                crate::error::Stage::Migration,
-                crate::error::ErrorCode::MigrationFailed,
-                crate::error::Path::root().field("payload"),
+            Err(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Migration,
+                crate::problem::ErrorCode::MigrationFailed,
+                crate::problem::Path::root().field("payload"),
                 "synthetic transformation refused",
             ))
         });
@@ -352,7 +352,7 @@ mod tests {
                 &registry(),
                 &source,
                 crate::ids::RevisionId::from_bytes([9; 16]),
-                crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(2), 2),
+                crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(2), 2),
             )
             .expect_err("must fail");
         assert_eq!(source, original);
@@ -374,16 +374,16 @@ mod tests {
                 &registry(),
                 &source,
                 crate::ids::RevisionId::from_bytes([9; 16]),
-                crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(2), 2),
+                crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(2), 2),
             )
             .expect_err("target misses the v2 field");
         assert!(failure.diagnostics.iter().any(|diagnostic| diagnostic.code
-            == crate::error::ErrorCode::MissingField
+            == crate::problem::ErrorCode::MissingField
             && diagnostic.path.to_string() == "$.payload.extraction"));
         // The source record is never rewritten.
         assert_eq!(
             source.assertion_lifecycle(),
-            Some(crate::schema::Lifecycle::Proposed)
+            Some(crate::fields::Lifecycle::Proposed)
         );
     }
 
@@ -393,15 +393,15 @@ mod tests {
         let migration = Migration::new("synthetic-v1-to-v3", 1, 3, add_extraction);
         let failure = migration
             .execute(
-                &crate::schema::SchemaRegistry::v1(),
+                &crate::fields::SchemaRegistry::v1(),
                 &source,
                 crate::ids::RevisionId::from_bytes([9; 16]),
-                crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(2), 2),
+                crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(2), 2),
             )
             .expect_err("no v3");
         assert_eq!(
             failure.diagnostics[0].code,
-            crate::error::ErrorCode::UnsupportedSchemaVersion
+            crate::problem::ErrorCode::UnsupportedSchemaVersion
         );
     }
 }

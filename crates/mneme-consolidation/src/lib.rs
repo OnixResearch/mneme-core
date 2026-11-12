@@ -5,13 +5,13 @@
 //! accepted assertions, and procedural suggestions. A job producing proposals
 //! never accepts them; acceptance is a separate compare-and-swap precondition
 //! evaluated by a later command.
-#![allow(unknown_lints, path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(unknown_lints)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod commands;
-pub mod generator;
-pub mod job;
-pub mod procedure;
+pub mod flow;
+pub mod proposals;
+pub mod runner;
 
 /// Resource limits for one consolidation job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,7 +153,7 @@ impl InputBatch {
     pub fn from_recall(
         scope: mneme_core::ScopeId,
         expected_revision: mneme_core::WorkspaceRevisionId,
-        response: &mneme_recall::RecallResponse,
+        response: &mneme_recall::Response,
     ) -> Result<Self, String> {
         Self::validate_recall_response(&scope, expected_revision, response)?;
         let (units, unpinned_candidates) = Self::recall_units(response);
@@ -180,7 +180,7 @@ impl InputBatch {
     fn validate_recall_response(
         scope: &mneme_core::ScopeId,
         expected_revision: mneme_core::WorkspaceRevisionId,
-        response: &mneme_recall::RecallResponse,
+        response: &mneme_recall::Response,
     ) -> Result<(), String> {
         if &response.context.scope != scope {
             return Err("recall scope does not match the consolidation scope".to_owned());
@@ -201,7 +201,7 @@ impl InputBatch {
         Ok(())
     }
 
-    fn recall_units(response: &mneme_recall::RecallResponse) -> (Vec<InputUnit>, usize) {
+    fn recall_units(response: &mneme_recall::Response) -> (Vec<InputUnit>, usize) {
         let mut units = Vec::with_capacity(response.candidates.len());
         let mut seen = std::collections::BTreeSet::new();
         let mut unpinned_candidates = 0;
@@ -242,7 +242,7 @@ impl InputBatch {
     }
 
     fn recall_limitations(
-        response: &mneme_recall::RecallResponse,
+        response: &mneme_recall::Response,
         unpinned_candidates: usize,
     ) -> RecallLimitations {
         RecallLimitations {
@@ -328,7 +328,7 @@ pub enum JobStatus {
 
 /// One consolidation job over a pinned batch.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ConsolidationJob {
+pub struct Job {
     pub job_id: String,
     pub recorded_at: mneme_core::Timestamp,
     pub idempotency_key: String,
@@ -341,7 +341,7 @@ pub struct ConsolidationJob {
     pub status: JobStatus,
 }
 
-impl ConsolidationJob {
+impl Job {
     /// Validate the job envelope and its batch.
     pub fn validate(&self) -> Result<(), String> {
         if self.job_id.trim().is_empty()
@@ -462,7 +462,7 @@ pub enum ProcedureKind {
     Runbook,
     Prompt,
     DatalogRule,
-    PrologRule,
+    Rule,
 }
 
 /// A procedural suggestion that requires its own validator/command path.
@@ -534,7 +534,7 @@ pub enum ProposalDisposition {
 
 /// One typed consolidation proposal.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ConsolidationProposal {
+pub struct Proposal {
     pub proposal_id: String,
     pub job_id: String,
     pub recorded_at: mneme_core::Timestamp,
@@ -547,7 +547,7 @@ pub struct ConsolidationProposal {
     pub disposition: ProposalDisposition,
 }
 
-impl ConsolidationProposal {
+impl Proposal {
     /// Distinct ancestry roots, not repeated summary count.
     #[allow(unknown_lints, usize_in_public_api)] // support counts mirror collection lengths
     pub fn independent_support_count(&self) -> usize {
@@ -620,7 +620,7 @@ impl ConsolidationProposal {
 /// Reject absence/cleanup conclusions from ranked, truncated, or incomplete input
 /// coverage. Other proposal kinds may still use individually validated units.
 pub fn validate_proposal_against_batch(
-    proposal: &ConsolidationProposal,
+    proposal: &Proposal,
     batch: &InputBatch,
 ) -> Result<(), String> {
     if matches!(
@@ -686,15 +686,15 @@ impl AcceptancePrecondition {
 
 /// A fixture bundle that keeps the four artifact classes distinct.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ConsolidationFixture {
+pub struct Fixture {
     pub observations: Vec<InputUnit>,
-    pub job: ConsolidationJob,
-    pub proposals: Vec<ConsolidationProposal>,
+    pub job: Job,
+    pub proposals: Vec<Proposal>,
     pub accepted_assertions: Vec<AcceptedAssertionRef>,
     pub acceptance: AcceptancePrecondition,
 }
 
-impl ConsolidationFixture {
+impl Fixture {
     /// Validate every component of a type-contract fixture.
     pub fn validate(&self) -> Result<(), String> {
         self.job.validate()?;
@@ -712,7 +712,7 @@ impl ConsolidationFixture {
 
 /// Construct sample fixture data used by the type-contract tests.
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-pub fn fixture() -> Result<ConsolidationFixture, String> {
+pub fn fixture() -> Result<Fixture, String> {
     let scope = mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar")?;
     let base = mneme_core::WorkspaceRevisionId::from_bytes([0xb0; 16]);
     let source = InputKey {
@@ -734,7 +734,7 @@ pub fn fixture() -> Result<ConsolidationFixture, String> {
     };
     let proposals = fixture_proposals(&scope, base, source);
     let batch = fixture_batch(&scope, base, &observation, source);
-    Ok(ConsolidationFixture {
+    Ok(Fixture {
         observations: vec![observation],
         job: fixture_job(scope.clone(), base, batch),
         proposals,
@@ -747,7 +747,7 @@ fn fixture_proposals(
     scope: &mneme_core::ScopeId,
     base: mneme_core::WorkspaceRevisionId,
     source: InputKey,
-) -> Vec<ConsolidationProposal> {
+) -> Vec<Proposal> {
     let premise = ProposalPremise {
         record_id: source.record_id,
         revision_id: source.revision_id,
@@ -776,8 +776,8 @@ fn fixture_summary_proposal(
     scope: &mneme_core::ScopeId,
     base: mneme_core::WorkspaceRevisionId,
     premise: ProposalPremise,
-) -> ConsolidationProposal {
-    ConsolidationProposal {
+) -> Proposal {
+    Proposal {
         proposal_id: "proposal-summary".to_owned(),
         job_id: "job-1".to_owned(),
         recorded_at: mneme_core::Timestamp::from_nanos(1_000),
@@ -797,8 +797,8 @@ fn fixture_assertion_proposal(
     scope: &mneme_core::ScopeId,
     base: mneme_core::WorkspaceRevisionId,
     premise: ProposalPremise,
-) -> ConsolidationProposal {
-    ConsolidationProposal {
+) -> Proposal {
+    Proposal {
         proposal_id: "proposal-assertion".to_owned(),
         job_id: "job-1".to_owned(),
         recorded_at: mneme_core::Timestamp::from_nanos(1_000),
@@ -822,15 +822,15 @@ fn fixture_procedure_proposal(
     scope: &mneme_core::ScopeId,
     base: mneme_core::WorkspaceRevisionId,
     premise: ProposalPremise,
-) -> ConsolidationProposal {
-    ConsolidationProposal {
+) -> Proposal {
+    Proposal {
         proposal_id: "proposal-procedure".to_owned(),
         job_id: "job-1".to_owned(),
         recorded_at: mneme_core::Timestamp::from_nanos(1_000),
         base_revision: base,
         scope: scope.clone(),
         operation: ProposalOperation::Procedure(ProcedureProposal {
-            kind: ProcedureKind::PrologRule,
+            kind: ProcedureKind::Rule,
             content: "grant_scope(user).".to_owned(),
             validator: "prolog-policy/v1".to_owned(),
         }),
@@ -873,8 +873,8 @@ fn fixture_job(
     scope: mneme_core::ScopeId,
     base: mneme_core::WorkspaceRevisionId,
     batch: InputBatch,
-) -> ConsolidationJob {
-    ConsolidationJob {
+) -> Job {
+    Job {
         job_id: "job-1".to_owned(),
         recorded_at: mneme_core::Timestamp::from_nanos(1_000),
         idempotency_key: "consolidate-1".to_owned(),
@@ -990,8 +990,8 @@ mod tests {
         let fixture = fixture().expect("fixture");
         let scope = fixture.job.scope.clone();
         let revision = fixture.job.base_revision;
-        let response = mneme_recall::RecallResponse {
-            context: mneme_recall::RecallContext {
+        let response = mneme_recall::Response {
+            context: mneme_recall::Context {
                 schema_version: 1,
                 scope: scope.clone(),
                 requested_revision: revision,
@@ -1001,9 +1001,9 @@ mod tests {
                 index_versions: std::collections::BTreeMap::new(),
                 fusion_policy: "test/v1".to_owned(),
             },
-            status: mneme_recall::RecallExecution::Partial,
+            status: mneme_recall::Execution::Partial,
             modes: vec![mneme_recall::ModeReport {
-                mode: mneme_recall::RecallMode::Lexical,
+                mode: mneme_recall::Mode::Lexical,
                 status: mneme_recall::ModeStatus::Used,
                 index_version: Some("test".to_owned()),
                 revision: Some(revision),

@@ -3,7 +3,7 @@
 //! Exact source bytes are authoritative. Documents have stable identities,
 //! optional literal entity bindings, pinned include closures, explicit anchors,
 //! a restricted sanitized preview, and revision-bound extraction candidates.
-#![allow(unknown_lints, no_recursion)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(unknown_lints)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -318,9 +318,9 @@ pub struct EntityPropertyEditRequest<'a> {
 #[derive(Debug, thiserror::Error)]
 pub enum DocumentError {
     #[error(transparent)]
-    Store(#[from] mneme_store::StoreError),
+    Store(#[from] mneme_store::Failure),
     #[error(transparent)]
-    Memory(#[from] mneme_memory::MemoryError),
+    Engine(#[from] mneme_memory::EvidenceError),
     #[error("document validation failed")]
     Diagnostics(Vec<Diagnostic>),
     #[error("invalid document request: {0}")]
@@ -337,7 +337,7 @@ pub enum DocumentError {
 pub type Result<T, E = DocumentError> = std::result::Result<T, E>;
 
 struct DocumentContext {
-    view: mneme_memory::MemoryView,
+    view: mneme_memory::View,
     documents: std::collections::BTreeMap<mneme_core::RecordId, DocumentView>,
     paths: std::collections::BTreeMap<String, mneme_core::RecordId>,
     entities: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
@@ -361,7 +361,7 @@ impl DocumentContext {
         let history = load_history(workspace, &snapshot, max_context_records)?;
         let sequences = workspace.revision_sequences()?;
         let suppressions = workspace.active_suppressions()?;
-        let view = mneme_memory::MemoryView::with_retention(
+        let view = mneme_memory::View::with_retention(
             snapshot.clone(),
             workspace.root(),
             history,
@@ -561,13 +561,13 @@ fn reference_is_pinned_to(record: &mneme_core::RecordEnvelope, name: &str, pin: 
 
 fn fresh_id() -> Result<mneme_core::RecordId> {
     Ok(mneme_core::RecordId::from_bytes(
-        mneme_store::blob::random_bytes()?,
+        mneme_store::payload::random_bytes()?,
     ))
 }
 
 fn fresh_revision() -> Result<mneme_core::RevisionId> {
     Ok(mneme_core::RevisionId::from_bytes(
-        mneme_store::blob::random_bytes()?,
+        mneme_store::payload::random_bytes()?,
     ))
 }
 
@@ -912,7 +912,7 @@ impl<'w> Documents<'w> {
 
     /// Validate the current managed working file as an import candidate.
     pub fn validate_working_file(&self, request: ImportRequest) -> Result<ValidatedDocument> {
-        let bytes = mneme_store::blob::read_working_file(self.workspace.root(), &request.path)?
+        let bytes = mneme_store::payload::read_working_file(self.workspace.root(), &request.path)?
             .ok_or_else(|| DocumentError::Io("working file does not exist".to_owned()))?;
         self.prepare_source(&request, &bytes)
             .map(|prepared| prepared.validated)
@@ -937,7 +937,7 @@ impl<'w> Documents<'w> {
         )? {
             return self.revision_from_outcome(&request.scope, None, &request.path, outcome);
         }
-        let bytes = mneme_store::blob::read_working_file(self.workspace.root(), &request.path)?
+        let bytes = mneme_store::payload::read_working_file(self.workspace.root(), &request.path)?
             .ok_or_else(|| DocumentError::Io("working file does not exist".to_owned()))?;
         let prepared = self.prepare_source(&request, &bytes)?;
         self.require_valid(&prepared)?;
@@ -1041,7 +1041,7 @@ impl<'w> Documents<'w> {
         if document.record.scope != request.scope {
             return Err(DocumentError::Invalid("document scope is not authorized"));
         }
-        mneme_store::blob::validate_relative_path(&request.path)
+        mneme_store::payload::validate_relative_path(&request.path)
             .map_err(|error| DocumentError::Io(error.to_string()))?;
         if request.path.contains('\\') {
             return Err(DocumentError::Invalid(
@@ -1268,7 +1268,7 @@ fn validate_import_request(request: &ImportRequest) -> Result<()> {
             "actor and idempotency key are required",
         ));
     }
-    mneme_store::blob::validate_relative_path(&request.path)
+    mneme_store::payload::validate_relative_path(&request.path)
         .map_err(|error| DocumentError::Io(error.to_string()))?;
     if request.path.contains('\\') {
         return Err(DocumentError::Invalid(
@@ -1793,7 +1793,7 @@ impl Documents<'_> {
         }
         let publications = if options.publish {
             let expected_previous =
-                mneme_store::blob::read_working_file(self.workspace.root(), &request.path)?
+                mneme_store::payload::read_working_file(self.workspace.root(), &request.path)?
                     .map(|bytes| mneme_core::ContentDigest::of_source_bytes(&bytes));
             vec![mneme_store::PublicationDraft {
                 path: request.path.clone(),

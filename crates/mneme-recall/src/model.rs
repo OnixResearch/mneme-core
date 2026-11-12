@@ -2,23 +2,23 @@
 //!
 //! The response keeps execution, corpus coverage, and result exhaustiveness
 //! separate. A ranked candidate set is never evidence of absence.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A candidate-generation mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RecallMode {
+pub enum Mode {
     Lexical,
     Structured,
     Vector,
 }
 
-impl RecallMode {
+impl Mode {
     /// Stable mode name used in reports.
     pub const fn name(self) -> &'static str {
         match self {
-            RecallMode::Lexical => "lexical",
-            RecallMode::Structured => "structured",
-            RecallMode::Vector => "vector",
+            Mode::Lexical => "lexical",
+            Mode::Structured => "structured",
+            Mode::Vector => "vector",
         }
     }
 }
@@ -62,7 +62,7 @@ pub struct StructuredRequest {
 
 /// One recall operation.
 #[derive(Clone, Debug)]
-pub struct RecallRequest {
+pub struct Request {
     pub actor: String,
     pub scope: mneme_core::ScopeId,
     pub revision: mneme_core::WorkspaceRevisionId,
@@ -71,7 +71,7 @@ pub struct RecallRequest {
     pub at: mneme_core::Timestamp,
     pub temporal: TemporalMode,
     /// Explicit candidate modes. The lexical mode is independently usable.
-    pub modes: std::collections::BTreeSet<RecallMode>,
+    pub modes: std::collections::BTreeSet<Mode>,
     pub structured: Option<StructuredRequest>,
     /// Permit an older served revision when explicitly requested.
     pub allow_stale: bool,
@@ -93,7 +93,7 @@ pub struct RecallRequest {
     pub cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
-impl RecallRequest {
+impl Request {
     /// A current-mode, lexical-only request with conservative budgets.
     pub fn lexical(
         actor: impl Into<String>,
@@ -102,14 +102,14 @@ impl RecallRequest {
         at: mneme_core::Timestamp,
         query: impl Into<String>,
     ) -> Self {
-        RecallRequest {
+        Request {
             actor: actor.into(),
             scope,
             revision,
             query: query.into(),
             at,
             temporal: TemporalMode::Current,
-            modes: std::collections::BTreeSet::from([RecallMode::Lexical]),
+            modes: std::collections::BTreeSet::from([Mode::Lexical]),
             structured: None,
             allow_stale: false,
             allow_fallback: true,
@@ -127,7 +127,7 @@ impl RecallRequest {
 
 /// Execution outcome of the recall operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecallExecution {
+pub enum Execution {
     Complete,
     Partial,
     Timeout,
@@ -135,14 +135,14 @@ pub enum RecallExecution {
     Failed,
 }
 
-impl RecallExecution {
+impl Execution {
     pub const fn name(self) -> &'static str {
         match self {
-            RecallExecution::Complete => "complete",
-            RecallExecution::Partial => "partial",
-            RecallExecution::Timeout => "timeout",
-            RecallExecution::Cancelled => "cancelled",
-            RecallExecution::Failed => "failed",
+            Execution::Complete => "complete",
+            Execution::Partial => "partial",
+            Execution::Timeout => "timeout",
+            Execution::Cancelled => "cancelled",
+            Execution::Failed => "failed",
         }
     }
 }
@@ -202,7 +202,7 @@ impl IndexCoverage {
 /// One mode's contribution and limitations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModeReport {
-    pub mode: RecallMode,
+    pub mode: Mode,
     pub status: ModeStatus,
     pub index_version: Option<String>,
     pub revision: Option<mneme_core::WorkspaceRevisionId>,
@@ -216,7 +216,7 @@ pub struct ModeReport {
 
 /// The exact context of one recall result.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecallContext {
+pub struct Context {
     pub schema_version: u32,
     pub scope: mneme_core::ScopeId,
     pub requested_revision: mneme_core::WorkspaceRevisionId,
@@ -282,7 +282,7 @@ impl ClaimStatus {
 
 /// Evidence attribution retained independently of whether a quote is available.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecallEvidence {
+pub struct Evidence {
     pub evidence: mneme_core::RecordId,
     pub source: mneme_core::RecordId,
     pub source_revision: Option<mneme_core::RevisionId>,
@@ -293,7 +293,7 @@ pub struct RecallEvidence {
 
 /// One ranked item before or after context packing.
 #[derive(Clone, Debug)]
-pub struct RecallCandidate {
+pub struct Candidate {
     pub id: String,
     pub content_kind: ContentKind,
     pub text: String,
@@ -308,12 +308,12 @@ pub struct RecallCandidate {
     pub claim_status: Option<ClaimStatus>,
     /// Exact attribution for a source excerpt; claims and summaries are not quotes.
     pub quote: bool,
-    pub evidence: Vec<RecallEvidence>,
+    pub evidence: Vec<Evidence>,
     pub derivations: Vec<mneme_datalog::Derivation>,
     pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
     /// False when another selected candidate shares this candidate's ancestry.
     pub independent_support: bool,
-    pub origins: std::collections::BTreeSet<RecallMode>,
+    pub origins: std::collections::BTreeSet<Mode>,
     pub score: f64,
     pub score_components: std::collections::BTreeMap<String, f64>,
 }
@@ -349,11 +349,11 @@ impl Default for DataBoundary {
 
 /// One recall response.
 #[derive(Clone, Debug)]
-pub struct RecallResponse {
-    pub context: RecallContext,
-    pub status: RecallExecution,
+pub struct Response {
+    pub context: Context,
+    pub status: Execution,
     pub modes: Vec<ModeReport>,
-    pub candidates: Vec<RecallCandidate>,
+    pub candidates: Vec<Candidate>,
     /// Whether this ranked result is exhaustive. Always false for recall.
     pub exhaustive: bool,
     /// Whether recall established a factual absence. Always false.
@@ -390,7 +390,7 @@ pub(crate) struct IndexedDocument {
     pub episode: Option<mneme_core::RecordId>,
     pub entity: Option<mneme_core::RecordId>,
     pub claim_status: Option<ClaimStatus>,
-    pub evidence: Vec<RecallEvidence>,
+    pub evidence: Vec<Evidence>,
     pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
 }
 

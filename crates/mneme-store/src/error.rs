@@ -4,11 +4,11 @@
 //! hash-invalid committed payload is an error, never an empty document. Stale
 //! bases, idempotency conflicts, validation refusals, publication divergence,
 //! and injected faults are separate variants so callers can react truthfully.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A workspace operation failure.
 #[derive(Debug, thiserror::Error)]
-pub enum StoreError {
+pub enum Failure {
     #[error("I/O error at {path}: {source}")]
     Io {
         path: std::path::PathBuf,
@@ -78,7 +78,7 @@ pub enum StoreError {
     InvalidCandidate { path: String },
 
     #[error("fault injected at {0:?}")]
-    InjectedFault(crate::faults::FaultPoint),
+    InjectedFault(crate::injectors::FaultPoint),
 
     #[error("eligibility generation advanced from {pinned} to {current}")]
     BarrierAdvanced { pinned: u64, current: u64 },
@@ -96,10 +96,10 @@ pub enum StoreError {
     Random(String),
 }
 
-impl StoreError {
+impl Failure {
     /// Wrap an I/O error with its path.
     pub fn io(path: impl Into<std::path::PathBuf>, source: std::io::Error) -> Self {
-        StoreError::Io {
+        Failure::Io {
             path: path.into(),
             source,
         }
@@ -107,4 +107,4 @@ impl StoreError {
 }
 
 /// A store result.
-pub type Result<T, E = StoreError> = std::result::Result<T, E>;
+pub type Result<T, E = Failure> = std::result::Result<T, E>;

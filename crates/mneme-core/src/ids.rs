@@ -36,40 +36,40 @@ macro_rules! opaque_id {
             }
 
             /// Encode as the typed Preserves identifier record.
-            pub fn to_value(self) -> crate::value::Value {
-                crate::value::Value::record_named($label, vec![crate::value::Value::string(self.to_hex())])
+            pub fn to_value(self) -> crate::typed::Value {
+                crate::typed::Value::record_named($label, vec![crate::typed::Value::string(self.to_hex())])
             }
 
             /// Decode from the typed Preserves identifier record.
-            pub fn from_value(value: &crate::value::Value, path: &crate::error::Path) -> Result<Self, crate::error::Diagnostic> {
+            pub fn from_value(value: &crate::typed::Value, path: &crate::problem::Path) -> Result<Self, crate::problem::Diagnostic> {
                 let Some(record) = value.as_record() else {
-                    return Err(crate::error::Diagnostic::new(
-                        crate::error::Stage::Envelope,
-                        crate::error::ErrorCode::TypeMismatch,
+                    return Err(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Envelope,
+                        crate::problem::ErrorCode::TypeMismatch,
                         path.clone(),
                         format!("expected <{} \"…\">", $label),
                     ));
                 };
-                if record.label() != &crate::value::Value::symbol($label) || record.fields().len() != 1 {
-                    return Err(crate::error::Diagnostic::new(
-                        crate::error::Stage::Envelope,
-                        crate::error::ErrorCode::TypeMismatch,
+                if record.label() != &crate::typed::Value::symbol($label) || record.fields().len() != 1 {
+                    return Err(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Envelope,
+                        crate::problem::ErrorCode::TypeMismatch,
                         path.clone(),
                         format!("expected <{} \"…\">", $label),
                     ));
                 }
                 let Some(text) = record.fields()[0].as_string() else {
-                    return Err(crate::error::Diagnostic::new(
-                        crate::error::Stage::Envelope,
-                        crate::error::ErrorCode::TypeMismatch,
+                    return Err(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Envelope,
+                        crate::problem::ErrorCode::TypeMismatch,
                         path.clone(),
                         format!("{} must carry a hexadecimal string", $label),
                     ));
                 };
                 Self::from_hex(text).map_err(|message| {
-                    crate::error::Diagnostic::new(
-                        crate::error::Stage::Envelope,
-                        crate::error::ErrorCode::InvalidIdentifier,
+                    crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Envelope,
+                        crate::problem::ErrorCode::InvalidIdentifier,
                         path.clone(),
                         format!("invalid {}: {message}", $label),
                     )
@@ -146,7 +146,7 @@ mod tests {
         let id = RecordId::from_hex("00112233445566778899aabbccddeeff").expect("valid hex");
         let value = id.to_value();
         assert_eq!(
-            RecordId::from_value(&value, &crate::error::Path::root()).expect("valid id record"),
+            RecordId::from_value(&value, &crate::problem::Path::root()).expect("valid id record"),
             id
         );
     }

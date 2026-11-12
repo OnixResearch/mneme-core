@@ -1,5 +1,5 @@
 //! In-memory lexical and local token-vector index over one scoped snapshot.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Index schema and tokenizer version.
 pub const LEXICAL_INDEX_VERSION: &str = "mneme-lexical-token-v1";
@@ -9,9 +9,9 @@ pub const VECTOR_INDEX_VERSION: &str = "mneme-trigram-hash-v1";
 /// Build a fresh index for the request's temporal selection.
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub(crate) fn build_index(
-    view: &mneme_memory::MemoryView,
-    request: &crate::model::RecallRequest,
-) -> crate::error::Result<crate::model::CachedIndex> {
+    view: &mneme_memory::View,
+    request: &crate::model::Request,
+) -> crate::failure::Result<crate::model::CachedIndex> {
     let snapshot = view.snapshot().clone();
     let mut index = IndexBuild::default();
     let max_documents = snapshot.records.len().saturating_mul(2);
@@ -41,10 +41,10 @@ struct IndexBuild {
 impl IndexBuild {
     fn add_record(
         &mut self,
-        view: &mneme_memory::MemoryView,
+        view: &mneme_memory::View,
         record: &mneme_core::RecordEnvelope,
         entities: &std::collections::BTreeMap<mneme_core::RecordId, String>,
-    ) -> crate::error::Result<()> {
+    ) -> crate::failure::Result<()> {
         match record.kind {
             mneme_core::RecordKind::Entity => self.add_entity(record, entities),
             mneme_core::RecordKind::Episode => self.add_episode(view, record)?,
@@ -93,9 +93,9 @@ impl IndexBuild {
 
     fn add_episode(
         &mut self,
-        view: &mneme_memory::MemoryView,
+        view: &mneme_memory::View,
         record: &mneme_core::RecordEnvelope,
-    ) -> crate::error::Result<()> {
+    ) -> crate::failure::Result<()> {
         let episode = mneme_memory::EpisodeView::parse(record.clone())?;
         let body = format!(
             "{} {} {}",
@@ -133,9 +133,9 @@ impl IndexBuild {
 
     fn add_source(
         &mut self,
-        view: &mneme_memory::MemoryView,
+        view: &mneme_memory::View,
         record: &mneme_core::RecordEnvelope,
-    ) -> crate::error::Result<()> {
+    ) -> crate::failure::Result<()> {
         let source = view.source(record.record_id)?;
         if let Some(path) = &source.path_hint {
             self.documents.push(document(IndexedDocumentInput {
@@ -163,10 +163,10 @@ impl IndexBuild {
 
     fn add_source_content(
         &mut self,
-        view: &mneme_memory::MemoryView,
+        view: &mneme_memory::View,
         record: &mneme_core::RecordEnvelope,
         source: &mneme_memory::SourceView,
-    ) -> crate::error::Result<()> {
+    ) -> crate::failure::Result<()> {
         match view.source_status_for(source)? {
             mneme_memory::SourceStatus::Retained(bytes) => match String::from_utf8(bytes) {
                 Ok(body) => self.documents.push(document(IndexedDocumentInput {
@@ -206,7 +206,7 @@ impl IndexBuild {
 
     fn add_assertion(
         &mut self,
-        view: &mneme_memory::MemoryView,
+        view: &mneme_memory::View,
         entities: &std::collections::BTreeMap<mneme_core::RecordId, String>,
         assertion: &mneme_memory::AssertionView,
     ) {
@@ -260,9 +260,9 @@ impl IndexBuild {
 }
 
 fn selected_assertions(
-    view: &mneme_memory::MemoryView,
-    request: &crate::model::RecallRequest,
-) -> crate::error::Result<Vec<mneme_memory::AssertionView>> {
+    view: &mneme_memory::View,
+    request: &crate::model::Request,
+) -> crate::failure::Result<Vec<mneme_memory::AssertionView>> {
     match request.temporal {
         crate::model::TemporalMode::Current => {
             Ok(view.current_beliefs(&mneme_memory::BeliefView {
@@ -289,7 +289,7 @@ fn selected_assertions(
 }
 
 fn entity_labels(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     scope: &mneme_core::ScopeId,
 ) -> std::collections::BTreeMap<mneme_core::RecordId, String> {
     view.snapshot()
@@ -307,10 +307,10 @@ fn entity_labels(
 }
 
 fn evidence_refs(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     assertion: &mneme_memory::AssertionView,
 ) -> (
-    Vec<crate::model::RecallEvidence>,
+    Vec<crate::model::Evidence>,
     std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
 ) {
     let mut roots = std::collections::BTreeSet::new();
@@ -334,7 +334,7 @@ fn evidence_refs(
         };
         let evidence_roots = view.evidence_roots(*evidence_id).unwrap_or_default();
         roots.extend(evidence_roots.iter().copied());
-        refs.push(crate::model::RecallEvidence {
+        refs.push(crate::model::Evidence {
             evidence: *evidence_id,
             source: evidence.source,
             source_revision,
@@ -358,7 +358,7 @@ struct IndexedDocumentInput {
     episode: Option<mneme_core::RecordId>,
     entity: Option<mneme_core::RecordId>,
     claim_status: Option<crate::model::ClaimStatus>,
-    evidence: Vec<crate::model::RecallEvidence>,
+    evidence: Vec<crate::model::Evidence>,
     ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
 }
 

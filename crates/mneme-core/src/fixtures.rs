@@ -30,13 +30,13 @@ fn revision_id(byte: u8) -> crate::ids::RevisionId {
     crate::ids::RevisionId::from_bytes([byte; 16])
 }
 
-fn scope() -> crate::scope::ScopeId {
-    crate::scope::ScopeId::new(crate::scope::ScopeClass::Project, "cedar")
+fn scope() -> crate::tenancy::ScopeId {
+    crate::tenancy::ScopeId::new(crate::tenancy::ScopeClass::Project, "cedar")
         .expect("constant synthetic scope")
 }
 
-fn recorded(order: u64) -> crate::time::RecordedTime {
-    crate::time::RecordedTime::new(crate::time::Timestamp::from_nanos(order as i64), order)
+fn recorded(order: u64) -> crate::clock::RecordedTime {
+    crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(order as i64), order)
 }
 
 /// The fixture entity identity.
@@ -60,102 +60,102 @@ pub fn evidence_id() -> crate::ids::RecordId {
 }
 
 /// The entity record.
-pub fn entity() -> crate::envelope::RecordEnvelope {
-    crate::envelope::RecordEnvelope {
+pub fn entity() -> crate::wire::RecordEnvelope {
+    crate::wire::RecordEnvelope {
         schema_version: 1,
-        kind: crate::schema::RecordKind::Entity,
+        kind: crate::fields::RecordKind::Entity,
         record_id: entity_id(),
         revision_id: revision_id(11),
         predecessor: None,
         scope: scope(),
         recorded: recorded(1),
-        payload: crate::envelope::Payload::new([
+        payload: crate::wire::Payload::new([
             (
-                crate::value::Symbol::from("entity-type"),
-                crate::value::Value::symbol("project"),
+                crate::typed::Symbol::from("entity-type"),
+                crate::typed::Value::symbol("project"),
             ),
             (
-                crate::value::Symbol::from("label"),
-                crate::value::Value::string("Cedar Notes"),
+                crate::typed::Symbol::from("label"),
+                crate::typed::Value::string("Cedar Notes"),
             ),
             (
-                crate::value::Symbol::from("properties"),
-                crate::value::Value::symbol_dictionary([]),
+                crate::typed::Symbol::from("properties"),
+                crate::typed::Value::symbol_dictionary([]),
             ),
         ]),
     }
 }
 
 /// The retained source-revision record.
-pub fn source_revision() -> crate::envelope::RecordEnvelope {
+pub fn source_revision() -> crate::wire::RecordEnvelope {
     let retained = crate::payload::RetainedSource::new(
-        crate::digest::ContentDigest::of_source_bytes(SOURCE_TEXT.as_bytes()),
+        crate::hashing::ContentDigest::of_source_bytes(SOURCE_TEXT.as_bytes()),
         SOURCE_TEXT.len() as u64,
         "text/asciidoc",
     )
     .expect("fixture source is retained");
-    crate::envelope::RecordEnvelope {
+    crate::wire::RecordEnvelope {
         schema_version: 1,
-        kind: crate::schema::RecordKind::SourceRevision,
+        kind: crate::fields::RecordKind::SourceRevision,
         record_id: source_revision_id(),
         revision_id: revision_id(12),
         predecessor: None,
         scope: scope(),
         recorded: recorded(2),
-        payload: crate::envelope::Payload::new([
+        payload: crate::wire::Payload::new([
             (
-                crate::value::Symbol::from("content"),
+                crate::typed::Symbol::from("content"),
                 crate::payload::SourceContent::Retained(retained).to_value(),
             ),
             (
-                crate::value::Symbol::from("acquisition"),
-                crate::value::Value::symbol("authored"),
+                crate::typed::Symbol::from("acquisition"),
+                crate::typed::Value::symbol("authored"),
             ),
             (
-                crate::value::Symbol::from("entity"),
-                crate::reference::Reference::local(entity_id(), crate::schema::RecordKind::Entity)
+                crate::typed::Symbol::from("entity"),
+                crate::pointer::Reference::local(entity_id(), crate::fields::RecordKind::Entity)
                     .to_value(),
             ),
             (
-                crate::value::Symbol::from("path-hint"),
-                crate::value::Value::string("project.adoc"),
+                crate::typed::Symbol::from("path-hint"),
+                crate::typed::Value::string("project.adoc"),
             ),
         ]),
     }
 }
 
 /// The recorded authored statement episode.
-pub fn episode() -> crate::envelope::RecordEnvelope {
-    crate::envelope::RecordEnvelope {
+pub fn episode() -> crate::wire::RecordEnvelope {
+    crate::wire::RecordEnvelope {
         schema_version: 1,
-        kind: crate::schema::RecordKind::Episode,
+        kind: crate::fields::RecordKind::Episode,
         record_id: record_id(3),
         revision_id: revision_id(13),
         predecessor: None,
         scope: scope(),
         recorded: recorded(3),
-        payload: crate::envelope::Payload::new([
+        payload: crate::wire::Payload::new([
             (
-                crate::value::Symbol::from("actor"),
-                crate::value::Value::string("synthetic author"),
+                crate::typed::Symbol::from("actor"),
+                crate::typed::Value::string("synthetic author"),
             ),
             (
-                crate::value::Symbol::from("episode-type"),
-                crate::value::Value::symbol("statement"),
+                crate::typed::Symbol::from("episode-type"),
+                crate::typed::Value::symbol("statement"),
             ),
             (
-                crate::value::Symbol::from("occurred"),
-                crate::time::ValidTime::Unknown.to_value(),
+                crate::typed::Symbol::from("occurred"),
+                crate::clock::ValidTime::Unknown.to_value(),
             ),
             (
-                crate::value::Symbol::from("summary"),
-                crate::value::Value::string(ASSERTED_SENTENCE),
+                crate::typed::Symbol::from("summary"),
+                crate::typed::Value::string(ASSERTED_SENTENCE),
             ),
             (
-                crate::value::Symbol::from("source"),
-                crate::reference::Reference::local(
+                crate::typed::Symbol::from("source"),
+                crate::pointer::Reference::local(
                     source_revision_id(),
-                    crate::schema::RecordKind::SourceRevision,
+                    crate::fields::RecordKind::SourceRevision,
                 )
                 .to_value(),
             ),
@@ -172,100 +172,100 @@ fn span() -> crate::payload::SourceSpan {
 }
 
 /// The evidence record supporting the fixture assertion.
-pub fn evidence() -> crate::envelope::RecordEnvelope {
-    crate::envelope::RecordEnvelope {
+pub fn evidence() -> crate::wire::RecordEnvelope {
+    crate::wire::RecordEnvelope {
         schema_version: 1,
-        kind: crate::schema::RecordKind::Evidence,
+        kind: crate::fields::RecordKind::Evidence,
         record_id: evidence_id(),
         revision_id: revision_id(15),
         predecessor: None,
         scope: scope(),
         recorded: recorded(4),
-        payload: crate::envelope::Payload::new([
+        payload: crate::wire::Payload::new([
             (
-                crate::value::Symbol::from("assertion"),
-                crate::reference::Reference::local(
+                crate::typed::Symbol::from("assertion"),
+                crate::pointer::Reference::local(
                     assertion_id(),
-                    crate::schema::RecordKind::Assertion,
+                    crate::fields::RecordKind::Assertion,
                 )
                 .to_value(),
             ),
             (
-                crate::value::Symbol::from("source"),
-                crate::reference::Reference::local(
+                crate::typed::Symbol::from("source"),
+                crate::pointer::Reference::local(
                     source_revision_id(),
-                    crate::schema::RecordKind::SourceRevision,
+                    crate::fields::RecordKind::SourceRevision,
                 )
                 .to_value(),
             ),
-            (crate::value::Symbol::from("span"), span().to_value()),
+            (crate::typed::Symbol::from("span"), span().to_value()),
             (
-                crate::value::Symbol::from("relation"),
-                crate::value::Value::symbol("supports"),
+                crate::typed::Symbol::from("relation"),
+                crate::typed::Value::symbol("supports"),
             ),
             (
-                crate::value::Symbol::from("origin"),
-                crate::value::Value::symbol("authored-statement"),
+                crate::typed::Symbol::from("origin"),
+                crate::typed::Value::symbol("authored-statement"),
             ),
             (
-                crate::value::Symbol::from("ancestry"),
-                crate::value::Value::set([]),
+                crate::typed::Symbol::from("ancestry"),
+                crate::typed::Value::set([]),
             ),
         ]),
     }
 }
 
 fn assertion_with_lifecycle(
-    lifecycle: crate::schema::Lifecycle,
+    lifecycle: crate::fields::Lifecycle,
     revision_byte: u8,
-) -> crate::envelope::RecordEnvelope {
-    crate::envelope::RecordEnvelope {
+) -> crate::wire::RecordEnvelope {
+    crate::wire::RecordEnvelope {
         schema_version: 1,
-        kind: crate::schema::RecordKind::Assertion,
+        kind: crate::fields::RecordKind::Assertion,
         record_id: assertion_id(),
         revision_id: revision_id(revision_byte),
         predecessor: None,
         scope: scope(),
         recorded: recorded(5),
-        payload: crate::envelope::Payload::new([
+        payload: crate::wire::Payload::new([
             (
-                crate::value::Symbol::from("subject"),
-                crate::reference::Reference::local(entity_id(), crate::schema::RecordKind::Entity)
+                crate::typed::Symbol::from("subject"),
+                crate::pointer::Reference::local(entity_id(), crate::fields::RecordKind::Entity)
                     .to_value(),
             ),
             (
-                crate::value::Symbol::from("predicate"),
-                crate::value::Value::symbol("storage-engine"),
+                crate::typed::Symbol::from("predicate"),
+                crate::typed::Value::symbol("storage-engine"),
             ),
             (
-                crate::value::Symbol::from("value"),
-                crate::value::Value::string("SQLite"),
+                crate::typed::Symbol::from("value"),
+                crate::typed::Value::string("SQLite"),
             ),
             (
-                crate::value::Symbol::from("stance"),
-                crate::value::Value::symbol("affirm"),
+                crate::typed::Symbol::from("stance"),
+                crate::typed::Value::symbol("affirm"),
             ),
             (
-                crate::value::Symbol::from("lifecycle"),
-                crate::value::Value::symbol(lifecycle.symbol()),
+                crate::typed::Symbol::from("lifecycle"),
+                crate::typed::Value::symbol(lifecycle.symbol()),
             ),
             (
-                crate::value::Symbol::from("origin"),
-                crate::value::Value::symbol("authored-statement"),
+                crate::typed::Symbol::from("origin"),
+                crate::typed::Value::symbol("authored-statement"),
             ),
             (
-                crate::value::Symbol::from("asserted-by"),
-                crate::value::Value::string("synthetic author"),
+                crate::typed::Symbol::from("asserted-by"),
+                crate::typed::Value::string("synthetic author"),
             ),
             (
-                crate::value::Symbol::from("valid-time"),
-                crate::time::ValidTime::Unknown.to_value(),
+                crate::typed::Symbol::from("valid-time"),
+                crate::clock::ValidTime::Unknown.to_value(),
             ),
             (
-                crate::value::Symbol::from("evidence"),
-                crate::value::Value::set([crate::reference::Reference::local(
+                crate::typed::Symbol::from("evidence"),
+                crate::typed::Value::set([crate::pointer::Reference::local(
                     evidence_id(),
-                    crate::schema::RecordKind::Evidence,
+                    crate::fields::RecordKind::Evidence,
                 )
                 .to_value()]),
             ),
@@ -274,22 +274,22 @@ fn assertion_with_lifecycle(
 }
 
 /// A stored assertion that remains proposed.
-pub fn proposed_assertion() -> crate::envelope::RecordEnvelope {
-    assertion_with_lifecycle(crate::schema::Lifecycle::Proposed, 14)
+pub fn proposed_assertion() -> crate::wire::RecordEnvelope {
+    assertion_with_lifecycle(crate::fields::Lifecycle::Proposed, 14)
 }
 
 /// An assertion whose explicit acceptance decision exists elsewhere.
 ///
 /// The fixture does not invent that decision; it only models the record state a
 /// policy-produced acceptance revision would carry.
-pub fn accepted_assertion() -> crate::envelope::RecordEnvelope {
-    let mut accepted = assertion_with_lifecycle(crate::schema::Lifecycle::Accepted, 24);
+pub fn accepted_assertion() -> crate::wire::RecordEnvelope {
+    let mut accepted = assertion_with_lifecycle(crate::fields::Lifecycle::Accepted, 24);
     accepted.predecessor = Some(revision_id(14));
     accepted
 }
 
 /// The complete fixture batch in reference order.
-pub fn fixture_batch() -> Vec<crate::envelope::RecordEnvelope> {
+pub fn fixture_batch() -> Vec<crate::wire::RecordEnvelope> {
     vec![
         entity(),
         source_revision(),
@@ -300,11 +300,11 @@ pub fn fixture_batch() -> Vec<crate::envelope::RecordEnvelope> {
 }
 
 /// Encode the fixture batch as a Preserves sequence value.
-pub fn fixture_batch_value() -> crate::value::Value {
-    crate::value::Value::sequence(
+pub fn fixture_batch_value() -> crate::typed::Value {
+    crate::typed::Value::sequence(
         fixture_batch()
             .iter()
-            .map(crate::envelope::RecordEnvelope::to_value)
+            .map(crate::wire::RecordEnvelope::to_value)
             .collect(),
     )
 }
@@ -312,22 +312,22 @@ pub fn fixture_batch_value() -> crate::value::Value {
 /// A schema registry that additionally declares the synthetic migration
 /// version 2. It is distinct from the production evidence version 2 and the two
 /// are never registered together.
-pub fn synthetic_v2_registry() -> crate::schema::SchemaRegistry {
-    crate::schema::SchemaRegistry::v1()
-        .with_version(crate::schema::RecordSchema::synthetic_migration_v2())
+pub fn synthetic_v2_registry() -> crate::fields::SchemaRegistry {
+    crate::fields::SchemaRegistry::v1()
+        .with_version(crate::fields::RecordSchema::synthetic_migration_v2())
 }
 
 /// The synthetic version 1 to version 2 migration fixture.
-pub fn synthetic_v1_to_v2_migration() -> crate::migration::Migration {
-    crate::migration::Migration::new(
+pub fn synthetic_v1_to_v2_migration() -> crate::upgrade::Migration {
+    crate::upgrade::Migration::new(
         "synthetic-v1-to-v2",
         1,
         2,
-        |payload: &crate::envelope::Payload| -> Result<crate::envelope::Payload, crate::error::Diagnostic> {
+        |payload: &crate::wire::Payload| -> Result<crate::wire::Payload, crate::problem::Diagnostic> {
             let mut output = payload.clone();
             output.insert(
-                crate::value::Symbol::from("extraction"),
-                crate::value::Value::string("synthetic-v2-fixture"),
+                crate::typed::Symbol::from("extraction"),
+                crate::typed::Value::string("synthetic-v2-fixture"),
             );
             Ok(output)
         },
@@ -340,12 +340,12 @@ mod tests {
 
     #[test]
     fn fixture_batch_validates_and_keeps_the_assertion_proposed() {
-        let values: Vec<crate::value::Value> = fixture_batch()
+        let values: Vec<crate::typed::Value> = fixture_batch()
             .iter()
-            .map(crate::envelope::RecordEnvelope::to_value)
+            .map(crate::wire::RecordEnvelope::to_value)
             .collect();
         let validated =
-            crate::envelope::validate_batch(&values, &crate::schema::SchemaRegistry::v1(), None)
+            crate::wire::validate_batch(&values, &crate::fields::SchemaRegistry::v1(), None)
                 .expect("fixture batch");
         let assertion = validated
             .records
@@ -354,7 +354,7 @@ mod tests {
             .expect("assertion present");
         assert_eq!(
             assertion.assertion_lifecycle(),
-            Some(crate::schema::Lifecycle::Proposed)
+            Some(crate::fields::Lifecycle::Proposed)
         );
         assert_ne!(
             proposed_assertion().full_digest(),
@@ -380,11 +380,11 @@ mod tests {
         }
         assert_eq!(
             proposed.assertion_lifecycle(),
-            Some(crate::schema::Lifecycle::Proposed)
+            Some(crate::fields::Lifecycle::Proposed)
         );
         assert_eq!(
             accepted.assertion_lifecycle(),
-            Some(crate::schema::Lifecycle::Accepted)
+            Some(crate::fields::Lifecycle::Accepted)
         );
         assert_eq!(accepted.predecessor, Some(proposed.revision_id));
     }
@@ -398,7 +398,7 @@ mod tests {
             .expect("migration fixture");
         assert_eq!(outcome.lineage.from_version, 1);
         assert_eq!(outcome.lineage.to_version, 2);
-        crate::envelope::validate_record_value(&outcome.target.to_value(), &registry, None)
+        crate::wire::validate_record_value(&outcome.target.to_value(), &registry, None)
             .expect("version two target");
     }
 }

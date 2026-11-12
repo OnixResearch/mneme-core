@@ -2,7 +2,7 @@
 //!
 //! Canonical records remain authoritative. Projection facts are disposable and
 //! carry rule, revision, scope, coverage, and source-support metadata.
-#![allow(unknown_lints, path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(unknown_lints)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -169,13 +169,13 @@ pub struct RuleProgram {
 
 /// Failure to register or build a projection.
 #[derive(Debug, thiserror::Error)]
-pub enum DatalogError {
+pub enum Error {
     #[error("rule bundle is invalid")]
     InvalidBundle(Vec<RuleDiagnostic>),
     #[error(transparent)]
-    Store(#[from] mneme_store::StoreError),
+    Store(#[from] mneme_store::Failure),
     #[error(transparent)]
-    Memory(#[from] mneme_memory::MemoryError),
+    Engine(#[from] mneme_memory::EvidenceError),
     #[error("unknown predicate {0}")]
     UnknownPredicate(String),
     #[error("datalog projection {0} is missing")]
@@ -322,7 +322,7 @@ pub struct Derivation {
 
 /// The built projection.
 #[derive(Clone, Debug)]
-pub struct DatalogBuild {
+pub struct Build {
     pub context: BuildContext,
     pub status: ExecutionStatus,
     pub coverage: Vec<Coverage>,
@@ -337,7 +337,7 @@ pub struct DatalogBuild {
     bundle: RuleBundle,
 }
 
-impl DatalogBuild {
+impl Build {
     /// Number of materialized rows in one predicate.
     #[allow(unknown_lints, usize_in_public_api)] // row counts mirror collection lengths
     pub fn row_count(&self, predicate: &str) -> usize {
@@ -539,9 +539,9 @@ impl QueryResult {
 }
 
 /// A bounded projection service over one mutable workspace.
-pub struct DatalogService<'w> {
+pub struct Service<'w> {
     workspace: &'w mut mneme_store::Workspace,
-    builds: std::collections::BTreeMap<String, DatalogBuild>,
+    builds: std::collections::BTreeMap<String, Build>,
     query_cache: std::collections::BTreeMap<QueryCacheKey, QueryResult>,
     participants: std::collections::BTreeSet<String>,
 }
@@ -566,10 +566,10 @@ impl RuleBundle {
     }
 }
 
-impl<'w> DatalogService<'w> {
+impl<'w> Service<'w> {
     /// Wrap a workspace.
     pub fn new(workspace: &'w mut mneme_store::Workspace) -> Self {
-        DatalogService {
+        Service {
             workspace,
             builds: std::collections::BTreeMap::new(),
             query_cache: std::collections::BTreeMap::new(),
@@ -580,11 +580,8 @@ impl<'w> DatalogService<'w> {
     /// Build a private projection and optionally publish its pointer through
     /// the workspace projection registry.
     #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-    pub fn build(&mut self, request: BuildRequest) -> Result<DatalogBuild, DatalogError> {
-        let program = request
-            .bundle
-            .validate()
-            .map_err(DatalogError::InvalidBundle)?;
+    pub fn build(&mut self, request: BuildRequest) -> Result<Build, Error> {
+        let program = request.bundle.validate().map_err(Error::InvalidBundle)?;
         let generation = self.workspace.eligibility_generation()?;
         let build_id = rules::build_id(rules::BuildIdContext {
             revision: request.revision,
@@ -612,7 +609,7 @@ impl<'w> DatalogService<'w> {
         }
         let max_cached_builds = 1_024;
         if !self.builds.contains_key(&build_id) && self.builds.len() >= max_cached_builds {
-            return Err(DatalogError::Failed(
+            return Err(Error::Failed(
                 "Datalog build cache exceeds the 1024-entry bound".to_owned(),
             ));
         }
@@ -624,7 +621,7 @@ impl<'w> DatalogService<'w> {
                 build.status,
                 ExecutionStatus::Timeout | ExecutionStatus::Cancelled | ExecutionStatus::Failed
             ) {
-                return Err(DatalogError::Failed(
+                return Err(Error::Failed(
                     "cannot publish a timed-out, cancelled, or failed projection".to_owned(),
                 ));
             }
@@ -641,13 +638,13 @@ impl<'w> DatalogService<'w> {
         build_id: String,
         generation: u64,
         snapshot: mneme_store::Snapshot,
-    ) -> Result<DatalogBuild, DatalogError> {
+    ) -> Result<Build, Error> {
         let history = {
             let mut history = std::collections::BTreeMap::new();
             for record in &snapshot.records {
                 for revision in self.workspace.record_revisions(record.record_id)? {
                     if history.len() >= 1_000_000 {
-                        return Err(DatalogError::Failed(
+                        return Err(Error::Failed(
                             "workspace history exceeds the 1M revision bound".to_owned(),
                         ));
                     }
@@ -658,7 +655,7 @@ impl<'w> DatalogService<'w> {
         };
         let sequences = self.workspace.revision_sequences()?;
         let suppressions = self.workspace.active_suppressions()?;
-        let view = mneme_memory::MemoryView::with_retention(
+        let view = mneme_memory::View::with_retention(
             snapshot.clone(),
             self.workspace.root(),
             history,
@@ -677,11 +674,11 @@ impl<'w> DatalogService<'w> {
         };
         let evaluated = engine::build(&view, request, &context, &program)?;
         if self.workspace.eligibility_generation()? != generation {
-            return Err(DatalogError::Failed(
+            return Err(Error::Failed(
                 "eligibility barrier advanced during projection build".to_owned(),
             ));
         }
-        Ok(DatalogBuild {
+        Ok(Build {
             context,
             status: evaluated.status,
             coverage: evaluated.coverage,
@@ -701,14 +698,14 @@ impl<'w> DatalogService<'w> {
     /// Publish a previously built private projection after a fresh barrier
     /// check. A build whose eligibility generation is no longer current is
     /// rejected without replacing the registered projection.
-    pub fn publish_build(&mut self, build: &DatalogBuild) -> Result<(), DatalogError> {
+    pub fn publish_build(&mut self, build: &Build) -> Result<(), Error> {
         self.publish(build)
     }
 
-    fn publish(&mut self, build: &DatalogBuild) -> Result<(), DatalogError> {
+    fn publish(&mut self, build: &Build) -> Result<(), Error> {
         let generation = self.workspace.eligibility_generation()?;
         if generation != build.context.eligibility_generation {
-            return Err(mneme_store::StoreError::BarrierAdvanced {
+            return Err(mneme_store::Failure::BarrierAdvanced {
                 pinned: build.context.eligibility_generation,
                 current: generation,
             }
@@ -742,33 +739,25 @@ impl<'w> DatalogService<'w> {
 
     /// Query a built projection. A changed eligibility generation always fails;
     /// an older revision requires `allow_stale`.
-    pub fn query(&mut self, build_id: &str, query: Query) -> Result<QueryResult, DatalogError> {
+    pub fn query(&mut self, build_id: &str, query: Query) -> Result<QueryResult, Error> {
         let build = self
             .builds
             .get(build_id)
             .cloned()
-            .ok_or_else(|| DatalogError::MissingBuild(build_id.to_owned()))?;
+            .ok_or_else(|| Error::MissingBuild(build_id.to_owned()))?;
         self.query_loaded(build, query)
     }
 
     /// Query an explicit build object, checking current barrier and revision.
-    pub fn query_build(
-        &mut self,
-        build: &DatalogBuild,
-        query: Query,
-    ) -> Result<QueryResult, DatalogError> {
+    pub fn query_build(&mut self, build: &Build, query: Query) -> Result<QueryResult, Error> {
         self.query_loaded(build.clone(), query)
     }
 
     #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-    fn query_loaded(
-        &mut self,
-        build: DatalogBuild,
-        query: Query,
-    ) -> Result<QueryResult, DatalogError> {
+    fn query_loaded(&mut self, build: Build, query: Query) -> Result<QueryResult, Error> {
         let current_generation = self.workspace.eligibility_generation()?;
         if current_generation != build.context.eligibility_generation {
-            return Err(mneme_store::StoreError::BarrierAdvanced {
+            return Err(mneme_store::Failure::BarrierAdvanced {
                 pinned: build.context.eligibility_generation,
                 current: current_generation,
             }
@@ -777,7 +766,7 @@ impl<'w> DatalogService<'w> {
         let current_revision = self.workspace.current_revision()?;
         let requested_revision = current_revision;
         if current_revision != build.context.served_revision && !query.allow_stale {
-            return Err(DatalogError::Stale {
+            return Err(Error::Stale {
                 requested: current_revision,
                 served: build.context.served_revision,
             });
@@ -806,10 +795,10 @@ impl<'w> DatalogService<'w> {
 
     fn query_cached(
         &mut self,
-        build: &DatalogBuild,
+        build: &Build,
         query: &Query,
         requested_revision: mneme_core::WorkspaceRevisionId,
-    ) -> Result<QueryResult, DatalogError> {
+    ) -> Result<QueryResult, Error> {
         let key = QueryCacheKey {
             build_id: build.context.projection_build_id.clone(),
             requested_revision,
@@ -839,21 +828,21 @@ impl<'w> DatalogService<'w> {
     }
 }
 
-fn validate_query_arity(build: &DatalogBuild, query: &Query) -> Result<(), DatalogError> {
+fn validate_query_arity(build: &Build, query: &Query) -> Result<(), Error> {
     let arity = build
         .arities
         .get(&query.predicate)
         .copied()
-        .ok_or_else(|| DatalogError::UnknownPredicate(query.predicate.clone()))?;
+        .ok_or_else(|| Error::UnknownPredicate(query.predicate.clone()))?;
     if !query.constants.is_empty() && query.constants.len() != arity {
-        return Err(DatalogError::InvalidQuery(
+        return Err(Error::InvalidQuery(
             "query constant count does not match predicate arity",
         ));
     }
     Ok(())
 }
 
-fn matching_query_rows(build: &DatalogBuild, query: &Query) -> Vec<QueryRow> {
+fn matching_query_rows(build: &Build, query: &Query) -> Vec<QueryRow> {
     let mut rows = Vec::new();
     if let Some(facts) = build.facts.get(&query.predicate) {
         for (terms, data) in facts {
@@ -874,7 +863,7 @@ fn matching_query_rows(build: &DatalogBuild, query: &Query) -> Vec<QueryRow> {
 }
 
 fn query_result(
-    build: &DatalogBuild,
+    build: &Build,
     query: &Query,
     coverage: Coverage,
     mut rows: Vec<QueryRow>,

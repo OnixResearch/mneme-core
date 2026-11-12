@@ -9,19 +9,18 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![allow(unknown_lints)] // Octet custom lint names are unknown to rustc
 
-pub mod error;
-pub mod index;
+pub mod engine;
+pub mod failure;
+pub mod lookup;
 pub mod model;
-pub mod service;
 
-pub use error::{RecallError, Result};
-pub use index::{LEXICAL_INDEX_VERSION, VECTOR_INDEX_VERSION};
+pub use engine::{FUSION_POLICY_VERSION, Service};
+pub use failure::{QueryError, Result};
+pub use lookup::{LEXICAL_INDEX_VERSION, VECTOR_INDEX_VERSION};
 pub use model::{
-    ClaimStatus, ContentKind, DataBoundary, IndexCoverage, ModeReport, ModeStatus, Omission,
-    RecallCandidate, RecallContext, RecallEvidence, RecallExecution, RecallMode, RecallRequest,
-    RecallResponse, StructuredRequest, TemporalMode,
+    Candidate, ClaimStatus, ContentKind, Context, DataBoundary, Evidence, Execution, IndexCoverage,
+    Mode, ModeReport, ModeStatus, Omission, Request, Response, StructuredRequest, TemporalMode,
 };
-pub use service::{FUSION_POLICY_VERSION, RecallService};
 
 /// Recall contract/index schema version.
 pub const INDEX_SCHEMA_VERSION: u32 = 1;

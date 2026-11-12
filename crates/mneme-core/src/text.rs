@@ -6,18 +6,36 @@
 //! exact textual representation is not used for hashing or persistence.
 
 /// Render a value using Preserves text syntax for human consumption.
-pub fn render(value: &crate::value::Value) -> String {
+pub fn render(value: &crate::typed::Value) -> String {
     let mut output = String::new();
     write_value(&mut output, value);
     output
 }
 
-#[allow(unknown_lints, no_recursion)] // recursive tree renderer; explicit stack tracked separately
-fn write_value(output: &mut String, value: &crate::value::Value) {
+enum RenderWork<'a> {
+    Value(&'a crate::typed::Value),
+    Text(&'static str),
+}
+
+fn write_value(output: &mut String, value: &crate::typed::Value) {
+    let mut work = vec![RenderWork::Value(value)];
+    while let Some(task) = work.pop() {
+        match task {
+            RenderWork::Text(text) => output.push_str(text),
+            RenderWork::Value(value) => {
+                if !write_scalar(output, value) {
+                    write_composite(&mut work, value);
+                }
+            }
+        }
+    }
+}
+
+fn write_scalar(output: &mut String, value: &crate::typed::Value) -> bool {
     match value {
-        crate::value::Value::Boolean(true) => output.push_str("#t"),
-        crate::value::Value::Boolean(false) => output.push_str("#f"),
-        crate::value::Value::Double(double) => {
+        crate::typed::Value::Boolean(true) => output.push_str("#t"),
+        crate::typed::Value::Boolean(false) => output.push_str("#f"),
+        crate::typed::Value::Double(double) => {
             let raw = double.value();
             if raw.is_finite() {
                 output.push_str(&format!("{raw:?}"));
@@ -25,74 +43,75 @@ fn write_value(output: &mut String, value: &crate::value::Value) {
                 output.push_str(&format!("#xd\"{:016x}\"", double.bits()));
             }
         }
-        crate::value::Value::SignedInteger(integer) => output.push_str(&integer.to_string()),
-        crate::value::Value::String(text) => match serde_json::to_string(text) {
+        crate::typed::Value::SignedInteger(integer) => output.push_str(&integer.to_string()),
+        crate::typed::Value::String(text) => match serde_json::to_string(text) {
             Ok(quoted) => output.push_str(&quoted),
             Err(_) => output.push_str(&format!("{text:?}")),
         },
-        crate::value::Value::ByteString(bytes) => {
+        crate::typed::Value::ByteString(bytes) => {
             output.push_str("#x\"");
             for byte in bytes.as_slice() {
                 output.push_str(&format!("{byte:02x}"));
             }
             output.push('"');
         }
-        crate::value::Value::Symbol(symbol) => match write_symbol_string(symbol.as_str()) {
+        crate::typed::Value::Symbol(symbol) => match write_symbol_string(symbol.as_str()) {
             Ok(bare) => output.push_str(&bare),
             Err(quoted) => output.push_str(&quoted),
         },
-        crate::value::Value::Record(record) => {
-            output.push('<');
-            write_value(output, record.label());
-            for field in record.fields() {
-                output.push(' ');
-                write_value(output, field);
-            }
-            output.push('>');
-        }
-        crate::value::Value::Sequence(items) => {
-            output.push('[');
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    output.push(' ');
-                }
-                write_value(output, item);
-            }
-            output.push(']');
-        }
-        crate::value::Value::Set(items) => {
-            output.push_str("#{");
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    output.push(' ');
-                }
-                write_value(output, item);
-            }
-            output.push('}');
-        }
-        crate::value::Value::Dictionary(entries) => {
-            write_dictionary(output, entries);
-            output.push('}');
-        }
-        crate::value::Value::Embedded(inner) => {
-            output.push_str("#:");
-            write_value(output, inner);
-        }
+        _ => return false,
     }
+    true
 }
 
-fn write_dictionary(
-    output: &mut String,
-    entries: &std::collections::BTreeMap<crate::Value, crate::Value>,
-) {
-    output.push('{');
-    for (index, (key, item)) in entries.iter().enumerate() {
-        if index > 0 {
-            output.push(' ');
+fn write_composite<'a>(work: &mut Vec<RenderWork<'a>>, value: &'a crate::typed::Value) {
+    match value {
+        crate::typed::Value::Record(record) => {
+            work.push(RenderWork::Text(">"));
+            for field in record.fields().iter().rev() {
+                work.push(RenderWork::Value(field));
+                work.push(RenderWork::Text(" "));
+            }
+            work.push(RenderWork::Value(record.label()));
+            work.push(RenderWork::Text("<"));
         }
-        write_value(output, key);
-        output.push_str(": ");
-        write_value(output, item);
+        crate::typed::Value::Sequence(items) => {
+            work.push(RenderWork::Text("]"));
+            for (index, item) in items.iter().enumerate().rev() {
+                work.push(RenderWork::Value(item));
+                if index > 0 {
+                    work.push(RenderWork::Text(" "));
+                }
+            }
+            work.push(RenderWork::Text("["));
+        }
+        crate::typed::Value::Set(items) => {
+            work.push(RenderWork::Text("}"));
+            for (index, item) in items.iter().enumerate().rev() {
+                work.push(RenderWork::Value(item));
+                if index > 0 {
+                    work.push(RenderWork::Text(" "));
+                }
+            }
+            work.push(RenderWork::Text("#{"));
+        }
+        crate::typed::Value::Dictionary(entries) => {
+            work.push(RenderWork::Text("}"));
+            for (index, (key, item)) in entries.iter().enumerate().rev() {
+                work.push(RenderWork::Value(item));
+                work.push(RenderWork::Text(": "));
+                work.push(RenderWork::Value(key));
+                if index > 0 {
+                    work.push(RenderWork::Text(" "));
+                }
+            }
+            work.push(RenderWork::Text("{"));
+        }
+        crate::typed::Value::Embedded(inner) => {
+            work.push(RenderWork::Value(inner));
+            work.push(RenderWork::Text("#:"));
+        }
+        _ => {}
     }
 }
 
@@ -132,14 +151,14 @@ mod tests {
 
     #[test]
     fn renders_compound_values() {
-        let value = crate::value::Value::dictionary([
+        let value = crate::typed::Value::dictionary([
             (
-                crate::value::Value::symbol("name"),
-                crate::value::Value::string("Cedar Notes"),
+                crate::typed::Value::symbol("name"),
+                crate::typed::Value::string("Cedar Notes"),
             ),
             (
-                crate::value::Value::symbol("large"),
-                crate::value::Value::integer(1_i64),
+                crate::typed::Value::symbol("large"),
+                crate::typed::Value::integer(1_i64),
             ),
         ]);
         assert_eq!(render(&value), "{large: 1 name: \"Cedar Notes\"}");
@@ -148,25 +167,25 @@ mod tests {
     #[test]
     fn quotes_symbols_that_need_escaping() {
         assert_eq!(
-            render(&crate::value::Value::symbol("plain-name")),
+            render(&crate::typed::Value::symbol("plain-name")),
             "plain-name"
         );
         assert_eq!(
-            render(&crate::value::Value::symbol("two words")),
+            render(&crate::typed::Value::symbol("two words")),
             "|two words|"
         );
-        assert_eq!(render(&crate::value::Value::symbol("a|b")), "|a\\|b|");
+        assert_eq!(render(&crate::typed::Value::symbol("a|b")), "|a\\|b|");
     }
 
     #[test]
     fn renders_bytes_and_embedded_markers() {
         assert_eq!(
-            render(&crate::value::Value::bytes([0_u8, 255])),
+            render(&crate::typed::Value::bytes([0_u8, 255])),
             "#x\"00ff\""
         );
         assert_eq!(
-            render(&crate::value::Value::embedded(
-                crate::value::Value::Boolean(true)
+            render(&crate::typed::Value::embedded(
+                crate::typed::Value::Boolean(true)
             )),
             "#:#t"
         );

@@ -9,29 +9,29 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-pub mod blob;
-pub mod clock;
-pub mod command;
+pub mod catalog;
+pub mod coordinator;
 pub mod error;
-pub mod faults;
-pub mod manifest;
-pub mod retention;
-pub mod workspace;
+pub mod injectors;
+pub mod lifecycle;
+pub mod payload;
+pub mod requests;
+pub mod timekeeper;
 
-pub use clock::{Clock, FixedClock, SystemClock};
-pub use command::{
-    CommitCommand, ImportCandidateDraft, PublicationDraft, RecordDraft, SourceBlobDraft,
-};
-pub use error::{Result, StoreError};
-pub use faults::{FaultAt, FaultInjector, FaultPoint, NoFaults};
-pub use manifest::{Manifest, ManifestRecord};
-pub use retention::{
-    BlobPurgeOutcome, RetentionCommit, RetentionJobState, RetentionLocationPlan,
-    RetentionLocationState, RetentionLocationStateRecord, RetentionOperation, RetentionParticipant,
-    RetentionSelector, RetentionSuppression, SuppressionMode,
-};
-pub use workspace::{
+pub use catalog::{Manifest, ManifestRecord};
+pub use coordinator::{
     CommitOutcome, LAYOUT_VERSION, LEDGER_FILE, ProjectionRegistration, ProjectionResolution,
     ProjectionState, PublicationOutcome, PublicationState, RecoveryReport, Snapshot, Workspace,
     WorkspaceConfig, WorkspaceStatus,
 };
+pub use error::{Failure, Result};
+pub use injectors::{FaultAt, FaultInjector, FaultPoint, NoFaults};
+pub use lifecycle::{
+    BlobPurgeOutcome, RetentionCommit, RetentionJobState, RetentionLocationPlan,
+    RetentionLocationState, RetentionLocationStateRecord, RetentionOperation, RetentionParticipant,
+    RetentionSelector, RetentionSuppression, SuppressionMode,
+};
+pub use requests::{
+    CommitCommand, ImportCandidateDraft, PublicationDraft, RecordDraft, SourceBlobDraft,
+};
+pub use timekeeper::{Clock, FixedClock, SystemClock};

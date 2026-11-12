@@ -3,7 +3,7 @@
 //!
 //! Everything here is computed from one pinned store snapshot. No method mutates
 //! canonical state or promotes a proposed assertion.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The policy predicate used for action-completion claims.
 pub const ACTION_COMPLETED_PREDICATE: &str = "action-completed";
@@ -147,7 +147,7 @@ impl SourceStatus {
 
 /// A read-only policy view over one committed snapshot.
 #[derive(Clone, Debug)]
-pub struct MemoryView {
+pub struct View {
     snapshot: mneme_store::Snapshot,
     root: std::path::PathBuf,
     records: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
@@ -159,7 +159,7 @@ pub struct MemoryView {
     suppressions: Vec<mneme_store::RetentionSuppression>,
 }
 
-impl MemoryView {
+impl View {
     /// Construct a view over a pinned snapshot and workspace root.
     pub fn new(snapshot: mneme_store::Snapshot, root: impl Into<std::path::PathBuf>) -> Self {
         Self::with_history(snapshot, root, std::collections::BTreeMap::new())
@@ -208,7 +208,7 @@ impl MemoryView {
             .iter()
             .map(|record| (record.record_id, record.clone()))
             .collect();
-        MemoryView {
+        View {
             snapshot,
             root: root.into(),
             records,
@@ -257,17 +257,17 @@ impl MemoryView {
     pub(crate) fn envelope(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<&mneme_core::RecordEnvelope> {
+    ) -> crate::failure::Result<&mneme_core::RecordEnvelope> {
         self.records
             .get(&record)
-            .ok_or(crate::error::MemoryError::Missing { record })
+            .ok_or(crate::failure::EvidenceError::Missing { record })
     }
 
     /// Read one envelope from the pinned view.
     pub fn record(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<&mneme_core::RecordEnvelope> {
+    ) -> crate::failure::Result<&mneme_core::RecordEnvelope> {
         self.envelope(record)
     }
 
@@ -275,7 +275,7 @@ impl MemoryView {
     pub fn assertion(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<crate::model::AssertionView> {
+    ) -> crate::failure::Result<crate::model::AssertionView> {
         crate::model::AssertionView::parse(self.envelope(record)?.clone())
     }
 
@@ -283,7 +283,7 @@ impl MemoryView {
     pub fn source(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<crate::model::SourceView> {
+    ) -> crate::failure::Result<crate::model::SourceView> {
         crate::model::SourceView::parse(self.envelope(record)?.clone())
     }
 
@@ -291,7 +291,7 @@ impl MemoryView {
     pub fn evidence_source(
         &self,
         evidence: &crate::model::EvidenceView,
-    ) -> crate::error::Result<crate::model::SourceView> {
+    ) -> crate::failure::Result<crate::model::SourceView> {
         let mut resolved =
             if let mneme_core::Reference::Pinned { revision, .. } = evidence.source_reference {
                 if let Some(record) = self.history.get(&(evidence.source, revision)) {
@@ -301,7 +301,7 @@ impl MemoryView {
                 {
                     current
                 } else {
-                    return Err(crate::error::MemoryError::Missing {
+                    return Err(crate::failure::EvidenceError::Missing {
                         record: evidence.source,
                     });
                 }
@@ -322,7 +322,7 @@ impl MemoryView {
         &self,
         source: mneme_core::RecordId,
         revision: mneme_core::RevisionId,
-    ) -> crate::error::Result<crate::model::SourceView> {
+    ) -> crate::failure::Result<crate::model::SourceView> {
         let mut resolved = if let Some(record) = self.history.get(&(source, revision)) {
             crate::model::SourceView::parse(record.clone())?
         } else if let Ok(current) = self.source(source)
@@ -330,7 +330,7 @@ impl MemoryView {
         {
             current
         } else {
-            return Err(crate::error::MemoryError::Missing { record: source });
+            return Err(crate::failure::EvidenceError::Missing { record: source });
         };
         if let Ok(current) = self.source(source)
             && current.availability != crate::model::SourceAvailability::Retained
@@ -344,7 +344,7 @@ impl MemoryView {
     pub fn current_source_revision(
         &self,
         source: mneme_core::RecordId,
-    ) -> crate::error::Result<mneme_core::RevisionId> {
+    ) -> crate::failure::Result<mneme_core::RevisionId> {
         Ok(self.source(source)?.record.revision_id)
     }
 
@@ -352,7 +352,7 @@ impl MemoryView {
     pub fn current_source_availability(
         &self,
         source: mneme_core::RecordId,
-    ) -> crate::error::Result<crate::model::SourceAvailability> {
+    ) -> crate::failure::Result<crate::model::SourceAvailability> {
         Ok(self.source(source)?.availability)
     }
 
@@ -360,14 +360,14 @@ impl MemoryView {
     pub fn checkpoint_revision(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<(
+    ) -> crate::failure::Result<(
         mneme_core::WorkspaceRevisionId,
         std::collections::BTreeSet<mneme_core::RecordId>,
         std::collections::BTreeSet<mneme_core::RecordId>,
     )> {
         let envelope = self.envelope(record)?;
         if envelope.kind != mneme_core::RecordKind::Checkpoint {
-            return Err(crate::error::MemoryError::invalid(
+            return Err(crate::failure::EvidenceError::invalid(
                 record,
                 "checkpoint",
                 "not a checkpoint record",
@@ -375,12 +375,12 @@ impl MemoryView {
         }
         let revision = mneme_core::WorkspaceRevisionId::from_value(
             envelope.payload.get("revision").ok_or_else(|| {
-                crate::error::MemoryError::invalid(record, "checkpoint", "missing revision")
+                crate::failure::EvidenceError::invalid(record, "checkpoint", "missing revision")
             })?,
             &mneme_core::Path::root().field("revision"),
         )
         .map_err(|diagnostic| {
-            crate::error::MemoryError::invalid(record, "checkpoint", diagnostic.to_string())
+            crate::failure::EvidenceError::invalid(record, "checkpoint", diagnostic.to_string())
         })?;
         let episodes = crate::model::required_reference_set(envelope, "episodes")?;
         let verified = crate::model::required_reference_set(envelope, "verified-outcomes")?;
@@ -391,7 +391,7 @@ impl MemoryView {
     pub fn evidence(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<crate::model::EvidenceView> {
+    ) -> crate::failure::Result<crate::model::EvidenceView> {
         crate::model::EvidenceView::parse(self.envelope(record)?.clone())
     }
 
@@ -399,7 +399,7 @@ impl MemoryView {
     pub fn decision(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<crate::model::DecisionView> {
+    ) -> crate::failure::Result<crate::model::DecisionView> {
         crate::model::DecisionView::parse(self.envelope(record)?.clone())
     }
 
@@ -407,7 +407,7 @@ impl MemoryView {
     pub fn derivation(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<crate::model::DerivationView> {
+    ) -> crate::failure::Result<crate::model::DerivationView> {
         crate::model::DerivationView::parse(self.envelope(record)?.clone())
     }
 
@@ -415,12 +415,12 @@ impl MemoryView {
     pub fn episode(
         &self,
         record: mneme_core::RecordId,
-    ) -> crate::error::Result<crate::model::EpisodeView> {
+    ) -> crate::failure::Result<crate::model::EpisodeView> {
         crate::model::EpisodeView::parse(self.envelope(record)?.clone())
     }
 
     /// Every current assertion.
-    pub fn assertions(&self) -> crate::error::Result<Vec<crate::model::AssertionView>> {
+    pub fn assertions(&self) -> crate::failure::Result<Vec<crate::model::AssertionView>> {
         self.records
             .values()
             .filter(|record| record.kind == mneme_core::RecordKind::Assertion)
@@ -433,7 +433,7 @@ impl MemoryView {
     pub fn evidence_for(
         &self,
         assertion: mneme_core::RecordId,
-    ) -> crate::error::Result<Vec<crate::model::EvidenceView>> {
+    ) -> crate::failure::Result<Vec<crate::model::EvidenceView>> {
         Ok(self
             .records
             .values()
@@ -448,7 +448,7 @@ impl MemoryView {
     pub fn derivations_for(
         &self,
         conclusion: mneme_core::RecordId,
-    ) -> crate::error::Result<Vec<crate::model::DerivationView>> {
+    ) -> crate::failure::Result<Vec<crate::model::DerivationView>> {
         Ok(self
             .records
             .values()
@@ -463,7 +463,7 @@ impl MemoryView {
     pub fn decisions_for(
         &self,
         target: mneme_core::RecordId,
-    ) -> crate::error::Result<Vec<crate::model::DecisionView>> {
+    ) -> crate::failure::Result<Vec<crate::model::DecisionView>> {
         Ok(self
             .records
             .values()
@@ -478,7 +478,7 @@ impl MemoryView {
     pub fn source_status(
         &self,
         source: mneme_core::RecordId,
-    ) -> crate::error::Result<SourceStatus> {
+    ) -> crate::failure::Result<SourceStatus> {
         let view = self.source(source)?;
         self.source_status_for(&view)
     }
@@ -487,7 +487,7 @@ impl MemoryView {
     pub fn source_status_for(
         &self,
         view: &crate::model::SourceView,
-    ) -> crate::error::Result<SourceStatus> {
+    ) -> crate::failure::Result<SourceStatus> {
         match &view.availability {
             crate::model::SourceAvailability::Retained => {
                 let Some(digest) = view.digest() else {
@@ -495,12 +495,12 @@ impl MemoryView {
                         "retained source has no digest".to_owned(),
                     ));
                 };
-                match mneme_store::blob::read(&self.root, digest) {
+                match mneme_store::payload::read(&self.root, digest) {
                     Ok(bytes) => Ok(SourceStatus::Retained(bytes)),
-                    Err(mneme_store::StoreError::MissingBlob { .. }) => Ok(SourceStatus::Corrupt(
+                    Err(mneme_store::Failure::MissingBlob { .. }) => Ok(SourceStatus::Corrupt(
                         "committed source blob is missing".to_owned(),
                     )),
-                    Err(mneme_store::StoreError::CorruptBlob { reason, .. }) => {
+                    Err(mneme_store::Failure::CorruptBlob { reason, .. }) => {
                         Ok(SourceStatus::Corrupt(reason))
                     }
                     Err(error) => Err(error.into()),
@@ -525,26 +525,26 @@ impl MemoryView {
         &self,
         evidence: mneme_core::RecordId,
         requirement: RetainedRequirement,
-    ) -> crate::error::Result<ValidatedEvidence> {
+    ) -> crate::failure::Result<ValidatedEvidence> {
         let evidence = self.evidence(evidence)?;
         let source = self.evidence_source(&evidence)?;
         if let mneme_core::Reference::Pinned { revision, .. } = evidence.source_reference
             && revision != source.record.revision_id
         {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "evidence pins source revision {revision}, but the retained source record is {}",
                 source.record.revision_id
             )));
         }
         if evidence.span.is_none() && evidence.anchor.is_none() {
-            return Err(crate::error::MemoryError::policy(
+            return Err(crate::failure::EvidenceError::policy(
                 "evidence requires an exact span or a stable anchor",
             ));
         }
         if let Some(anchor) = &evidence.anchor
             && anchor.trim().is_empty()
         {
-            return Err(crate::error::MemoryError::policy(
+            return Err(crate::failure::EvidenceError::policy(
                 "evidence anchor must not be empty",
             ));
         }
@@ -552,7 +552,7 @@ impl MemoryView {
         if requirement == RetainedRequirement::Required
             && !matches!(status, SourceStatus::Retained(_))
         {
-            return Err(crate::error::MemoryError::policy(format!(
+            return Err(crate::failure::EvidenceError::policy(format!(
                 "evidence source is {} and cannot be newly cited",
                 status.availability().name()
             )));
@@ -561,15 +561,16 @@ impl MemoryView {
             (Some(span), SourceStatus::Retained(bytes)) => {
                 let end = span.end();
                 if end >= bytes.len() as u64 {
-                    return Err(crate::error::MemoryError::policy(format!(
+                    return Err(crate::failure::EvidenceError::policy(format!(
                         "evidence span ends at byte {end}, beyond the {} retained bytes",
                         bytes.len()
                     )));
                 }
-                let start = usize::try_from(span.start())
-                    .map_err(|_| crate::error::MemoryError::policy("span start exceeds usize"))?;
+                let start = usize::try_from(span.start()).map_err(|_| {
+                    crate::failure::EvidenceError::policy("span start exceeds usize")
+                })?;
                 let end = usize::try_from(end)
-                    .map_err(|_| crate::error::MemoryError::policy("span end exceeds usize"))?;
+                    .map_err(|_| crate::failure::EvidenceError::policy("span end exceeds usize"))?;
                 Some(bytes[start..=end].to_vec())
             }
             _ => None,
@@ -602,7 +603,7 @@ impl MemoryView {
     pub fn current_beliefs(
         &self,
         view: &BeliefView,
-    ) -> crate::error::Result<Vec<crate::model::AssertionView>> {
+    ) -> crate::failure::Result<Vec<crate::model::AssertionView>> {
         let assertions = self.assertions()?;
         let mut beliefs = Vec::with_capacity(assertions.len());
         for assertion in assertions {
@@ -659,7 +660,7 @@ impl MemoryView {
         }
     }
 
-    pub fn conflicts(&self, view: &BeliefView) -> crate::error::Result<Vec<ConflictGroup>> {
+    pub fn conflicts(&self, view: &BeliefView) -> crate::failure::Result<Vec<ConflictGroup>> {
         let assertions = self.assertions()?;
         let mut candidates = Vec::with_capacity(assertions.len());
         for assertion in assertions {
@@ -734,7 +735,7 @@ impl MemoryView {
     pub fn accepted_decision(
         &self,
         assertion: &crate::model::AssertionView,
-    ) -> crate::error::Result<bool> {
+    ) -> crate::failure::Result<bool> {
         let Some(decision_id) = assertion.decision else {
             return Ok(false);
         };
@@ -750,7 +751,7 @@ impl MemoryView {
     pub fn lifecycle_decision_valid(
         &self,
         assertion: &crate::model::AssertionView,
-    ) -> crate::error::Result<bool> {
+    ) -> crate::failure::Result<bool> {
         match assertion.lifecycle {
             mneme_core::Lifecycle::Accepted => self.accepted_decision(assertion),
             mneme_core::Lifecycle::Retracted => {
@@ -791,7 +792,7 @@ impl MemoryView {
     pub fn has_observed_outcome(
         &self,
         assertion: &crate::model::AssertionView,
-    ) -> crate::error::Result<bool> {
+    ) -> crate::failure::Result<bool> {
         for evidence_id in &assertion.evidence {
             if let Ok(evidence) = self.evidence(*evidence_id) {
                 for ancestor in &evidence.ancestry {
@@ -814,71 +815,86 @@ impl MemoryView {
     pub fn evidence_roots(
         &self,
         evidence: mneme_core::RecordId,
-    ) -> crate::error::Result<std::collections::BTreeSet<SourceRevisionKey>> {
+    ) -> crate::failure::Result<std::collections::BTreeSet<SourceRevisionKey>> {
         let mut roots = std::collections::BTreeSet::new();
         let mut visiting = std::collections::BTreeSet::new();
         self.collect_roots(evidence, &mut roots, &mut visiting)?;
         Ok(roots)
     }
 
-    #[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn collect_roots(
         &self,
         record: mneme_core::RecordId,
         roots: &mut std::collections::BTreeSet<SourceRevisionKey>,
         visiting: &mut std::collections::BTreeSet<mneme_core::RecordId>,
-    ) -> crate::error::Result<()> {
-        if !visiting.insert(record) {
-            return Err(crate::error::MemoryError::policy(format!(
-                "evidence ancestry contains a cycle at {record}"
-            )));
+    ) -> crate::failure::Result<()> {
+        enum Visit {
+            Enter(mneme_core::RecordId),
+            Exit(mneme_core::RecordId),
         }
-        let Some(envelope) = self.records.get(&record) else {
-            visiting.remove(&record);
-            return Ok(());
-        };
-        match envelope.kind {
-            mneme_core::RecordKind::Evidence => {
-                let evidence = crate::model::EvidenceView::parse(envelope.clone())?;
-                if evidence.ancestry.is_empty() {
-                    let source = self.evidence_source(&evidence)?;
-                    roots.insert((evidence.source, source.record.revision_id));
-                } else {
-                    for ancestor in &evidence.ancestry {
-                        self.collect_roots(*ancestor, roots, visiting)?;
+        let mut pending = vec![Visit::Enter(record)];
+        while let Some(task) = pending.pop() {
+            let record = match task {
+                Visit::Enter(record) => record,
+                Visit::Exit(record) => {
+                    visiting.remove(&record);
+                    continue;
+                }
+            };
+            if !visiting.insert(record) {
+                return Err(crate::failure::EvidenceError::policy(format!(
+                    "evidence ancestry contains a cycle at {record}"
+                )));
+            }
+            let Some(envelope) = self.records.get(&record) else {
+                visiting.remove(&record);
+                continue;
+            };
+            let mut descend = Vec::new();
+            match envelope.kind {
+                mneme_core::RecordKind::Evidence => {
+                    let evidence = crate::model::EvidenceView::parse(envelope.clone())?;
+                    if evidence.ancestry.is_empty() {
+                        let source = self.evidence_source(&evidence)?;
+                        roots.insert((evidence.source, source.record.revision_id));
+                    } else {
+                        descend.extend(evidence.ancestry.iter().copied());
                     }
                 }
-            }
-            mneme_core::RecordKind::Episode => {
-                let episode = crate::model::EpisodeView::parse(envelope.clone())?;
-                if let Some(source) = episode.source {
-                    let revision = self
-                        .records
-                        .get(&source)
-                        .map(|record| record.revision_id)
-                        .unwrap_or(envelope.revision_id);
-                    roots.insert((source, revision));
-                } else {
+                mneme_core::RecordKind::Episode => {
+                    let episode = crate::model::EpisodeView::parse(envelope.clone())?;
+                    if let Some(source) = episode.source {
+                        let revision = self
+                            .records
+                            .get(&source)
+                            .map_or(envelope.revision_id, |record| record.revision_id);
+                        roots.insert((source, revision));
+                    } else {
+                        roots.insert((record, envelope.revision_id));
+                    }
+                }
+                mneme_core::RecordKind::Assertion => {
+                    let assertion = crate::model::AssertionView::parse(envelope.clone())?;
+                    descend.extend(assertion.evidence.iter().copied());
+                }
+                mneme_core::RecordKind::Derivation => {
+                    let derivation = crate::model::DerivationView::parse(envelope.clone())?;
+                    descend.extend(derivation.premises.iter().copied());
+                }
+                _ => {
                     roots.insert((record, envelope.revision_id));
                 }
             }
-            mneme_core::RecordKind::Assertion => {
-                let assertion = crate::model::AssertionView::parse(envelope.clone())?;
-                for evidence in &assertion.evidence {
-                    self.collect_roots(*evidence, roots, visiting)?;
+            if descend.is_empty() {
+                visiting.remove(&record);
+            } else {
+                pending.push(Visit::Exit(record));
+                for ancestor in descend.into_iter().rev() {
+                    pending.push(Visit::Enter(ancestor));
                 }
-            }
-            mneme_core::RecordKind::Derivation => {
-                let derivation = crate::model::DerivationView::parse(envelope.clone())?;
-                for premise in &derivation.premises {
-                    self.collect_roots(*premise, roots, visiting)?;
-                }
-            }
-            _ => {
-                roots.insert((record, envelope.revision_id));
             }
         }
-        visiting.remove(&record);
         Ok(())
     }
 
@@ -886,7 +902,7 @@ impl MemoryView {
     pub fn corroboration(
         &self,
         assertion: mneme_core::RecordId,
-    ) -> crate::error::Result<Corroboration> {
+    ) -> crate::failure::Result<Corroboration> {
         let assertion = self.assertion(assertion)?;
         let mut roots = std::collections::BTreeSet::new();
         let mut supporting = 0;
@@ -1065,10 +1081,10 @@ impl MemoryView {
     pub fn derivation_alternatives(
         &self,
         conclusion: mneme_core::RecordId,
-    ) -> crate::error::Result<Vec<DerivationAlternative>> {
+    ) -> crate::failure::Result<Vec<DerivationAlternative>> {
         let max_derivation_records = 1_000_000;
         if self.records.len() > max_derivation_records {
-            return Err(crate::error::MemoryError::policy(
+            return Err(crate::failure::EvidenceError::policy(
                 "derivation traversal exceeds the 1M record bound",
             ));
         }
@@ -1112,7 +1128,7 @@ impl MemoryView {
         &self,
         assertion: mneme_core::RecordId,
         policy: Policy,
-    ) -> crate::error::Result<Explanation> {
+    ) -> crate::failure::Result<Explanation> {
         let assertion = self.assertion(assertion)?;
         let decisions = self.decisions_for(assertion.record.record_id)?;
         let (evidence_explanations, roots, evidence_nodes, is_truncated) =
@@ -1140,7 +1156,7 @@ impl MemoryView {
         &self,
         assertion: &crate::model::AssertionView,
         policy: Policy,
-    ) -> crate::error::Result<(
+    ) -> crate::failure::Result<(
         Vec<EvidenceExplanation>,
         std::collections::BTreeSet<SourceRevisionKey>,
         usize,
@@ -1162,10 +1178,12 @@ impl MemoryView {
             let excerpt = match (&evidence.span, &status) {
                 (Some(span), SourceStatus::Retained(bytes)) => {
                     let start = usize::try_from(span.start()).map_err(|_| {
-                        crate::error::MemoryError::policy("span start exceeds usize")
+                        crate::failure::EvidenceError::policy("span start exceeds usize")
                     })?;
                     let end = usize::try_from(span.end())
-                        .map_err(|_| crate::error::MemoryError::policy("span end exceeds usize"))?
+                        .map_err(|_| {
+                            crate::failure::EvidenceError::policy("span end exceeds usize")
+                        })?
                         .saturating_add(1)
                         .min(bytes.len());
                     if start <= end {

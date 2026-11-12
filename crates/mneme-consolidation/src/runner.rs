@@ -2,7 +2,7 @@
 //!
 //! Progress advances one reviewed input at a time. A retry resumes the same
 //! identity without replaying completed inputs or duplicating proposal IDs.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A cooperative cancellation flag.
 #[derive(Clone, Default)]
@@ -37,7 +37,7 @@ pub struct JobProgress {
 
 impl JobProgress {
     /// Validate that progress belongs to the job and has no out-of-batch work.
-    pub fn validate(&self, job: &crate::ConsolidationJob) -> Result<(), String> {
+    pub fn validate(&self, job: &crate::Job) -> Result<(), String> {
         if self.job_id != job.job_id {
             return Err("progress belongs to another job".to_owned());
         }
@@ -57,16 +57,16 @@ impl JobProgress {
     }
 }
 
-/// A job runner that can be reconstructed from durable progress.
+/// A job run that can be reconstructed from durable progress.
 #[derive(Clone, Debug)]
-pub struct JobRunner {
-    job: crate::ConsolidationJob,
+pub struct Executor {
+    job: crate::Job,
     progress: JobProgress,
 }
 
-impl JobRunner {
+impl Executor {
     /// Start a fresh run.
-    pub fn start(job: crate::ConsolidationJob) -> Result<Self, String> {
+    pub fn start(job: crate::Job) -> Result<Self, String> {
         if job.batch.reviewed.len() > job.limits.max_inputs {
             return Err("batch exceeds the input limit".to_owned());
         }
@@ -77,11 +77,11 @@ impl JobRunner {
             elapsed_ms: 0,
             status: crate::JobStatus::Running,
         };
-        Ok(JobRunner { job, progress })
+        Ok(Executor { job, progress })
     }
 
     /// Resume from durable progress, refusing a different job identity.
-    pub fn resume(job: crate::ConsolidationJob, progress: JobProgress) -> Result<Self, String> {
+    pub fn resume(job: crate::Job, progress: JobProgress) -> Result<Self, String> {
         progress.validate(&job)?;
         if matches!(
             progress.status,
@@ -93,14 +93,14 @@ impl JobRunner {
         {
             return Err("terminal progress is inconsistent with the batch".to_owned());
         }
-        Ok(JobRunner { job, progress })
+        Ok(Executor { job, progress })
     }
 
     pub fn progress(&self) -> &JobProgress {
         &self.progress
     }
 
-    pub fn job(&self) -> &crate::ConsolidationJob {
+    pub fn job(&self) -> &crate::Job {
         &self.job
     }
 
@@ -111,10 +111,10 @@ impl JobRunner {
     /// being marked complete.
     pub fn process_summary(
         &mut self,
-        input: &crate::generator::GeneratorInput,
+        input: &crate::proposals::GeneratorInput,
         control: &JobControl,
         elapsed_ms: u64,
-    ) -> Result<Vec<crate::ConsolidationProposal>, String> {
+    ) -> Result<Vec<crate::Proposal>, String> {
         if control.is_cancelled() {
             self.progress.status = crate::JobStatus::Cancelled;
             return Err("job cancelled".to_owned());
@@ -135,7 +135,7 @@ impl JobRunner {
             self.progress.status = crate::JobStatus::Timeout;
             return Err("job time limit exceeded".to_owned());
         }
-        let proposals = crate::generator::DeterministicGenerator.generate(
+        let proposals = crate::proposals::DeterministicGenerator.generate(
             &self.job,
             &self.job.batch,
             std::slice::from_ref(input),
@@ -180,7 +180,7 @@ pub struct JobIdentity {
     pub extractor_revision: Option<String>,
 }
 
-impl crate::ConsolidationJob {
+impl crate::Job {
     /// Identity used to classify retries.
     pub fn identity(&self) -> JobIdentity {
         JobIdentity {
@@ -335,11 +335,11 @@ impl ProgressStore {
 mod tests {
     use super::*;
 
-    fn inputs() -> Vec<crate::generator::GeneratorInput> {
+    fn inputs() -> Vec<crate::proposals::GeneratorInput> {
         let fixture = crate::fixture().expect("fixture");
         let mut result = Vec::with_capacity(fixture.job.batch.units.len());
         for unit in fixture.job.batch.units.clone() {
-            result.push(crate::generator::GeneratorInput {
+            result.push(crate::proposals::GeneratorInput {
                 key: unit.key,
                 text: format!("source {}", unit.key.record_id.to_hex()),
                 span: mneme_core::SourceSpan::new(0, 7).ok(),
@@ -348,21 +348,21 @@ mod tests {
         result
     }
 
-    fn runner() -> JobRunner {
-        JobRunner::start(crate::fixture().expect("fixture").job).expect("start")
+    fn run() -> Executor {
+        Executor::start(crate::fixture().expect("fixture").job).expect("start")
     }
 
     #[test]
     fn retry_resumes_without_duplicate_proposals() {
         let inputs = inputs();
         let control = JobControl::new();
-        let mut runner = runner();
-        let first = runner
+        let mut run = run();
+        let first = run
             .process_summary(&inputs[0], &control, 10)
             .expect("first");
         assert_eq!(first.len(), 1);
-        let progress = runner.progress().clone();
-        let mut resumed = JobRunner::resume(runner.job().clone(), progress).expect("resume");
+        let progress = run.progress().clone();
+        let mut resumed = Executor::resume(run.job().clone(), progress).expect("resume");
         let duplicate = resumed
             .process_summary(&inputs[0], &control, 10)
             .expect("idempotent retry");
@@ -379,28 +379,27 @@ mod tests {
     #[test]
     fn cancellation_keeps_completed_units_and_does_not_advance() {
         let inputs = inputs();
-        let mut runner = runner();
+        let mut run = run();
         let control = JobControl::new();
-        runner
-            .process_summary(&inputs[0], &control, 10)
+        run.process_summary(&inputs[0], &control, 10)
             .expect("first");
         control.cancel();
-        let error = runner
+        let error = run
             .process_summary(&inputs[1], &control, 10)
             .expect_err("cancelled");
         assert_eq!(error, "job cancelled");
-        assert_eq!(runner.progress().status, crate::JobStatus::Cancelled);
-        assert_eq!(runner.progress().completed.len(), 1);
+        assert_eq!(run.progress().status, crate::JobStatus::Cancelled);
+        assert_eq!(run.progress().completed.len(), 1);
     }
 
     #[test]
     fn time_limit_blocks_completion() {
         let inputs = inputs();
-        let runner = runner();
+        let run = run();
         let control = JobControl::new();
-        let mut job = runner.job().clone();
+        let mut job = run.job().clone();
         job.limits.max_time_ms = 5;
-        let mut limited = JobRunner::start(job).expect("limited");
+        let mut limited = Executor::start(job).expect("limited");
         let error = limited
             .process_summary(&inputs[0], &control, 6)
             .expect_err("timeout");
@@ -430,14 +429,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = ProgressStore::new(dir.path().join("progress.json"));
         let control = JobControl::new();
-        let mut runner = runner();
-        runner
-            .process_summary(&inputs[0], &control, 10)
+        let mut run = run();
+        run.process_summary(&inputs[0], &control, 10)
             .expect("first");
-        store.save(runner.progress()).expect("save");
+        store.save(run.progress()).expect("save");
         let loaded = store.load().expect("load").expect("progress");
-        let job = runner.job().clone();
-        let mut resumed = JobRunner::resume(job, loaded).expect("resume");
+        let job = run.job().clone();
+        let mut resumed = Executor::resume(job, loaded).expect("resume");
         resumed
             .process_summary(&inputs[1], &control, 10)
             .expect("second");

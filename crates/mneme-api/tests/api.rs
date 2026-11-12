@@ -158,7 +158,7 @@ fn acceptance_recall_and_explain_share_one_revision() {
         query: "SQLite".to_owned(),
         at: mneme_core::Timestamp::from_nanos(2_000),
         temporal: mneme_recall::TemporalMode::Current,
-        modes: std::collections::BTreeSet::from([mneme_recall::RecallMode::Lexical]),
+        modes: std::collections::BTreeSet::from([mneme_recall::Mode::Lexical]),
         allow_stale: false,
         allow_fallback: true,
         allow_partial: true,
@@ -271,7 +271,7 @@ fn revise_dispute_and_retract_preserve_history() {
     let response = service.execute(&revise);
     assert!(response.ok, "{:?}", response.value);
     let after = revision_from(field(field(&response.value, "data"), "revision"));
-    let view = mneme_memory::Memory::new(
+    let view = mneme_memory::Engine::new(
         &mut mneme_store::Workspace::open(
             &harness.root,
             mneme_store::WorkspaceConfig::new(
@@ -424,7 +424,7 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         query: "SQLite".to_owned(),
         at: mneme_core::Timestamp::from_nanos(2_000),
         temporal: mneme_recall::TemporalMode::Current,
-        modes: std::collections::BTreeSet::from([mneme_recall::RecallMode::Lexical]),
+        modes: std::collections::BTreeSet::from([mneme_recall::Mode::Lexical]),
         allow_stale: false,
         allow_fallback: true,
         allow_partial: true,

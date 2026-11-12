@@ -15,5 +15,5 @@ pub use command::{
     ApiCommand, COMMAND_FORMAT, COMMAND_VERSION, LocalSession, RESULT_FORMAT, RESULT_VERSION,
     ReviseAction, SessionConfig, decode,
 };
-pub use error::{ApiError, ApiErrorCode, ApiResult};
-pub use service::{ApiResponse, ApiService, error_document};
+pub use error::{ApiError, ApiErrorCode, CallResult};
+pub use service::{ApiService, CallResponse, error_document};

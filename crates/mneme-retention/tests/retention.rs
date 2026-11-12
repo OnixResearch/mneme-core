@@ -1,4 +1,4 @@
-//! Retention behavior over real workspaces, evidence records, and blobs.
+//! Engine behavior over real workspaces, evidence records, and blobs.
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::expect_used)]
 
@@ -191,8 +191,8 @@ impl Harness {
         selector: mneme_retention::Selector,
         key: &str,
         scope: mneme_core::ScopeId,
-    ) -> mneme_retention::RetentionRequest {
-        mneme_retention::RetentionRequest {
+    ) -> mneme_retention::Request {
+        mneme_retention::Request {
             actor: "retention-author".to_owned(),
             scope,
             base_revision: self.workspace.current_revision().expect("base"),
@@ -200,7 +200,7 @@ impl Harness {
             operation,
             selector,
             effective: None,
-            policy: mneme_retention::RetentionPolicy {
+            policy: mneme_retention::Policy {
                 version: mneme_retention::POLICY_VERSION.to_owned(),
                 retain_assertion_after_prune: true,
                 block_content_replay: true,
@@ -304,14 +304,14 @@ fn add_supported_assertion(
 }
 
 fn source_blob_path(harness: &Harness, bytes: &[u8]) -> std::path::PathBuf {
-    mneme_store::blob::blob_path(
+    mneme_store::payload::blob_path(
         harness.temp.path(),
         mneme_core::ContentDigest::of_source_bytes(bytes),
     )
 }
 
 fn record_blob_path(harness: &Harness, record: &mneme_core::RecordEnvelope) -> std::path::PathBuf {
-    mneme_store::blob::blob_path(harness.temp.path(), record.full_digest())
+    mneme_store::payload::blob_path(harness.temp.path(), record.full_digest())
 }
 
 fn assert_missing(path: &std::path::Path) {
@@ -319,7 +319,7 @@ fn assert_missing(path: &std::path::Path) {
 }
 
 fn beliefs(harness: &mut Harness) -> Vec<mneme_memory::AssertionView> {
-    let memory = mneme_memory::Memory::new(&mut harness.workspace);
+    let memory = mneme_memory::Engine::new(&mut harness.workspace);
     memory
         .view()
         .expect("view")
@@ -344,21 +344,21 @@ fn pruning_keeps_a_permitted_assertion_and_reports_pruned_bytes() {
         scope(),
     );
     let plan = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         let plan = retention.plan(request.clone()).expect("plan");
         assert_eq!(plan.surviving_assertions, vec![assertion]);
         plan
     };
     assert_eq!(plan.source_targets, vec![rid(0x20)]);
     let result = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("execute")
     };
     assert!(result.logical_withdrawal);
     assert!(result.physical_cleanup_complete, "{result:?}");
     assert_missing(&source_path);
     {
-        let memory = mneme_memory::Memory::new(&mut harness.workspace);
+        let memory = mneme_memory::Engine::new(&mut harness.workspace);
         let view = memory.view().expect("view");
         let source = view.source(rid(0x20)).expect("source");
         assert_eq!(
@@ -400,12 +400,9 @@ fn unauthorized_scope_fails_without_mutation_or_detail() {
         other_scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         let error = retention.plan(request).expect_err("unauthorized");
-        assert!(matches!(
-            error,
-            mneme_retention::RetentionError::Unauthorized
-        ));
+        assert!(matches!(error, mneme_retention::PolicyError::Unauthorized));
     }
     let after = harness.workspace.snapshot().expect("after");
     assert_eq!(before.revision, after.revision);
@@ -449,7 +446,7 @@ fn forget_hides_dependents_and_purges_payload_blobs() {
         scope(),
     );
     let result = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("forget")
     };
     assert!(result.logical_withdrawal);
@@ -462,7 +459,7 @@ fn forget_hides_dependents_and_purges_payload_blobs() {
         assert_missing(path);
     }
     {
-        let memory = mneme_memory::Memory::new(&mut harness.workspace);
+        let memory = mneme_memory::Engine::new(&mut harness.workspace);
         let view = memory.view().expect("view");
         assert!(view.source(rid(0x20)).is_err());
         assert!(view.assertion(assertion).is_err());
@@ -493,7 +490,7 @@ fn support_retraction_keeps_an_independent_proof() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         let plan = retention.plan(request.clone()).expect("plan");
         assert!(plan.surviving_assertions.contains(&assertion));
         assert_eq!(plan.withdrawn_evidence, vec![rid(0x30)]);
@@ -501,7 +498,7 @@ fn support_retraction_keeps_an_independent_proof() {
         assert!(result.physical_cleanup_complete, "{result:?}");
     }
     {
-        let memory = mneme_memory::Memory::new(&mut harness.workspace);
+        let memory = mneme_memory::Engine::new(&mut harness.workspace);
         let view = memory.view().expect("view");
         assert!(view.assertion_eligible(assertion));
         let explanation = view
@@ -547,11 +544,11 @@ fn support_retraction_without_independent_proof_removes_current_belief() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("execute");
     }
     {
-        let memory = mneme_memory::Memory::new(&mut harness.workspace);
+        let memory = mneme_memory::Engine::new(&mut harness.workspace);
         let view = memory.view().expect("view");
         assert!(!view.assertion_eligible(assertion));
     }
@@ -569,12 +566,12 @@ fn forget_preserves_an_independent_assertion_without_its_forgotten_citation() {
         scope(),
     );
     let result = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("forget")
     };
     assert!(result.logical_withdrawal);
     {
-        let memory = mneme_memory::Memory::new(&mut harness.workspace);
+        let memory = mneme_memory::Engine::new(&mut harness.workspace);
         let view = memory.view().expect("view");
         assert!(view.source(rid(0x20)).is_err());
         assert!(view.source(rid(0x22)).is_ok());
@@ -661,12 +658,12 @@ fn retraction_records_lifecycle_and_invalidates_dependent_derivation() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         let plan = retention.plan(request.clone()).expect("plan");
         assert!(plan.invalidated_derivations.contains(&rid(0x72)));
         retention.execute(request).expect("retract");
     }
-    let memory = mneme_memory::Memory::new(&mut harness.workspace);
+    let memory = mneme_memory::Engine::new(&mut harness.workspace);
     let view = memory.view().expect("view");
     assert!(
         view.assertion(premise)
@@ -696,10 +693,10 @@ fn valid_time_expiry_removes_current_applicability_without_deleting_history() {
     );
     request.effective = Some(effective);
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("expire");
     }
-    let memory = mneme_memory::Memory::new(&mut harness.workspace);
+    let memory = mneme_memory::Engine::new(&mut harness.workspace);
     let view = memory.view().expect("view");
     let current = view.assertion(assertion).expect("assertion");
     assert_eq!(
@@ -739,7 +736,7 @@ fn repeated_command_returns_the_same_operation_and_generation() {
         scope(),
     );
     let first = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request.clone()).expect("first")
     };
     let generation = harness
@@ -747,7 +744,7 @@ fn repeated_command_returns_the_same_operation_and_generation() {
         .eligibility_generation()
         .expect("generation");
     let second = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("second")
     };
     assert_eq!(first.operation_id, second.operation_id);
@@ -775,12 +772,12 @@ fn cleanup_resumes_after_a_fault_and_keeps_the_barrier() {
     );
     let operation_id = {
         let error = {
-            let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+            let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
             retention.execute(request.clone()).expect_err("fault")
         };
         assert!(matches!(
             error,
-            mneme_retention::RetentionError::Store(mneme_store::StoreError::InjectedFault(_))
+            mneme_retention::PolicyError::Store(mneme_store::Failure::InjectedFault(_))
         ));
         // The barrier committed before cleanup failed.
         let generation = harness
@@ -793,13 +790,13 @@ fn cleanup_resumes_after_a_fault_and_keeps_the_barrier() {
             .expect("lookup")
             .expect("operation");
         assert_eq!(pending.generation, generation);
-        let memory = mneme_memory::Memory::new(&mut harness.workspace);
+        let memory = mneme_memory::Engine::new(&mut harness.workspace);
         assert!(memory.view().expect("view").source(rid(0x20)).is_err());
         pending.operation_id
     };
     harness.reopen();
     let result = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.resume(&operation_id).expect("resume")
     };
     assert_eq!(result.operation_id, operation_id);
@@ -847,7 +844,7 @@ fn shared_content_address_retains_bytes_and_reports_without_owner_detail() {
         scope(),
     );
     let result = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("forget")
     };
     assert!(!result.physical_cleanup_complete, "{result:?}");
@@ -918,7 +915,7 @@ fn forgetting_a_source_suppresses_dependent_checkpoint() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         let plan = retention.plan(request.clone()).expect("plan");
         assert!(
             plan.suppressed
@@ -932,7 +929,7 @@ fn forgetting_a_source_suppresses_dependent_checkpoint() {
         );
         retention.execute(request).expect("forget");
     }
-    let memory = mneme_memory::Memory::new(&mut harness.workspace);
+    let memory = mneme_memory::Engine::new(&mut harness.workspace);
     let view = memory.view().expect("view");
     assert!(view.record(rid(0x70)).is_err());
     assert!(view.record(rid(0x72)).is_err());
@@ -949,7 +946,7 @@ fn forgotten_content_cannot_be_replayed_under_a_new_identity() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("forget");
     }
     let (replayed, blob) = mneme_memory::build_source(
@@ -981,7 +978,7 @@ fn forgotten_content_cannot_be_replayed_under_a_new_identity() {
         .expect_err("content replay must be refused");
     assert!(matches!(
         error,
-        mneme_store::StoreError::RetentionSuppressed { .. }
+        mneme_store::Failure::RetentionSuppressed { .. }
     ));
 }
 
@@ -1084,7 +1081,7 @@ fn restore_without_current_suppression_state_fails_closed_until_applied() {
         },
     )
     .expect("current");
-    let request = mneme_retention::RetentionRequest {
+    let request = mneme_retention::Request {
         actor: "retention-author".to_owned(),
         scope: scope(),
         base_revision: current.current_revision().expect("base"),
@@ -1092,7 +1089,7 @@ fn restore_without_current_suppression_state_fails_closed_until_applied() {
         operation: mneme_retention::OperationKind::Forget,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy {
+        policy: mneme_retention::Policy {
             version: mneme_retention::POLICY_VERSION.to_owned(),
             retain_assertion_after_prune: true,
             block_content_replay: true,
@@ -1100,7 +1097,7 @@ fn restore_without_current_suppression_state_fails_closed_until_applied() {
         },
     };
     {
-        let mut retention = mneme_retention::Retention::new(&mut current);
+        let mut retention = mneme_retention::Engine::new(&mut current);
         retention.execute(request).expect("forget");
     }
     let ledger = current.export_suppression_ledger().expect("ledger");
@@ -1116,7 +1113,7 @@ fn restore_without_current_suppression_state_fails_closed_until_applied() {
     .expect("restore");
     assert!(matches!(
         restored.snapshot().expect_err("blocked read"),
-        mneme_store::StoreError::MissingRetentionState { .. }
+        mneme_store::Failure::MissingRetentionState { .. }
     ));
     restored
         .apply_restore_suppression_ledger(&ledger)
@@ -1183,7 +1180,7 @@ fn future_payload_store_cannot_enable_without_retention_contract() {
         .expect_err("unregistered payload store");
     assert!(matches!(
         error,
-        mneme_store::StoreError::MissingRetentionParticipant { .. }
+        mneme_store::Failure::MissingRetentionParticipant { .. }
     ));
     workspace
         .register_retention_participant(mneme_store::RetentionParticipant {
@@ -1220,12 +1217,12 @@ fn policy_can_refuse_pruning_when_it_would_hide_required_support() {
     );
     request.policy.retain_assertion_after_prune = false;
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         let error = retention.execute(request).expect_err("policy refusal");
-        assert!(matches!(error, mneme_retention::RetentionError::Policy(_)));
+        assert!(matches!(error, mneme_retention::PolicyError::Policy(_)));
     }
     assert!(source_path.exists());
-    let memory = mneme_memory::Memory::new(&mut harness.workspace);
+    let memory = mneme_memory::Engine::new(&mut harness.workspace);
     let view = memory.view().expect("view");
     assert!(view.assertion_eligible(assertion));
 }
@@ -1245,11 +1242,11 @@ fn fault_before_barrier_commit_leaves_source_and_generation_unchanged() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         let error = retention.execute(request).expect_err("fault");
         assert!(matches!(
             error,
-            mneme_retention::RetentionError::Store(mneme_store::StoreError::InjectedFault(_))
+            mneme_retention::PolicyError::Store(mneme_store::Failure::InjectedFault(_))
         ));
     }
     let after = harness.workspace.snapshot().expect("after");
@@ -1274,9 +1271,9 @@ fn ambiguous_operation_and_selector_combinations_are_rejected_before_mutation() 
         "ambiguous-expiry",
         scope(),
     );
-    let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+    let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
     let error = retention.plan(request).expect_err("ambiguous");
-    assert!(matches!(error, mneme_retention::RetentionError::Invalid(_)));
+    assert!(matches!(error, mneme_retention::PolicyError::Invalid(_)));
 }
 
 #[test]
@@ -1303,7 +1300,7 @@ fn failed_managed_cache_keeps_barrier_and_reports_incomplete_cleanup() {
             retention: Some(mneme_store::RetentionCommit {
                 operation_id: operation_id.clone(),
                 operation_kind: "forget".to_owned(),
-                policy_version: mneme_retention::RetentionPolicy {
+                policy_version: mneme_retention::Policy {
                     version: mneme_retention::POLICY_VERSION.to_owned(),
                     retain_assertion_after_prune: true,
                     block_content_replay: true,
@@ -1322,7 +1319,7 @@ fn failed_managed_cache_keeps_barrier_and_reports_incomplete_cleanup() {
         })
         .expect("barrier commit");
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         let cancelled = retention.cancel(&operation_id).expect("cancel");
         assert!(cancelled.logical_withdrawal);
         assert!(!cancelled.physical_cleanup_complete);
@@ -1354,7 +1351,7 @@ fn rebuild_from_a_pre_forget_snapshot_is_refused() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("forget");
     }
     let error = harness
@@ -1363,7 +1360,7 @@ fn rebuild_from_a_pre_forget_snapshot_is_refused() {
         .expect_err("old snapshot contains forgotten data");
     assert!(matches!(
         error,
-        mneme_store::StoreError::RetentionSuppressed { .. }
+        mneme_store::Failure::RetentionSuppressed { .. }
     ));
     let current = harness.workspace.snapshot().expect("current");
     assert!(harness.workspace.require_replay_eligible(&current).is_ok());
@@ -1395,7 +1392,7 @@ fn forget_suppresses_a_pending_publication_before_recovery() {
             retention: None,
         })
         .expect_err("fault after commit");
-    assert!(matches!(error, mneme_store::StoreError::InjectedFault(_)));
+    assert!(matches!(error, mneme_store::Failure::InjectedFault(_)));
     harness.reopen();
     let request = harness.request(
         mneme_retention::OperationKind::Forget,
@@ -1404,7 +1401,7 @@ fn forget_suppresses_a_pending_publication_before_recovery() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("forget");
     }
     let intents = harness
@@ -1416,7 +1413,7 @@ fn forget_suppresses_a_pending_publication_before_recovery() {
     let pending = harness.workspace.publish_pending().expect("publish");
     assert!(pending.is_empty());
     assert!(
-        mneme_store::blob::read_working_file(harness.temp.path(), "leak.adoc")
+        mneme_store::payload::read_working_file(harness.temp.path(), "leak.adoc")
             .expect("working file")
             .is_none()
     );
@@ -1437,16 +1434,16 @@ fn a_query_pinned_before_the_barrier_cannot_publish_after_it() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("forget");
     }
-    let memory = mneme_memory::Memory::new(&mut harness.workspace);
+    let memory = mneme_memory::Engine::new(&mut harness.workspace);
     let error = memory
         .explain_at(assertion, Some(generation), Default::default())
         .expect_err("stale generation");
     assert!(matches!(
         error,
-        mneme_memory::MemoryError::Store(mneme_store::StoreError::BarrierAdvanced { .. })
+        mneme_memory::EvidenceError::Store(mneme_store::Failure::BarrierAdvanced { .. })
     ));
 }
 
@@ -1461,12 +1458,12 @@ fn pruning_removes_only_an_exact_managed_working_copy() {
         scope(),
     );
     let result = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("prune")
     };
     assert!(result.physical_cleanup_complete, "{result:?}");
     assert!(
-        mneme_store::blob::read_working_file(harness.temp.path(), "project.adoc")
+        mneme_store::payload::read_working_file(harness.temp.path(), "project.adoc")
             .expect("working file")
             .is_none()
     );
@@ -1477,7 +1474,7 @@ fn external_working_edit_is_preserved_and_reported_unavailable() {
     let mut harness = Harness::new(Box::new(mneme_store::NoFaults));
     harness.add_source_with_file("source-file", 0x20, 0x21, "project.adoc", SOURCE_A);
     let edited = b"= Cedar\n\nA later external edit.\n";
-    mneme_store::blob::publish_working_file(harness.temp.path(), "project.adoc", edited)
+    mneme_store::payload::publish_working_file(harness.temp.path(), "project.adoc", edited)
         .expect("external edit");
     let request = harness.request(
         mneme_retention::OperationKind::SourcePruning,
@@ -1486,12 +1483,12 @@ fn external_working_edit_is_preserved_and_reported_unavailable() {
         scope(),
     );
     let result = {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(request).expect("prune")
     };
     assert!(!result.physical_cleanup_complete);
     assert_eq!(
-        mneme_store::blob::read_working_file(harness.temp.path(), "project.adoc").expect("file"),
+        mneme_store::payload::read_working_file(harness.temp.path(), "project.adoc").expect("file"),
         Some(edited.to_vec())
     );
     assert!(result.locations.iter().any(|location| {
@@ -1513,7 +1510,7 @@ fn idempotency_key_reuse_with_a_different_selector_conflicts() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         retention.execute(first).expect("first");
     }
     let second = harness.request(
@@ -1522,11 +1519,11 @@ fn idempotency_key_reuse_with_a_different_selector_conflicts() {
         "same-key",
         scope(),
     );
-    let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+    let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
     let error = retention.execute(second).expect_err("conflict");
     assert!(matches!(
         error,
-        mneme_retention::RetentionError::Store(mneme_store::StoreError::IdempotencyConflict { .. })
+        mneme_retention::PolicyError::Store(mneme_store::Failure::IdempotencyConflict { .. })
     ));
 }
 
@@ -1542,12 +1539,12 @@ fn content_selector_targets_only_authorized_matching_sources() {
         scope(),
     );
     {
-        let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
         let plan = retention.plan(request.clone()).expect("content plan");
         assert_eq!(plan.source_targets.len(), 2);
         retention.execute(request).expect("content forget");
     }
-    let memory = mneme_memory::Memory::new(&mut harness.workspace);
+    let memory = mneme_memory::Engine::new(&mut harness.workspace);
     let view = memory.view().expect("view");
     assert!(view.source(rid(0x20)).is_err());
     assert!(view.source(rid(0x22)).is_err());
@@ -1561,9 +1558,9 @@ fn content_selector_targets_only_authorized_matching_sources() {
         other_scope(),
     );
     foreign.scope = other_scope();
-    let mut retention = mneme_retention::Retention::new(&mut harness.workspace);
+    let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
     assert!(matches!(
         retention.plan(foreign).expect_err("foreign content"),
-        mneme_retention::RetentionError::Unauthorized
+        mneme_retention::PolicyError::Unauthorized
     ));
 }

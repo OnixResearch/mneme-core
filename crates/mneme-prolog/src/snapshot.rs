@@ -3,7 +3,7 @@
 //! The image is built from one committed memory view and selected Datalog query
 //! results. Revision, scope, eligibility generation, rule context, and every
 //! canonical premise must match before any fact is admitted.
-#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// One accepted canonical assertion in the image.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,7 +66,7 @@ pub enum ImageError {
 /// Build an immutable image from one view and selected Datalog results.
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn build_input_image(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     scope: &mneme_core::ScopeId,
     expected_revision: mneme_core::WorkspaceRevisionId,
     expected_generation: u64,
@@ -122,7 +122,7 @@ pub fn build_input_image(
 }
 
 fn canonical_facts(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     scope: &mneme_core::ScopeId,
 ) -> Result<Vec<CanonicalFact>, ImageError> {
     let assertions = view
@@ -204,7 +204,7 @@ fn validate_result_context(
 }
 
 fn selected_rows(
-    view: &mneme_memory::MemoryView,
+    view: &mneme_memory::View,
     scope: &mneme_core::ScopeId,
     expected_revision: mneme_core::WorkspaceRevisionId,
     result: &mneme_datalog::QueryResult,
@@ -304,7 +304,7 @@ mod tests {
     fn setup() -> Result<
         (
             tempfile::TempDir,
-            mneme_memory::MemoryView,
+            mneme_memory::View,
             mneme_core::WorkspaceRevisionId,
             u64,
         ),
@@ -325,7 +325,7 @@ mod tests {
         let generation = workspace
             .eligibility_generation()
             .map_err(|e| e.to_string())?;
-        let view = mneme_memory::MemoryView::new(
+        let view = mneme_memory::View::new(
             workspace.snapshot().map_err(|e| e.to_string())?,
             workspace.root(),
         );

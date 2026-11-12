@@ -415,8 +415,8 @@ impl Harness {
         self.accept(assertion, 0x52, 0x53, 0x44);
     }
 
-    fn request(&self, query: &str) -> mneme_recall::RecallRequest {
-        mneme_recall::RecallRequest::lexical(
+    fn request(&self, query: &str) -> mneme_recall::Request {
+        mneme_recall::Request::lexical(
             "recall-test",
             scope(),
             self.workspace.current_revision().expect("revision"),
@@ -483,7 +483,7 @@ fn lexical_source_quote_and_claim_keep_exact_provenance() {
     let mut harness = Harness::new();
     let request = harness.request("SQLite");
     let revision = request.revision;
-    let mut service = mneme_recall::RecallService::new(&mut harness.workspace);
+    let mut service = mneme_recall::Service::new(&mut harness.workspace);
     let response = service.recall(request).expect("recall");
     assert_eq!(response.context.requested_revision, revision);
     assert_eq!(response.context.served_revision, revision);
@@ -520,16 +520,16 @@ fn scope_and_empty_search_do_not_claim_absence() {
     let mut harness = Harness::new();
     let excluded_request = harness.request("birch");
     let empty_request = harness.request("zebra");
-    let mut service = mneme_recall::RecallService::new(&mut harness.workspace);
+    let mut service = mneme_recall::Service::new(&mut harness.workspace);
     let excluded = service.recall(excluded_request).expect("scope query");
     assert!(excluded.candidates.is_empty());
-    assert_eq!(excluded.status, mneme_recall::RecallExecution::Complete);
+    assert_eq!(excluded.status, mneme_recall::Execution::Complete);
     assert!(!excluded.exhaustive);
     assert!(!excluded.absence_established);
 
     let empty = service.recall(empty_request).expect("empty query");
     assert!(empty.candidates.is_empty());
-    assert_eq!(empty.status, mneme_recall::RecallExecution::Complete);
+    assert_eq!(empty.status, mneme_recall::Execution::Complete);
     assert!(!empty.exhaustive);
     assert!(!empty.absence_established);
 }
@@ -538,15 +538,15 @@ fn scope_and_empty_search_do_not_claim_absence() {
 fn local_vector_mode_recalls_approximate_terms() {
     let mut harness = Harness::new();
     let mut request = harness.request("SQlitee");
-    request.modes = std::collections::BTreeSet::from([mneme_recall::RecallMode::Vector]);
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    request.modes = std::collections::BTreeSet::from([mneme_recall::Mode::Vector]);
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(request)
         .expect("vector recall");
     assert!(
         response
             .modes
             .iter()
-            .any(|mode| mode.mode == mneme_recall::RecallMode::Vector
+            .any(|mode| mode.mode == mneme_recall::Mode::Vector
                 && mode.status == mneme_recall::ModeStatus::Used)
     );
     assert!(!response.candidates.is_empty());
@@ -559,7 +559,7 @@ fn budget_truncation_keeps_source_span_and_reports_omissions() {
     let mut request = harness.request("cedar service");
     request.max_context_bytes = 32;
     request.max_quote_bytes = 100;
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(request)
         .expect("budget recall");
     let source = response
@@ -578,7 +578,7 @@ fn budget_truncation_keeps_source_span_and_reports_omissions() {
 
     let mut item_limited = harness.request("SQLite");
     item_limited.max_items = 1;
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(item_limited)
         .expect("item recall");
     assert_eq!(response.candidates.len(), 1);
@@ -590,7 +590,7 @@ fn shared_ancestry_is_not_counted_as_independent_claims() {
     let mut harness = Harness::new();
     harness.add_copied_claim();
     let request = harness.request("SQLite");
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(request)
         .expect("ancestry recall");
     let claims = response
@@ -613,8 +613,8 @@ fn structured_candidates_keep_datalog_coverage_and_derivations() {
     let mut harness = Harness::new();
     let mut request = harness.request("SQLite");
     request.modes = std::collections::BTreeSet::from([
-        mneme_recall::RecallMode::Lexical,
-        mneme_recall::RecallMode::Structured,
+        mneme_recall::Mode::Lexical,
+        mneme_recall::Mode::Structured,
     ]);
     request.structured = Some(mneme_recall::StructuredRequest {
         bundle: claim_bundle(),
@@ -628,7 +628,7 @@ fn structured_candidates_keep_datalog_coverage_and_derivations() {
         },
         incomplete_extents: std::collections::BTreeSet::new(),
     });
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(request)
         .expect("structured recall");
     let structured = response
@@ -640,7 +640,7 @@ fn structured_candidates_keep_datalog_coverage_and_derivations() {
     let mode = response
         .modes
         .iter()
-        .find(|mode| mode.mode == mneme_recall::RecallMode::Structured)
+        .find(|mode| mode.mode == mneme_recall::Mode::Structured)
         .expect("structured mode");
     assert_eq!(mode.relation_exhaustive, Some(true));
     assert!(mode.coverage.complete);
@@ -668,11 +668,11 @@ fn stale_revision_disclosure_is_explicit() {
     request.revision = old;
     request.allow_stale = false;
     assert!(matches!(
-        mneme_recall::RecallService::new(&mut harness.workspace).recall(request.clone()),
-        Err(mneme_recall::RecallError::StaleRevision { .. })
+        mneme_recall::Service::new(&mut harness.workspace).recall(request.clone()),
+        Err(mneme_recall::QueryError::StaleRevision { .. })
     ));
     request.allow_stale = true;
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(request)
         .expect("stale recall");
     assert_eq!(response.context.requested_revision, old);
@@ -687,11 +687,11 @@ fn stale_revision_disclosure_is_explicit() {
 fn forget_invalidates_warm_index_and_removes_source_candidates() {
     let mut harness = Harness::new();
     let warm_request = harness.request("widen scope");
-    let first = mneme_recall::RecallService::new(&mut harness.workspace)
+    let first = mneme_recall::Service::new(&mut harness.workspace)
         .recall(warm_request)
         .expect("warm recall");
     assert!(!first.candidates.is_empty());
-    let request = mneme_retention::RetentionRequest {
+    let request = mneme_retention::Request {
         actor: "recall-test".to_owned(),
         scope: scope(),
         base_revision: harness.workspace.current_revision().expect("base"),
@@ -699,18 +699,18 @@ fn forget_invalidates_warm_index_and_removes_source_candidates() {
         operation: mneme_retention::OperationKind::Forget,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy {
+        policy: mneme_retention::Policy {
             version: mneme_retention::POLICY_VERSION.to_owned(),
             retain_assertion_after_prune: true,
             block_content_replay: true,
             retain_withdrawn_evidence_metadata: true,
         },
     };
-    mneme_retention::Retention::new(&mut harness.workspace)
+    mneme_retention::Engine::new(&mut harness.workspace)
         .execute(request)
         .expect("forget");
     let after_request = harness.request("widen scope");
-    let after = mneme_recall::RecallService::new(&mut harness.workspace)
+    let after = mneme_recall::Service::new(&mut harness.workspace)
         .recall(after_request)
         .expect("post-forget recall");
     assert!(after.candidates.is_empty());
@@ -804,7 +804,7 @@ fn historical_inspection_preserves_superseded_unknown_time() {
     harness.commit(scope(), "supersede", vec![decision, superseded], Vec::new());
     let mut request = harness.request("legacy-value");
     request.temporal = mneme_recall::TemporalMode::Historical;
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(request)
         .expect("historical recall");
     let candidate = response
@@ -824,24 +824,24 @@ fn cancellation_and_time_budget_never_look_successful() {
     cancelled.cancellation = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
         true,
     )));
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(cancelled)
         .expect("cancelled response");
-    assert_eq!(response.status, mneme_recall::RecallExecution::Cancelled);
+    assert_eq!(response.status, mneme_recall::Execution::Cancelled);
     assert!(response.candidates.is_empty());
     assert!(!response.absence_established);
 
     let mut timed = harness.request("SQLite");
     timed.max_time_ms = 0;
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(timed)
         .expect("timeout response");
     assert!(matches!(
         response.status,
-        mneme_recall::RecallExecution::Timeout | mneme_recall::RecallExecution::Complete
+        mneme_recall::Execution::Timeout | mneme_recall::Execution::Complete
     ));
     assert!(!response.absence_established);
-    if response.status == mneme_recall::RecallExecution::Timeout {
+    if response.status == mneme_recall::Execution::Timeout {
         assert!(response.candidates.is_empty());
     }
 }
@@ -849,7 +849,7 @@ fn cancellation_and_time_budget_never_look_successful() {
 #[test]
 fn source_pruning_keeps_claim_envelope_without_a_quote() {
     let mut harness = Harness::new();
-    let request = mneme_retention::RetentionRequest {
+    let request = mneme_retention::Request {
         actor: "recall-test".to_owned(),
         scope: scope(),
         base_revision: harness.workspace.current_revision().expect("base"),
@@ -857,18 +857,18 @@ fn source_pruning_keeps_claim_envelope_without_a_quote() {
         operation: mneme_retention::OperationKind::SourcePruning,
         selector: mneme_retention::Selector::Source(rid(0x20)),
         effective: None,
-        policy: mneme_retention::RetentionPolicy {
+        policy: mneme_retention::Policy {
             version: mneme_retention::POLICY_VERSION.to_owned(),
             retain_assertion_after_prune: true,
             block_content_replay: true,
             retain_withdrawn_evidence_metadata: true,
         },
     };
-    mneme_retention::Retention::new(&mut harness.workspace)
+    mneme_retention::Engine::new(&mut harness.workspace)
         .execute(request)
         .expect("prune");
     let pruned_request = harness.request("SQLite");
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(pruned_request)
         .expect("pruned recall");
     let claim = response
@@ -895,15 +895,15 @@ fn source_pruning_keeps_claim_envelope_without_a_quote() {
 fn structured_unavailable_uses_declared_lexical_fallback() {
     let mut harness = Harness::new();
     let mut request = harness.request("SQLite");
-    request.modes = std::collections::BTreeSet::from([mneme_recall::RecallMode::Structured]);
+    request.modes = std::collections::BTreeSet::from([mneme_recall::Mode::Structured]);
     request.allow_fallback = true;
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(request)
         .expect("fallback recall");
-    assert_eq!(response.status, mneme_recall::RecallExecution::Partial);
+    assert_eq!(response.status, mneme_recall::Execution::Partial);
     assert!(!response.candidates.is_empty());
     assert!(response.modes.iter().any(|mode| {
-        mode.mode == mneme_recall::RecallMode::Lexical
+        mode.mode == mneme_recall::Mode::Lexical
             && mode.status == mneme_recall::ModeStatus::Used
             && mode
                 .reason
@@ -911,7 +911,7 @@ fn structured_unavailable_uses_declared_lexical_fallback() {
                 .is_some_and(|reason| reason.contains("fallback"))
     }));
     assert!(response.modes.iter().any(|mode| {
-        mode.mode == mneme_recall::RecallMode::Structured
+        mode.mode == mneme_recall::Mode::Structured
             && mode.status == mneme_recall::ModeStatus::Unavailable
     }));
 }
@@ -922,7 +922,7 @@ fn independent_contradiction_survives_copied_descendants() {
     harness.add_copied_claim();
     harness.add_independent_contradiction();
     let request = harness.request("SQLite");
-    let response = mneme_recall::RecallService::new(&mut harness.workspace)
+    let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(request)
         .expect("contradiction recall");
     let independent = response

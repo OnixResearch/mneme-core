@@ -4,12 +4,12 @@
 //! results, conditional premises, and reviewable plan/fact proposals. It does
 //! not invoke an engine. The capability starts disabled; ordinary memory
 //! operations do not depend on this crate.
-#![allow(unknown_lints, path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(unknown_lints)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![cfg_attr(test, allow(clippy::expect_used))]
 
-pub mod image;
-pub mod plan;
-pub mod worker;
+pub mod execution;
+pub mod process;
+pub mod snapshot;
 
 /// Required feature names for a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -229,7 +229,7 @@ impl CapabilityMetadata {
     }
 
     /// Check that a request is advertised and within the profile.
-    pub fn ensure_request(&self, request: &PrologRequest) -> Result<(), CapabilityError> {
+    pub fn ensure_request(&self, request: &Request) -> Result<(), CapabilityError> {
         if let CapabilityState::Disabled { reason } = &self.state {
             return Err(CapabilityError::Unavailable {
                 reason: reason.clone(),
@@ -353,53 +353,47 @@ pub enum Term {
 }
 
 impl Term {
-    fn depth(&self) -> usize {
-        match self {
-            Term::List(items) => 1 + items.iter().map(Term::depth).max().unwrap_or(0),
-            Term::Compound { args, .. } => 1 + args.iter().map(Term::depth).max().unwrap_or(0),
-            _ => 1,
-        }
-    }
-
-    #[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn check(&self, profile: TermProfile) -> Result<(), CapabilityError> {
-        match self {
-            Term::Variable(_) => {
-                return Err(CapabilityError::InvalidRequest(
-                    "variables are not valid input terms".to_owned(),
+        let mut pending = vec![(self, 1_usize)];
+        while let Some((term, depth)) = pending.pop() {
+            if depth > profile.max_depth {
+                return Err(CapabilityError::LimitExceeded(
+                    "term exceeds the depth profile".to_owned(),
                 ));
             }
-            Term::List(items) => {
-                if items.len() > profile.max_collection {
-                    return Err(CapabilityError::LimitExceeded(
-                        "list exceeds the term collection limit".to_owned(),
+            match term {
+                Term::Variable(_) => {
+                    return Err(CapabilityError::InvalidRequest(
+                        "variables are not valid input terms".to_owned(),
                     ));
                 }
-                for item in items {
-                    item.check(profile)?;
+                Term::List(items) => {
+                    if items.len() > profile.max_collection {
+                        return Err(CapabilityError::LimitExceeded(
+                            "list exceeds the term collection limit".to_owned(),
+                        ));
+                    }
+                    for item in items {
+                        pending.push((item, depth + 1));
+                    }
                 }
-            }
-            Term::Compound { args, .. } => {
-                if args.len() > profile.max_collection {
-                    return Err(CapabilityError::LimitExceeded(
-                        "compound term exceeds the argument limit".to_owned(),
+                Term::Compound { args, .. } => {
+                    if args.len() > profile.max_collection {
+                        return Err(CapabilityError::LimitExceeded(
+                            "compound term exceeds the argument limit".to_owned(),
+                        ));
+                    }
+                    for arg in args {
+                        pending.push((arg, depth + 1));
+                    }
+                }
+                Term::Reference { .. } if !profile.references_allowed => {
+                    return Err(CapabilityError::InvalidRequest(
+                        "record references are not allowed by this profile".to_owned(),
                     ));
                 }
-                for arg in args {
-                    arg.check(profile)?;
-                }
+                Term::Integer(_) | Term::String(_) | Term::Symbol(_) | Term::Reference { .. } => {}
             }
-            Term::Reference { .. } if !profile.references_allowed => {
-                return Err(CapabilityError::InvalidRequest(
-                    "record references are not allowed by this profile".to_owned(),
-                ));
-            }
-            Term::Integer(_) | Term::String(_) | Term::Symbol(_) | Term::Reference { .. } => {}
-        }
-        if self.depth() > profile.max_depth {
-            return Err(CapabilityError::LimitExceeded(
-                "term exceeds the depth profile".to_owned(),
-            ));
         }
         Ok(())
     }
@@ -440,7 +434,7 @@ pub enum Literal {
 
 /// One allowlisted rule. Rules are data; no engine registration is implied.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrologRule {
+pub struct Rule {
     pub id: String,
     pub version: String,
     pub head: Atom,
@@ -465,20 +459,20 @@ pub struct RequestLimits {
 
 /// Engine-neutral query request.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrologRequest {
+pub struct Request {
     pub actor: String,
     pub scope: mneme_core::ScopeId,
     pub revision: mneme_core::WorkspaceRevisionId,
     pub eligibility_generation: u64,
     pub image_digest: String,
     pub goal: Atom,
-    pub rules: Vec<PrologRule>,
+    pub rules: Vec<Rule>,
     pub assumptions: Vec<Assumption>,
     pub features: std::collections::BTreeSet<Feature>,
     pub limits: RequestLimits,
 }
 
-impl PrologRequest {
+impl Request {
     fn validate_terms(&self, profile: TermProfile) -> Result<(), CapabilityError> {
         if self.actor.trim().is_empty() || self.image_digest.trim().is_empty() {
             return Err(CapabilityError::InvalidRequest(
@@ -637,28 +631,28 @@ pub struct FactChangeProposal {
 
 /// A reviewable output from search.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PrologProposal {
+pub enum Proposal {
     Plan(PlanProposal),
     FactChange(FactChangeProposal),
 }
 
 /// Bounded result envelope.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrologResult {
+pub struct Outcome {
     pub status: ExecutionStatus,
     pub exhaustive: bool,
     pub coverage: InputCoverage,
     pub context: SearchContext,
     pub solutions: Vec<Solution>,
-    pub proposals: Vec<PrologProposal>,
+    pub proposals: Vec<Proposal>,
     pub consumed: ConsumedLimits,
     pub reason: Option<String>,
 }
 
-impl PrologResult {
+impl Outcome {
     /// A disabled capability result.
     pub fn disabled(reason: impl Into<String>, context: SearchContext) -> Self {
-        PrologResult {
+        Outcome {
             status: ExecutionStatus::Disabled,
             exhaustive: false,
             coverage: InputCoverage {
@@ -876,10 +870,10 @@ impl Solution {
     }
 }
 
-impl PrologResult {
+impl Outcome {
     /// Validate this result against the request that produced it, including
     /// context, premise chains, pruning disclosure, and assumptions.
-    pub fn validate_for_request(&self, request: &PrologRequest) -> Result<(), CapabilityError> {
+    pub fn validate_for_request(&self, request: &Request) -> Result<(), CapabilityError> {
         self.validate()?;
         if self.context.revision != request.revision
             || self.context.scope != request.scope
@@ -914,8 +908,8 @@ mod tests {
         mneme_core::WorkspaceRevisionId::from_bytes([0xb0; 16])
     }
 
-    fn request(features: std::collections::BTreeSet<Feature>) -> PrologRequest {
-        PrologRequest {
+    fn request(features: std::collections::BTreeSet<Feature>) -> Request {
+        Request {
             actor: "agent".to_owned(),
             scope: scope(),
             revision: revision(),
@@ -1021,7 +1015,7 @@ mod tests {
             profile: "positive-minimal/v1".to_owned(),
             rule_versions: std::collections::BTreeMap::new(),
         };
-        let mut result = PrologResult::disabled("disabled", context);
+        let mut result = Outcome::disabled("disabled", context);
         assert!(!result.exhaustive);
         assert!(result.validate().is_ok());
         result.status = ExecutionStatus::Timeout;
