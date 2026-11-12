@@ -8,6 +8,7 @@
 #![allow(unknown_lints)] // intentional top-level store module layout
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![allow(unknown_lints, module_file_count)] // intentional top-level module layout
 
 pub mod catalog;
 pub mod coordinator;

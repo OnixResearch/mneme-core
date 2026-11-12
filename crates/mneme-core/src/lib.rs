@@ -12,6 +12,7 @@
 #![allow(unknown_lints)] // public transport module path and intentional top-level layout
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![allow(unknown_lints, module_file_count)] // intentional top-level module layout
 
 pub mod base64;
 pub mod binary;
