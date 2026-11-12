@@ -37,6 +37,17 @@ struct SourceCursor<'a> {
     mode_buffer: String,
 }
 
+struct SourceLineContext<'line, 'context> {
+    source: &'context RenderSource,
+    depth: usize,
+    text: &'line str,
+    includes: &'context std::collections::BTreeMap<usize, crate::asciidoc::IncludeDirective>,
+    anchors: &'context std::collections::BTreeMap<usize, crate::asciidoc::AnchorSpec>,
+    start: usize,
+    line_number: usize,
+    content: &'line str,
+}
+
 pub(crate) fn render(
     root: &RenderSource,
     sources: &std::collections::BTreeMap<String, RenderSource>,
@@ -204,14 +215,16 @@ impl Renderer<'_> {
                 .strip_suffix('\r')
                 .unwrap_or_else(|| line.strip_suffix('\n').unwrap_or(line));
             self.render_source_line(
-                source,
-                depth,
-                text,
-                &includes,
-                &anchors,
-                start,
-                line_number,
-                content,
+                SourceLineContext {
+                    source,
+                    depth,
+                    text,
+                    includes: &includes,
+                    anchors: &anchors,
+                    start,
+                    line_number,
+                    content,
+                },
                 &mut cursor,
             );
         }
@@ -236,33 +249,15 @@ impl Renderer<'_> {
         false
     }
 
-    #[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one compact fixture/context
-    fn render_source_line<'a>(
+    fn render_source_line<'line, 'context>(
         &mut self,
-        source: &RenderSource,
-        depth: usize,
-        text: &'a str,
-        includes: &std::collections::BTreeMap<usize, crate::asciidoc::IncludeDirective>,
-        anchors: &std::collections::BTreeMap<usize, crate::asciidoc::AnchorSpec>,
-        start: usize,
-        line_number: usize,
-        content: &'a str,
-        cursor: &mut SourceCursor<'a>,
+        line: SourceLineContext<'line, 'context>,
+        cursor: &mut SourceCursor<'line>,
     ) {
-        if self.render_source_block_line(content, cursor) {
+        if self.render_source_block_line(line.content, cursor) {
             return;
         }
-        self.render_source_normal_line(
-            source,
-            depth,
-            text,
-            includes,
-            anchors,
-            start,
-            line_number,
-            content,
-            cursor,
-        );
+        self.render_source_normal_line(line, cursor);
     }
 
     fn render_source_block_line(&mut self, content: &str, cursor: &mut SourceCursor<'_>) -> bool {
@@ -326,35 +321,33 @@ impl Renderer<'_> {
         }
     }
 
-    #[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one compact fixture/context
-    fn render_source_normal_line<'a>(
+    fn render_source_normal_line<'line, 'context>(
         &mut self,
-        source: &RenderSource,
-        depth: usize,
-        text: &'a str,
-        includes: &std::collections::BTreeMap<usize, crate::asciidoc::IncludeDirective>,
-        anchors: &std::collections::BTreeMap<usize, crate::asciidoc::AnchorSpec>,
-        start: usize,
-        line_number: usize,
-        content: &'a str,
-        cursor: &mut SourceCursor<'a>,
+        line: SourceLineContext<'line, 'context>,
+        cursor: &mut SourceCursor<'line>,
     ) {
-        if let Some(anchor) = anchors.get(&start) {
+        if let Some(anchor) = line.anchors.get(&line.start) {
             cursor.pending_anchor = Some(anchor.anchor.clone());
             return;
         }
-        if let Some(directive) = includes.get(&start) {
+        if let Some(directive) = line.includes.get(&line.start) {
             self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
             if let Some(anchor) = cursor.pending_anchor.take() {
                 let _ = write!(self.html, "<span id=\"{}\"></span>", escape_html(&anchor));
             }
-            self.render_include(source, directive, depth);
+            self.render_include(line.source, directive, line.depth);
             return;
         }
-        if self.render_source_delimiter(content, line_number, cursor) {
+        if self.render_source_delimiter(line.content, line.line_number, cursor) {
             return;
         }
-        self.render_source_content_line(text, start, line_number, content, cursor);
+        self.render_source_content_line(
+            line.text,
+            line.start,
+            line.line_number,
+            line.content,
+            cursor,
+        );
     }
 
     fn render_source_delimiter(
@@ -676,15 +669,15 @@ fn inline(
         let Some(character) = rest.chars().next() else {
             break;
         };
-        render_inline_character(
+        render_inline_character(InlineCharacterContext {
             text,
             index,
             rest,
             character,
             line,
-            &mut output,
-            &mut diagnostics,
-        );
+            output: &mut output,
+            diagnostics: &mut diagnostics,
+        });
         index += character.len_utf8();
     }
     (output, diagnostics)
@@ -751,16 +744,26 @@ fn render_inline_macro(
     Some(end)
 }
 
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one compact fixture/context
-fn render_inline_character(
-    text: &str,
+struct InlineCharacterContext<'input, 'output> {
+    text: &'input str,
     index: usize,
-    rest: &str,
+    rest: &'input str,
     character: char,
     line: usize,
-    output: &mut String,
-    diagnostics: &mut Vec<crate::asciidoc::Diagnostic>,
-) {
+    output: &'output mut String,
+    diagnostics: &'output mut Vec<crate::asciidoc::Diagnostic>,
+}
+
+fn render_inline_character(context: InlineCharacterContext<'_, '_>) {
+    let InlineCharacterContext {
+        text,
+        index,
+        rest,
+        character,
+        line,
+        output,
+        diagnostics,
+    } = context;
     match character {
         '<' | '>' => {
             diagnostics.push(crate::asciidoc::Diagnostic::warning(

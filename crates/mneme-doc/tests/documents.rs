@@ -183,15 +183,15 @@ fn import_move_and_property_edit_preserve_identity_and_source_bytes() {
         .expect("entity");
     let property_base = harness.workspace.current_revision().expect("base");
     mneme_doc::Documents::new(&mut harness.workspace)
-        .edit_entity_property(
-            "doc-author",
-            &scope(),
-            property_base,
-            "property",
-            entity_source_id(),
-            "status",
-            Some(mneme_core::Value::string("reviewed")),
-        )
+        .edit_entity_property(mneme_doc::EntityPropertyEditRequest {
+            actor: "doc-author",
+            scope: &scope(),
+            base_revision: property_base,
+            idempotency_key: "property",
+            entity_id: entity_source_id(),
+            property: "status",
+            value: Some(mneme_core::Value::string("reviewed")),
+        })
         .expect("property edit");
     let entity_after = harness
         .workspace
@@ -776,11 +776,13 @@ fn unavailable_root_and_include_sources_are_reported_without_substitution() {
         part_view.source.source,
         rev(0x72),
         &scope(),
-        "source bytes pruned under retention policy",
-        "pruned",
-        Some(digest),
-        None,
-        Some("docs/part.adoc"),
+        mneme_memory::UnavailableSourceWithDigestOptions {
+            reason: "source bytes pruned under retention policy",
+            availability: "pruned",
+            prior_digest: Some(digest),
+            entity: None,
+            path_hint: Some("docs/part.adoc"),
+        },
     );
     unavailable.predecessor = Some(part.source.revision);
     let base = harness.workspace.current_revision().expect("base");
@@ -906,32 +908,36 @@ fn evidence_keeps_a_pinned_document_span_after_the_document_changes() {
         rid(0x40),
         rev(0x41),
         &scope(),
-        rid(0x42),
-        imported.source.source,
-        imported.source.revision,
-        Some(span),
-        Some("evidence"),
-        mneme_memory::SupportRelation::Supports,
-        mneme_core::Origin::AuthoredStatement,
-        &[],
+        mneme_memory::EvidenceOptions {
+            assertion: rid(0x42),
+            source: imported.source.source,
+            source_revision: imported.source.revision,
+            span: Some(span),
+            anchor: Some("evidence"),
+            relation: mneme_memory::SupportRelation::Supports,
+            origin: mneme_core::Origin::AuthoredStatement,
+            ancestry: &[],
+        },
     );
     let assertion = mneme_memory::build_proposed_assertion(
         rid(0x42),
         rev(0x43),
         &scope(),
-        entity_source_id(),
-        "citation",
-        mneme_core::Value::string("original"),
-        mneme_memory::Stance::Affirm,
-        mneme_core::Origin::AuthoredStatement,
-        "author",
-        mneme_core::ValidTime::always(),
-        &[mneme_core::Reference::local(
-            rid(0x40),
-            mneme_core::RecordKind::Evidence,
-        )],
-        None,
-        None,
+        mneme_memory::ProposedAssertionOptions {
+            subject: entity_source_id(),
+            predicate: "citation",
+            value: mneme_core::Value::string("original"),
+            stance: mneme_memory::Stance::Affirm,
+            origin: mneme_core::Origin::AuthoredStatement,
+            asserted_by: "author",
+            valid_time: mneme_core::ValidTime::always(),
+            evidence: &[mneme_core::Reference::local(
+                rid(0x40),
+                mneme_core::RecordKind::Evidence,
+            )],
+            extraction: None,
+            superseded_by: None,
+        },
     );
     mneme_memory::Memory::new(&mut harness.workspace)
         .commit(mneme_memory::MemoryBatch {

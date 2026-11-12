@@ -110,10 +110,12 @@ impl Harness {
             source,
             revision,
             &scope(),
-            SOURCE_TEXT.as_bytes(),
-            "text/plain",
-            Some(entity),
-            Some("docs/cedar.txt"),
+            mneme_memory::SourceOptions {
+                bytes: SOURCE_TEXT.as_bytes(),
+                media_type: "text/plain",
+                entity: Some(entity),
+                path_hint: Some("docs/cedar.txt"),
+            },
         )
         .expect("source");
         self.commit(scope(), "source", vec![source_record], vec![source_blob]);
@@ -131,32 +133,38 @@ impl Harness {
             evidence,
             rev(0x31),
             &scope(),
-            assertion,
-            source,
-            revision,
-            Some(mneme_core::SourceSpan::new(0, SOURCE_TEXT.len() as u64 - 1).expect("span")),
-            Some("deployment"),
-            mneme_memory::SupportRelation::Supports,
-            mneme_core::Origin::AuthoredStatement,
-            &[],
+            mneme_memory::EvidenceOptions {
+                assertion,
+                source,
+                source_revision: revision,
+                span: Some(
+                    mneme_core::SourceSpan::new(0, SOURCE_TEXT.len() as u64 - 1).expect("span"),
+                ),
+                anchor: Some("deployment"),
+                relation: mneme_memory::SupportRelation::Supports,
+                origin: mneme_core::Origin::AuthoredStatement,
+                ancestry: &[],
+            },
         );
         let proposed = mneme_memory::build_proposed_assertion(
             assertion,
             rev(0x41),
             &scope(),
-            entity,
-            "deployment",
-            mneme_core::Value::string("SQLite"),
-            mneme_memory::Stance::Affirm,
-            mneme_core::Origin::AuthoredStatement,
-            "author",
-            mneme_core::ValidTime::always(),
-            &[mneme_core::Reference::local(
-                evidence,
-                mneme_core::RecordKind::Evidence,
-            )],
-            None,
-            None,
+            mneme_memory::ProposedAssertionOptions {
+                subject: entity,
+                predicate: "deployment",
+                value: mneme_core::Value::string("SQLite"),
+                stance: mneme_memory::Stance::Affirm,
+                origin: mneme_core::Origin::AuthoredStatement,
+                asserted_by: "author",
+                valid_time: mneme_core::ValidTime::always(),
+                evidence: &[mneme_core::Reference::local(
+                    evidence,
+                    mneme_core::RecordKind::Evidence,
+                )],
+                extraction: None,
+                superseded_by: None,
+            },
         );
         self.commit(
             scope(),
@@ -172,15 +180,17 @@ impl Harness {
             rid(0x60),
             rev(0x61),
             &scope(),
-            "agent",
-            "observation",
-            mneme_core::ValidTime::always(),
-            "Cedar episode records a SQLite rollout without embeddings",
-            Some(mneme_core::Reference::local(
-                source,
-                mneme_core::RecordKind::SourceRevision,
-            )),
-            &[],
+            mneme_memory::EpisodeOptions {
+                actor: "agent",
+                episode_type: "observation",
+                occurred: mneme_core::ValidTime::always(),
+                summary: "Cedar episode records a SQLite rollout without embeddings",
+                source: Some(mneme_core::Reference::local(
+                    source,
+                    mneme_core::RecordKind::SourceRevision,
+                )),
+                related: &[],
+            },
         );
         self.commit(scope(), "episode", vec![episode], Vec::new());
     }
@@ -225,10 +235,12 @@ impl Harness {
             source,
             revision,
             &other_scope(),
-            OTHER_TEXT.as_bytes(),
-            "text/plain",
-            Some(entity),
-            Some("docs/birch.txt"),
+            mneme_memory::SourceOptions {
+                bytes: OTHER_TEXT.as_bytes(),
+                media_type: "text/plain",
+                entity: Some(entity),
+                path_hint: Some("docs/birch.txt"),
+            },
         )
         .expect("source");
         self.commit(
@@ -251,32 +263,38 @@ impl Harness {
             evidence,
             rev(0x75),
             &other_scope(),
-            assertion,
-            source,
-            revision,
-            Some(mneme_core::SourceSpan::new(0, OTHER_TEXT.len() as u64 - 1).expect("span")),
-            Some("other"),
-            mneme_memory::SupportRelation::Supports,
-            mneme_core::Origin::AuthoredStatement,
-            &[],
+            mneme_memory::EvidenceOptions {
+                assertion,
+                source,
+                source_revision: revision,
+                span: Some(
+                    mneme_core::SourceSpan::new(0, OTHER_TEXT.len() as u64 - 1).expect("span"),
+                ),
+                anchor: Some("other"),
+                relation: mneme_memory::SupportRelation::Supports,
+                origin: mneme_core::Origin::AuthoredStatement,
+                ancestry: &[],
+            },
         );
         let proposed = mneme_memory::build_proposed_assertion(
             assertion,
             rev(0x81),
             &other_scope(),
-            entity,
-            "secret",
-            mneme_core::Value::string("birch-secret"),
-            mneme_memory::Stance::Affirm,
-            mneme_core::Origin::AuthoredStatement,
-            "author",
-            mneme_core::ValidTime::always(),
-            &[mneme_core::Reference::local(
-                evidence,
-                mneme_core::RecordKind::Evidence,
-            )],
-            None,
-            None,
+            mneme_memory::ProposedAssertionOptions {
+                subject: entity,
+                predicate: "secret",
+                value: mneme_core::Value::string("birch-secret"),
+                stance: mneme_memory::Stance::Affirm,
+                origin: mneme_core::Origin::AuthoredStatement,
+                asserted_by: "author",
+                valid_time: mneme_core::ValidTime::always(),
+                evidence: &[mneme_core::Reference::local(
+                    evidence,
+                    mneme_core::RecordKind::Evidence,
+                )],
+                extraction: None,
+                superseded_by: None,
+            },
         );
         self.commit(
             other_scope(),
@@ -321,15 +339,17 @@ impl Harness {
             rid(decision_byte),
             rev(decision_rev),
             &scope,
-            mneme_memory::DecisionKind::Acceptance,
-            assertion,
-            "author",
-            "recall-policy/v1",
-            self.workspace.current_revision().expect("base"),
-            "accepted",
-            "recall fixture",
-            &[],
-            &[],
+            mneme_memory::DecisionOptions {
+                kind: mneme_memory::DecisionKind::Acceptance,
+                target: assertion,
+                actor: "author",
+                policy: "recall-policy/v1",
+                input_revision: self.workspace.current_revision().expect("base"),
+                outcome: "accepted",
+                rationale: "recall fixture",
+                evidence: &[],
+                related: &[],
+            },
         );
         let accepted = mneme_memory::build_assertion_revision(
             &current,
@@ -353,32 +373,38 @@ impl Harness {
             evidence,
             rev(0x33),
             &scope(),
-            assertion,
-            rid(0x20),
-            rev(0x21),
-            Some(mneme_core::SourceSpan::new(0, SOURCE_TEXT.len() as u64 - 1).expect("span")),
-            Some("copied"),
-            mneme_memory::SupportRelation::Supports,
-            mneme_core::Origin::AuthoredStatement,
-            &[],
+            mneme_memory::EvidenceOptions {
+                assertion,
+                source: rid(0x20),
+                source_revision: rev(0x21),
+                span: Some(
+                    mneme_core::SourceSpan::new(0, SOURCE_TEXT.len() as u64 - 1).expect("span"),
+                ),
+                anchor: Some("copied"),
+                relation: mneme_memory::SupportRelation::Supports,
+                origin: mneme_core::Origin::AuthoredStatement,
+                ancestry: &[],
+            },
         );
         let proposed = mneme_memory::build_proposed_assertion(
             assertion,
             rev(0x43),
             &scope(),
-            rid(0x10),
-            "summary",
-            mneme_core::Value::string("Cedar deployment uses SQLite"),
-            mneme_memory::Stance::Affirm,
-            mneme_core::Origin::AuthoredStatement,
-            "author",
-            mneme_core::ValidTime::always(),
-            &[mneme_core::Reference::local(
-                evidence,
-                mneme_core::RecordKind::Evidence,
-            )],
-            None,
-            None,
+            mneme_memory::ProposedAssertionOptions {
+                subject: rid(0x10),
+                predicate: "summary",
+                value: mneme_core::Value::string("Cedar deployment uses SQLite"),
+                stance: mneme_memory::Stance::Affirm,
+                origin: mneme_core::Origin::AuthoredStatement,
+                asserted_by: "author",
+                valid_time: mneme_core::ValidTime::always(),
+                evidence: &[mneme_core::Reference::local(
+                    evidence,
+                    mneme_core::RecordKind::Evidence,
+                )],
+                extraction: None,
+                superseded_by: None,
+            },
         );
         self.commit(
             scope(),
@@ -430,13 +456,13 @@ fn constant(value: mneme_core::Value) -> mneme_datalog::Term {
 }
 
 fn claim_bundle() -> mneme_datalog::RuleBundle {
-    mneme_datalog::RuleBundle::new(
-        "recall",
-        "1",
-        3,
-        std::collections::BTreeMap::from([("assertion".to_owned(), 4)]),
-        std::collections::BTreeSet::from(["assertion".to_owned()]),
-        vec![mneme_datalog::Rule::new(
+    mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "recall".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 3,
+        base_predicates: std::collections::BTreeMap::from([("assertion".to_owned(), 4)]),
+        complete_predicates: std::collections::BTreeSet::from(["assertion".to_owned()]),
+        rules: vec![mneme_datalog::Rule::new(
             "claim",
             atom("claim", vec![var("subject"), var("value")]),
             vec![mneme_datalog::Literal::Positive(atom(
@@ -449,7 +475,7 @@ fn claim_bundle() -> mneme_datalog::RuleBundle {
                 ],
             ))],
         )],
-    )
+    })
 }
 
 #[test]
@@ -705,32 +731,36 @@ fn historical_inspection_preserves_superseded_unknown_time() {
         evidence,
         rev(0x37),
         &scope(),
-        assertion,
-        rid(0x20),
-        rev(0x21),
-        Some(mneme_core::SourceSpan::new(0, 10).expect("span")),
-        Some("historical"),
-        mneme_memory::SupportRelation::Supports,
-        mneme_core::Origin::AuthoredStatement,
-        &[],
+        mneme_memory::EvidenceOptions {
+            assertion,
+            source: rid(0x20),
+            source_revision: rev(0x21),
+            span: Some(mneme_core::SourceSpan::new(0, 10).expect("span")),
+            anchor: Some("historical"),
+            relation: mneme_memory::SupportRelation::Supports,
+            origin: mneme_core::Origin::AuthoredStatement,
+            ancestry: &[],
+        },
     );
     let proposed = mneme_memory::build_proposed_assertion(
         assertion,
         rev(0x47),
         &scope(),
-        rid(0x10),
-        "legacy",
-        mneme_core::Value::string("legacy-value"),
-        mneme_memory::Stance::Affirm,
-        mneme_core::Origin::AuthoredStatement,
-        "author",
-        mneme_core::ValidTime::Unknown,
-        &[mneme_core::Reference::local(
-            evidence,
-            mneme_core::RecordKind::Evidence,
-        )],
-        None,
-        None,
+        mneme_memory::ProposedAssertionOptions {
+            subject: rid(0x10),
+            predicate: "legacy",
+            value: mneme_core::Value::string("legacy-value"),
+            stance: mneme_memory::Stance::Affirm,
+            origin: mneme_core::Origin::AuthoredStatement,
+            asserted_by: "author",
+            valid_time: mneme_core::ValidTime::Unknown,
+            evidence: &[mneme_core::Reference::local(
+                evidence,
+                mneme_core::RecordKind::Evidence,
+            )],
+            extraction: None,
+            superseded_by: None,
+        },
     );
     harness.commit(
         scope(),
@@ -749,15 +779,17 @@ fn historical_inspection_preserves_superseded_unknown_time() {
         rid(0x56),
         rev(0x57),
         &scope(),
-        mneme_memory::DecisionKind::Supersession,
-        assertion,
-        "author",
-        "recall-policy/v1",
-        harness.workspace.current_revision().expect("base"),
-        "superseded",
-        "retained for inspection",
-        &[],
-        &[],
+        mneme_memory::DecisionOptions {
+            kind: mneme_memory::DecisionKind::Supersession,
+            target: assertion,
+            actor: "author",
+            policy: "recall-policy/v1",
+            input_revision: harness.workspace.current_revision().expect("base"),
+            outcome: "superseded",
+            rationale: "retained for inspection",
+            evidence: &[],
+            related: &[],
+        },
     );
     let superseded = mneme_memory::build_assertion_revision(
         &current,
@@ -925,10 +957,12 @@ impl Harness {
             source,
             revision,
             &scope(),
-            text,
-            "text/plain",
-            Some(rid(0x10)),
-            Some("docs/independent.txt"),
+            mneme_memory::SourceOptions {
+                bytes: text,
+                media_type: "text/plain",
+                entity: Some(rid(0x10)),
+                path_hint: Some("docs/independent.txt"),
+            },
         )
         .expect("independent source");
         self.commit(
@@ -941,32 +975,36 @@ impl Harness {
             evidence,
             rev(0x35),
             &scope(),
-            assertion,
-            source,
-            revision,
-            Some(mneme_core::SourceSpan::new(0, text.len() as u64 - 1).expect("span")),
-            Some("independent"),
-            mneme_memory::SupportRelation::Supports,
-            mneme_core::Origin::AuthoredStatement,
-            &[],
+            mneme_memory::EvidenceOptions {
+                assertion,
+                source,
+                source_revision: revision,
+                span: Some(mneme_core::SourceSpan::new(0, text.len() as u64 - 1).expect("span")),
+                anchor: Some("independent"),
+                relation: mneme_memory::SupportRelation::Supports,
+                origin: mneme_core::Origin::AuthoredStatement,
+                ancestry: &[],
+            },
         );
         let proposed = mneme_memory::build_proposed_assertion(
             assertion,
             rev(0x4a),
             &scope(),
-            rid(0x10),
-            "deployment",
-            mneme_core::Value::string("PostgreSQL, not only SQLite"),
-            mneme_memory::Stance::Deny,
-            mneme_core::Origin::AuthoredStatement,
-            "reviewer",
-            mneme_core::ValidTime::always(),
-            &[mneme_core::Reference::local(
-                evidence,
-                mneme_core::RecordKind::Evidence,
-            )],
-            None,
-            None,
+            mneme_memory::ProposedAssertionOptions {
+                subject: rid(0x10),
+                predicate: "deployment",
+                value: mneme_core::Value::string("PostgreSQL, not only SQLite"),
+                stance: mneme_memory::Stance::Deny,
+                origin: mneme_core::Origin::AuthoredStatement,
+                asserted_by: "reviewer",
+                valid_time: mneme_core::ValidTime::always(),
+                evidence: &[mneme_core::Reference::local(
+                    evidence,
+                    mneme_core::RecordKind::Evidence,
+                )],
+                extraction: None,
+                superseded_by: None,
+            },
         );
         self.commit(
             scope(),

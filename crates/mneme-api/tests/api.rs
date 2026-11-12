@@ -317,12 +317,14 @@ fn resume_is_read_only_and_forget_reports_lifecycle_progress() {
         rid(0xc1),
         rev(0xc2),
         &scope(),
-        "finish the memory task",
-        "waiting",
-        &[],
-        &[],
-        base,
-        Some("environment: test host"),
+        mneme_memory::CheckpointOptions {
+            goal: "finish the memory task",
+            state: "waiting",
+            episodes: &[],
+            verified_outcomes: &[],
+            revision: base,
+            note: Some("environment: test host"),
+        },
     )
     .into_envelope(mneme_core::RecordedTime::new(
         mneme_core::Timestamp::from_nanos(3_000),
@@ -465,12 +467,14 @@ fn vertical_slice_lost_response_timeout_resume_and_forget() {
         rid(0xd1),
         rev(0xd2),
         &scope(),
-        "vertical task",
-        "paused",
-        &[],
-        &[],
-        accepted_revision,
-        Some("environment observed before restart"),
+        mneme_memory::CheckpointOptions {
+            goal: "vertical task",
+            state: "paused",
+            episodes: &[],
+            verified_outcomes: &[],
+            revision: accepted_revision,
+            note: Some("environment observed before restart"),
+        },
     )
     .into_envelope(mneme_core::RecordedTime::new(
         mneme_core::Timestamp::from_nanos(3_000),

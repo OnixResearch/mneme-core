@@ -132,10 +132,12 @@ impl<'w> RecallService<'w> {
         }
         self.require_generation(generation)?;
         finish_recall_response(
-            request,
-            started,
-            served_revision,
-            generation,
+            RecallCompletionContext {
+                request,
+                started,
+                served_revision,
+                generation,
+            },
             progress,
             RecallPacked {
                 returned,
@@ -596,20 +598,25 @@ struct RecallPacked {
     truncated: bool,
 }
 
-#[allow(
-    unknown_lints,
-    ambient_clock,
-    clippy::too_many_arguments,
-    too_many_parameters
-)]
-fn finish_recall_response(
-    request: &crate::model::RecallRequest,
+struct RecallCompletionContext<'a> {
+    request: &'a crate::model::RecallRequest,
     started: std::time::Instant,
     served_revision: mneme_core::WorkspaceRevisionId,
     generation: u64,
+}
+
+#[allow(unknown_lints, ambient_clock)]
+fn finish_recall_response(
+    context: RecallCompletionContext<'_>,
     mut progress: RecallProgress,
     mut packed: RecallPacked,
 ) -> crate::error::Result<crate::model::RecallResponse> {
+    let RecallCompletionContext {
+        request,
+        started,
+        served_revision,
+        generation,
+    } = context;
     if cancelled(request) {
         progress.execution = crate::model::RecallExecution::Cancelled;
         packed.returned.clear();
@@ -950,16 +957,18 @@ fn pack(
         }
     };
     let deadline = std::time::Duration::from_millis(max_time_ms);
-    for candidate in ordered {
-        pack_candidate(
-            candidate,
+    {
+        let mut context = CandidatePackingContext {
             request,
             started,
             deadline,
-            &mut packed,
+            packed: &mut packed,
             execution,
             reasons,
-        );
+        };
+        for candidate in ordered {
+            pack_candidate(candidate, &mut context);
+        }
     }
     packed.into_parts()
 }
@@ -1009,21 +1018,26 @@ fn order_by_independence(
     ordered
 }
 
-#[allow(
-    unknown_lints,
-    ambient_clock,
-    clippy::too_many_arguments,
-    too_many_parameters
-)]
-fn pack_candidate(
-    candidate: crate::model::RecallCandidate,
-    request: &crate::model::RecallRequest,
+struct CandidatePackingContext<'a> {
+    request: &'a crate::model::RecallRequest,
     started: std::time::Instant,
     deadline: std::time::Duration,
-    packed: &mut PackedCandidates,
-    execution: &mut crate::model::RecallExecution,
-    reasons: &mut Vec<String>,
+    packed: &'a mut PackedCandidates,
+    execution: &'a mut crate::model::RecallExecution,
+    reasons: &'a mut Vec<String>,
+}
+
+#[allow(unknown_lints, ambient_clock)]
+fn pack_candidate(
+    candidate: crate::model::RecallCandidate,
+    context: &mut CandidatePackingContext<'_>,
 ) {
+    let request = context.request;
+    let started = context.started;
+    let deadline = context.deadline;
+    let packed = &mut *context.packed;
+    let execution = &mut *context.execution;
+    let reasons = &mut *context.reasons;
     if cancelled(request) {
         *execution = crate::model::RecallExecution::Cancelled;
         reasons.push("recall cancelled during packing".to_owned());

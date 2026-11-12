@@ -28,7 +28,9 @@ pub use policy::{
     ValidatedEvidence,
 };
 pub use service::{
-    Memory, MemoryBatch, build_assertion_revision, build_checkpoint, build_decision,
+    CheckpointOptions, DecisionOptions, DerivationOptions, EpisodeOptions, EvidenceOptions, Memory,
+    MemoryBatch, ProposedAssertionOptions, SourceOptions, UnavailableSourceOptions,
+    UnavailableSourceWithDigestOptions, build_assertion_revision, build_checkpoint, build_decision,
     build_derivation, build_episode, build_evidence, build_proposed_assertion, build_source,
     build_unavailable_source, build_unavailable_source_with_digest,
 };

@@ -789,15 +789,17 @@ fn plan_retraction(
         decision_id,
         decision_revision,
         &assertion.record.scope,
-        mneme_memory::DecisionKind::Retraction,
-        assertion_id,
-        &request.actor,
-        &request.policy.version,
-        plan.request.base_revision,
-        "retracted",
-        "retention request; no opposite proposition asserted",
-        &[],
-        &[],
+        mneme_memory::DecisionOptions {
+            kind: mneme_memory::DecisionKind::Retraction,
+            target: assertion_id,
+            actor: &request.actor,
+            policy: &request.policy.version,
+            input_revision: plan.request.base_revision,
+            outcome: "retracted",
+            rationale: "retention request; no opposite proposition asserted",
+            evidence: &[],
+            related: &[],
+        },
     );
     let retracted = mneme_memory::build_assertion_revision(
         &assertion.record,
@@ -891,11 +893,13 @@ fn plan_pruning(
             *source,
             fresh_revision()?,
             &source_view.record.scope,
-            "source bytes pruned under retention policy",
-            "pruned",
-            Some(digest),
-            source_view.entity,
-            source_view.path_hint.as_deref(),
+            mneme_memory::UnavailableSourceWithDigestOptions {
+                reason: "source bytes pruned under retention policy",
+                availability: "pruned",
+                prior_digest: Some(digest),
+                entity: source_view.entity,
+                path_hint: source_view.path_hint.as_deref(),
+            },
         );
         revision.predecessor = Some(source_view.record.revision_id);
         plan.records.push(revision);
@@ -1551,37 +1555,52 @@ fn add_inventory_locations(plan: &mut RetentionPlan) {
     }
 }
 
-#[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn references_any(
     value: &mneme_core::Value,
     targets: &std::collections::BTreeSet<mneme_core::RecordId>,
 ) -> bool {
-    if let Ok(reference) = mneme_core::Reference::from_value(value, &mneme_core::Path::root()) {
-        return reference
-            .target()
-            .is_some_and(|target| targets.contains(&target));
-    }
-    match value {
-        mneme_core::Value::Record(record) => {
-            record.label();
-            record
-                .fields()
-                .iter()
-                .any(|field| references_any(field, targets))
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        if let Ok(reference) = mneme_core::Reference::from_value(value, &mneme_core::Path::root()) {
+            if reference
+                .target()
+                .is_some_and(|target| targets.contains(&target))
+            {
+                return true;
+            }
+            continue;
         }
-        mneme_core::Value::Sequence(items) => {
-            items.iter().any(|item| references_any(item, targets))
+        match value {
+            mneme_core::Value::Record(record) => {
+                record.label();
+                for field in record.fields().iter().rev() {
+                    pending.push(field);
+                }
+            }
+            mneme_core::Value::Sequence(items) => {
+                for item in items.iter().rev() {
+                    pending.push(item);
+                }
+            }
+            mneme_core::Value::Set(items) => {
+                for item in items.iter().rev() {
+                    pending.push(item);
+                }
+            }
+            mneme_core::Value::Dictionary(entries) => {
+                for (key, value) in entries.iter().rev() {
+                    pending.push(value);
+                    pending.push(key);
+                }
+            }
+            mneme_core::Value::Embedded(inner) => pending.push(inner),
+            mneme_core::Value::Boolean(_)
+            | mneme_core::Value::Double(_)
+            | mneme_core::Value::SignedInteger(_)
+            | mneme_core::Value::Symbol(_)
+            | mneme_core::Value::String(_)
+            | mneme_core::Value::ByteString(_) => {}
         }
-        mneme_core::Value::Set(items) => items.iter().any(|item| references_any(item, targets)),
-        mneme_core::Value::Dictionary(entries) => entries
-            .iter()
-            .any(|(key, value)| references_any(key, targets) || references_any(value, targets)),
-        mneme_core::Value::Embedded(inner) => references_any(inner, targets),
-        mneme_core::Value::Boolean(_)
-        | mneme_core::Value::Double(_)
-        | mneme_core::Value::SignedInteger(_)
-        | mneme_core::Value::Symbol(_)
-        | mneme_core::Value::String(_)
-        | mneme_core::Value::ByteString(_) => false,
     }
+    false
 }

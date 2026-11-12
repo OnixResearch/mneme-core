@@ -80,8 +80,7 @@ pub fn build_input_image(
     }
     let canonical = canonical_facts(view, scope)?;
     let mut relations = Vec::with_capacity(results.len());
-    let mut rule_versions = std::collections::BTreeMap::new();
-    let mut rule_context: Option<(String, String)> = None;
+    let mut validation = ResultContextValidation::default();
     let mut is_all_complete = true;
     for result in results {
         let is_coverage_complete = validate_result_context(
@@ -89,8 +88,7 @@ pub fn build_input_image(
             scope,
             expected_revision,
             expected_generation,
-            &mut rule_context,
-            &mut rule_versions,
+            &mut validation,
         )?;
         is_all_complete &= is_coverage_complete;
         let rows = selected_rows(view, scope, expected_revision, &result)?;
@@ -108,7 +106,7 @@ pub fn build_input_image(
             eligibility_generation: expected_generation,
             image_digest,
             profile: "positive-minimal/v1".to_owned(),
-            rule_versions,
+            rule_versions: validation.rule_versions,
         },
         canonical,
         relations,
@@ -150,14 +148,18 @@ fn canonical_facts(
     Ok(canonical)
 }
 
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one cohesive context
+#[derive(Default)]
+struct ResultContextValidation {
+    rule_context: Option<(String, String)>,
+    rule_versions: std::collections::BTreeMap<String, String>,
+}
+
 fn validate_result_context(
     result: &mneme_datalog::QueryResult,
     scope: &mneme_core::ScopeId,
     expected_revision: mneme_core::WorkspaceRevisionId,
     expected_generation: u64,
-    rule_context: &mut Option<(String, String)>,
-    rule_versions: &mut std::collections::BTreeMap<String, String>,
+    validation: &mut ResultContextValidation,
 ) -> Result<bool, ImageError> {
     if result.context.served_revision != expected_revision
         || result.served_revision != expected_revision
@@ -182,13 +184,13 @@ fn validate_result_context(
         result.context.rule_bundle_id.clone(),
         result.context.rule_bundle_version.clone(),
     );
-    if let Some(existing) = rule_context.as_ref() {
+    if let Some(existing) = validation.rule_context.as_ref() {
         if existing != &context {
             return Err(ImageError::MixedRuleContext);
         }
     } else {
-        *rule_context = Some(context);
-        rule_versions.insert(
+        validation.rule_context = Some(context);
+        validation.rule_versions.insert(
             result.context.rule_bundle_id.clone(),
             result.context.rule_bundle_version.clone(),
         );

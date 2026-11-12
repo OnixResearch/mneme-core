@@ -58,27 +58,28 @@ fn fixture_command(base: mneme_core::WorkspaceRevisionId, key: &str) -> mneme_st
     }
 }
 
-#[allow(unknown_lints, too_many_parameters)] // Octet structural exception: cohesive state-machine code; split tracked separately
-fn source_draft(
-    bytes: &[u8],
+struct SourceDraftInput<'a> {
+    bytes: &'a [u8],
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     predecessor: Option<mneme_core::RevisionId>,
     entity: mneme_core::RecordId,
-    path: &str,
-) -> mneme_store::RecordDraft {
+    path: &'a str,
+}
+
+fn source_draft(input: SourceDraftInput<'_>) -> mneme_store::RecordDraft {
     let retained = mneme_core::RetainedSource::new(
-        mneme_core::ContentDigest::of_source_bytes(bytes),
-        bytes.len() as u64,
+        mneme_core::ContentDigest::of_source_bytes(input.bytes),
+        input.bytes.len() as u64,
         "text/asciidoc",
     )
     .expect("retained source");
     mneme_store::RecordDraft {
         schema_version: 1,
         kind: mneme_core::RecordKind::SourceRevision,
-        record_id,
-        revision_id,
-        predecessor,
+        record_id: input.record_id,
+        revision_id: input.revision_id,
+        predecessor: input.predecessor,
         scope: scope(),
         payload: mneme_core::Payload::new([
             (
@@ -91,11 +92,12 @@ fn source_draft(
             ),
             (
                 mneme_core::Symbol::from("entity"),
-                mneme_core::Reference::local(entity, mneme_core::RecordKind::Entity).to_value(),
+                mneme_core::Reference::local(input.entity, mneme_core::RecordKind::Entity)
+                    .to_value(),
             ),
             (
                 mneme_core::Symbol::from("path-hint"),
-                mneme_core::Value::string(path),
+                mneme_core::Value::string(input.path),
             ),
         ]),
     }
@@ -249,14 +251,14 @@ fn external_import_candidate_must_match_existing_bytes_and_bindings() {
     mneme_store::blob::publish_working_file(temp.path(), "project.adoc", edited.as_bytes())
         .expect("edit file");
     let revision = mneme_core::RevisionId::from_bytes([0x21; 16]);
-    let replacement = source_draft(
-        edited.as_bytes(),
-        mneme_core::fixtures::source_revision_id(),
-        revision,
-        Some(mneme_core::fixtures::source_revision().revision_id),
-        mneme_core::fixtures::entity_id(),
-        "project.adoc",
-    );
+    let replacement = source_draft(SourceDraftInput {
+        bytes: edited.as_bytes(),
+        record_id: mneme_core::fixtures::source_revision_id(),
+        revision_id: revision,
+        predecessor: Some(mneme_core::fixtures::source_revision().revision_id),
+        entity: mneme_core::fixtures::entity_id(),
+        path: "project.adoc",
+    });
     let import = mneme_store::CommitCommand {
         base,
         actor: "author".to_owned(),
@@ -290,14 +292,14 @@ fn external_import_candidate_must_match_existing_bytes_and_bindings() {
         actor: "author".to_owned(),
         scope: scope(),
         idempotency_key: "stale-import".to_owned(),
-        records: vec![source_draft(
-            edited.as_bytes(),
-            mneme_core::fixtures::source_revision_id(),
-            second_revision,
-            Some(revision),
-            mneme_core::fixtures::entity_id(),
-            "project.adoc",
-        )],
+        records: vec![source_draft(SourceDraftInput {
+            bytes: edited.as_bytes(),
+            record_id: mneme_core::fixtures::source_revision_id(),
+            revision_id: second_revision,
+            predecessor: Some(revision),
+            entity: mneme_core::fixtures::entity_id(),
+            path: "project.adoc",
+        })],
         source_blobs: Vec::new(),
         publications: Vec::new(),
         import_candidates: vec![mneme_store::ImportCandidateDraft {
@@ -360,14 +362,14 @@ fn conflicting_source_binding_is_rejected_before_commit() {
         scope: scope(),
         payload: entity_payload,
     };
-    let rebind = source_draft(
-        mneme_core::fixtures::SOURCE_TEXT.as_bytes(),
-        mneme_core::RecordId::from_bytes([0x33; 16]),
-        mneme_core::RevisionId::from_bytes([0x34; 16]),
-        None,
-        other_entity.record_id,
-        "project.adoc",
-    );
+    let rebind = source_draft(SourceDraftInput {
+        bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes(),
+        record_id: mneme_core::RecordId::from_bytes([0x33; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([0x34; 16]),
+        predecessor: None,
+        entity: other_entity.record_id,
+        path: "project.adoc",
+    });
     let error = workspace
         .commit(mneme_store::CommitCommand {
             base: workspace.current_revision().expect("current"),
@@ -581,14 +583,14 @@ fn metadata_only_update_preserves_exact_source_bytes() {
     let genesis = workspace.current_revision().expect("genesis");
     let source_bytes =
         b"= Synthetic\n\n// a comment\ninclude::other.adoc[]\n\n  noncanonical   spacing\n";
-    let source = source_draft(
-        source_bytes,
-        mneme_core::fixtures::source_revision_id(),
-        mneme_core::RevisionId::from_bytes([0x41; 16]),
-        None,
-        mneme_core::fixtures::entity_id(),
-        "project.adoc",
-    );
+    let source = source_draft(SourceDraftInput {
+        bytes: source_bytes,
+        record_id: mneme_core::fixtures::source_revision_id(),
+        revision_id: mneme_core::RevisionId::from_bytes([0x41; 16]),
+        predecessor: None,
+        entity: mneme_core::fixtures::entity_id(),
+        path: "project.adoc",
+    });
     workspace
         .commit(mneme_store::CommitCommand {
             base: genesis,
@@ -1303,14 +1305,14 @@ fn malformed_import_candidate_is_refused_and_keeps_the_prior_snapshot() {
     mneme_store::blob::publish_working_file(temp.path(), "project.adoc", candidate_bytes)
         .expect("file");
     // The record claims a retained source whose bytes do not match the file.
-    let wrong = source_draft(
-        b"different bytes",
-        mneme_core::fixtures::source_revision_id(),
-        mneme_core::RevisionId::from_bytes([0x81; 16]),
-        None,
-        mneme_core::fixtures::entity_id(),
-        "project.adoc",
-    );
+    let wrong = source_draft(SourceDraftInput {
+        bytes: b"different bytes",
+        record_id: mneme_core::fixtures::source_revision_id(),
+        revision_id: mneme_core::RevisionId::from_bytes([0x81; 16]),
+        predecessor: None,
+        entity: mneme_core::fixtures::entity_id(),
+        path: "project.adoc",
+    });
     let error = workspace
         .commit(mneme_store::CommitCommand {
             base: workspace.current_revision().expect("current"),

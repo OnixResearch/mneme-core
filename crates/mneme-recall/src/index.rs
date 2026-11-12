@@ -74,21 +74,21 @@ impl IndexBuild {
             .map(mneme_core::text::render)
             .unwrap_or_default();
         let body = format!("{label} {entity_type} {properties}");
-        self.documents.push(document(
-            format!("entity:{}", record.record_id),
-            crate::model::ContentKind::TypedField,
-            body,
-            "entity.label".to_owned(),
-            None,
-            None,
-            None,
-            Some(record.record_id),
-            None,
-            None,
-            None,
-            Vec::new(),
-            std::collections::BTreeSet::new(),
-        ));
+        self.documents.push(document(IndexedDocumentInput {
+            id: format!("entity:{}", record.record_id),
+            kind: crate::model::ContentKind::TypedField,
+            text: body,
+            field_path: "entity.label".to_owned(),
+            source: None,
+            source_revision: None,
+            span: None,
+            assertion: Some(record.record_id),
+            episode: None,
+            entity: None,
+            claim_status: None,
+            evidence: Vec::new(),
+            ancestry_roots: std::collections::BTreeSet::new(),
+        }));
     }
 
     fn add_episode(
@@ -113,21 +113,21 @@ impl IndexBuild {
             }
             None => (None, None),
         };
-        self.documents.push(document(
-            format!("episode:{}", record.record_id),
-            crate::model::ContentKind::EpisodeSummary,
-            body,
-            "episode.summary".to_owned(),
+        self.documents.push(document(IndexedDocumentInput {
+            id: format!("episode:{}", record.record_id),
+            kind: crate::model::ContentKind::EpisodeSummary,
+            text: body,
+            field_path: "episode.summary".to_owned(),
             source,
             source_revision,
-            None,
-            None,
-            Some(record.record_id),
-            None,
-            None,
-            Vec::new(),
-            std::collections::BTreeSet::new(),
-        ));
+            span: None,
+            assertion: None,
+            episode: Some(record.record_id),
+            entity: None,
+            claim_status: None,
+            evidence: Vec::new(),
+            ancestry_roots: std::collections::BTreeSet::new(),
+        }));
         Ok(())
     }
 
@@ -138,21 +138,24 @@ impl IndexBuild {
     ) -> crate::error::Result<()> {
         let source = view.source(record.record_id)?;
         if let Some(path) = &source.path_hint {
-            self.documents.push(document(
-                format!("source-path:{}:{}", record.record_id, record.revision_id),
-                crate::model::ContentKind::TypedField,
-                path.clone(),
-                "source.path-hint".to_owned(),
-                Some(record.record_id),
-                Some(record.revision_id),
-                None,
-                None,
-                None,
-                None,
-                None,
-                Vec::new(),
-                std::collections::BTreeSet::from([(record.record_id, record.revision_id)]),
-            ));
+            self.documents.push(document(IndexedDocumentInput {
+                id: format!("source-path:{}:{}", record.record_id, record.revision_id),
+                kind: crate::model::ContentKind::TypedField,
+                text: path.clone(),
+                field_path: "source.path-hint".to_owned(),
+                source: Some(record.record_id),
+                source_revision: Some(record.revision_id),
+                span: None,
+                assertion: None,
+                episode: None,
+                entity: None,
+                claim_status: None,
+                evidence: Vec::new(),
+                ancestry_roots: std::collections::BTreeSet::from([(
+                    record.record_id,
+                    record.revision_id,
+                )]),
+            }));
         }
         self.add_source_content(view, record, &source)?;
         Ok(())
@@ -166,21 +169,24 @@ impl IndexBuild {
     ) -> crate::error::Result<()> {
         match view.source_status_for(source)? {
             mneme_memory::SourceStatus::Retained(bytes) => match String::from_utf8(bytes) {
-                Ok(body) => self.documents.push(document(
-                    format!("source:{}:{}", record.record_id, record.revision_id),
-                    crate::model::ContentKind::SourceExcerpt,
-                    body,
-                    "source.content".to_owned(),
-                    Some(record.record_id),
-                    Some(record.revision_id),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Vec::new(),
-                    std::collections::BTreeSet::from([(record.record_id, record.revision_id)]),
-                )),
+                Ok(body) => self.documents.push(document(IndexedDocumentInput {
+                    id: format!("source:{}:{}", record.record_id, record.revision_id),
+                    kind: crate::model::ContentKind::SourceExcerpt,
+                    text: body,
+                    field_path: "source.content".to_owned(),
+                    source: Some(record.record_id),
+                    source_revision: Some(record.revision_id),
+                    span: None,
+                    assertion: None,
+                    episode: None,
+                    entity: None,
+                    claim_status: None,
+                    evidence: Vec::new(),
+                    ancestry_roots: std::collections::BTreeSet::from([(
+                        record.record_id,
+                        record.revision_id,
+                    )]),
+                })),
                 Err(_) => {
                     self.skipped += 1;
                     self.skip_reasons
@@ -217,21 +223,21 @@ impl IndexBuild {
             subject,
             assertion.asserted_by
         );
-        self.documents.push(document(
-            format!("assertion:{}", assertion.record.record_id),
-            crate::model::ContentKind::Claim,
-            body,
-            format!("assertion.{}", assertion.predicate),
-            None,
-            None,
-            None,
-            Some(assertion.record.record_id),
-            None,
-            None,
-            Some(status),
+        self.documents.push(document(IndexedDocumentInput {
+            id: format!("assertion:{}", assertion.record.record_id),
+            kind: crate::model::ContentKind::Claim,
+            text: body,
+            field_path: format!("assertion.{}", assertion.predicate),
+            source: None,
+            source_revision: None,
+            span: None,
+            assertion: Some(assertion.record.record_id),
+            episode: None,
+            entity: None,
+            claim_status: Some(status),
             evidence,
-            roots,
-        ));
+            ancestry_roots: roots,
+        }));
     }
 
     fn finish(self, revision: mneme_core::WorkspaceRevisionId) -> crate::model::CachedIndex {
@@ -340,8 +346,7 @@ fn evidence_refs(
     (refs, roots)
 }
 
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
-fn document(
+struct IndexedDocumentInput {
     id: String,
     kind: crate::model::ContentKind,
     text: String,
@@ -355,7 +360,24 @@ fn document(
     claim_status: Option<crate::model::ClaimStatus>,
     evidence: Vec<crate::model::RecallEvidence>,
     ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
-) -> crate::model::IndexedDocument {
+}
+
+fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
+    let IndexedDocumentInput {
+        id,
+        kind,
+        text,
+        field_path,
+        source,
+        source_revision,
+        span,
+        assertion,
+        episode,
+        entity,
+        claim_status,
+        evidence,
+        ancestry_roots,
+    } = input;
     let normalized = text.to_lowercase();
     let terms = tokenize(&normalized);
     let trigrams = trigram_counts(&normalized);

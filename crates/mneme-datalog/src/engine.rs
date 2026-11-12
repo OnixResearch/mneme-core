@@ -490,6 +490,12 @@ enum RuleOutcome {
     Skipped,
 }
 
+struct AggregateSpec {
+    function: crate::AggregateFunction,
+    input: crate::Term,
+    output: String,
+}
+
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn evaluate_rule(
     evaluation: &mut Evaluation<'_>,
@@ -505,7 +511,11 @@ fn evaluate_rule(
             output,
         } = literal
         {
-            Some((*function, input.clone(), output.clone()))
+            Some(AggregateSpec {
+                function: *function,
+                input: input.clone(),
+                output: output.clone(),
+            })
         } else {
             None
         }
@@ -524,8 +534,8 @@ fn evaluate_rule(
     if let Err(outcome) = filter_nonpositive_literals(evaluation, rule, &mut bindings) {
         return Ok(outcome);
     }
-    if let Some((function, input, output)) = aggregate {
-        return evaluate_aggregate_rule(evaluation, rule, function, &input, &output, &bindings);
+    if let Some(aggregate) = aggregate {
+        return evaluate_aggregate_rule(evaluation, rule, aggregate, &bindings);
     }
     evaluate_ordinary_rule(evaluation, rule, &bindings)
 }
@@ -600,16 +610,19 @@ fn filter_nonpositive_literals(
     Ok(())
 }
 
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one cohesive context
 fn evaluate_aggregate_rule(
     evaluation: &mut Evaluation<'_>,
     rule: &crate::Rule,
-    function: crate::AggregateFunction,
-    input: &crate::Term,
-    output: &str,
+    aggregate: AggregateSpec,
     bindings: &RuleBindings,
 ) -> Result<RuleOutcome, crate::DatalogError> {
-    let grouped = aggregate_rows(&rule.head, output, function, input, bindings)?;
+    let grouped = aggregate_rows(
+        &rule.head,
+        &aggregate.output,
+        aggregate.function,
+        &aggregate.input,
+        bindings,
+    )?;
     let mut is_changed = false;
     for aggregate_row in grouped {
         let (support, sources) =

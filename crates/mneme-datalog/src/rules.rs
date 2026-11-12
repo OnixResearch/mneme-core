@@ -162,30 +162,39 @@ fn analyze_rule_body(
     let mut analysis = RuleBodyAnalysis::new();
     for (index, literal) in rule.body.iter().enumerate() {
         analyze_literal(
-            bundle,
-            rule,
+            LiteralAnalysisContext {
+                bundle,
+                rule,
+                arities,
+                heads,
+                analysis: &mut analysis,
+                diagnostics,
+            },
             index,
             literal,
-            arities,
-            heads,
-            &mut analysis,
-            diagnostics,
         );
     }
     analysis
 }
 
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one cohesive context
-fn analyze_literal(
-    bundle: &crate::RuleBundle,
-    rule: &crate::Rule,
-    index: usize,
-    literal: &crate::Literal,
-    arities: &std::collections::BTreeMap<String, usize>,
-    heads: &std::collections::BTreeMap<String, usize>,
-    analysis: &mut RuleBodyAnalysis,
-    diagnostics: &mut Vec<crate::RuleDiagnostic>,
-) {
+struct LiteralAnalysisContext<'a> {
+    bundle: &'a crate::RuleBundle,
+    rule: &'a crate::Rule,
+    arities: &'a std::collections::BTreeMap<String, usize>,
+    heads: &'a std::collections::BTreeMap<String, usize>,
+    analysis: &'a mut RuleBodyAnalysis,
+    diagnostics: &'a mut Vec<crate::RuleDiagnostic>,
+}
+
+fn analyze_literal(context: LiteralAnalysisContext<'_>, index: usize, literal: &crate::Literal) {
+    let LiteralAnalysisContext {
+        bundle,
+        rule,
+        arities,
+        heads,
+        analysis,
+        diagnostics,
+    } = context;
     match literal {
         crate::Literal::Forbidden(name) => {
             analysis.is_seen_forbidden = true;
@@ -196,7 +205,7 @@ fn analyze_literal(
             ));
         }
         crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
-            validate_atom(atom, arities, heads, &bundle.rules, &rule.id, diagnostics);
+            validate_atom(atom, arities, heads, &rule.id, diagnostics);
             match literal {
                 crate::Literal::Positive(_) => {
                     analysis
@@ -395,12 +404,10 @@ fn finish_validation(
     }
 }
 
-#[allow(unknown_lints, too_many_parameters)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn validate_atom(
     atom: &crate::Atom,
     arities: &std::collections::BTreeMap<String, usize>,
     heads: &std::collections::BTreeMap<String, usize>,
-    _rules: &[crate::Rule],
     rule: &str,
     diagnostics: &mut Vec<crate::RuleDiagnostic>,
 ) {
@@ -506,15 +513,24 @@ fn diag(
 }
 
 /// Stable build identity from context and rules.
-#[allow(unknown_lints, too_many_parameters)] // Octet structural exception: cohesive state-machine code; split tracked separately
-pub(crate) fn build_id(
-    revision: mneme_core::WorkspaceRevisionId,
-    scope: &mneme_core::ScopeId,
-    generation: u64,
-    bundle: &crate::RuleBundle,
-    limits: &crate::Limits,
-    incomplete_extents: &std::collections::BTreeSet<String>,
-) -> String {
+pub(crate) struct BuildIdContext<'a> {
+    pub(crate) revision: mneme_core::WorkspaceRevisionId,
+    pub(crate) scope: &'a mneme_core::ScopeId,
+    pub(crate) generation: u64,
+    pub(crate) bundle: &'a crate::RuleBundle,
+    pub(crate) limits: &'a crate::Limits,
+    pub(crate) incomplete_extents: &'a std::collections::BTreeSet<String>,
+}
+
+pub(crate) fn build_id(context: BuildIdContext<'_>) -> String {
+    let BuildIdContext {
+        revision,
+        scope,
+        generation,
+        bundle,
+        limits,
+        incomplete_extents,
+    } = context;
     let incomplete = incomplete_extents
         .iter()
         .cloned()

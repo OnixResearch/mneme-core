@@ -435,26 +435,42 @@ impl Value {
     }
 
     /// Whether this value, or any nested value, is an embedded marker.
-    #[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn contains_embedded(&self) -> bool {
-        match self {
-            Value::Embedded(_) => true,
-            Value::Record(record) => {
-                record.label.contains_embedded()
-                    || record.fields.iter().any(Value::contains_embedded)
+        let mut pending = vec![self];
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::Embedded(_) => return true,
+                Value::Record(record) => {
+                    for field in record.fields.iter().rev() {
+                        pending.push(field);
+                    }
+                    pending.push(&record.label);
+                }
+                Value::Sequence(items) => {
+                    for item in items.iter().rev() {
+                        pending.push(item);
+                    }
+                }
+                Value::Set(items) => {
+                    for item in items.iter().rev() {
+                        pending.push(item);
+                    }
+                }
+                Value::Dictionary(entries) => {
+                    for (key, value) in entries.iter().rev() {
+                        pending.push(value);
+                        pending.push(key);
+                    }
+                }
+                Value::Boolean(_)
+                | Value::Double(_)
+                | Value::SignedInteger(_)
+                | Value::Symbol(_)
+                | Value::String(_)
+                | Value::ByteString(_) => {}
             }
-            Value::Sequence(items) => items.iter().any(Value::contains_embedded),
-            Value::Set(items) => items.iter().any(Value::contains_embedded),
-            Value::Dictionary(entries) => entries
-                .iter()
-                .any(|(key, value)| key.contains_embedded() || value.contains_embedded()),
-            Value::Boolean(_)
-            | Value::Double(_)
-            | Value::SignedInteger(_)
-            | Value::Symbol(_)
-            | Value::String(_)
-            | Value::ByteString(_) => false,
         }
+        false
     }
 }
 

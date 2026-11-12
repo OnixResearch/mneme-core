@@ -222,14 +222,17 @@ fn constant(value: mneme_core::Value) -> mneme_datalog::Term {
 }
 
 fn bundle(rules: Vec<mneme_datalog::Rule>, complete: &[&str]) -> mneme_datalog::RuleBundle {
-    mneme_datalog::RuleBundle::new(
-        "base",
-        "1",
-        3,
-        std::collections::BTreeMap::from([("entity".to_owned(), 3), ("relation".to_owned(), 3)]),
-        complete.iter().map(|name| (*name).to_owned()).collect(),
+    mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "base".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 3,
+        base_predicates: std::collections::BTreeMap::from([
+            ("entity".to_owned(), 3),
+            ("relation".to_owned(), 3),
+        ]),
+        complete_predicates: complete.iter().map(|name| (*name).to_owned()).collect(),
         rules,
-    )
+    })
 }
 
 fn path_bundle() -> mneme_datalog::RuleBundle {
@@ -370,14 +373,14 @@ fn unsafe_forbidden_non_stratified_and_schema_rules_are_rejected() {
         (bundle(vec![forbidden], &[]), "forbidden-builtin"),
         (bundle(vec![negative], &["p"]), "non-stratified"),
         (
-            mneme_datalog::RuleBundle::new(
-                "bad",
-                "1",
-                0,
-                std::collections::BTreeMap::new(),
-                std::collections::BTreeSet::new(),
-                Vec::new(),
-            ),
+            mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+                id: "bad".to_owned(),
+                version: "1".to_owned(),
+                schema_version: 0,
+                base_predicates: std::collections::BTreeMap::new(),
+                complete_predicates: std::collections::BTreeSet::new(),
+                rules: Vec::new(),
+            }),
             "schema-version",
         ),
     ] {
@@ -648,16 +651,18 @@ fn add_assertion_support(harness: &mut Harness, sources: bool) -> mneme_core::Re
         rid(0x40),
         rev(0x41),
         &scope(),
-        rid(0x10),
-        "claim",
-        mneme_core::Value::string("retained"),
-        mneme_memory::Stance::Affirm,
-        mneme_core::Origin::AuthoredStatement,
-        "author",
-        mneme_core::ValidTime::always(),
-        &evidence_refs,
-        None,
-        None,
+        mneme_memory::ProposedAssertionOptions {
+            subject: rid(0x10),
+            predicate: "claim",
+            value: mneme_core::Value::string("retained"),
+            stance: mneme_memory::Stance::Affirm,
+            origin: mneme_core::Origin::AuthoredStatement,
+            asserted_by: "author",
+            valid_time: mneme_core::ValidTime::always(),
+            evidence: &evidence_refs,
+            extraction: None,
+            superseded_by: None,
+        },
     );
     harness.commit(
         "evidence",
@@ -678,10 +683,12 @@ fn add_support_sources(harness: &mut Harness, sources: bool) {
         rid(0x20),
         rev(0x21),
         &scope(),
-        source_a,
-        "text/asciidoc",
-        Some(rid(0x10)),
-        Some("a.adoc"),
+        mneme_memory::SourceOptions {
+            bytes: source_a,
+            media_type: "text/asciidoc",
+            entity: Some(rid(0x10)),
+            path_hint: Some("a.adoc"),
+        },
     )
     .expect("source a");
     let mut records = vec![source_record];
@@ -691,10 +698,12 @@ fn add_support_sources(harness: &mut Harness, sources: bool) {
             rid(0x22),
             rev(0x23),
             &scope(),
-            source_b,
-            "text/asciidoc",
-            Some(rid(0x10)),
-            Some("b.adoc"),
+            mneme_memory::SourceOptions {
+                bytes: source_b,
+                media_type: "text/asciidoc",
+                entity: Some(rid(0x10)),
+                path_hint: Some("b.adoc"),
+            },
         )
         .expect("source b");
         records.push(source_record_b);
@@ -709,28 +718,32 @@ fn support_evidence(sources: bool) -> Vec<mneme_store::RecordDraft> {
         rid(0x30),
         rev(0x31),
         &scope(),
-        rid(0x40),
-        rid(0x20),
-        rev(0x21),
-        Some(span),
-        Some("a"),
-        mneme_memory::SupportRelation::Supports,
-        mneme_core::Origin::AuthoredStatement,
-        &[],
+        mneme_memory::EvidenceOptions {
+            assertion: rid(0x40),
+            source: rid(0x20),
+            source_revision: rev(0x21),
+            span: Some(span),
+            anchor: Some("a"),
+            relation: mneme_memory::SupportRelation::Supports,
+            origin: mneme_core::Origin::AuthoredStatement,
+            ancestry: &[],
+        },
     )];
     if sources {
         evidence.push(mneme_memory::build_evidence(
             rid(0x32),
             rev(0x33),
             &scope(),
-            rid(0x40),
-            rid(0x22),
-            rev(0x23),
-            Some(span),
-            Some("b"),
-            mneme_memory::SupportRelation::Supports,
-            mneme_core::Origin::AuthoredStatement,
-            &[],
+            mneme_memory::EvidenceOptions {
+                assertion: rid(0x40),
+                source: rid(0x22),
+                source_revision: rev(0x23),
+                span: Some(span),
+                anchor: Some("b"),
+                relation: mneme_memory::SupportRelation::Supports,
+                origin: mneme_core::Origin::AuthoredStatement,
+                ancestry: &[],
+            },
         ));
     }
     evidence
@@ -748,15 +761,17 @@ fn accept_support_assertion(harness: &mut Harness) {
         rid(0x50),
         rev(0x51),
         &scope(),
-        mneme_memory::DecisionKind::Acceptance,
-        rid(0x40),
-        "author",
-        "datalog-policy/v1",
-        harness.workspace.current_revision().expect("base"),
-        "accepted",
-        "datalog fixture",
-        &[],
-        &[],
+        mneme_memory::DecisionOptions {
+            kind: mneme_memory::DecisionKind::Acceptance,
+            target: rid(0x40),
+            actor: "author",
+            policy: "datalog-policy/v1",
+            input_revision: harness.workspace.current_revision().expect("base"),
+            outcome: "accepted",
+            rationale: "datalog fixture",
+            evidence: &[],
+            related: &[],
+        },
     );
     let accepted = mneme_memory::build_assertion_revision(
         &current,
@@ -772,13 +787,13 @@ fn accept_support_assertion(harness: &mut Harness) {
 fn retraction_pruning_and_forget_update_datalog_support() {
     let mut harness = Harness::new();
     let assertion = add_assertion_support(&mut harness, true);
-    let bundle = mneme_datalog::RuleBundle::new(
-        "claims",
-        "1",
-        3,
-        std::collections::BTreeMap::from([("assertion".to_owned(), 4)]),
-        std::collections::BTreeSet::from(["assertion".to_owned()]),
-        vec![mneme_datalog::Rule::new(
+    let bundle = mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "claims".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 3,
+        base_predicates: std::collections::BTreeMap::from([("assertion".to_owned(), 4)]),
+        complete_predicates: std::collections::BTreeSet::from(["assertion".to_owned()]),
+        rules: vec![mneme_datalog::Rule::new(
             "claim",
             atom("claim", vec![var("subject"), var("value")]),
             vec![mneme_datalog::Literal::Positive(atom(
@@ -791,7 +806,7 @@ fn retraction_pruning_and_forget_update_datalog_support() {
                 ],
             ))],
         )],
-    );
+    });
     let build = harness.build(bundle.clone(), false);
     assert_eq!(build.status, mneme_datalog::ExecutionStatus::Complete);
     let result = harness.query(
@@ -897,13 +912,13 @@ fn retraction_pruning_and_forget_update_datalog_support() {
         .execute(prune)
         .expect("prune");
     assert_missing(&source_blob);
-    let bundle = mneme_datalog::RuleBundle::new(
-        "pruned",
-        "1",
-        3,
-        std::collections::BTreeMap::from([("assertion".to_owned(), 4)]),
-        std::collections::BTreeSet::from(["assertion".to_owned()]),
-        vec![mneme_datalog::Rule::new(
+    let bundle = mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "pruned".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 3,
+        base_predicates: std::collections::BTreeMap::from([("assertion".to_owned(), 4)]),
+        complete_predicates: std::collections::BTreeSet::from(["assertion".to_owned()]),
+        rules: vec![mneme_datalog::Rule::new(
             "claim",
             atom("claim", vec![var("subject"), var("value")]),
             vec![mneme_datalog::Literal::Positive(atom(
@@ -916,7 +931,7 @@ fn retraction_pruning_and_forget_update_datalog_support() {
                 ],
             ))],
         )],
-    );
+    });
     let build = harness.build(bundle, false);
     let result = harness.query(
         &build.context.projection_build_id,
@@ -964,13 +979,13 @@ fn query_row_limit_is_non_exhaustive() {
 fn explicit_forget_invalidates_builds_and_prevents_replay_rows() {
     let mut harness = Harness::new();
     add_assertion_support(&mut harness, false);
-    let bundle = mneme_datalog::RuleBundle::new(
-        "forget",
-        "1",
-        3,
-        std::collections::BTreeMap::from([("assertion".to_owned(), 4)]),
-        std::collections::BTreeSet::from(["assertion".to_owned()]),
-        vec![mneme_datalog::Rule::new(
+    let bundle = mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "forget".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 3,
+        base_predicates: std::collections::BTreeMap::from([("assertion".to_owned(), 4)]),
+        complete_predicates: std::collections::BTreeSet::from(["assertion".to_owned()]),
+        rules: vec![mneme_datalog::Rule::new(
             "claim",
             atom("claim", vec![var("subject"), var("value")]),
             vec![mneme_datalog::Literal::Positive(atom(
@@ -983,7 +998,7 @@ fn explicit_forget_invalidates_builds_and_prevents_replay_rows() {
                 ],
             ))],
         )],
-    );
+    });
     let old_build = harness.build(bundle.clone(), false);
     let old_build_id = old_build.context.projection_build_id.clone();
     let result = harness.query(

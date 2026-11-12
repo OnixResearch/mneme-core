@@ -116,14 +116,14 @@ impl<'w> Memory<'w> {
         let history = load_history(self.workspace, &snapshot)?;
         let sequences = self.workspace.revision_sequences()?;
         let suppressions = self.workspace.active_suppressions()?;
-        validate_batch(
-            &snapshot,
-            self.workspace.root(),
-            &batch,
-            &history,
-            &sequences,
-            &suppressions,
-        )?;
+        validate_batch(BatchValidationInputs {
+            snapshot: &snapshot,
+            root: self.workspace.root(),
+            batch: &batch,
+            history: &history,
+            revision_sequences: &sequences,
+            suppressions: &suppressions,
+        })?;
         let outcome = self.workspace.commit(mneme_store::CommitCommand {
             base,
             actor: batch.actor,
@@ -164,18 +164,16 @@ fn load_history(
     Ok(history)
 }
 
-#[allow(unknown_lints, too_many_parameters)] // Octet structural exception: cohesive state-machine code; split tracked separately
-fn validate_batch(
-    snapshot: &mneme_store::Snapshot,
-    root: &std::path::Path,
-    batch: &MemoryBatch,
-    history: &std::collections::BTreeMap<
-        (mneme_core::RecordId, mneme_core::RevisionId),
-        mneme_core::RecordEnvelope,
-    >,
-    revision_sequences: &std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
-    suppressions: &[mneme_store::RetentionSuppression],
-) -> crate::error::Result<()> {
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::error::Result<()> {
+    let BatchValidationInputs {
+        snapshot,
+        root,
+        batch,
+        history,
+        revision_sequences,
+        suppressions,
+    } = inputs;
     let max_batch_records = 1_000_000;
     if snapshot.records.len().saturating_add(batch.records.len()) > max_batch_records
         || batch.source_blobs.len() > max_batch_records
@@ -209,14 +207,14 @@ fn validate_batch(
         supplied_sources.insert(source.digest(), source.bytes.clone());
     }
     extend_batch_records(&mut combined, batch)?;
-    let view = batch_memory_view(
+    let view = batch_memory_view(BatchMemoryViewInputs {
         snapshot,
         root,
-        &combined,
+        combined: &combined,
         history,
         revision_sequences,
         suppressions,
-    );
+    });
     let context = BatchValidation {
         snapshot,
         root,
@@ -232,6 +230,18 @@ fn validate_batch(
         validate_record(&envelope, &context)?;
     }
     Ok(())
+}
+
+struct BatchValidationInputs<'a> {
+    snapshot: &'a mneme_store::Snapshot,
+    root: &'a std::path::Path,
+    batch: &'a MemoryBatch,
+    history: &'a std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+    revision_sequences: &'a std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
+    suppressions: &'a [mneme_store::RetentionSuppression],
 }
 
 fn extend_batch_records(
@@ -254,18 +264,16 @@ fn extend_batch_records(
     Ok(())
 }
 
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one cohesive context
-fn batch_memory_view(
-    snapshot: &mneme_store::Snapshot,
-    root: &std::path::Path,
-    combined: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
-    history: &std::collections::BTreeMap<
-        (mneme_core::RecordId, mneme_core::RevisionId),
-        mneme_core::RecordEnvelope,
-    >,
-    revision_sequences: &std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
-    suppressions: &[mneme_store::RetentionSuppression],
-) -> crate::policy::MemoryView {
+#[allow(unknown_lints)] // Octet structural exception: parameter group mirrors one cohesive context
+fn batch_memory_view(inputs: BatchMemoryViewInputs<'_>) -> crate::policy::MemoryView {
+    let BatchMemoryViewInputs {
+        snapshot,
+        root,
+        combined,
+        history,
+        revision_sequences,
+        suppressions,
+    } = inputs;
     let mut index = mneme_core::SnapshotIndex::new();
     for record in combined.values() {
         index.insert(record.record_id, record.kind, record.revision_id);
@@ -286,6 +294,18 @@ fn batch_memory_view(
         revision_sequences.clone(),
         suppressions.to_vec(),
     )
+}
+
+struct BatchMemoryViewInputs<'a> {
+    snapshot: &'a mneme_store::Snapshot,
+    root: &'a std::path::Path,
+    combined: &'a std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    history: &'a std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+    revision_sequences: &'a std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
+    suppressions: &'a [mneme_store::RetentionSuppression],
 }
 
 struct BatchValidation<'a> {
@@ -666,17 +686,47 @@ fn valid_time_value(valid_time: mneme_core::ValidTime) -> mneme_core::Value {
     valid_time.to_value()
 }
 
+/// Optional source metadata used when building a retained source revision.
+#[derive(Clone, Copy)]
+pub struct SourceOptions<'a> {
+    pub bytes: &'a [u8],
+    pub media_type: &'a str,
+    pub entity: Option<mneme_core::RecordId>,
+    pub path_hint: Option<&'a str>,
+}
+
+/// Metadata for an unavailable or pruned source revision.
+#[derive(Clone, Copy)]
+pub struct UnavailableSourceOptions<'a> {
+    pub reason: &'a str,
+    pub availability: &'a str,
+    pub entity: Option<mneme_core::RecordId>,
+    pub path_hint: Option<&'a str>,
+}
+
+/// Metadata for an unavailable source revision, including its prior digest.
+#[derive(Clone, Copy)]
+pub struct UnavailableSourceWithDigestOptions<'a> {
+    pub reason: &'a str,
+    pub availability: &'a str,
+    pub prior_digest: Option<mneme_core::ContentDigest>,
+    pub entity: Option<mneme_core::RecordId>,
+    pub path_hint: Option<&'a str>,
+}
+
 /// Build a retained source revision and its exact source blob.
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_source(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
-    bytes: &[u8],
-    media_type: &str,
-    entity: Option<mneme_core::RecordId>,
-    path_hint: Option<&str>,
+    options: SourceOptions<'_>,
 ) -> crate::error::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
+    let SourceOptions {
+        bytes,
+        media_type,
+        entity,
+        path_hint,
+    } = options;
     let retained = mneme_core::RetainedSource::new(
         mneme_core::ContentDigest::of_source_bytes(bytes),
         bytes.len() as u64,
@@ -723,41 +773,47 @@ pub fn build_source(
 }
 
 /// Build an unavailable or pruned source revision.
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_unavailable_source(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
-    reason: &str,
-    availability: &str,
-    entity: Option<mneme_core::RecordId>,
-    path_hint: Option<&str>,
+    options: UnavailableSourceOptions<'_>,
 ) -> mneme_store::RecordDraft {
+    let UnavailableSourceOptions {
+        reason,
+        availability,
+        entity,
+        path_hint,
+    } = options;
     build_unavailable_source_with_digest(
         record_id,
         revision_id,
         scope,
-        reason,
-        availability,
-        None,
-        entity,
-        path_hint,
+        UnavailableSourceWithDigestOptions {
+            reason,
+            availability,
+            prior_digest: None,
+            entity,
+            path_hint,
+        },
     )
 }
 
 /// Build an unavailable source revision that preserves the identity of the
 /// bytes it no longer stores.
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_unavailable_source_with_digest(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
-    reason: &str,
-    availability: &str,
-    prior_digest: Option<mneme_core::ContentDigest>,
-    entity: Option<mneme_core::RecordId>,
-    path_hint: Option<&str>,
+    options: UnavailableSourceWithDigestOptions<'_>,
 ) -> mneme_store::RecordDraft {
+    let UnavailableSourceWithDigestOptions {
+        reason,
+        availability,
+        prior_digest,
+        entity,
+        path_hint,
+    } = options;
     let mut entries = vec![
         (
             mneme_core::Symbol::from("content"),
@@ -804,19 +860,32 @@ pub fn build_unavailable_source_with_digest(
     }
 }
 
+/// Optional episode content, including related-record links.
+#[derive(Clone)]
+pub struct EpisodeOptions<'a> {
+    pub actor: &'a str,
+    pub episode_type: &'a str,
+    pub occurred: mneme_core::ValidTime,
+    pub summary: &'a str,
+    pub source: Option<mneme_core::Reference>,
+    pub related: &'a [mneme_core::Reference],
+}
+
 /// Build an episode, including optional related-record links.
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_episode(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
-    actor: &str,
-    episode_type: &str,
-    occurred: mneme_core::ValidTime,
-    summary: &str,
-    source: Option<mneme_core::Reference>,
-    related: &[mneme_core::Reference],
+    options: EpisodeOptions<'_>,
 ) -> mneme_store::RecordDraft {
+    let EpisodeOptions {
+        actor,
+        episode_type,
+        occurred,
+        summary,
+        source,
+        related,
+    } = options;
     let mut entries = vec![
         (
             mneme_core::Symbol::from("actor"),
@@ -852,21 +921,36 @@ pub fn build_episode(
     }
 }
 
+/// Evidence content over an exact source revision.
+#[derive(Clone, Copy)]
+pub struct EvidenceOptions<'a> {
+    pub assertion: mneme_core::RecordId,
+    pub source: mneme_core::RecordId,
+    pub source_revision: mneme_core::RevisionId,
+    pub span: Option<mneme_core::SourceSpan>,
+    pub anchor: Option<&'a str>,
+    pub relation: crate::model::SupportRelation,
+    pub origin: mneme_core::Origin,
+    pub ancestry: &'a [mneme_core::Reference],
+}
+
 /// Build evidence over an exact source revision.
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_evidence(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
-    assertion: mneme_core::RecordId,
-    source: mneme_core::RecordId,
-    source_revision: mneme_core::RevisionId,
-    span: Option<mneme_core::SourceSpan>,
-    anchor: Option<&str>,
-    relation: crate::model::SupportRelation,
-    origin: mneme_core::Origin,
-    ancestry: &[mneme_core::Reference],
+    options: EvidenceOptions<'_>,
 ) -> mneme_store::RecordDraft {
+    let EvidenceOptions {
+        assertion,
+        source,
+        source_revision,
+        span,
+        anchor,
+        relation,
+        origin,
+        ancestry,
+    } = options;
     let mut entries = vec![
         (
             mneme_core::Symbol::from("assertion"),
@@ -914,24 +998,38 @@ pub fn build_evidence(
     }
 }
 
-/// Build a proposed assertion. There is deliberately no parameter that sets an
+/// Proposed assertion content; this never sets an accepted lifecycle.
+#[derive(Clone)]
+pub struct ProposedAssertionOptions<'a> {
+    pub subject: mneme_core::RecordId,
+    pub predicate: &'a str,
+    pub value: mneme_core::Value,
+    pub stance: crate::model::Stance,
+    pub origin: mneme_core::Origin,
+    pub asserted_by: &'a str,
+    pub valid_time: mneme_core::ValidTime,
+    pub evidence: &'a [mneme_core::Reference],
+    pub extraction: Option<(&'a str, &'a str)>,
+    pub superseded_by: Option<mneme_core::Reference>,
+}
+
+/// Build a proposed assertion. There is deliberately no option that sets an
 /// accepted lifecycle.
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
-pub fn build_proposed_assertion(
-    record_id: mneme_core::RecordId,
-    revision_id: mneme_core::RevisionId,
-    scope: &mneme_core::ScopeId,
-    subject: mneme_core::RecordId,
-    predicate: &str,
-    value: mneme_core::Value,
-    stance: crate::model::Stance,
-    origin: mneme_core::Origin,
-    asserted_by: &str,
-    valid_time: mneme_core::ValidTime,
-    evidence: &[mneme_core::Reference],
-    extraction: Option<(&str, &str)>,
-    superseded_by: Option<mneme_core::Reference>,
-) -> mneme_store::RecordDraft {
+fn assertion_entries(
+    options: ProposedAssertionOptions<'_>,
+) -> Vec<(mneme_core::Symbol, mneme_core::Value)> {
+    let ProposedAssertionOptions {
+        subject,
+        predicate,
+        value,
+        stance,
+        origin,
+        asserted_by,
+        valid_time,
+        evidence,
+        extraction,
+        superseded_by,
+    } = options;
     let mut entries = vec![
         (
             mneme_core::Symbol::from("subject"),
@@ -986,6 +1084,16 @@ pub fn build_proposed_assertion(
             superseded_by.to_value(),
         ));
     }
+    entries
+}
+
+pub fn build_proposed_assertion(
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    options: ProposedAssertionOptions<'_>,
+) -> mneme_store::RecordDraft {
+    let entries = assertion_entries(options);
     mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Assertion,
@@ -997,22 +1105,38 @@ pub fn build_proposed_assertion(
     }
 }
 
+/// Content for an attributed decision.
+#[derive(Clone)]
+pub struct DecisionOptions<'a> {
+    pub kind: crate::model::DecisionKind,
+    pub target: mneme_core::RecordId,
+    pub actor: &'a str,
+    pub policy: &'a str,
+    pub input_revision: mneme_core::WorkspaceRevisionId,
+    pub outcome: &'a str,
+    pub rationale: &'a str,
+    pub evidence: &'a [mneme_core::Reference],
+    pub related: &'a [mneme_core::Reference],
+}
+
 /// Build an attributed decision.
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_decision(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
-    kind: crate::model::DecisionKind,
-    target: mneme_core::RecordId,
-    actor: &str,
-    policy: &str,
-    input_revision: mneme_core::WorkspaceRevisionId,
-    outcome: &str,
-    rationale: &str,
-    evidence: &[mneme_core::Reference],
-    related: &[mneme_core::Reference],
+    options: DecisionOptions<'_>,
 ) -> mneme_store::RecordDraft {
+    let DecisionOptions {
+        kind,
+        target,
+        actor,
+        policy,
+        input_revision,
+        outcome,
+        rationale,
+        evidence,
+        related,
+    } = options;
     let mut entries = vec![
         (
             mneme_core::Symbol::from("decision-kind"),
@@ -1089,19 +1213,32 @@ pub fn build_assertion_revision(
     }
 }
 
+/// Content for a derivation with a complete premise set.
+#[derive(Clone, Copy)]
+pub struct DerivationOptions<'a> {
+    pub conclusion: mneme_core::RecordId,
+    pub premises: &'a [mneme_core::Reference],
+    pub rule_id: &'a str,
+    pub rule_version: i64,
+    pub evaluation_revision: mneme_core::WorkspaceRevisionId,
+    pub completeness: &'a str,
+}
+
 /// Build a derivation with a complete premise set.
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_derivation(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
-    conclusion: mneme_core::RecordId,
-    premises: &[mneme_core::Reference],
-    rule_id: &str,
-    rule_version: i64,
-    evaluation_revision: mneme_core::WorkspaceRevisionId,
-    completeness: &str,
+    options: DerivationOptions<'_>,
 ) -> mneme_store::RecordDraft {
+    let DerivationOptions {
+        conclusion,
+        premises,
+        rule_id,
+        rule_version,
+        evaluation_revision,
+        completeness,
+    } = options;
     mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Derivation,
@@ -1135,19 +1272,32 @@ pub fn build_derivation(
     }
 }
 
+/// Content for a checkpoint pinned to the current episode/revision state.
+#[derive(Clone, Copy)]
+pub struct CheckpointOptions<'a> {
+    pub goal: &'a str,
+    pub state: &'a str,
+    pub episodes: &'a [mneme_core::Reference],
+    pub verified_outcomes: &'a [mneme_core::Reference],
+    pub revision: mneme_core::WorkspaceRevisionId,
+    pub note: Option<&'a str>,
+}
+
 /// Build a checkpoint pinned to the current episode/revision state.
-#[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
 pub fn build_checkpoint(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
-    goal: &str,
-    state: &str,
-    episodes: &[mneme_core::Reference],
-    verified_outcomes: &[mneme_core::Reference],
-    revision: mneme_core::WorkspaceRevisionId,
-    note: Option<&str>,
+    options: CheckpointOptions<'_>,
 ) -> mneme_store::RecordDraft {
+    let CheckpointOptions {
+        goal,
+        state,
+        episodes,
+        verified_outcomes,
+        revision,
+        note,
+    } = options;
     let mut entries = vec![
         (
             mneme_core::Symbol::from("goal"),

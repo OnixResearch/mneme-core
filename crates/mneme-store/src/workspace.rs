@@ -33,6 +33,25 @@ type BlobRecord = (
 );
 type BlobIndex = std::collections::BTreeMap<[u8; 32], BlobRecord>;
 
+struct VerifiedRecordEnvelopeInput<'a> {
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    kind: mneme_core::RecordKind,
+    envelope_digest: &'a [u8],
+    payload_digest: &'a [u8],
+    full_digest: &'a [u8],
+    revision: mneme_core::WorkspaceRevisionId,
+}
+
+struct SourceRecordDigestInput<'a> {
+    record_id: mneme_core::RecordId,
+    full: mneme_core::ContentDigest,
+    payload_digest: &'a [u8],
+    context: mneme_core::WorkspaceRevisionId,
+    current: &'a std::collections::BTreeMap<mneme_core::RecordId, SourcePresence>,
+    required: &'a mut std::collections::BTreeSet<[u8; 32]>,
+}
+
 struct PreparedCommit {
     request_digest: mneme_core::ContentDigest,
     base: mneme_core::WorkspaceRevisionId,
@@ -980,30 +999,34 @@ impl Workspace {
             if forgotten.matches(record_id, revision_id) {
                 continue;
             }
-            records.push(self.load_verified_record_envelope(
-                record_id,
-                revision_id,
-                kind,
-                &envelope_digest,
-                &payload_digest,
-                &full_digest,
-                revision,
-            )?);
+            records.push(
+                self.load_verified_record_envelope(VerifiedRecordEnvelopeInput {
+                    record_id,
+                    revision_id,
+                    kind,
+                    envelope_digest: &envelope_digest,
+                    payload_digest: &payload_digest,
+                    full_digest: &full_digest,
+                    revision,
+                })?,
+            );
         }
         Ok((records, manifest_records))
     }
 
-    #[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)] // parameter groups mirror one compact fixture/context
     fn load_verified_record_envelope(
         &self,
-        record_id: mneme_core::RecordId,
-        revision_id: mneme_core::RevisionId,
-        kind: mneme_core::RecordKind,
-        envelope_digest: &[u8],
-        payload_digest: &[u8],
-        full_digest: &[u8],
-        revision: mneme_core::WorkspaceRevisionId,
+        input: VerifiedRecordEnvelopeInput<'_>,
     ) -> crate::error::Result<mneme_core::RecordEnvelope> {
+        let VerifiedRecordEnvelopeInput {
+            record_id,
+            revision_id,
+            kind,
+            envelope_digest,
+            payload_digest,
+            full_digest,
+            revision,
+        } = input;
         let digest = digest_with(
             envelope_digest,
             "preserves-canonical-binary-v1",
@@ -1097,15 +1120,17 @@ impl Workspace {
                     reason: format!("unknown record kind {kind}"),
                 }
             })?;
-            records.push(self.load_verified_record_envelope(
-                record_id,
-                revision_id,
-                kind,
-                &envelope_digest,
-                &payload_digest,
-                &full_digest,
-                context,
-            )?);
+            records.push(
+                self.load_verified_record_envelope(VerifiedRecordEnvelopeInput {
+                    record_id,
+                    revision_id,
+                    kind,
+                    envelope_digest: &envelope_digest,
+                    payload_digest: &payload_digest,
+                    full_digest: &full_digest,
+                    revision: context,
+                })?,
+            );
         }
         Ok(records)
     }
@@ -2854,28 +2879,30 @@ impl Workspace {
         }
         required.insert(*full.as_bytes());
         if kind == mneme_core::RecordKind::SourceRevision {
-            self.include_source_record_digest(
+            self.include_source_record_digest(SourceRecordDigestInput {
                 record_id,
                 full,
-                &payload_digest,
+                payload_digest: &payload_digest,
                 context,
                 current,
                 required,
-            )?;
+            })?;
         }
         Ok(())
     }
 
-    #[allow(unknown_lints, too_many_parameters)] // parameter groups mirror one compact fixture/context
     fn include_source_record_digest(
         &self,
-        record_id: mneme_core::RecordId,
-        full: mneme_core::ContentDigest,
-        payload_digest: &[u8],
-        context: mneme_core::WorkspaceRevisionId,
-        current: &std::collections::BTreeMap<mneme_core::RecordId, SourcePresence>,
-        required: &mut std::collections::BTreeSet<[u8; 32]>,
+        input: SourceRecordDigestInput<'_>,
     ) -> crate::error::Result<()> {
+        let SourceRecordDigestInput {
+            record_id,
+            full,
+            payload_digest,
+            context,
+            current,
+            required,
+        } = input;
         let payload = digest_with(
             payload_digest,
             "preserves-canonical-binary-v1",

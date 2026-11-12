@@ -303,6 +303,17 @@ pub struct MoveRequest {
     pub title: Option<String>,
 }
 
+/// A structured entity-property edit request.
+pub struct EntityPropertyEditRequest<'a> {
+    pub actor: &'a str,
+    pub scope: &'a mneme_core::ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
+    pub idempotency_key: &'a str,
+    pub entity_id: mneme_core::RecordId,
+    pub property: &'a str,
+    pub value: Option<mneme_core::Value>,
+}
+
 /// Failure of a document operation.
 #[derive(Debug, thiserror::Error)]
 pub enum DocumentError {
@@ -573,59 +584,47 @@ struct ResolvedIncludes {
     total_bytes: usize,
 }
 
-#[allow(unknown_lints, too_many_parameters)] // Octet structural exception: cohesive state-machine code; split tracked separately
-fn resolve_import_includes(
-    context: &DocumentContext,
-    scope: &mneme_core::ScopeId,
-    root_path: &str,
-    root_bytes: &[u8],
-    policy: &DocumentPolicy,
+struct IncludeResolutionRequest<'a> {
+    context: &'a DocumentContext,
+    scope: &'a mneme_core::ScopeId,
+    root_path: &'a str,
+    root_bytes: &'a [u8],
+    policy: &'a DocumentPolicy,
     deadline: std::time::Instant,
-) -> Result<ResolvedIncludes> {
+}
+
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+fn resolve_import_includes(request: IncludeResolutionRequest<'_>) -> Result<ResolvedIncludes> {
     let mut resolved = ResolvedIncludes {
         closure: std::collections::BTreeMap::new(),
         sources: std::collections::BTreeMap::new(),
         diagnostics: Vec::new(),
-        total_bytes: root_bytes.len(),
+        total_bytes: request.root_bytes.len(),
     };
     let mut stack = std::collections::BTreeSet::new();
-    stack.insert(root_path.to_owned());
-    resolve_include_bytes(
-        context,
-        scope,
-        root_path,
-        root_bytes,
-        policy,
-        deadline,
-        0,
-        &mut stack,
-        &mut resolved,
-    )?;
+    stack.insert(request.root_path.to_owned());
+    {
+        let mut resolver = IncludeResolver {
+            context: request.context,
+            scope: request.scope,
+            policy: request.policy,
+            deadline: request.deadline,
+            stack: &mut stack,
+            resolved: &mut resolved,
+        };
+        resolve_include_bytes(&mut resolver, request.root_path, request.root_bytes, 0)?;
+    }
     Ok(resolved)
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(unknown_lints, ambient_clock, too_many_parameters)] // include deadline is the import shell
+#[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
 fn resolve_include_bytes(
-    context: &DocumentContext,
-    scope: &mneme_core::ScopeId,
+    resolver: &mut IncludeResolver<'_>,
     origin_path: &str,
     bytes: &[u8],
-    policy: &DocumentPolicy,
-    deadline: std::time::Instant,
     depth: usize,
-    stack: &mut std::collections::BTreeSet<String>,
-    resolved: &mut ResolvedIncludes,
 ) -> Result<()> {
-    IncludeResolver {
-        context,
-        scope,
-        policy,
-        deadline,
-        stack,
-        resolved,
-    }
-    .resolve_bytes(origin_path, bytes, depth)
+    resolver.resolve_bytes(origin_path, bytes, depth)
 }
 
 struct IncludeResolver<'a> {
@@ -1102,24 +1101,17 @@ impl<'w> Documents<'w> {
     }
 
     /// Change one structured entity property without touching document bytes.
-    #[allow(unknown_lints, clippy::too_many_arguments, too_many_parameters)]
     pub fn edit_entity_property(
         &mut self,
-        actor: &str,
-        scope: &mneme_core::ScopeId,
-        base: mneme_core::WorkspaceRevisionId,
-        idempotency_key: &str,
-        entity_id: mneme_core::RecordId,
-        property: &str,
-        value: Option<mneme_core::Value>,
+        request: EntityPropertyEditRequest<'_>,
     ) -> Result<mneme_core::WorkspaceRevisionId> {
-        let context = DocumentContext::load(self.workspace, Some(base))?;
+        let context = DocumentContext::load(self.workspace, Some(request.base_revision))?;
         let entity = context
             .entities
-            .get(&entity_id)
+            .get(&request.entity_id)
             .cloned()
-            .ok_or(DocumentError::Missing(entity_id))?;
-        if entity.scope != *scope {
+            .ok_or(DocumentError::Missing(request.entity_id))?;
+        if entity.scope != *request.scope {
             return Err(DocumentError::Invalid("entity scope is not authorized"));
         }
         let mut properties = entity
@@ -1128,8 +1120,8 @@ impl<'w> Documents<'w> {
             .and_then(mneme_core::Value::as_dictionary)
             .cloned()
             .unwrap_or_default();
-        let key = mneme_core::Value::symbol(property.to_owned());
-        match value {
+        let key = mneme_core::Value::symbol(request.property.to_owned());
+        match request.value {
             Some(value) => {
                 properties.insert(key, value);
             }
@@ -1152,10 +1144,10 @@ impl<'w> Documents<'w> {
             payload,
         };
         let outcome = self.workspace.commit(mneme_store::CommitCommand {
-            base,
-            actor: actor.to_owned(),
-            scope: scope.clone(),
-            idempotency_key: idempotency_key.to_owned(),
+            base: request.base_revision,
+            actor: request.actor.to_owned(),
+            scope: request.scope.clone(),
+            idempotency_key: request.idempotency_key.to_owned(),
             records: vec![draft],
             source_blobs: Vec::new(),
             publications: Vec::new(),
@@ -1187,14 +1179,14 @@ impl<'w> Documents<'w> {
         let text = match std::str::from_utf8(bytes) {
             Ok(text) => text,
             Err(error) => {
-                return Ok(invalid_utf8_document(
+                return Ok(invalid_utf8_document(InvalidUtf8DocumentInput {
                     request,
                     bytes,
                     document_id,
                     digest,
                     candidate_id,
-                    error.valid_up_to(),
-                ));
+                    valid_up_to: error.valid_up_to(),
+                }));
             }
         };
         self.prepare_valid_source(SourcePreparation {
@@ -1257,10 +1249,12 @@ impl<'w> Documents<'w> {
                 preparation.source_id,
                 preparation.source_revision,
                 &preparation.request.scope,
-                preparation.bytes,
-                "text/asciidoc",
-                analysis.entity,
-                Some(&preparation.request.path),
+                mneme_memory::SourceOptions {
+                    bytes: preparation.bytes,
+                    media_type: "text/asciidoc",
+                    entity: analysis.entity,
+                    path_hint: Some(&preparation.request.path),
+                },
             )?
             .1,
             document_id: preparation.document_id,
@@ -1326,31 +1320,32 @@ fn load_existing_document(
     Ok(existing)
 }
 
-#[allow(unknown_lints, too_many_parameters)] // parameter groups mirror one compact fixture/context
-fn invalid_utf8_document(
-    request: &ImportRequest,
-    bytes: &[u8],
+struct InvalidUtf8DocumentInput<'a> {
+    request: &'a ImportRequest,
+    bytes: &'a [u8],
     document_id: mneme_core::RecordId,
     digest: mneme_core::ContentDigest,
     candidate_id: String,
     valid_up_to: usize,
-) -> PreparedDocument {
+}
+
+fn invalid_utf8_document(input: InvalidUtf8DocumentInput<'_>) -> PreparedDocument {
     PreparedDocument {
         validated: ValidatedDocument {
-            candidate_id,
-            base_revision: request.base_revision,
-            document_id: Some(document_id),
-            path: request.path.clone(),
-            title: request.title.clone().unwrap_or_default(),
+            candidate_id: input.candidate_id,
+            base_revision: input.request.base_revision,
+            document_id: Some(input.document_id),
+            path: input.request.path.clone(),
+            title: input.request.title.clone().unwrap_or_default(),
             entity: None,
-            source_digest: digest,
+            source_digest: input.digest,
             anchors: Vec::new(),
             includes: Vec::new(),
             diagnostics: vec![Diagnostic::new(
                 "invalid-utf8",
                 "document source is not valid UTF-8",
                 1,
-                valid_up_to,
+                input.valid_up_to,
                 None,
             )],
             preview_diagnostics: Vec::new(),
@@ -1359,10 +1354,10 @@ fn invalid_utf8_document(
         },
         records: Vec::new(),
         source_blob: mneme_store::SourceBlobDraft {
-            bytes: bytes.to_vec(),
+            bytes: input.bytes.to_vec(),
             media_type: mneme_core::Symbol::from("text/asciidoc"),
         },
-        document_id,
+        document_id: input.document_id,
     }
 }
 
@@ -1432,14 +1427,14 @@ fn source_dependencies(
     let max_time_ms = u64::try_from(preparation.request.policy.max_time_ms)
         .map_err(|_| DocumentError::Invalid("include time budget exceeds u64 milliseconds"))?;
     let deadline = include_start + std::time::Duration::from_millis(max_time_ms);
-    let resolved = match resolve_import_includes(
-        &preparation.context,
-        &preparation.request.scope,
-        &preparation.request.path,
-        preparation.bytes,
-        &preparation.request.policy,
+    let resolved = match resolve_import_includes(IncludeResolutionRequest {
+        context: &preparation.context,
+        scope: &preparation.request.scope,
+        root_path: &preparation.request.path,
+        root_bytes: preparation.bytes,
+        policy: &preparation.request.policy,
         deadline,
-    ) {
+    }) {
         Ok(resolved) => resolved,
         Err(DocumentError::Diagnostics(errors)) => {
             diagnostics.extend(errors);
@@ -1531,10 +1526,12 @@ fn build_source_records(
         preparation.source_id,
         preparation.source_revision,
         &request.scope,
-        preparation.bytes,
-        "text/asciidoc",
-        analysis.entity,
-        Some(&request.path),
+        mneme_memory::SourceOptions {
+            bytes: preparation.bytes,
+            media_type: "text/asciidoc",
+            entity: analysis.entity,
+            path_hint: Some(&request.path),
+        },
     )?
     .0;
     if let Some(existing) = &preparation.existing {

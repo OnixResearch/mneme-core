@@ -124,24 +124,27 @@ pub struct RuleBundle {
     pub rules: Vec<Rule>,
 }
 
+/// Named fields for constructing a versioned rule bundle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleBundleOptions {
+    pub id: String,
+    pub version: String,
+    pub schema_version: u32,
+    pub base_predicates: std::collections::BTreeMap<String, usize>,
+    pub complete_predicates: std::collections::BTreeSet<String>,
+    pub rules: Vec<Rule>,
+}
+
 impl RuleBundle {
     /// Construct a bundle.
-    #[allow(unknown_lints, usize_in_public_api, too_many_parameters)] // predicate arities mirror slice lengths
-    pub fn new(
-        id: impl Into<String>,
-        version: impl Into<String>,
-        schema_version: u32,
-        base_predicates: std::collections::BTreeMap<String, usize>,
-        complete_predicates: std::collections::BTreeSet<String>,
-        rules: Vec<Rule>,
-    ) -> Self {
+    pub fn new(options: RuleBundleOptions) -> Self {
         RuleBundle {
-            id: id.into(),
-            version: version.into(),
-            schema_version,
-            base_predicates,
-            complete_predicates,
-            rules,
+            id: options.id,
+            version: options.version,
+            schema_version: options.schema_version,
+            base_predicates: options.base_predicates,
+            complete_predicates: options.complete_predicates,
+            rules: options.rules,
         }
     }
 }
@@ -583,14 +586,14 @@ impl<'w> DatalogService<'w> {
             .validate()
             .map_err(DatalogError::InvalidBundle)?;
         let generation = self.workspace.eligibility_generation()?;
-        let build_id = rules::build_id(
-            request.revision,
-            &request.scope,
+        let build_id = rules::build_id(rules::BuildIdContext {
+            revision: request.revision,
+            scope: &request.scope,
             generation,
-            &program.bundle,
-            &request.limits,
-            &request.incomplete_extents,
-        );
+            bundle: &program.bundle,
+            limits: &request.limits,
+            incomplete_extents: &request.incomplete_extents,
+        });
         let is_cancellation_requested = request
             .cancellation
             .as_ref()

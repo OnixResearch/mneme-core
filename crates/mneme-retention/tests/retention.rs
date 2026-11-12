@@ -100,10 +100,12 @@ impl Harness {
             rid(id),
             rev(revision),
             scope,
-            bytes,
-            "text/asciidoc",
-            Some(mneme_core::fixtures::entity_id()),
-            None,
+            mneme_memory::SourceOptions {
+                bytes,
+                media_type: "text/asciidoc",
+                entity: Some(mneme_core::fixtures::entity_id()),
+                path_hint: None,
+            },
         )
         .expect("source");
         self.commit(key, vec![source], vec![blob], None);
@@ -114,10 +116,12 @@ impl Harness {
             rid(id),
             rev(revision),
             &scope(),
-            bytes,
-            "text/asciidoc",
-            Some(mneme_core::fixtures::entity_id()),
-            Some(path),
+            mneme_memory::SourceOptions {
+                bytes,
+                media_type: "text/asciidoc",
+                entity: Some(mneme_core::fixtures::entity_id()),
+                path_hint: Some(path),
+            },
         )
         .expect("source");
         let base = self.workspace.current_revision().expect("base");
@@ -159,15 +163,17 @@ impl Harness {
             decision,
             rev(decision_revision),
             &current.scope,
-            mneme_memory::DecisionKind::Acceptance,
-            assertion,
-            "author",
-            "test-policy/v1",
-            self.workspace.current_revision().expect("base"),
-            "accepted",
-            "supported acceptance",
-            &[],
-            &[],
+            mneme_memory::DecisionOptions {
+                kind: mneme_memory::DecisionKind::Acceptance,
+                target: assertion,
+                actor: "author",
+                policy: "test-policy/v1",
+                input_revision: self.workspace.current_revision().expect("base"),
+                outcome: "accepted",
+                rationale: "supported acceptance",
+                evidence: &[],
+                related: &[],
+            },
         );
         let accepted = mneme_memory::build_assertion_revision(
             &current,
@@ -216,6 +222,15 @@ fn entity() -> mneme_store::RecordDraft {
     }
 }
 
+fn evidence_references(evidence: &[mneme_store::RecordDraft]) -> Vec<mneme_core::Reference> {
+    evidence
+        .iter()
+        .map(|draft| {
+            mneme_core::Reference::local(draft.record_id, mneme_core::RecordKind::Evidence)
+        })
+        .collect()
+}
+
 fn add_supported_assertion(
     harness: &mut Harness,
     with_second_source: bool,
@@ -229,50 +244,51 @@ fn add_supported_assertion(
         rid(0x30),
         rev(0x31),
         &scope(),
-        rid(0x40),
-        rid(0x20),
-        rev(0x21),
-        Some(span),
-        Some("anchor-a"),
-        mneme_memory::SupportRelation::Supports,
-        mneme_core::Origin::AuthoredStatement,
-        &[],
+        mneme_memory::EvidenceOptions {
+            assertion: rid(0x40),
+            source: rid(0x20),
+            source_revision: rev(0x21),
+            span: Some(mneme_core::SourceSpan::new(0, 10).expect("span")),
+            anchor: Some("anchor-a"),
+            relation: mneme_memory::SupportRelation::Supports,
+            origin: mneme_core::Origin::AuthoredStatement,
+            ancestry: &[],
+        },
     )];
     if with_second_source {
         evidence.push(mneme_memory::build_evidence(
             rid(0x32),
             rev(0x33),
             &scope(),
-            rid(0x40),
-            rid(0x22),
-            rev(0x23),
-            Some(span),
-            Some("anchor-b"),
-            mneme_memory::SupportRelation::Supports,
-            mneme_core::Origin::AuthoredStatement,
-            &[],
+            mneme_memory::EvidenceOptions {
+                assertion: rid(0x40),
+                source: rid(0x22),
+                source_revision: rev(0x23),
+                span: Some(span),
+                anchor: Some("anchor-b"),
+                relation: mneme_memory::SupportRelation::Supports,
+                origin: mneme_core::Origin::AuthoredStatement,
+                ancestry: &[],
+            },
         ));
     }
-    let evidence_references = evidence
-        .iter()
-        .map(|draft| {
-            mneme_core::Reference::local(draft.record_id, mneme_core::RecordKind::Evidence)
-        })
-        .collect::<Vec<_>>();
+    let evidence_references = evidence_references(&evidence);
     let assertion = mneme_memory::build_proposed_assertion(
         rid(0x40),
         rev(0x41),
         &scope(),
-        mneme_core::fixtures::entity_id(),
-        "storage-policy",
-        mneme_core::Value::string("retain exact bytes"),
-        mneme_memory::Stance::Affirm,
-        mneme_core::Origin::AuthoredStatement,
-        "author",
-        mneme_core::ValidTime::always(),
-        &evidence_references,
-        None,
-        None,
+        mneme_memory::ProposedAssertionOptions {
+            subject: mneme_core::fixtures::entity_id(),
+            predicate: "storage-policy",
+            value: mneme_core::Value::string("retain exact bytes"),
+            stance: mneme_memory::Stance::Affirm,
+            origin: mneme_core::Origin::AuthoredStatement,
+            asserted_by: "author",
+            valid_time: mneme_core::ValidTime::always(),
+            evidence: &evidence_references,
+            extraction: None,
+            superseded_by: None,
+        },
     );
     harness.commit(
         "assertion-batch",
@@ -602,16 +618,18 @@ fn retraction_records_lifecycle_and_invalidates_dependent_derivation() {
         conclusion,
         rev(0x61),
         &scope(),
-        mneme_core::fixtures::entity_id(),
-        "conclusion",
-        mneme_core::Value::string("derived"),
-        mneme_memory::Stance::Affirm,
-        mneme_core::Origin::AuthoredStatement,
-        "author",
-        mneme_core::ValidTime::always(),
-        &[],
-        None,
-        None,
+        mneme_memory::ProposedAssertionOptions {
+            subject: mneme_core::fixtures::entity_id(),
+            predicate: "conclusion",
+            value: mneme_core::Value::string("derived"),
+            stance: mneme_memory::Stance::Affirm,
+            origin: mneme_core::Origin::AuthoredStatement,
+            asserted_by: "author",
+            valid_time: mneme_core::ValidTime::always(),
+            evidence: &[],
+            extraction: None,
+            superseded_by: None,
+        },
     );
     conclusion_assertion.payload.insert(
         mneme_core::Symbol::from("completeness"),
@@ -623,15 +641,17 @@ fn retraction_records_lifecycle_and_invalidates_dependent_derivation() {
         rid(0x72),
         rev(0x73),
         &scope(),
-        conclusion,
-        &[mneme_core::Reference::local(
-            premise,
-            mneme_core::RecordKind::Assertion,
-        )],
-        "rule-a",
-        1,
-        harness.workspace.current_revision().expect("base"),
-        "complete",
+        mneme_memory::DerivationOptions {
+            conclusion,
+            premises: &[mneme_core::Reference::local(
+                premise,
+                mneme_core::RecordKind::Assertion,
+            )],
+            rule_id: "rule-a",
+            rule_version: 1,
+            evaluation_revision: harness.workspace.current_revision().expect("base"),
+            completeness: "complete",
+        },
     );
     harness.commit("derivation", vec![derivation], Vec::new(), None);
     let request = harness.request(
@@ -796,10 +816,12 @@ fn shared_content_address_retains_bytes_and_reports_without_owner_detail() {
             rid(0x24),
             rev(0x25),
             &other_scope(),
-            SOURCE_A,
-            "text/asciidoc",
-            None,
-            None,
+            mneme_memory::SourceOptions {
+                bytes: SOURCE_A,
+                media_type: "text/asciidoc",
+                entity: None,
+                path_hint: None,
+            },
         )
         .expect("shared source");
         let base = harness.workspace.current_revision().expect("base");
@@ -859,30 +881,34 @@ fn forgetting_a_source_suppresses_dependent_checkpoint() {
         rid(0x70),
         rev(0x71),
         &scope(),
-        "author",
-        "statement",
-        mneme_core::ValidTime::always(),
-        "exact source summary",
-        Some(mneme_core::Reference::pinned(
-            rid(0x20),
-            rev(0x21),
-            mneme_core::RecordKind::SourceRevision,
-        )),
-        &[],
+        mneme_memory::EpisodeOptions {
+            actor: "author",
+            episode_type: "statement",
+            occurred: mneme_core::ValidTime::always(),
+            summary: "exact source summary",
+            source: Some(mneme_core::Reference::pinned(
+                rid(0x20),
+                rev(0x21),
+                mneme_core::RecordKind::SourceRevision,
+            )),
+            related: &[],
+        },
     );
     let checkpoint = mneme_memory::build_checkpoint(
         rid(0x72),
         rev(0x73),
         &scope(),
-        "resume task",
-        "planned",
-        &[mneme_core::Reference::local(
-            rid(0x70),
-            mneme_core::RecordKind::Episode,
-        )],
-        &[],
-        harness.workspace.current_revision().expect("base"),
-        Some("depends on the source"),
+        mneme_memory::CheckpointOptions {
+            goal: "resume task",
+            state: "planned",
+            episodes: &[mneme_core::Reference::local(
+                rid(0x70),
+                mneme_core::RecordKind::Episode,
+            )],
+            verified_outcomes: &[],
+            revision: harness.workspace.current_revision().expect("base"),
+            note: Some("depends on the source"),
+        },
     );
     harness.commit("checkpoint", vec![episode, checkpoint], Vec::new(), None);
     let request = harness.request(
@@ -930,10 +956,12 @@ fn forgotten_content_cannot_be_replayed_under_a_new_identity() {
         rid(0x26),
         rev(0x27),
         &scope(),
-        SOURCE_A,
-        "text/asciidoc",
-        None,
-        None,
+        mneme_memory::SourceOptions {
+            bytes: SOURCE_A,
+            media_type: "text/asciidoc",
+            entity: None,
+            path_hint: None,
+        },
     )
     .expect("replay source");
     let base = harness.workspace.current_revision().expect("base");
@@ -957,14 +985,32 @@ fn forgotten_content_cannot_be_replayed_under_a_new_identity() {
     ));
 }
 
-#[allow(unknown_lints, no_recursion)] // Octet structural exception: cohesive state-machine code; split tracked separately
 fn copy_tree(source: &std::path::Path, destination: &std::path::Path) {
     std::fs::create_dir_all(destination).expect("destination");
-    for entry in std::fs::read_dir(source).expect("source entries") {
+    let mut directories = vec![std::fs::read_dir(source).expect("source entries")];
+    let mut destinations = vec![destination.to_path_buf()];
+    let mut steps = 0_usize;
+    while let Some(entries) = directories.last_mut() {
+        steps += 1;
+        if steps > 1_000_000 {
+            break;
+        }
+        let next = entries.next();
+        let Some(entry) = next else {
+            directories.pop();
+            destinations.pop();
+            continue;
+        };
         let entry = entry.expect("entry");
-        let target = destination.join(entry.file_name());
+        let target = destinations
+            .last()
+            .expect("destination path")
+            .join(entry.file_name());
         if entry.file_type().expect("type").is_dir() {
-            copy_tree(&entry.path(), &target);
+            std::fs::create_dir_all(&target).expect("destination");
+            let child_source = entry.path();
+            destinations.push(target);
+            directories.push(std::fs::read_dir(child_source).expect("source entries"));
         } else {
             std::fs::copy(entry.path(), target).expect("copy file");
         }
@@ -1004,10 +1050,12 @@ fn restore_without_current_suppression_state_fails_closed_until_applied() {
             rid(0x20),
             rev(0x21),
             &scope(),
-            SOURCE_A,
-            "text/asciidoc",
-            Some(mneme_core::fixtures::entity_id()),
-            None,
+            mneme_memory::SourceOptions {
+                bytes: SOURCE_A,
+                media_type: "text/asciidoc",
+                entity: Some(mneme_core::fixtures::entity_id()),
+                path_hint: None,
+            },
         )
         .expect("source");
         let base = workspace.current_revision().expect("base");
