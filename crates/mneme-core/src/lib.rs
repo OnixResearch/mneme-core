@@ -9,10 +9,9 @@
 //! No module in this crate performs I/O, reads a clock, or mutates committed
 //! state. Time, identity, authorization, and limits are supplied explicitly.
 
-#![allow(unknown_lints)] // public transport module path and intentional top-level layout
+#![allow(unknown_lints, module_file_count)] // public transport module path and intentional top-level layout
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-#![allow(unknown_lints, module_file_count)] // intentional top-level module layout
 
 pub mod base64;
 pub mod binary;
