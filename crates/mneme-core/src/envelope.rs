@@ -5,7 +5,7 @@
 //! and typed payload. Validation has distinct syntax, envelope, and domain
 //! stages, reports field-addressed diagnostics, and never changes an assertion's
 //! epistemic lifecycle.
-#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The label of a durable Mneme record envelope.
 pub const RECORD_LABEL: &str = "mneme-record";
@@ -108,7 +108,11 @@ impl Payload {
                     "payload field names must be declared symbols",
                 ));
             };
-            if !fields.contains_key(symbol) && fields.len() >= max_payload_fields {
+            if let Some(field) = fields.get_mut(symbol) {
+                *field = item.clone();
+                continue;
+            }
+            if fields.len() >= max_payload_fields {
                 return Err(crate::error::Diagnostic::new(
                     crate::error::Stage::Envelope,
                     crate::error::ErrorCode::TypeMismatch,
@@ -643,12 +647,13 @@ fn decode_batch_envelopes(
     values: &[crate::value::Value],
 ) -> Result<Vec<RecordEnvelope>, Vec<crate::error::Diagnostic>> {
     let mut diagnostics = Vec::new();
-    let mut envelopes = Vec::new();
+    let mut envelopes = Vec::with_capacity(values.len());
     for (position, value) in values.iter().enumerate() {
         match RecordEnvelope::from_value(value) {
             Ok(envelope) => envelopes.push(envelope),
             Err(record_diagnostics) => {
                 let prefix = crate::error::Path::root().index(position);
+                diagnostics.reserve(record_diagnostics.len());
                 diagnostics.extend(record_diagnostics.into_iter().map(|mut diagnostic| {
                     diagnostic.path = rebase(diagnostic.path, &prefix);
                     diagnostic
@@ -665,8 +670,7 @@ fn decode_batch_envelopes(
 fn validate_unique_batch_ids(
     envelopes: &[RecordEnvelope],
 ) -> Result<(), Vec<crate::error::Diagnostic>> {
-    let mut diagnostics = Vec::new();
-    let mut record_ids = std::collections::BTreeMap::new();
+    let mut diagnostics = Vec::with_capacity(envelopes.len().saturating_mul(2));
     let mut revision_ids = std::collections::BTreeSet::new();
     let mut seen_records = std::collections::BTreeSet::new();
     for (position, envelope) in envelopes.iter().enumerate() {
@@ -681,8 +685,6 @@ fn validate_unique_batch_ids(
                     envelope.record_id
                 ),
             ));
-        } else {
-            record_ids.insert(envelope.record_id, position);
         }
         if !revision_ids.insert(envelope.revision_id) {
             diagnostics.push(crate::error::Diagnostic::new(
@@ -709,7 +711,9 @@ fn validate_batch_records(
     let mut diagnostics = Vec::new();
     for (position, envelope) in envelopes.iter().enumerate() {
         let prefix = crate::error::Path::root().index(position);
-        diagnostics.extend(validate_record(envelope, context, &prefix));
+        let record_diagnostics = validate_record(envelope, context, &prefix);
+        diagnostics.reserve(record_diagnostics.len());
+        diagnostics.extend(record_diagnostics);
     }
     diagnostics
 }

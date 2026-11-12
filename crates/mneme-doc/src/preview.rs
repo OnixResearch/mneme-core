@@ -1,5 +1,4 @@
 //! Restricted preview rendering and explicit include occurrence mapping.
-#![allow(unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![allow(ignored_result)] // fmt::Write to String and test cleanup cannot fail recoverably
 
 use std::fmt::Write;
@@ -476,9 +475,10 @@ impl Renderer<'_> {
         }
         self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
         let is_ordered = is_list_item(content, '.');
-        let mut items = Vec::new();
         let mut current_line = line_number;
         let mut current_content = content.to_owned();
+        let tag = if is_ordered { "ol" } else { "ul" };
+        let _ = write!(self.html, "<{tag}>");
         for next in text.split_inclusive('\n').skip(line_number) {
             let next_number = current_line + 1;
             let next_content = next
@@ -490,27 +490,29 @@ impl Renderer<'_> {
                 if is_list_item(next_content, '.') != is_ordered {
                     break;
                 }
-                items.push(current_content);
+                let text = current_content
+                    .trim_start()
+                    .strip_prefix(if is_ordered { "." } else { "*" })
+                    .unwrap_or(&current_content)
+                    .trim();
+                let (rendered, diagnostics) = inline(text, line_number, &self.config.version);
+                self.diagnostics.extend(diagnostics);
+                let _ = write!(self.html, "<li>{rendered}</li>");
                 current_content = next_content.to_owned();
                 current_line = next_number;
             } else {
                 break;
             }
         }
-        items.push(current_content);
-        cursor.skip_until = line_number + items.len().saturating_sub(1);
-        let tag = if is_ordered { "ol" } else { "ul" };
-        let _ = write!(self.html, "<{tag}>");
-        for item in items {
-            let text = item
-                .trim_start()
-                .strip_prefix(if is_ordered { "." } else { "*" })
-                .unwrap_or(&item)
-                .trim();
-            let (rendered, diagnostics) = inline(text, line_number, &self.config.version);
-            self.diagnostics.extend(diagnostics);
-            let _ = write!(self.html, "<li>{rendered}</li>");
-        }
+        let text = current_content
+            .trim_start()
+            .strip_prefix(if is_ordered { "." } else { "*" })
+            .unwrap_or(&current_content)
+            .trim();
+        let (rendered, diagnostics) = inline(text, line_number, &self.config.version);
+        self.diagnostics.extend(diagnostics);
+        let _ = write!(self.html, "<li>{rendered}</li>");
+        cursor.skip_until = current_line;
         let _ = write!(self.html, "</{tag}>");
         true
     }

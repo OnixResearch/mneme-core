@@ -1,5 +1,5 @@
 //! Bounded recall service over one mutable workspace handle.
-#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Ranking/fusion policy version.
 pub const FUSION_POLICY_VERSION: &str = "rrf-k60-v1";
@@ -502,7 +502,7 @@ impl RecallProgress {
         rows: mneme_datalog::QueryResult,
     ) {
         let coverage = structured_coverage(build, &rows, &structured.query.predicate);
-        let mut structured_ranking = Vec::new();
+        let mut structured_ranking = Vec::with_capacity(rows.rows.len());
         for row in &rows.rows {
             let id = structured_id(&structured.query.predicate, &row.values);
             let candidate = structured_candidate(&structured.query.predicate, row, id.clone());
@@ -986,7 +986,7 @@ impl PackedCandidates {
 fn order_by_independence(
     values: Vec<crate::model::RecallCandidate>,
 ) -> Vec<crate::model::RecallCandidate> {
-    let mut ordered = Vec::new();
+    let mut ordered = Vec::with_capacity(values.len());
     let mut duplicates = Vec::with_capacity(values.len());
     let mut seen_roots = std::collections::BTreeSet::new();
     for candidate in values {

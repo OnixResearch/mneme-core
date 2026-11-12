@@ -5,7 +5,7 @@
 //! without promoting an assertion's epistemic lifecycle or rewriting payloads.
 //! Unknown extension fields are retained under the version 1 compatibility
 //! rule; an editor that cannot preserve one must refuse the edit instead.
-#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The record kinds declared by the version 1 application schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -766,7 +766,7 @@ fn validate_reference_set_field(
     let Some(items) = value.as_set() else {
         return type_mismatch(value, path, "set of references");
     };
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = Vec::with_capacity(items.len().saturating_mul(2));
     for (position, item) in items.iter().enumerate() {
         match crate::reference::Reference::from_value(item, &path.index(position)) {
             Err(diagnostic) => diagnostics.push(diagnostic),

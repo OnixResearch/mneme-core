@@ -3,7 +3,7 @@
 //! Exact source bytes are authoritative. Documents have stable identities,
 //! optional literal entity bindings, pinned include closures, explicit anchors,
 //! a restricted sanitized preview, and revision-bound extraction candidates.
-#![allow(unknown_lints, no_recursion, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(unknown_lints, no_recursion)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -17,6 +17,7 @@ pub const DOCUMENT_SCHEMA_VERSION: u32 = 3;
 pub const PROCESSOR_VERSION: &str = "mneme-asciidoc/0.1";
 /// The preview configuration version.
 pub const RENDER_CONFIG_VERSION: &str = "mneme-preview/v1";
+const MAX_INCLUDE_ENTRIES: usize = 1_000_000;
 
 /// Bounded include and import policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -461,7 +462,6 @@ fn parse_include_map(
         .as_dictionary()
         .ok_or(DocumentError::Invalid("includes must be a dictionary"))?;
     let mut includes = std::collections::BTreeMap::new();
-    let max_includes = 1_000_000;
     for (path, reference_value) in dictionary {
         let Some(path) = path.as_string() else {
             return Err(DocumentError::Invalid("include path must be text"));
@@ -479,7 +479,7 @@ fn parse_include_map(
                 "include closure entries must be pinned",
             ));
         };
-        if !includes.contains_key(path) && includes.len() >= max_includes {
+        if includes.len() >= MAX_INCLUDE_ENTRIES {
             return Err(DocumentError::Invalid(
                 "document include closure exceeds the 1M entry bound",
             ));
@@ -1561,7 +1561,7 @@ fn build_source_records(
     } else {
         None
     };
-    let payload = document_payload(preparation, analysis, binding);
+    let payload = document_payload(preparation, analysis, binding)?;
     records.push(mneme_store::RecordDraft {
         schema_version: DOCUMENT_SCHEMA_VERSION,
         kind: mneme_core::RecordKind::Document,
@@ -1582,12 +1582,18 @@ fn document_payload(
     preparation: &SourcePreparation<'_>,
     analysis: &SourceAnalysis,
     binding: Option<mneme_core::RecordId>,
-) -> mneme_core::Payload {
+) -> Result<mneme_core::Payload> {
     let request = preparation.request;
     let mut includes_dictionary = std::collections::BTreeMap::new();
     for (path, pin) in &analysis.resolved.closure {
+        let key = mneme_core::Value::string(path.clone());
+        if includes_dictionary.len() >= MAX_INCLUDE_ENTRIES {
+            return Err(DocumentError::Invalid(
+                "document include closure exceeds the 1M entry bound",
+            ));
+        }
         includes_dictionary.insert(
-            mneme_core::Value::string(path.clone()),
+            key,
             mneme_core::Reference::pinned(
                 pin.source,
                 pin.revision,
@@ -1638,7 +1644,7 @@ fn document_payload(
             mneme_core::Value::Dictionary(includes_dictionary),
         ));
     }
-    mneme_core::Payload::new(payload)
+    Ok(mneme_core::Payload::new(payload))
 }
 
 fn append_anchor_records(
@@ -1874,8 +1880,9 @@ impl Documents<'_> {
                 digest,
             });
         }
-        let mut anchors = Vec::new();
-        for record in &context.view.snapshot().records {
+        let snapshot = context.view.snapshot();
+        let mut anchors = Vec::with_capacity(snapshot.records.len());
+        for record in &snapshot.records {
             if record.kind == mneme_core::RecordKind::DocumentAnchor
                 && optional_reference_target(record, "document") == Some(document.record.record_id)
                 && reference_is_pinned_to(record, "source-revision", document.source)
@@ -2055,7 +2062,7 @@ impl Documents<'_> {
         let source_digest = source_view
             .as_ref()
             .and_then(|source| source.digest().or(source.prior_digest));
-        let sources = load_preview_sources(&context, &document);
+        let sources = load_preview_sources(&context, &document)?;
         render_preview_artifact(&context, &document, &config, source_digest, sources)
     }
 
@@ -2087,8 +2094,16 @@ struct PreviewSources {
     diagnostics: Vec<Diagnostic>,
 }
 
-fn load_preview_sources(context: &DocumentContext, document: &DocumentView) -> PreviewSources {
-    let mut diagnostics = Vec::new();
+fn load_preview_sources(
+    context: &DocumentContext,
+    document: &DocumentView,
+) -> Result<PreviewSources> {
+    if document.includes.len() > MAX_INCLUDE_ENTRIES {
+        return Err(DocumentError::Invalid(
+            "document include closure exceeds the 1M entry bound",
+        ));
+    }
+    let mut diagnostics = Vec::with_capacity(document.includes.len().saturating_add(1));
     let root = match context.source_bytes(document.source) {
         Ok(Some(bytes)) => Some(preview::RenderSource {
             path: document
@@ -2123,6 +2138,11 @@ fn load_preview_sources(context: &DocumentContext, document: &DocumentView) -> P
         });
         match context.source_bytes(*pin) {
             Ok(Some(bytes)) => {
+                if sources.len() >= MAX_INCLUDE_ENTRIES {
+                    return Err(DocumentError::Invalid(
+                        "document preview source index exceeds the 1M entry bound",
+                    ));
+                }
                 sources.insert(
                     path.clone(),
                     preview::RenderSource {
@@ -2141,12 +2161,12 @@ fn load_preview_sources(context: &DocumentContext, document: &DocumentView) -> P
             )),
         }
     }
-    PreviewSources {
+    Ok(PreviewSources {
         root,
         sources,
         included,
         diagnostics,
-    }
+    })
 }
 
 #[allow(unknown_lints, ambient_clock)] // preview deadline is the render shell
@@ -2201,6 +2221,11 @@ fn load_extraction_sources(
     context: &DocumentContext,
     document: &DocumentView,
 ) -> Result<std::collections::BTreeMap<String, preview::RenderSource>> {
+    if document.includes.len() > MAX_INCLUDE_ENTRIES {
+        return Err(DocumentError::Invalid(
+            "document include closure exceeds the 1M entry bound",
+        ));
+    }
     let root_bytes = context.require_retained_source(document.source)?.1;
     let mut sources = std::collections::BTreeMap::new();
     let root_path = document
@@ -2215,8 +2240,14 @@ fn load_extraction_sources(
             bytes: root_bytes,
         },
     );
+    let max_sources = MAX_INCLUDE_ENTRIES.saturating_add(1);
     for (path, pin) in &document.includes {
         let (_, bytes) = context.require_retained_source(*pin)?;
+        if sources.len() >= max_sources {
+            return Err(DocumentError::Invalid(
+                "document extraction source index exceeds the 1M entry bound",
+            ));
+        }
         sources.insert(
             path.clone(),
             preview::RenderSource {
@@ -2472,9 +2503,7 @@ fn index_documents(
                         "two committed documents share one logical path",
                     ));
                 }
-                if !documents.contains_key(&record.record_id)
-                    && documents.len() >= max_context_records
-                {
+                if documents.len() >= max_context_records {
                     return Err(DocumentError::Invalid(
                         "document index exceeds the 1M record bound",
                     ));
@@ -2482,9 +2511,7 @@ fn index_documents(
                 documents.insert(record.record_id, document);
             }
             mneme_core::RecordKind::Entity => {
-                if !entities.contains_key(&record.record_id)
-                    && entities.len() >= max_context_records
-                {
+                if entities.len() >= max_context_records {
                     return Err(DocumentError::Invalid(
                         "entity index exceeds the 1M record bound",
                     ));

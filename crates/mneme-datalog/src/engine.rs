@@ -1,5 +1,5 @@
 //! Snapshot fact loading, bounded fixpoint evaluation, and coverage.
-#![allow(unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+// Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 type FactKey = Vec<mneme_core::Value>;
 
@@ -777,7 +777,7 @@ fn aggregate_rows(
 ) -> Result<Vec<AggregateRow>, crate::DatalogError> {
     let group_variables = aggregate_group_variables(head, output);
     let groups = collect_aggregate_groups(&group_variables, input, bindings)?;
-    let mut output_rows = Vec::new();
+    let mut output_rows = Vec::with_capacity(groups.len());
     for (_, (indices, values)) in groups {
         let value = aggregate_value(function, values)?;
         let Some(first) = indices.first().and_then(|index| bindings.get(*index)) else {

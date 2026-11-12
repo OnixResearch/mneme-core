@@ -1,5 +1,5 @@
 //! Shared execution of validated agent-memory commands.
-#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A transport-neutral response. `value` is a versioned tagged JSON document.
 #[derive(Clone, Debug)]

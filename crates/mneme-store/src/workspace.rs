@@ -7,7 +7,7 @@
 //! working files as a separately recoverable step. A committed revision never
 //! references a missing required blob; filesystem publication never overwrites a
 //! divergent external edit.
-#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 use rusqlite::OptionalExtension;
 
 use crate::clock::Clock;
@@ -2293,6 +2293,7 @@ impl Workspace {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut output = std::collections::BTreeMap::new();
+        let max_blob_entries = rows.len();
         for (digest, profile, boundary, length) in rows {
             let Some(profile) = mneme_core::EncodingProfile::parse(&profile) else {
                 return Err(crate::error::StoreError::UnsupportedLayout(format!(
@@ -2321,6 +2322,11 @@ impl Workspace {
             })?;
             let mut key = [0_u8; 32];
             key.copy_from_slice(digest.as_bytes());
+            if output.len() >= max_blob_entries {
+                return Err(crate::error::StoreError::UnsupportedLayout(
+                    "ledger blob index exceeds its input row bound".to_owned(),
+                ));
+            }
             output.insert(
                 key,
                 (digest, db_u64(length, "blob length")?, profile, boundary),
@@ -3080,6 +3086,7 @@ impl Workspace {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut states = std::collections::BTreeMap::new();
+        let max_source_states = rows.len();
         for (record_id, revision_id, envelope_digest) in rows {
             let record_id = record_id_from_blob(&record_id, revision)?;
             let revision_id = revision_id_from_blob(&revision_id, revision)?;
@@ -3093,6 +3100,11 @@ impl Workspace {
                 revision,
             )?;
             let state = self.source_presence_from_envelope(digest);
+            if states.len() >= max_source_states {
+                return Err(crate::error::StoreError::UnsupportedLayout(
+                    "source state index exceeds its input row bound".to_owned(),
+                ));
+            }
             states.insert(record_id, state);
         }
         Ok(states)

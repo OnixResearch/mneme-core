@@ -3,7 +3,7 @@
 //!
 //! Everything here is computed from one pinned store snapshot. No method mutates
 //! canonical state or promotes a proposed assertion.
-#![allow(path_segment_repetition, unbounded_collection_growth)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
+#![allow(path_segment_repetition)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The policy predicate used for action-completion claims.
 pub const ACTION_COMPLETED_PREDICATE: &str = "action-completed";
@@ -603,8 +603,9 @@ impl MemoryView {
         &self,
         view: &BeliefView,
     ) -> crate::error::Result<Vec<crate::model::AssertionView>> {
-        let mut beliefs = Vec::new();
-        for assertion in self.assertions()? {
+        let assertions = self.assertions()?;
+        let mut beliefs = Vec::with_capacity(assertions.len());
+        for assertion in assertions {
             if !self.in_scope(&assertion, view) {
                 continue;
             }
@@ -659,8 +660,9 @@ impl MemoryView {
     }
 
     pub fn conflicts(&self, view: &BeliefView) -> crate::error::Result<Vec<ConflictGroup>> {
-        let mut candidates = Vec::new();
-        for assertion in self.assertions()? {
+        let assertions = self.assertions()?;
+        let mut candidates = Vec::with_capacity(assertions.len());
+        for assertion in assertions {
             if !self.in_scope(&assertion, view) {
                 continue;
             }
@@ -1146,7 +1148,7 @@ impl MemoryView {
     )> {
         let mut nodes = 1;
         let mut is_truncated = false;
-        let mut evidence_explanations = Vec::new();
+        let mut evidence_explanations = Vec::with_capacity(assertion.evidence.len());
         let mut roots = std::collections::BTreeSet::new();
         for evidence_id in &assertion.evidence {
             if nodes >= policy.max_explanation_nodes {
