@@ -3,6 +3,13 @@
 //! Version 1 retains typed payload extensions. An editor that only understands
 //! a declared subset must either preserve every field it does not understand or
 //! refuse the edit. Silently dropping a retained extension is never permitted.
+//!
+//! A production editor — the document authoring adapter, the desktop editor —
+//! builds its replacement payload from the fields it declares and then calls
+//! [`EditorView::edit`], which carries every other field of the current
+//! revision forward and refuses any edit that would lose or change one.
+//! [`EditorView::replace_payload`] is the same guard without the carry-forward,
+//! for an editor that assembled the complete payload itself.
 
 /// A narrowed editor view over one record kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,6 +31,22 @@ impl EditorView {
         }
     }
 
+    /// An editor that understands exactly the fields one kind schema declares.
+    ///
+    /// This is the constructor for an editor that implements the whole declared
+    /// schema for its kind and knows nothing else, so its supported set cannot
+    /// drift from the schema.
+    pub fn declared(kind_schema: &crate::fields::KindSchema) -> Self {
+        EditorView {
+            kind: kind_schema.kind(),
+            supported: kind_schema
+                .fields()
+                .iter()
+                .map(|field| crate::typed::Symbol::from(field.name))
+                .collect(),
+        }
+    }
+
     /// The record kind this editor edits.
     pub const fn kind(&self) -> crate::fields::RecordKind {
         self.kind
@@ -32,6 +55,31 @@ impl EditorView {
     /// Whether the editor declares support for a field.
     pub fn supports(&self, name: &str) -> bool {
         self.supported.contains(&crate::typed::Symbol::from(name))
+    }
+
+    /// Build the payload for an edit, preserving every retained extension.
+    ///
+    /// `replacement` holds the fields this editor understands. Every other
+    /// field of the current revision is copied verbatim, so an edit can never
+    /// drop a field added by a newer client, another tool, or a generic
+    /// commit. The carried payload is then checked by
+    /// [`EditorView::replace_payload`], which refuses an edit that would change
+    /// a field this editor cannot validate.
+    pub fn edit(
+        &self,
+        envelope: &crate::wire::RecordEnvelope,
+        replacement: crate::wire::Payload,
+    ) -> Result<crate::wire::Payload, Vec<crate::problem::Diagnostic>> {
+        let mut carried = replacement;
+        for name in envelope.payload.names() {
+            if self.supported.contains(name) || carried.contains(name.as_str()) {
+                continue;
+            }
+            if let Some(value) = envelope.payload.get(name.as_str()) {
+                carried.insert(name.clone(), value.clone());
+            }
+        }
+        self.replace_payload(envelope, carried)
     }
 
     /// Replace a record's payload, preserving every retained extension field.
@@ -213,5 +261,55 @@ mod tests {
             .replace_payload(&record, crate::wire::Payload::default())
             .expect_err("kind mismatch");
         assert_eq!(error[0].code, crate::problem::ErrorCode::TypeMismatch);
+    }
+
+    #[test]
+    fn an_editor_that_builds_from_scratch_carries_extensions_forward() {
+        let record = entity_with_extension();
+        let schema = crate::fields::RecordSchema::v1();
+        let kind = crate::fields::RecordKind::Entity;
+        let editor = EditorView::declared(schema.kind(kind).expect("entity schema"));
+        assert!(editor.supports("label"));
+        assert!(!editor.supports("future-extension"));
+
+        let replacement = crate::wire::Payload::new([
+            (
+                crate::typed::Symbol::from("entity-type"),
+                crate::typed::Value::symbol("project"),
+            ),
+            (
+                crate::typed::Symbol::from("label"),
+                crate::typed::Value::string("Cedar renamed"),
+            ),
+            (
+                crate::typed::Symbol::from("properties"),
+                crate::typed::Value::dictionary([]),
+            ),
+        ]);
+        let edited = editor.edit(&record, replacement).expect("preserved");
+        assert_eq!(
+            edited.get("future-extension"),
+            record.payload.get("future-extension"),
+            "the edit must not drop the retained extension"
+        );
+        assert_eq!(
+            edited.get("label"),
+            Some(&crate::typed::Value::string("Cedar renamed"))
+        );
+
+        // An edit that changes a field the editor cannot validate is refused.
+        let label = crate::typed::Symbol::from("label");
+        let renamed = crate::typed::Value::string("Cedar renamed");
+        let mut changed = crate::wire::Payload::new([(label, renamed)]);
+        changed.insert(
+            crate::typed::Symbol::from("future-extension"),
+            crate::typed::Value::set([crate::typed::Value::integer(8_i64)]),
+        );
+        let error = editor.edit(&record, changed).expect_err("changed");
+        assert_eq!(
+            error[0].code,
+            crate::problem::ErrorCode::UnsupportedExtension
+        );
+        assert_eq!(error[0].path.to_string(), "$.payload[\"future-extension\"]");
     }
 }

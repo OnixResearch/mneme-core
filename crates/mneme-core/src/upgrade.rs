@@ -404,4 +404,33 @@ mod tests {
             crate::problem::ErrorCode::UnsupportedSchemaVersion
         );
     }
+
+    #[test]
+    fn a_migration_cannot_return_a_target_with_an_embedded_value() {
+        let source = assertion();
+        let migration = Migration::new("synthetic-embedded", 1, 2, |payload| {
+            let mut output = payload.clone();
+            output.insert(
+                crate::typed::Symbol::from("extraction"),
+                crate::typed::Value::string("synthetic-v2"),
+            );
+            output.insert(
+                crate::typed::Symbol::from("note"),
+                crate::typed::Value::embedded(crate::typed::Value::Boolean(true)),
+            );
+            Ok(output)
+        });
+        let failure = migration
+            .execute(
+                &registry(),
+                &source,
+                crate::ids::RevisionId::from_bytes([0x44; 16]),
+                crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(9), 9),
+            )
+            .expect_err("embedded values are not durable");
+        assert_eq!(
+            failure.diagnostics[0].code,
+            crate::problem::ErrorCode::EmbeddedValueNotDurable
+        );
+    }
 }

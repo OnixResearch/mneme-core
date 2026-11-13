@@ -111,11 +111,20 @@ impl RetentionSuppression {
 pub struct RetentionLocationPlan {
     pub location_id: String,
     /// `source-blob`, `record-blob`, `publication-intent`, `staging`,
-    /// `temporary-exports`, `sqlite-payloads`, or `working-file`.
+    /// `temporary-exports`, `sqlite-payloads`, `working-file`, or
+    /// `participant-file`.
     pub location_kind: String,
     /// Digest hex, publication intent id, or a safe inventory label.
     pub locator: String,
 }
+
+/// The retained-metadata declaration a plan must make before it may name a
+/// managed working path.
+///
+/// A working-file locator carries the path hint of the forgotten source, so the
+/// ledger keeps that path only when the impact plan states that it does. Without
+/// the declaration the plan is refused instead of silently persisting it.
+pub const MANAGED_WORKING_PATH_DECLARATION: &str = "managed-working-path";
 
 impl RetentionLocationPlan {
     fn to_value(&self) -> mneme_core::Value {
@@ -197,6 +206,28 @@ impl RetentionCommit {
             }
             if location.location_kind.trim().is_empty() {
                 return Err("retention location kind must not be empty".to_owned());
+            }
+            if location.location_kind == "working-file"
+                && !self
+                    .retained_metadata
+                    .iter()
+                    .any(|entry| entry == MANAGED_WORKING_PATH_DECLARATION)
+            {
+                return Err(
+                    "retention plan retains a managed working path without declaring it".to_owned(),
+                );
+            }
+            if matches!(
+                location.location_kind.as_str(),
+                "working-file" | "participant-file"
+            ) {
+                let path = location
+                    .locator
+                    .rsplit_once('#')
+                    .map_or(location.locator.as_str(), |(path, _)| path);
+                if !mneme_kernel::text::is_canonical_relative_path(path.as_bytes()) {
+                    return Err("retention location names a path that is not canonical".to_owned());
+                }
             }
             if !locations.insert(location.location_id.clone()) {
                 return Err("duplicate retention location id".to_owned());
@@ -298,9 +329,51 @@ impl RetentionLocationState {
         }
     }
 
-    /// Whether this state is terminal and physically accounted for.
-    pub const fn is_terminal(self) -> bool {
-        !matches!(self, RetentionLocationState::Pending)
+    /// The kernel state this store state denotes.
+    pub const fn to_kernel(self) -> mneme_kernel::cleanup::LocationState {
+        match self {
+            RetentionLocationState::Pending => mneme_kernel::cleanup::LocationState::Pending,
+            RetentionLocationState::Purged => mneme_kernel::cleanup::LocationState::Purged,
+            RetentionLocationState::Absent => mneme_kernel::cleanup::LocationState::Absent,
+            RetentionLocationState::RetainedShared => {
+                mneme_kernel::cleanup::LocationState::RetainedShared
+            }
+            RetentionLocationState::Unavailable => {
+                mneme_kernel::cleanup::LocationState::Unavailable
+            }
+            RetentionLocationState::Verified => mneme_kernel::cleanup::LocationState::Verified,
+            RetentionLocationState::Failed => mneme_kernel::cleanup::LocationState::Failed,
+        }
+    }
+
+    /// The store state for a kernel cleanup state.
+    pub const fn from_kernel(state: mneme_kernel::cleanup::LocationState) -> Self {
+        match state {
+            mneme_kernel::cleanup::LocationState::Pending => RetentionLocationState::Pending,
+            mneme_kernel::cleanup::LocationState::Purged => RetentionLocationState::Purged,
+            mneme_kernel::cleanup::LocationState::Absent => RetentionLocationState::Absent,
+            mneme_kernel::cleanup::LocationState::RetainedShared => {
+                RetentionLocationState::RetainedShared
+            }
+            mneme_kernel::cleanup::LocationState::Unavailable => {
+                RetentionLocationState::Unavailable
+            }
+            mneme_kernel::cleanup::LocationState::Verified => RetentionLocationState::Verified,
+            mneme_kernel::cleanup::LocationState::Failed => RetentionLocationState::Failed,
+        }
+    }
+
+    /// Whether this state is settled: none of the targeted bytes remain.
+    ///
+    /// A failed, shared or unavailable location is not settled, so a resume
+    /// attempts it again instead of treating it as finished cleanup.
+    pub fn is_terminal(self) -> bool {
+        mneme_kernel::cleanup::is_settled(self.to_kernel())
+    }
+
+    /// Whether a resume must attempt or re-inspect this location.
+    pub fn needs_attempt(self) -> bool {
+        mneme_kernel::cleanup::needs_attempt(self.to_kernel())
     }
 }
 

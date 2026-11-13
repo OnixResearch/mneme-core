@@ -2,8 +2,10 @@
 //!
 //! A manifest names the workspace revision, its parent, every current record
 //! revision, and every blob the revision requires. It is encoded with canonical
-//! Preserves binary and hashed with the payload profile; the ledger stores both
-//! the bytes and the digest.
+//! Preserves binary and hashed with the payload profile. The ledger stores the
+//! digest, not a copy of the bytes: the same value is rebuilt from the stored
+//! snapshot membership and required-digest journal whenever a read verifies a
+//! revision.
 #![allow(unknown_lints, module_file_count)] // documented boundary allowance
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 

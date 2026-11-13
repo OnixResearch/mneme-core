@@ -1,17 +1,44 @@
 //! Versioned, type-tagged JSON transport for crate::typed::Value values.
 //!
 //! Every supported value kind has an explicit tag. A symbol and a string with
-//! equal text remain distinct, integers are decimal strings of arbitrary
-//! precision, doubles carry their exact IEEE-754 bits, bytes use strict Base64,
-//! and dictionary keys may be any encoded value. A versioned document envelope
-//! wraps the tagged value so a decoder never guesses the format. Unsupported or
-//! malformed payloads fail before any domain mutation.
+//! equal text remain distinct, integers are decimal strings, doubles carry
+//! their exact IEEE-754 bits, bytes use strict Base64, and dictionary keys may
+//! be any encoded value. A versioned document envelope wraps the tagged value
+//! so a decoder never guesses the format. Unsupported or malformed payloads
+//! fail before any domain mutation.
+//!
+//! Decoding text is strict in three ways the JSON data model alone does not
+//! give: a repeated object member is refused instead of letting the last
+//! spelling win, nesting is bounded by [`crate::binary::MAX_DEPTH`] so both
+//! codecs accept the same values, and integers are bounded by
+//! [`MAX_INTEGER_DIGITS`] before any conversion runs.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// The tagged JSON document format name.
 pub const TRANSPORT_FORMAT: &str = "mneme.preserves-tagged-json";
 /// The tagged JSON document version.
 pub const TRANSPORT_VERSION: u32 = 1;
+/// Maximum decimal digits in a transport integer.
+///
+/// Derived from [`crate::binary::MAX_INTEGER_BYTES`]: the largest magnitude a
+/// 4096-byte two's-complement integer can hold has 9864 decimal digits, so
+/// this bound lets the transport read back every integer the binary codec
+/// accepts. The digit count is checked before the text is converted, so
+/// decoding an integer stays linear in the input size.
+pub const MAX_INTEGER_DIGITS: usize = 9864;
+
+/// JSON containers from the envelope down to the top-level value object.
+const ENVELOPE_NESTING: usize = 2;
+/// JSON containers each dictionary level adds: the entries array, the entry
+/// object, and the nested value object.
+const DICTIONARY_NESTING: usize = 3;
+/// Maximum JSON container nesting in a transport document.
+///
+/// The deepest document that nests `crate::binary::MAX_DEPTH` values is a
+/// chain of dictionaries. Keeping the bound below the 128-container recursion
+/// limit of the JSON parser means an over-deep document is reported as a depth
+/// limit rather than as malformed JSON.
+const MAX_JSON_NESTING: usize = ENVELOPE_NESTING + DICTIONARY_NESTING * crate::binary::MAX_DEPTH;
 
 const TAG: &str = "t";
 const VALUE: &str = "v";
@@ -37,19 +64,19 @@ pub fn encode_document_string(value: &crate::typed::Value) -> String {
 }
 
 /// Decode a transport document from text.
+///
+/// A repeated object member is refused: the JSON data model collapses repeats
+/// to the last spelling, which would let a reader that keeps the first one see
+/// a different value, version or kind from the one Mneme validates.
 pub fn decode_document(text: &str) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
-    let json: serde_json::Value = serde_json::from_str(text).map_err(|error| {
-        crate::problem::Diagnostic::new(
-            crate::problem::Stage::Transport,
-            crate::problem::ErrorCode::InvalidTaggedJson,
-            crate::problem::Path::root(),
-            format!("invalid JSON: {error}"),
-        )
-    })?;
-    decode_document_value(&json)
+    decode_document_value(&parse_document_text(text)?)
 }
 
 /// Decode a transport document from an already parsed JSON value.
+///
+/// This entry point cannot see repeated members, because a parsed
+/// [`serde_json::Value`] has already collapsed them. Use [`decode_document`]
+/// for untrusted text.
 pub fn decode_document_value(
     json: &serde_json::Value,
 ) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
@@ -219,10 +246,23 @@ fn tagged<const N: usize>(tag: &str, members: [(&str, serde_json::Value); N]) ->
 }
 
 /// Decode one tagged value. No coercion or fallback is applied.
-#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn decode_value(
     json: &serde_json::Value,
     path: &crate::problem::Path,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
+    decode_value_at(json, path, 0)
+}
+
+/// Decode one tagged value nested `depth` values deep.
+///
+/// `depth` is the number of compound values already open, so a compound value
+/// here would sit at nesting level `depth + 1`; the bound is
+/// [`crate::binary::MAX_DEPTH`], the same one the binary decoder applies.
+#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+fn decode_value_at(
+    json: &serde_json::Value,
+    path: &crate::problem::Path,
+    depth: usize,
 ) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     let object = json
         .as_object()
@@ -235,10 +275,22 @@ pub fn decode_value(
         "string" => decode_string(object, path),
         "symbol" => decode_symbol(object, path),
         "bytes" => decode_bytes(object, path),
-        "record" => decode_record(object, path),
-        "sequence" | "set" => decode_collection(tag, object, path),
-        "dictionary" => decode_dictionary(object, path),
-        "embedded" => decode_embedded(object, path),
+        "record" => {
+            enter_value(path, depth)?;
+            decode_record(object, path, depth)
+        }
+        "sequence" | "set" => {
+            enter_value(path, depth)?;
+            decode_collection(tag, object, path, depth)
+        }
+        "dictionary" => {
+            enter_value(path, depth)?;
+            decode_dictionary(object, path, depth)
+        }
+        "embedded" => {
+            enter_value(path, depth)?;
+            decode_embedded(object, path, depth)
+        }
         other => Err(crate::problem::Diagnostic::new(
             crate::problem::Stage::Transport,
             crate::problem::ErrorCode::UnsupportedValueKind,
@@ -246,6 +298,22 @@ pub fn decode_value(
             format!("unsupported tagged value type {other:?}"),
         )),
     }
+}
+
+/// Refuse a compound value nested deeper than [`crate::binary::MAX_DEPTH`].
+fn enter_value(
+    path: &crate::problem::Path,
+    depth: usize,
+) -> Result<(), crate::problem::Diagnostic> {
+    if depth >= crate::binary::MAX_DEPTH {
+        return Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::DepthLimitExceeded,
+            path.clone(),
+            format!("value nesting exceeds {} levels", crate::binary::MAX_DEPTH),
+        ));
+    }
+    Ok(())
 }
 
 fn decode_boolean(
@@ -266,12 +334,14 @@ fn decode_double(
 ) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "bits"], path)?;
     let bits = string_member(object, "bits", path)?;
-    if bits.len() != 16 || !bits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    // One spelling per bit pattern: uppercase digits would make two documents
+    // that render differently produce the same value and the same digest.
+    if bits.len() != 16 || !mneme_kernel::text::is_lower_hex(bits.as_bytes()) {
         return Err(crate::problem::Diagnostic::new(
             crate::problem::Stage::Transport,
             crate::problem::ErrorCode::InvalidFloatBits,
             path.named("bits"),
-            "double bits must be exactly 16 hexadecimal digits",
+            "double bits must be exactly 16 lowercase hexadecimal digits",
         ));
     }
     let bits = u64::from_str_radix(bits, 16).map_err(|_| {
@@ -293,7 +363,7 @@ fn decode_integer(
 ) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, VALUE], path)?;
     let text = string_member(object, VALUE, path)?;
-    let integer = parse_decimal_integer(text).map_err(|message| {
+    let digits = check_decimal_text(text).map_err(|message| {
         crate::problem::Diagnostic::new(
             crate::problem::Stage::Transport,
             crate::problem::ErrorCode::InvalidIntegerText,
@@ -301,6 +371,35 @@ fn decode_integer(
             message,
         )
     })?;
+    // The size bound is applied before the digits are converted, so a hostile
+    // integer costs one linear spelling check and no conversion at all.
+    if digits > MAX_INTEGER_DIGITS {
+        return Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::LimitExceeded,
+            path.named(VALUE),
+            format!("integer of {digits} digit(s) exceeds the {MAX_INTEGER_DIGITS}-digit limit"),
+        ));
+    }
+    let integer = text.parse::<num_bigint::BigInt>().map_err(|_| {
+        crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidIntegerText,
+            path.named(VALUE),
+            "integer text is out of range",
+        )
+    })?;
+    if !crate::binary::integer_within_byte_limit(&integer) {
+        return Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::LimitExceeded,
+            path.named(VALUE),
+            format!(
+                "integer exceeds the {}-byte two's-complement limit",
+                crate::binary::MAX_INTEGER_BYTES
+            ),
+        ));
+    }
     Ok(crate::typed::Value::SignedInteger(
         crate::typed::SignedInteger::new(integer),
     ))
@@ -348,19 +447,24 @@ fn decode_bytes(
 fn decode_record(
     object: &serde_json::Map<String, serde_json::Value>,
     path: &crate::problem::Path,
+    depth: usize,
 ) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "label", "fields"], path)?;
     let label_json = object
         .get("label")
         .ok_or_else(|| invalid(&path.named("label"), "record is missing its label"))?;
-    let label = decode_value(label_json, &path.named("label"))?;
+    let label = decode_value_at(label_json, &path.named("label"), depth + 1)?;
     let fields_json = object
         .get("fields")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| invalid(&path.named("fields"), "record fields must be an array"))?;
     let mut fields = Vec::with_capacity(fields_json.len());
     for (index, field) in fields_json.iter().enumerate() {
-        fields.push(decode_value(field, &path.named("fields").index(index))?);
+        fields.push(decode_value_at(
+            field,
+            &path.named("fields").index(index),
+            depth + 1,
+        )?);
     }
     Ok(crate::typed::Value::Record(crate::typed::Record::new(
         label, fields,
@@ -371,6 +475,7 @@ fn decode_collection(
     tag: &str,
     object: &serde_json::Map<String, serde_json::Value>,
     path: &crate::problem::Path,
+    depth: usize,
 ) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "items"], path)?;
     let items_json = object
@@ -380,13 +485,17 @@ fn decode_collection(
     if tag == "sequence" {
         let mut items = Vec::with_capacity(items_json.len());
         for (index, item) in items_json.iter().enumerate() {
-            items.push(decode_value(item, &path.named("items").index(index))?);
+            items.push(decode_value_at(
+                item,
+                &path.named("items").index(index),
+                depth + 1,
+            )?);
         }
         Ok(crate::typed::Value::Sequence(items))
     } else {
         let mut items = std::collections::BTreeSet::new();
         for (index, item) in items_json.iter().enumerate() {
-            let item = decode_value(item, &path.named("items").index(index))?;
+            let item = decode_value_at(item, &path.named("items").index(index), depth + 1)?;
             if !items.insert(item) {
                 return Err(crate::problem::Diagnostic::new(
                     crate::problem::Stage::Transport,
@@ -403,6 +512,7 @@ fn decode_collection(
 fn decode_dictionary(
     object: &serde_json::Map<String, serde_json::Value>,
     path: &crate::problem::Path,
+    depth: usize,
 ) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "entries"], path)?;
     let entries_json = object
@@ -428,8 +538,8 @@ fn decode_dictionary(
         let value_json = entry_object
             .get("value")
             .ok_or_else(|| invalid(&entry_path.named("value"), "entry is missing its value"))?;
-        let key = decode_value(key_json, &entry_path.named("key"))?;
-        let value = decode_value(value_json, &entry_path.named("value"))?;
+        let key = decode_value_at(key_json, &entry_path.named("key"), depth + 1)?;
+        let value = decode_value_at(value_json, &entry_path.named("value"), depth + 1)?;
         if entries.insert(key, value).is_some() {
             return Err(crate::problem::Diagnostic::new(
                 crate::problem::Stage::Transport,
@@ -445,18 +555,24 @@ fn decode_dictionary(
 fn decode_embedded(
     object: &serde_json::Map<String, serde_json::Value>,
     path: &crate::problem::Path,
+    depth: usize,
 ) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
     reject_extra(object, &[TAG, "value"], path)?;
     let inner = object
         .get("value")
         .ok_or_else(|| invalid(&path.named("value"), "embedded value is missing"))?;
-    Ok(crate::typed::Value::embedded(decode_value(
+    Ok(crate::typed::Value::embedded(decode_value_at(
         inner,
         &path.named("value"),
+        depth + 1,
     )?))
 }
 
-fn parse_decimal_integer(text: &str) -> Result<num_bigint::BigInt, &'static str> {
+/// Validate the spelling of a decimal integer and report its digit count.
+///
+/// The count is what the size bound is applied to, so the conversion never
+/// runs on text longer than [`MAX_INTEGER_DIGITS`].
+fn check_decimal_text(text: &str) -> Result<usize, &'static str> {
     let digits = text.strip_prefix('-').unwrap_or(text);
     if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("integer must be an optional minus sign and decimal digits");
@@ -467,8 +583,212 @@ fn parse_decimal_integer(text: &str) -> Result<num_bigint::BigInt, &'static str>
     if text == "-0" {
         return Err("negative zero is not a canonical integer spelling");
     }
-    text.parse::<num_bigint::BigInt>()
-        .map_err(|_| "integer text is out of range")
+    Ok(digits.len())
+}
+
+/// Parse transport text into a JSON value, refusing repeated object members.
+///
+/// [`serde_json::Value`] collapses a repeated member to its last spelling, so
+/// the tree is built here member by member while the repeats are still visible.
+fn parse_document_text(text: &str) -> Result<serde_json::Value, crate::problem::Diagnostic> {
+    check_json_nesting(text)?;
+    let repeated = std::cell::RefCell::new(None);
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let parsed = serde::de::DeserializeSeed::deserialize(
+        StrictJson {
+            repeated: &repeated,
+        },
+        &mut deserializer,
+    );
+    let value = match parsed {
+        Ok(value) => value,
+        Err(error) => return Err(json_error(&repeated, &error)),
+    };
+    deserializer
+        .end()
+        .map_err(|error| json_error(&repeated, &error))?;
+    Ok(value)
+}
+
+/// Reject text whose JSON container nesting exceeds [`MAX_JSON_NESTING`].
+///
+/// The scan is linear and runs before the parser, so an over-deep document is
+/// reported as a depth limit instead of as the parser's own recursion error.
+fn check_json_nesting(text: &str) -> Result<(), crate::problem::Diagnostic> {
+    let mut depth: usize = 0;
+    let mut is_in_string = false;
+    let mut is_escaped = false;
+    for byte in text.bytes() {
+        if is_in_string {
+            if is_escaped {
+                is_escaped = false;
+            } else if byte == b'\\' {
+                is_escaped = true;
+            } else if byte == b'"' {
+                is_in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => is_in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_JSON_NESTING {
+                    return Err(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Transport,
+                        crate::problem::ErrorCode::DepthLimitExceeded,
+                        crate::problem::Path::root(),
+                        format!(
+                            "JSON nesting exceeds {MAX_JSON_NESTING} levels, the bound implied by {} nested values",
+                            crate::binary::MAX_DEPTH
+                        ),
+                    ));
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Build the diagnostic for a failed strict parse.
+fn json_error(
+    repeated: &std::cell::RefCell<Option<String>>,
+    error: &serde_json::Error,
+) -> crate::problem::Diagnostic {
+    let repeated = repeated.borrow();
+    match repeated.as_deref() {
+        Some(name) => crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidTaggedJson,
+            crate::problem::Path::root().named(name),
+            format!("repeated JSON object member {name:?}"),
+        ),
+        None => crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::InvalidTaggedJson,
+            crate::problem::Path::root(),
+            format!("invalid JSON: {error}"),
+        ),
+    }
+}
+
+/// Deserializes one JSON value while recording a repeated object member.
+struct StrictJson<'a> {
+    repeated: &'a std::cell::RefCell<Option<String>>,
+}
+
+impl<'de, 'a> serde::de::DeserializeSeed<'de> for StrictJson<'a> {
+    type Value = serde_json::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(StrictJsonVisitor {
+            repeated: self.repeated,
+        })
+    }
+}
+
+/// Visitor that builds a [`serde_json::Value`] and refuses repeated members.
+struct StrictJsonVisitor<'a> {
+    repeated: &'a std::cell::RefCell<Option<String>>,
+}
+
+impl<'de, 'a> serde::de::Visitor<'de> for StrictJsonVisitor<'a> {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(serde_json::Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(serde_json::Value::from(value))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(serde_json::Value::from(value))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| E::custom("number is not representable in JSON"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(serde_json::Value::String(value.to_owned()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(serde_json::Value::String(value))
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let repeated = self.repeated;
+        // A self-describing sequence reports how many elements remain, so the
+        // buffer is reserved once instead of growing under the loop; a
+        // non-self-describing one reports nothing and the loop grows it.
+        let capacity = serde::de::SeqAccess::size_hint(&sequence).unwrap_or(0);
+        let mut items = Vec::with_capacity(capacity);
+        while let Some(item) = sequence.next_element_seed(StrictJson { repeated })? {
+            items.push(item);
+        }
+        Ok(serde_json::Value::Array(items))
+    }
+
+    fn visit_map<A>(self, mut members: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let repeated = self.repeated;
+        let mut object = serde_json::Map::new();
+        while let Some(name) = members.next_key::<String>()? {
+            if object.contains_key(&name) {
+                *repeated.borrow_mut() = Some(name);
+                return Err(<A::Error as serde::de::Error>::custom(
+                    "repeated JSON object member",
+                ));
+            }
+            let value = members.next_value_seed(StrictJson { repeated })?;
+            object.insert(name, value);
+        }
+        Ok(serde_json::Value::Object(object))
+    }
 }
 
 fn invalid(path: &crate::problem::Path, message: &'static str) -> crate::problem::Diagnostic {

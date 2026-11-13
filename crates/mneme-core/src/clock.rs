@@ -47,7 +47,11 @@ impl Timestamp {
         let month = digits(bytes, 5, 2)?;
         expect(bytes, 7, b'-')?;
         let day = digits(bytes, 8, 2)?;
-        expect(bytes, 10, b'T')?;
+        // RFC 3339 §5.6 lets producers emit the date-time separator in lower
+        // case, exactly as it allows `z` for the zero offset.
+        if !matches!(bytes.get(10), Some(b'T' | b't')) {
+            return Err("timestamp has an unexpected separator");
+        }
         let hour = digits(bytes, 11, 2)?;
         expect(bytes, 13, b':')?;
         let minute = digits(bytes, 14, 2)?;
@@ -75,9 +79,13 @@ impl Timestamp {
             })
             .and_then(|value| value.checked_sub(offset_seconds))
             .ok_or("timestamp is outside the supported range")?;
-        let total = seconds
+        // A representable instant near the lower bound needs the fraction to
+        // land before the range check: `seconds * 1e9` alone can be below
+        // `i64::MIN` while `seconds * 1e9 + nanoseconds` is representable.
+        let total = i128::from(seconds)
             .checked_mul(1_000_000_000)
-            .and_then(|value| value.checked_add(nanoseconds))
+            .and_then(|value| value.checked_add(i128::from(nanoseconds)))
+            .and_then(|value| i64::try_from(value).ok())
             .ok_or("timestamp is outside the supported range")?;
         Ok(Timestamp(total))
     }
@@ -501,6 +509,44 @@ mod tests {
         assert!(Timestamp::parse("2024-01-01T24:00:00Z").is_err());
         assert!(Timestamp::parse("2024-01-01T00:00:00").is_err());
         assert!(Timestamp::parse("2024-01-01T00:00:00+24:00").is_err());
+    }
+
+    #[test]
+    fn lower_case_separator_and_offset_are_the_same_instant() {
+        let canonical = Timestamp::parse("2026-11-10T00:00:00Z").expect("upper case");
+        let lower_case = Timestamp::parse("2026-11-10t00:00:00z").expect("RFC 3339 §5.6");
+        assert_eq!(lower_case, canonical);
+        let mixed = Timestamp::parse("2026-11-10t00:00:00Z").expect("lower case separator");
+        assert_eq!(mixed, canonical);
+    }
+
+    #[test]
+    fn representable_instants_at_the_lower_bound_parse_and_roundtrip() {
+        // The lower bound of the i64 nanosecond range. Its second count alone
+        // is below `i64::MIN` once multiplied by 1e9; the fraction brings the
+        // total back into range, so parsing must combine them before checking.
+        let minimum = Timestamp::min();
+        let rendered = minimum.to_rfc3339();
+        assert_eq!(rendered, "1677-09-21T00:12:43.145224192Z");
+        let parsed = Timestamp::parse(&rendered).expect("minimum roundtrip");
+        assert_eq!(parsed, minimum);
+
+        let lower_fraction =
+            Timestamp::parse("1677-09-21T00:12:43.999999999Z").expect("representable");
+        assert_eq!(lower_fraction.nanos(), -9_223_372_036_000_000_001);
+        let lower_text = lower_fraction.to_rfc3339();
+        assert_eq!(lower_text, "1677-09-21T00:12:43.999999999Z");
+
+        let upper = Timestamp::max();
+        assert_eq!(
+            Timestamp::parse("2262-04-11T23:47:16.854775807Z").expect("upper bound"),
+            upper
+        );
+        assert_eq!(upper.to_rfc3339(), "2262-04-11T23:47:16.854775807Z");
+
+        // One nanosecond below the range stays refused.
+        assert!(Timestamp::parse("1677-09-21T00:12:43.145224191Z").is_err());
+        assert!(Timestamp::parse("2262-04-11T23:47:16.854775808Z").is_err());
     }
 
     #[test]

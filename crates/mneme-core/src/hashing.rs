@@ -16,6 +16,36 @@ pub const PROFILE_CANONICAL_BINARY_V1: &str = "preserves-canonical-binary-v1";
 /// The exact source-byte encoding profile.
 pub const PROFILE_RAW_BYTES_V1: &str = "raw-bytes-v1";
 
+/// Convert 32 digest bytes into the decision kernel's two-word digest.
+///
+/// The first sixteen bytes become the high word and the last sixteen the low
+/// word, each read big-endian. `u128::from_be_bytes` is injective, so equal
+/// kernel digests are equal byte digests and different byte digests never
+/// collide in the kernel.
+pub fn kernel_digest(bytes: &[u8; 32]) -> mneme_kernel::hashing::Digest {
+    let (high, low) = bytes.split_at(16);
+    mneme_kernel::hashing::Digest {
+        hi: u128::from_be_bytes(word_16(high)),
+        lo: u128::from_be_bytes(word_16(low)),
+    }
+}
+
+/// The idempotency fingerprint of one request payload.
+///
+/// A caller builds the value from every input that can change the outcome of
+/// the command, and the digest is taken over the payload boundary, so two
+/// requests replay each other only when those inputs are identical.
+pub fn request_fingerprint(value: &crate::typed::Value) -> ContentDigest {
+    ContentDigest::of_payload(value)
+}
+
+/// Read sixteen bytes; `split_at(16)` on a 32-byte array always yields two.
+fn word_16(bytes: &[u8]) -> [u8; 16] {
+    let mut word = [0_u8; 16];
+    word.copy_from_slice(bytes);
+    word
+}
+
 /// A hash algorithm understood by this build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HashAlgorithm {
@@ -188,6 +218,11 @@ impl ContentDigest {
     /// The raw digest bytes.
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
+    }
+
+    /// Convert to the decision kernel's two-word digest.
+    pub fn to_kernel(&self) -> mneme_kernel::hashing::Digest {
+        kernel_digest(&self.bytes)
     }
 
     /// Lowercase hexadecimal digest.
@@ -380,5 +415,49 @@ mod tests {
         assert_eq!(source.boundary(), ValueBoundary::SourceBytes);
         assert_eq!(semantic.profile(), EncodingProfile::CanonicalBinaryV1);
         assert_eq!(semantic.boundary(), ValueBoundary::Payload);
+    }
+
+    #[test]
+    fn kernel_digest_reads_each_half_big_endian() {
+        let mut bytes = [0_u8; 32];
+        bytes[0] = 0x01;
+        bytes[15] = 0x02;
+        bytes[16] = 0x03;
+        bytes[31] = 0x04;
+        let digest = kernel_digest(&bytes);
+        // Big-endian: byte 0 is the most significant byte of the high word and
+        // byte 15 the least significant; a little-endian reading would swap
+        // them.
+        assert_eq!(digest.hi >> 120, 0x01);
+        assert_eq!(digest.hi & 0xff, 0x02);
+        assert_eq!(digest.lo >> 120, 0x03);
+        assert_eq!(digest.lo & 0xff, 0x04);
+    }
+
+    #[test]
+    fn kernel_digests_agree_exactly_when_the_digests_do() {
+        let left = ContentDigest::of_source_bytes(b"left");
+        let same = ContentDigest::of_source_bytes(b"left");
+        let other = ContentDigest::of_source_bytes(b"right");
+        assert_eq!(left, same);
+        assert_eq!(left.to_kernel(), same.to_kernel());
+        assert_ne!(left, other);
+        assert_ne!(left.to_kernel(), other.to_kernel());
+        assert_eq!(left.to_kernel(), kernel_digest(left.as_bytes()));
+    }
+
+    #[test]
+    fn request_fingerprint_is_the_payload_digest() {
+        let value = request_value("notes/cedar.adoc");
+        let fingerprint = request_fingerprint(&value);
+        assert_eq!(fingerprint, ContentDigest::of_payload(&value));
+        assert_eq!(fingerprint.boundary(), ValueBoundary::Payload);
+        let other = request_value("notes/other.adoc");
+        assert_ne!(fingerprint, request_fingerprint(&other));
+    }
+
+    fn request_value(path: &str) -> crate::typed::Value {
+        let fields = vec![crate::typed::Value::string(path)];
+        crate::typed::Value::record_named("document-import-request", fields)
     }
 }

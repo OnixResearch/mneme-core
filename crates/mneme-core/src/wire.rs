@@ -162,15 +162,40 @@ impl RecordEnvelope {
         )
     }
 
-    /// Decode envelope structure. Schema and domain validation follow in
-    /// [`validate_record`].
-    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    /// Decode envelope structure without a schema registry. Schema and domain
+    /// validation follow in [`validate_record`].
+    ///
+    /// A caller that knows which versions it supports should use
+    /// [`RecordEnvelope::from_value_with_registry`] instead: only that form
+    /// refuses an unsupported version before reading the fields under a layout
+    /// the version does not have.
     pub fn from_value(
         value: &crate::typed::Value,
     ) -> Result<Self, Vec<crate::problem::Diagnostic>> {
-        let record = envelope_record(value)?;
+        Self::decode(value, None)
+    }
+
+    /// Decode envelope structure against a registry of supported versions.
+    ///
+    /// The declared version is read and checked before any other positional
+    /// field, so a record written by a newer build is reported as an
+    /// unsupported version instead of being reinterpreted under the version 1
+    /// layout and reported as malformed.
+    pub fn from_value_with_registry(
+        value: &crate::typed::Value,
+        registry: &crate::fields::SchemaRegistry,
+    ) -> Result<Self, Vec<crate::problem::Diagnostic>> {
+        Self::decode(value, Some(registry))
+    }
+
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    fn decode(
+        value: &crate::typed::Value,
+        registry: Option<&crate::fields::SchemaRegistry>,
+    ) -> Result<Self, Vec<crate::problem::Diagnostic>> {
+        let (record, schema_version) = envelope_record(value, registry)?;
         let mut diagnostics = Vec::new();
-        let (schema_version, kind, record_id, revision_id, predecessor) =
+        let (kind, record_id, revision_id, predecessor) =
             parse_envelope_identity(record, &mut diagnostics);
         let (scope, recorded, payload) = parse_envelope_contents(record, &mut diagnostics);
         match (
@@ -226,23 +251,41 @@ impl RecordEnvelope {
     }
 }
 
-fn envelope_record(
-    value: &crate::typed::Value,
-) -> Result<&crate::typed::Record, Vec<crate::problem::Diagnostic>> {
+/// Decode the record structure and the schema version it declares.
+///
+/// Everything after field 0 is interpreted under the declared version, so the
+/// version is read and checked first: a future layout may put any value in any
+/// later position, and reporting a v1 diagnostic for it would tell a caller its
+/// data is corrupt when the real answer is that this build is too old.
+fn envelope_record<'a>(
+    value: &'a crate::typed::Value,
+    registry: Option<&crate::fields::SchemaRegistry>,
+) -> Result<(&'a crate::typed::Record, u32), Vec<crate::problem::Diagnostic>> {
     let Some(record) = value.as_record() else {
-        return Err(vec![crate::problem::Diagnostic::new(
-            crate::problem::Stage::Envelope,
-            crate::problem::ErrorCode::TypeMismatch,
-            crate::problem::Path::root(),
-            format!("expected <{RECORD_LABEL} …>"),
-        )]);
+        return Err(vec![expected_record_error()]);
     };
     if record.label() != &crate::typed::Value::symbol(RECORD_LABEL) {
+        return Err(vec![expected_record_error()]);
+    }
+    let Some(declared) = record.fields().first().and_then(unsigned) else {
+        let message = "schema version must be a non-negative integer";
+        return Err(vec![schema_version_error(message)]);
+    };
+    let Ok(schema_version) = u32::try_from(declared) else {
+        let message = "schema version exceeds the supported integer range";
+        return Err(vec![schema_version_error(message)]);
+    };
+    if let Some(registry) = registry
+        && registry.schema(schema_version).is_none()
+    {
         return Err(vec![crate::problem::Diagnostic::new(
             crate::problem::Stage::Envelope,
-            crate::problem::ErrorCode::TypeMismatch,
-            crate::problem::Path::root(),
-            format!("expected <{RECORD_LABEL} …>"),
+            crate::problem::ErrorCode::UnsupportedSchemaVersion,
+            crate::problem::Path::root().field("schema-version"),
+            format!(
+                "schema version {schema_version} is not registered; supported versions: {:?}",
+                registry.supported_versions()
+            ),
         )]);
     }
     if value.contains_embedded() {
@@ -264,11 +307,28 @@ fn envelope_record(
             ),
         )]);
     }
-    Ok(record)
+    Ok((record, schema_version))
+}
+
+fn expected_record_error() -> crate::problem::Diagnostic {
+    crate::problem::Diagnostic::new(
+        crate::problem::Stage::Envelope,
+        crate::problem::ErrorCode::TypeMismatch,
+        crate::problem::Path::root(),
+        format!("expected <{RECORD_LABEL} …>"),
+    )
+}
+
+fn schema_version_error(message: &'static str) -> crate::problem::Diagnostic {
+    crate::problem::Diagnostic::new(
+        crate::problem::Stage::Envelope,
+        crate::problem::ErrorCode::UnsupportedSchemaVersion,
+        crate::problem::Path::root().field("schema-version"),
+        message,
+    )
 }
 
 type EnvelopeIdentity = (
-    u32,
     Option<crate::fields::RecordKind>,
     Option<crate::ids::RecordId>,
     Option<crate::ids::RevisionId>,
@@ -279,29 +339,8 @@ fn parse_envelope_identity(
     record: &crate::typed::Record,
     diagnostics: &mut Vec<crate::problem::Diagnostic>,
 ) -> EnvelopeIdentity {
-    let schema_version = match unsigned(&record.fields()[0]) {
-        Some(version) => match u32::try_from(version) {
-            Ok(version) => version,
-            Err(_) => {
-                diagnostics.push(crate::problem::Diagnostic::new(
-                    crate::problem::Stage::Envelope,
-                    crate::problem::ErrorCode::UnsupportedSchemaVersion,
-                    crate::problem::Path::root().field("schema-version"),
-                    "schema version exceeds the supported integer range",
-                ));
-                0
-            }
-        },
-        None => {
-            diagnostics.push(crate::problem::Diagnostic::new(
-                crate::problem::Stage::Envelope,
-                crate::problem::ErrorCode::UnsupportedSchemaVersion,
-                crate::problem::Path::root().field("schema-version"),
-                "schema version must be a non-negative integer",
-            ));
-            0
-        }
-    };
+    // Field 0 was read and checked by `envelope_record`; the remaining fields
+    // are only interpreted because that version is one this build knows.
     let kind = match crate::fields::RecordKind::from_value(
         &record.fields()[1],
         &crate::problem::Path::root().field("kind"),
@@ -339,7 +378,7 @@ fn parse_envelope_identity(
             }
         },
     };
-    (schema_version, kind, record_id, revision_id, predecessor)
+    (kind, record_id, revision_id, predecessor)
 }
 
 fn parse_envelope_contents(
@@ -436,11 +475,10 @@ pub fn validate_record(
     context: &RecordContext<'_>,
     path: &crate::problem::Path,
 ) -> Vec<crate::problem::Diagnostic> {
-    let mut diagnostics = Vec::new();
-    validate_predecessor(envelope, context.prior, path, &mut diagnostics);
-
+    // An unsupported version is decided before anything else is interpreted:
+    // a future layout is not a defective version 1 record.
     let Some(schema) = context.registry.schema(envelope.schema_version) else {
-        diagnostics.push(crate::problem::Diagnostic::new(
+        return vec![crate::problem::Diagnostic::new(
             crate::problem::Stage::Envelope,
             crate::problem::ErrorCode::UnsupportedSchemaVersion,
             path.field("schema-version"),
@@ -449,9 +487,22 @@ pub fn validate_record(
                 envelope.schema_version,
                 context.registry.supported_versions()
             ),
-        ));
-        return diagnostics;
+        )];
     };
+    // The durable no-embedded rule is a property of every record, not of the
+    // decode path: a constructed envelope (a migration target, for example)
+    // must be refused here too, or validation would certify a record the
+    // decoder refuses to read back.
+    if envelope_contains_embedded(envelope) {
+        return vec![crate::problem::Diagnostic::new(
+            crate::problem::Stage::Envelope,
+            crate::problem::ErrorCode::EmbeddedValueNotDurable,
+            path.clone(),
+            "durable records must not contain live embedded values",
+        )];
+    }
+    let mut diagnostics = Vec::new();
+    validate_predecessor(envelope, context.prior, path, &mut diagnostics);
     let Some(kind_schema) = schema.kind(envelope.kind) else {
         diagnostics.push(crate::problem::Diagnostic::new(
             crate::problem::Stage::Envelope,
@@ -465,19 +516,25 @@ pub fn validate_record(
         ));
         return diagnostics;
     };
-    validate_payload_fields(
-        envelope,
-        kind_schema,
-        context.resolution,
-        path,
-        &mut diagnostics,
-    );
+    validate_payload_fields(envelope, kind_schema, context, path, &mut diagnostics);
     diagnostics.extend(crate::fields::validate_domain(
         envelope.kind,
         envelope.payload.as_map(),
         &path.field("payload"),
     ));
     diagnostics
+}
+
+/// Whether any payload field holds a live embedded value.
+///
+/// The other envelope fields are typed identifiers, scope and time values, so
+/// only the payload can carry one.
+fn envelope_contains_embedded(envelope: &RecordEnvelope) -> bool {
+    envelope
+        .payload
+        .as_map()
+        .values()
+        .any(crate::typed::Value::contains_embedded)
 }
 
 fn validate_predecessor(
@@ -510,14 +567,14 @@ fn validate_predecessor(
                     ));
                 }
                 if envelope.predecessor != Some(entry.revision) {
+                    // The message names no revision: the offered predecessor is
+                    // wrong, and the record's current revision may belong to a
+                    // scope the caller is not authorized for.
                     diagnostics.push(crate::problem::Diagnostic::new(
                         crate::problem::Stage::Envelope,
                         crate::problem::ErrorCode::InvalidPredecessor,
                         path.field("predecessor"),
-                        format!(
-                            "replacement must name predecessor revision {}",
-                            entry.revision
-                        ),
+                        "replacement must name the current revision of the record as its predecessor",
                     ));
                 }
             }
@@ -538,7 +595,7 @@ fn validate_predecessor(
 fn validate_payload_fields(
     envelope: &RecordEnvelope,
     kind_schema: &crate::fields::KindSchema,
-    resolution: Option<&crate::pointer::SnapshotIndex>,
+    context: &RecordContext<'_>,
     path: &crate::problem::Path,
     diagnostics: &mut Vec<crate::problem::Diagnostic>,
 ) {
@@ -556,18 +613,46 @@ fn validate_payload_fields(
                 field.ty,
                 value,
                 &field_path,
-                resolution,
+                context.resolution,
             )),
         }
     }
-    if kind_schema.extensions() == crate::fields::ExtensionPolicy::Refuse {
-        for name in envelope.payload.names() {
-            if kind_schema.field(name.as_str()).is_none() {
+    for name in envelope.payload.names() {
+        if kind_schema.field(name.as_str()).is_some() {
+            continue;
+        }
+        match kind_schema.extensions() {
+            crate::fields::ExtensionPolicy::Refuse => {
                 diagnostics.push(crate::problem::Diagnostic::new(
                     crate::problem::Stage::Domain,
                     crate::problem::ErrorCode::UnsupportedExtension,
                     path.field("payload").named(name.as_str()),
                     format!("field {} is not declared and extensions are refused", name),
+                ));
+            }
+            crate::fields::ExtensionPolicy::Retain => {
+                // Retaining an extension must not be a way around schema
+                // validation: when a later version declares this name
+                // authoritative for the kind, the type it declares applies
+                // even to a record written under an earlier version.
+                let Some(field) = context.registry.later_field(
+                    envelope.kind,
+                    name.as_str(),
+                    envelope.schema_version,
+                ) else {
+                    continue;
+                };
+                let Some(value) = envelope.payload.get(name.as_str()) else {
+                    continue;
+                };
+                // The declaring version's static field name addresses the
+                // diagnostic exactly as it would for a record of that version.
+                let declared = path.field("payload").field(field.name);
+                diagnostics.extend(crate::fields::validate_field(
+                    field.ty,
+                    value,
+                    &declared,
+                    context.resolution,
                 ));
             }
         }
@@ -580,7 +665,7 @@ pub fn validate_record_value(
     registry: &crate::fields::SchemaRegistry,
     index: Option<&crate::pointer::SnapshotIndex>,
 ) -> Result<RecordEnvelope, Vec<crate::problem::Diagnostic>> {
-    let envelope = RecordEnvelope::from_value(value)?;
+    let envelope = RecordEnvelope::from_value_with_registry(value, registry)?;
     let context = match index {
         Some(snapshot) => RecordContext::against(registry, snapshot),
         None => RecordContext::isolated(registry),
@@ -611,7 +696,7 @@ pub fn validate_batch(
     registry: &crate::fields::SchemaRegistry,
     external_index: Option<&crate::pointer::SnapshotIndex>,
 ) -> Result<ValidatedBatch, Vec<crate::problem::Diagnostic>> {
-    let envelopes = decode_batch_envelopes(values)?;
+    let envelopes = decode_batch_envelopes(values, registry)?;
     validate_unique_batch_ids(&envelopes)?;
 
     let mut index = external_index.cloned().unwrap_or_default();
@@ -648,11 +733,12 @@ pub fn validate_batch(
 
 fn decode_batch_envelopes(
     values: &[crate::typed::Value],
+    registry: &crate::fields::SchemaRegistry,
 ) -> Result<Vec<RecordEnvelope>, Vec<crate::problem::Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut envelopes = Vec::with_capacity(values.len());
     for (position, value) in values.iter().enumerate() {
-        match RecordEnvelope::from_value(value) {
+        match RecordEnvelope::from_value_with_registry(value, registry) {
             Ok(envelope) => envelopes.push(envelope),
             Err(record_diagnostics) => {
                 let prefix = crate::problem::Path::root().index(position);
@@ -1108,5 +1194,219 @@ mod tests {
         // version is registered; the envelope version is the authority.
         validate_record_value(&assertion("proposed").to_value(), &registry, None)
             .expect("v1 record remains valid");
+    }
+
+    fn document_v3() -> RecordEnvelope {
+        let key = crate::typed::Value::string("chapters/one.adoc");
+        let includes = crate::typed::Value::dictionary([(key, source_pin())]);
+        RecordEnvelope {
+            schema_version: 3,
+            kind: crate::fields::RecordKind::Document,
+            record_id: record_id(6),
+            revision_id: revision_id(6),
+            predecessor: None,
+            scope: scope(),
+            recorded: recorded(),
+            payload: Payload::new([
+                (
+                    crate::typed::Symbol::from("title"),
+                    crate::typed::Value::string("Cedar Notes"),
+                ),
+                (
+                    crate::typed::Symbol::from("source-revision"),
+                    crate::pointer::Reference::local(
+                        record_id(2),
+                        crate::fields::RecordKind::SourceRevision,
+                    )
+                    .to_value(),
+                ),
+                (crate::typed::Symbol::from("includes"), includes),
+            ]),
+        }
+    }
+
+    fn source_pin() -> crate::typed::Value {
+        let reference = crate::pointer::Reference::pinned(
+            record_id(2),
+            revision_id(2),
+            crate::fields::RecordKind::SourceRevision,
+        );
+        reference.to_value()
+    }
+
+    #[test]
+    fn unsupported_version_is_refused_before_the_version_one_layout() {
+        let registry = crate::fields::SchemaRegistry::v1();
+        // A future layout may have another field count, unknown kind, scope and
+        // time symbols, and payloads that are not dictionaries. None of those
+        // may be read as a v1-layout defect.
+        let extra_field = crate::typed::Value::record_named(
+            RECORD_LABEL,
+            vec![
+                crate::typed::Value::integer(99_i64),
+                crate::typed::Value::symbol("future-kind"),
+                record_id(1).to_value(),
+                revision_id(1).to_value(),
+                crate::typed::Value::symbol("none"),
+                scope().to_value(),
+                recorded().to_value(),
+                Payload::default().to_value(),
+                crate::typed::Value::symbol("future-field"),
+            ],
+        );
+        let future_layout = crate::typed::Value::record_named(
+            RECORD_LABEL,
+            vec![
+                crate::typed::Value::integer(99_i64),
+                crate::typed::Value::symbol("future-kind"),
+                crate::typed::Value::string("future-record"),
+                crate::typed::Value::symbol("future-revision"),
+                crate::typed::Value::symbol("future-predecessor"),
+                crate::typed::Value::symbol("future-scope"),
+                crate::typed::Value::symbol("future-time"),
+                crate::typed::Value::symbol("future-payload"),
+            ],
+        );
+        for value in [extra_field.clone(), future_layout] {
+            let error = RecordEnvelope::from_value_with_registry(&value, &registry)
+                .expect_err("unsupported version");
+            assert_eq!(error.len(), 1, "{error:?}");
+            assert_eq!(
+                error[0].code,
+                crate::problem::ErrorCode::UnsupportedSchemaVersion
+            );
+            assert_eq!(error[0].path.to_string(), "$.schema-version");
+        }
+        // The batch path takes the same decision, so `record validate` reports
+        // an unsupported version rather than a malformed envelope.
+        let values = [extra_field];
+        let error = validate_batch(&values, &registry, None).expect_err("unsupported version");
+        assert_eq!(
+            error[0].code,
+            crate::problem::ErrorCode::UnsupportedSchemaVersion
+        );
+        assert_eq!(error[0].path.to_string(), "$[0].schema-version");
+    }
+
+    #[test]
+    fn uppercase_identifier_is_refused_at_its_field() {
+        let uppercase = "0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A0A";
+        let revision = crate::typed::Value::record_named(
+            "revision-id",
+            vec![crate::typed::Value::string(uppercase)],
+        );
+        let value = crate::typed::Value::record_named(
+            RECORD_LABEL,
+            vec![
+                crate::typed::Value::integer(1_i64),
+                crate::typed::Value::symbol("entity"),
+                record_id(1).to_value(),
+                revision,
+                crate::typed::Value::symbol("none"),
+                scope().to_value(),
+                recorded().to_value(),
+                Payload::default().to_value(),
+            ],
+        );
+        let registry = crate::fields::SchemaRegistry::v1();
+        let decoded = RecordEnvelope::from_value_with_registry(&value, &registry);
+        let error = decoded.expect_err("uppercase revision id");
+        assert_eq!(error[0].code, crate::problem::ErrorCode::InvalidIdentifier);
+        assert_eq!(error[0].path.to_string(), "$.revision-id");
+        assert!(
+            !error[0].message.contains("0A0A"),
+            "the refused bytes must not be echoed: {}",
+            error[0].message
+        );
+    }
+
+    #[test]
+    fn wrong_predecessor_diagnostic_does_not_disclose_the_current_revision() {
+        let original = entity();
+        let mut index = crate::pointer::SnapshotIndex::new();
+        assert!(index.insert(original.record_id, original.kind, original.revision_id));
+        let mut replacement = entity();
+        replacement.revision_id = revision_id(7);
+        replacement.predecessor = Some(revision_id(6));
+        let registry = crate::fields::SchemaRegistry::v1();
+        let context = RecordContext::against(&registry, &index);
+        let error = validate_record(&replacement, &context, &crate::problem::Path::root());
+        let predecessor = error
+            .iter()
+            .find(|diagnostic| diagnostic.code == crate::problem::ErrorCode::InvalidPredecessor)
+            .expect("predecessor diagnostic");
+        let current = original.revision_id.to_hex();
+        let next = replacement.revision_id.to_hex();
+        let offered = revision_id(6).to_hex();
+        for revision in [current, next, offered] {
+            assert!(
+                !predecessor.message.contains(&revision),
+                "the diagnostic names a revision: {}",
+                predecessor.message
+            );
+        }
+    }
+
+    #[test]
+    fn constructed_envelopes_are_held_to_the_durable_rule() {
+        let mut record = entity();
+        record.payload.insert(
+            crate::typed::Symbol::from("unretained-extension"),
+            crate::typed::Value::embedded(crate::typed::Value::string("live object")),
+        );
+        let registry = crate::fields::SchemaRegistry::v1();
+        let context = RecordContext::isolated(&registry);
+        let error = validate_record(&record, &context, &crate::problem::Path::root());
+        assert_eq!(error.len(), 1, "{error:?}");
+        assert_eq!(
+            error[0].code,
+            crate::problem::ErrorCode::EmbeddedValueNotDurable
+        );
+    }
+
+    #[test]
+    fn a_later_version_governs_a_retained_authoritative_field() {
+        let registry = crate::fields::SchemaRegistry::production();
+        let mut record = assertion("proposed");
+        record.payload.insert(
+            crate::typed::Symbol::from("extraction"),
+            crate::typed::Value::string("free-text model note"),
+        );
+        let error = validate_record_value(&record.to_value(), &registry, None)
+            .expect_err("malformed extraction");
+        assert!(error.iter().any(|diagnostic| diagnostic.code
+            == crate::problem::ErrorCode::TypeMismatch
+            && diagnostic.path.to_string() == "$.payload.extraction"));
+
+        // The shape the memory adapter writes stays valid and keeps its digest.
+        record.payload.insert(
+            crate::typed::Symbol::from("extraction"),
+            crate::typed::Value::record_named(
+                "extraction",
+                vec![
+                    crate::typed::Value::string("model"),
+                    crate::typed::Value::string("prompt"),
+                ],
+            ),
+        );
+        let validated = validate_record_value(&record.to_value(), &registry, None)
+            .expect("well-formed extraction");
+        assert_eq!(validated.full_digest(), record.full_digest());
+
+        // The same rule covers a version 1 document's retained include map.
+        let document = document_v3();
+        validate_record_value(&document.to_value(), &registry, None).expect("well-formed includes");
+        let mut malformed = document.clone();
+        malformed.schema_version = 1;
+        let key = crate::typed::Value::string("x.adoc");
+        let untyped = crate::typed::Value::dictionary([(key, crate::typed::Value::integer(1_i64))]);
+        malformed
+            .payload
+            .insert(crate::typed::Symbol::from("includes"), untyped);
+        let error = validate_record_value(&malformed.to_value(), &registry, None)
+            .expect_err("malformed includes");
+        assert!(error.iter().any(|diagnostic| diagnostic.code
+            == crate::problem::ErrorCode::TypeMismatch
+            && diagnostic.path.to_string() == "$.payload.includes[\"x.adoc\"]"));
     }
 }

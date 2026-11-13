@@ -4,6 +4,12 @@
 //! tagged JSON transport; text output is for people reading logs, errors, and
 //! summaries. Symbols are quoted when they are not comfortably readable. The
 //! exact textual representation is not used for hashing or persistence.
+//!
+//! Control, invisible and bidirectional-control characters are always escaped,
+//! because the text is read on terminals: record content must not be able to
+//! clear the screen, recolour text, reorder it or forge a second output line.
+//! Printable text renders unchanged, and a rendered string is a valid Preserves
+//! text string that parses back to the same text.
 
 /// Render a value using Preserves text syntax for human consumption.
 pub fn render(value: &crate::typed::Value) -> String {
@@ -44,10 +50,7 @@ fn write_scalar(output: &mut String, value: &crate::typed::Value) -> bool {
             }
         }
         crate::typed::Value::SignedInteger(integer) => output.push_str(&integer.to_string()),
-        crate::typed::Value::String(text) => match serde_json::to_string(text) {
-            Ok(quoted) => output.push_str(&quoted),
-            Err(_) => output.push_str(&format!("{text:?}")),
-        },
+        crate::typed::Value::String(text) => write_string(output, text),
         crate::typed::Value::ByteString(bytes) => {
             output.push_str("#x\"");
             for byte in bytes.as_slice() {
@@ -55,10 +58,7 @@ fn write_scalar(output: &mut String, value: &crate::typed::Value) -> bool {
             }
             output.push('"');
         }
-        crate::typed::Value::Symbol(symbol) => match write_symbol_string(symbol.as_str()) {
-            Ok(bare) => output.push_str(&bare),
-            Err(quoted) => output.push_str(&quoted),
-        },
+        crate::typed::Value::Symbol(symbol) => output.push_str(&render_symbol(symbol.as_str())),
         _ => return false,
     }
     true
@@ -117,18 +117,105 @@ fn write_composite<'a>(work: &mut Vec<RenderWork<'a>>, value: &'a crate::typed::
 
 /// Write a symbol using the diagnostic text syntax.
 pub fn write_symbol(formatter: &mut std::fmt::Formatter<'_>, text: &str) -> std::fmt::Result {
-    match write_symbol_string(text) {
-        Ok(bare) => formatter.write_str(&bare),
-        Err(quoted) => formatter.write_str(&quoted),
+    formatter.write_str(&render_symbol(text))
+}
+
+/// Render a symbol: bare when it is comfortably readable, quoted otherwise.
+fn render_symbol(text: &str) -> String {
+    if is_bare_symbol(text) {
+        return text.to_owned();
+    }
+    let mut rendered = String::with_capacity(text.len() + 2);
+    rendered.push('|');
+    for character in text.chars() {
+        if character == '|' {
+            rendered.push_str("\\|");
+        } else {
+            write_quoted_character(&mut rendered, character);
+        }
+    }
+    rendered.push('|');
+    rendered
+}
+
+/// Append a string as a quoted Preserves text string literal.
+fn write_string(output: &mut String, text: &str) {
+    output.push('"');
+    for character in text.chars() {
+        if character == '"' {
+            output.push_str("\\\"");
+        } else {
+            write_quoted_character(output, character);
+        }
+    }
+    output.push('"');
+}
+
+/// Append one character of a quoted text form, escaping what must be escaped.
+///
+/// The escapes are the Preserves text string escapes, so a rendered string
+/// parses back to the same text; the quoted-symbol form uses the same set.
+fn write_quoted_character(output: &mut String, character: char) {
+    match character {
+        '\\' => output.push_str("\\\\"),
+        '\n' => output.push_str("\\n"),
+        '\r' => output.push_str("\\r"),
+        '\t' => output.push_str("\\t"),
+        '\u{08}' => output.push_str("\\b"),
+        '\u{0C}' => output.push_str("\\f"),
+        other if is_nonprinting(other) => write_code_point_escape(output, other),
+        other => output.push(other),
     }
 }
 
-fn write_symbol_string(text: &str) -> Result<String, String> {
-    if is_bare_symbol(text) {
-        Ok(text.to_owned())
-    } else {
-        let escaped = text.replace('\\', "\\\\").replace('|', "\\|");
-        Err(format!("|{escaped}|"))
+/// Whether a character must be escaped because it is invisible or reorders text.
+///
+/// Covers the C0, DEL and C1 controls, the Unicode format characters that
+/// render as nothing or change the direction of the text around them, and the
+/// line and paragraph separators, none of which may reach a terminal.
+///
+/// Exposed crate-wide so diagnostic message escaping can apply the same rule to
+/// text it interpolates.
+pub(crate) fn is_nonprinting(character: char) -> bool {
+    if character.is_control() {
+        return true;
+    }
+    matches!(
+        u32::from(character),
+        0x00AD
+            | 0x061C
+            | 0x180E
+            | 0xFEFF
+            | 0x200B..=0x200F
+            | 0x2028..=0x202E
+            | 0x2060..=0x206F
+            | 0xE0000..=0xE007F
+    )
+}
+
+/// Append the `\uXXXX` escape for a character.
+///
+/// Code points above the basic multilingual plane use a UTF-16 surrogate pair,
+/// because a bare surrogate is not a valid Preserves text escape.
+fn write_code_point_escape(output: &mut String, character: char) {
+    let scalar = u32::from(character);
+    if scalar <= 0xFFFF {
+        write_escape_unit(output, scalar);
+        return;
+    }
+    let adjusted = scalar - 0x1_0000;
+    write_escape_unit(output, 0xD800 + (adjusted >> 10));
+    write_escape_unit(output, 0xDC00 + (adjusted & 0x3FF));
+}
+
+/// Append `\u` and the four hexadecimal digits of one UTF-16 code unit.
+fn write_escape_unit(output: &mut String, unit: u32) {
+    output.push_str("\\u");
+    for shift in [12_u32, 8, 4, 0] {
+        // Masking keeps the digit below the radix, so a digit always results.
+        if let Some(digit) = char::from_digit((unit >> shift) & 0xF, 16) {
+            output.push(digit);
+        }
     }
 }
 

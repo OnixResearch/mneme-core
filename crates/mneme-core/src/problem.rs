@@ -64,6 +64,8 @@ pub enum ErrorCode {
     TrailingBytes,
     DepthLimitExceeded,
     AnnotationLimitExceeded,
+    /// A declared size or count limit was exceeded.
+    LimitExceeded,
     DuplicateSetElement,
     DuplicateDictionaryKey,
     UnsupportedValueKind,
@@ -116,6 +118,7 @@ impl ErrorCode {
             ErrorCode::TrailingBytes => "trailing-bytes",
             ErrorCode::DepthLimitExceeded => "depth-limit-exceeded",
             ErrorCode::AnnotationLimitExceeded => "annotation-limit-exceeded",
+            ErrorCode::LimitExceeded => "limit-exceeded",
             ErrorCode::DuplicateSetElement => "duplicate-set-element",
             ErrorCode::DuplicateDictionaryKey => "duplicate-dictionary-key",
             ErrorCode::UnsupportedValueKind => "unsupported-value-kind",
@@ -280,11 +283,33 @@ impl Diagnostic {
 
 impl std::fmt::Display for Diagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}: {}", self.path, self.code, self.message)
+        write!(formatter, "{}: {}: ", self.path, self.code)?;
+        write_escaped(&self.message, formatter)
     }
 }
 
 impl std::error::Error for Diagnostic {}
+
+/// Write diagnostic text with control characters escaped.
+///
+/// A message quotes record content — kind symbols, extension field names,
+/// values — and record content is chosen by whoever committed it. Emitting it
+/// verbatim would let a crafted record clear or recolour an operator's
+/// terminal, or forge a second output line that looks like another diagnostic.
+fn write_escaped(text: &str, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    for character in text.chars() {
+        match character {
+            '\n' => formatter.write_str("\\n")?,
+            '\r' => formatter.write_str("\\r")?,
+            '\t' => formatter.write_str("\\t")?,
+            control if crate::text::is_nonprinting(control) => {
+                write!(formatter, "\\u{{{:x}}}", u32::from(control))?;
+            }
+            other => write!(formatter, "{other}")?,
+        }
+    }
+    Ok(())
+}
 
 /// Render a diagnostic list for human output.
 pub fn render_diagnostics(diagnostics: &[Diagnostic]) -> String {
@@ -321,5 +346,23 @@ mod tests {
             diagnostic.to_string(),
             "$.record.payload: missing-field: required field lifecycle is absent"
         );
+    }
+
+    #[test]
+    fn control_characters_in_a_message_cannot_reach_the_terminal() {
+        let diagnostic = Diagnostic::new(
+            Stage::Envelope,
+            ErrorCode::UnknownRecordKind,
+            Path::root().field("kind"),
+            "unknown record kind x\u{1b}[2J\u{1b}[31mFAKE OK\nvalid entity",
+        );
+        let rendered = render_diagnostics(&[diagnostic]);
+        assert!(
+            !rendered.chars().any(char::is_control),
+            "control characters survived rendering: {rendered:?}"
+        );
+        assert!(rendered.contains("\\u{1b}[2J"), "{rendered}");
+        assert!(rendered.contains("\\u{1b}[31m"), "{rendered}");
+        assert!(rendered.contains("\\nvalid entity"), "{rendered}");
     }
 }

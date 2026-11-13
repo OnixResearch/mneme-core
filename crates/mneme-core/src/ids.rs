@@ -108,24 +108,28 @@ opaque_id!(
 );
 
 fn parse_hex(text: &str) -> Result<[u8; 16], &'static str> {
-    if text.len() != 32 {
+    let digits = text.as_bytes();
+    if digits.len() != 32 {
         return Err("identifier must contain exactly 32 hexadecimal digits");
     }
+    // One spelling per identity: accepting `A`-`F` would let the same record be
+    // submitted two ways, and the digest is taken over the canonical form, so
+    // the two spellings would hash alike while their submitted bytes differ.
+    if !mneme_kernel::text::is_lower_hex(digits) {
+        return Err("identifier must contain exactly 32 lowercase hexadecimal digits");
+    }
     let mut bytes = [0_u8; 16];
-    for (index, chunk) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
-        let high = nibble(chunk[0])?;
-        let low = nibble(chunk[1])?;
-        bytes[index] = (high << 4) | low;
+    for (index, chunk) in digits.as_chunks::<2>().0.iter().enumerate() {
+        bytes[index] = (nibble(chunk[0]) << 4) | nibble(chunk[1]);
     }
     Ok(bytes)
 }
 
-fn nibble(byte: u8) -> Result<u8, &'static str> {
+const fn nibble(byte: u8) -> u8 {
     match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err("identifier contains a non-hexadecimal character"),
+        b'0'..=b'9' => byte - b'0',
+        // `parse_hex` has already refused every byte outside `0`-`9` and `a`-`f`.
+        _ => byte - b'a' + 10,
     }
 }
 
@@ -175,5 +179,33 @@ mod tests {
                 "{text:?} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn uppercase_hexadecimal_is_not_a_canonical_identifier() {
+        let canonical = "00112233445566778899aabbccddeeff";
+        assert!(RecordId::from_hex(canonical).is_ok());
+        let uppercase = canonical.to_uppercase();
+        assert!(
+            RecordId::from_hex(&uppercase).is_err(),
+            "uppercase identifiers must be refused, not silently rewritten"
+        );
+        // The refusal reaches the record envelope as an invalid identifier at
+        // the field that carried it, so a caller sees the bytes it submitted.
+        let value = crate::typed::Value::record_named(
+            "record-id",
+            vec![crate::typed::Value::string(uppercase)],
+        );
+        let diagnostic =
+            RecordId::from_value(&value, &crate::problem::Path::root()).expect_err("uppercase id");
+        assert_eq!(
+            diagnostic.code,
+            crate::problem::ErrorCode::InvalidIdentifier
+        );
+        assert!(
+            diagnostic.message.contains("lowercase"),
+            "{}",
+            diagnostic.message
+        );
     }
 }

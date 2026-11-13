@@ -21,8 +21,8 @@ pub mod timekeeper;
 pub use catalog::{Manifest, ManifestRecord};
 pub use coordinator::{
     CommitOutcome, LAYOUT_VERSION, LEDGER_FILE, ProjectionRegistration, ProjectionResolution,
-    ProjectionState, PublicationOutcome, PublicationState, RecoveryReport, Snapshot, Workspace,
-    WorkspaceConfig, WorkspaceStatus,
+    ProjectionState, PublicationOutcome, PublicationState, RecoveryReport, SharedRecordCache,
+    Snapshot, Workspace, WorkspaceConfig, WorkspaceStatus,
 };
 pub use error::{Failure, Result};
 pub use injectors::{FaultAt, FaultInjector, FaultPoint, NoFaults};

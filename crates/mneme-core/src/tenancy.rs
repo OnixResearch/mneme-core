@@ -43,6 +43,24 @@ impl ScopeClass {
             _ => None,
         }
     }
+
+    /// Convert to the decision kernel's isolation class.
+    ///
+    /// The kernel only distinguishes hypothesis scopes from every other class,
+    /// because that is the only distinction the isolation rules use: a
+    /// hypothesis claim must never reach operational views, and every other
+    /// class holds operational memory. The exhaustive `match` keeps a new
+    /// class from silently acquiring operational standing.
+    pub const fn to_kernel(self) -> mneme_kernel::isolation::ScopeClass {
+        match self {
+            ScopeClass::Hypothesis => mneme_kernel::isolation::ScopeClass::Hypothesis,
+            ScopeClass::User
+            | ScopeClass::Workspace
+            | ScopeClass::Project
+            | ScopeClass::Agent
+            | ScopeClass::Task => mneme_kernel::isolation::ScopeClass::Operational,
+        }
+    }
 }
 
 impl std::fmt::Display for ScopeClass {
@@ -201,5 +219,27 @@ mod tests {
         let error =
             ScopeId::from_value(&value, &crate::problem::Path::root()).expect_err("unknown class");
         assert_eq!(error.code, crate::problem::ErrorCode::InvalidScope);
+    }
+
+    #[test]
+    fn only_hypothesis_scopes_are_hypothetical_to_the_kernel() {
+        assert_eq!(
+            ScopeClass::Hypothesis.to_kernel(),
+            mneme_kernel::isolation::ScopeClass::Hypothesis
+        );
+        for operational in [
+            ScopeClass::User,
+            ScopeClass::Workspace,
+            ScopeClass::Project,
+            ScopeClass::Agent,
+            ScopeClass::Task,
+        ] {
+            assert_eq!(
+                operational.to_kernel(),
+                mneme_kernel::isolation::ScopeClass::Operational,
+                "{} must be operational",
+                operational.symbol()
+            );
+        }
     }
 }

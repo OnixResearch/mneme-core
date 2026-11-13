@@ -15,9 +15,10 @@ fn document(
     record: mneme_core::RecordId,
     revision: mneme_core::RevisionId,
     title: &str,
+    path: &str,
 ) -> mneme_core::RecordEnvelope {
     mneme_core::RecordEnvelope {
-        schema_version: 1,
+        schema_version: 3,
         kind: mneme_core::RecordKind::Document,
         record_id: record,
         revision_id: revision,
@@ -28,6 +29,10 @@ fn document(
             (
                 mneme_core::Symbol::from("title"),
                 mneme_core::Value::string(title),
+            ),
+            (
+                mneme_core::Symbol::from("path"),
+                mneme_core::Value::string(path),
             ),
             (
                 mneme_core::Symbol::from("entity"),
@@ -87,21 +92,40 @@ fn validate(
     values: &[mneme_core::Value],
     prior: Option<&mneme_core::SnapshotIndex>,
 ) -> mneme_core::ValidatedBatch {
-    mneme_core::validate_batch(values, &mneme_core::SchemaRegistry::v1(), prior)
+    mneme_core::validate_batch(values, &mneme_core::SchemaRegistry::production(), prior)
         .expect("valid batch")
 }
 
 #[test]
 fn document_move_preserves_identity_and_incoming_references() {
-    let document_one = document(IDENTITY, REVISION_ONE, "Cedar Notes");
+    let document_one = document(IDENTITY, REVISION_ONE, "Cedar Notes", "notes/cedar.adoc");
+    // Equal content, distinct identity: no implicit merge, and the equal-content
+    // document is validated under its own revision.
     let duplicate = document(
         mneme_core::RecordId::from_bytes([9; 16]),
-        REVISION_ONE,
+        REVISION_TWO,
         "Cedar Notes",
+        "notes/cedar.adoc",
     );
-    // Equal content, distinct identity: no implicit merge.
     assert_eq!(document_one.payload_digest(), duplicate.payload_digest());
     assert_ne!(document_one.record_id, duplicate.record_id);
+    let duplicated = validate(
+        &[
+            mneme_core::fixtures::entity().to_value(),
+            mneme_core::fixtures::source_revision().to_value(),
+            duplicate.to_value(),
+        ],
+        None,
+    );
+    let duplicate_entry = duplicated
+        .index
+        .get(&duplicate.record_id)
+        .expect("the duplicate document is indexed");
+    assert_eq!(duplicate_entry.revision, REVISION_TWO);
+    assert!(
+        duplicated.index.get(&IDENTITY).is_none(),
+        "equal content must not create the original identity"
+    );
 
     let before = [
         mneme_core::fixtures::entity(),
@@ -114,31 +138,56 @@ fn document_move_preserves_identity_and_incoming_references() {
         .map(mneme_core::RecordEnvelope::to_value)
         .collect();
     let prior = validate(&before_values, None);
+    let resolved_before = incoming_relation_target(&prior, &prior.index);
+    assert_eq!(resolved_before.target, IDENTITY);
+    assert_eq!(resolved_before.kind, mneme_core::RecordKind::Document);
+    assert_eq!(resolved_before.revision, REVISION_ONE);
 
-    let mut renamed = document(IDENTITY, REVISION_TWO, "Cedar Notes (renamed)");
-    renamed.predecessor = Some(REVISION_ONE);
-    renamed.recorded = mneme_core::RecordedTime::new(mneme_core::Timestamp::from_nanos(12), 12);
-    let after = validate(&[renamed.to_value()], Some(&prior.index));
+    // The move: the same identity and kind, a new revision, and a new path.
+    let mut moved = document(
+        IDENTITY,
+        REVISION_TWO,
+        "Cedar Notes",
+        "notes/moved/cedar.adoc",
+    );
+    moved.predecessor = Some(REVISION_ONE);
+    moved.recorded = mneme_core::RecordedTime::new(mneme_core::Timestamp::from_nanos(12), 12);
+    assert_ne!(
+        document_one.payload.get("path"),
+        moved.payload.get("path"),
+        "the move must change the logical path"
+    );
+    let after = validate(&[moved.to_value()], Some(&prior.index));
     let current = after
         .records
         .iter()
         .find(|record| record.record_id == IDENTITY)
-        .expect("renamed document");
+        .expect("moved document");
     assert_eq!(current.predecessor, Some(REVISION_ONE));
     assert_eq!(current.kind, mneme_core::RecordKind::Document);
+    assert_eq!(
+        current.payload.get("path"),
+        Some(&mneme_core::Value::string("notes/moved/cedar.adoc"))
+    );
 
-    // The incoming relation still resolves to the stable document identity.
-    let RelationTarget { target, kind } = incoming_relation_target(&prior);
-    assert_eq!(target, IDENTITY);
-    assert_eq!(kind, mneme_core::RecordKind::Document);
+    // The incoming relation still resolves to the stable document identity, and
+    // now to the revision the move created.
+    let resolved_after = incoming_relation_target(&prior, &after.index);
+    assert_eq!(resolved_after.target, IDENTITY);
+    assert_eq!(resolved_after.kind, mneme_core::RecordKind::Document);
+    assert_eq!(resolved_after.revision, REVISION_TWO);
 }
 
 struct RelationTarget {
     target: mneme_core::RecordId,
     kind: mneme_core::RecordKind,
+    revision: mneme_core::RevisionId,
 }
 
-fn incoming_relation_target(batch: &mneme_core::ValidatedBatch) -> RelationTarget {
+fn incoming_relation_target(
+    batch: &mneme_core::ValidatedBatch,
+    index: &mneme_core::SnapshotIndex,
+) -> RelationTarget {
     let relation = batch
         .records
         .iter()
@@ -149,9 +198,15 @@ fn incoming_relation_target(batch: &mneme_core::ValidatedBatch) -> RelationTarge
         &mneme_core::Path::root(),
     )
     .expect("typed reference");
+    reference
+        .validate(index, &mneme_core::Path::root())
+        .expect("the incoming reference resolves after the change");
+    let target = reference.target().expect("local target");
+    let entry = index.get(&target).expect("indexed target");
     RelationTarget {
-        target: reference.target().expect("local target"),
+        target,
         kind: reference.kind(),
+        revision: entry.revision,
     }
 }
 

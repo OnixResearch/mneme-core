@@ -33,6 +33,7 @@ pub mod typed;
 pub mod upgrade;
 pub mod wire;
 
+pub use binary::MAX_INTEGER_BYTES;
 pub use binary::{decode, decode_canonical, encode};
 pub use clock::{RecordedTime, Timestamp, ValidTime};
 pub use fields::{
@@ -40,6 +41,7 @@ pub use fields::{
     SchemaRegistry,
 };
 pub use hashing::{ContentDigest, EncodingProfile, HashAlgorithm, ValueBoundary};
+pub use hashing::{kernel_digest, request_fingerprint};
 pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
 pub use payload::{RetainedSource, SourceContent, SourceSpan};
 pub use pointer::{Reference, RevisionEntry, SnapshotIndex};

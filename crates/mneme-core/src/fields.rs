@@ -161,6 +161,20 @@ impl Lifecycle {
             )
         })
     }
+
+    /// Convert to the decision kernel's lifecycle.
+    ///
+    /// The exhaustive `match` means a lifecycle added here cannot be handed to
+    /// the kernel under some other state's transition rules.
+    pub const fn to_kernel(self) -> mneme_kernel::claim::Lifecycle {
+        match self {
+            Lifecycle::Proposed => mneme_kernel::claim::Lifecycle::Proposed,
+            Lifecycle::Accepted => mneme_kernel::claim::Lifecycle::Accepted,
+            Lifecycle::Disputed => mneme_kernel::claim::Lifecycle::Disputed,
+            Lifecycle::Superseded => mneme_kernel::claim::Lifecycle::Superseded,
+            Lifecycle::Retracted => mneme_kernel::claim::Lifecycle::Retracted,
+        }
+    }
 }
 
 /// The declared origin category of an assertion or episode.
@@ -222,6 +236,10 @@ pub enum FieldType {
     Span,
     SourceContent,
     WorkspaceRevision,
+    /// `<extraction model prompt>`: the model and prompt behind a value.
+    Extraction,
+    /// A document include closure: text paths to pinned source revisions.
+    IncludeMap,
 }
 
 /// One declared payload field.
@@ -356,7 +374,11 @@ impl RecordSchema {
                 RecordKind::Assertion => {
                     kind.fields
                         .push(optional("decision", reference(Some(RecordKind::Decision))));
-                    kind.fields.push(optional("extraction", FieldType::Any));
+                    // Model extractions are ordinary authoritative data: a
+                    // malformed one would break every belief and conflict view
+                    // in the workspace, so its shape is schema-checked here.
+                    kind.fields
+                        .push(optional("extraction", FieldType::Extraction));
                     kind.fields
                         .push(optional("completeness", FieldType::Symbol));
                 }
@@ -417,7 +439,10 @@ impl RecordSchema {
                         ),
                         optional("path", FieldType::Text),
                         optional("binding", reference(Some(RecordKind::DocumentBinding))),
-                        optional("includes", FieldType::Dictionary),
+                        // The include closure decides which source bytes a
+                        // rendered document depends on, so it is authoritative
+                        // data rather than an untyped dictionary.
+                        optional("includes", FieldType::IncludeMap),
                         optional("render-config", FieldType::Text),
                     ],
                     ExtensionPolicy::Retain,
@@ -676,6 +701,29 @@ impl SchemaRegistry {
     pub fn supported_versions(&self) -> Vec<u32> {
         self.versions.keys().copied().collect()
     }
+
+    /// The declared field a later version introduces for a kind.
+    ///
+    /// An earlier version retains unknown payload fields as extensions. When
+    /// the unknown name is one a later version declares authoritative for the
+    /// same kind, the version that introduced it still governs its type:
+    /// otherwise a record written under the compatibility rule could carry a
+    /// malformed value that every consumer of the later version then has to
+    /// reject. The lowest later version wins, so the type is the one the field
+    /// had when it was introduced. The returned spec carries the declared
+    /// static name, so a diagnostic can address the field the way the declaring
+    /// version does. Only the type and the name apply: the field is absent from
+    /// the earlier version's schema, so a missing value is not a missing field.
+    pub fn later_field(&self, kind: RecordKind, name: &str, version: u32) -> Option<FieldSpec> {
+        let start = std::ops::Bound::Excluded(version);
+        let stop = std::ops::Bound::Unbounded;
+        self.versions.range((start, stop)).find_map(|(_, schema)| {
+            schema
+                .kind(kind)
+                .and_then(|kind_schema| kind_schema.field(name))
+                .copied()
+        })
+    }
 }
 
 /// Validate one declared payload field.
@@ -737,7 +785,96 @@ pub fn validate_field(
         FieldType::WorkspaceRevision => {
             validate_parsed_field(crate::ids::WorkspaceRevisionId::from_value(value, path))
         }
+        FieldType::Extraction => validate_extraction_field(value, path),
+        FieldType::IncludeMap => validate_include_map_field(value, path, index),
     }
+}
+
+/// Validate `<extraction model prompt>`.
+///
+/// The label, the arity and both field types are fixed: a consumer that parses
+/// an extraction must be able to do so without a fallback.
+fn validate_extraction_field(
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    let shape_error = || {
+        vec![crate::problem::Diagnostic::new(
+            crate::problem::Stage::Domain,
+            crate::problem::ErrorCode::TypeMismatch,
+            path.clone(),
+            "expected <extraction model prompt> with two strings",
+        )]
+    };
+    let Some(record) = value.as_record() else {
+        return shape_error();
+    };
+    if record.label() != &crate::typed::Value::symbol("extraction") || record.fields().len() != 2 {
+        return shape_error();
+    }
+    let mut diagnostics = Vec::with_capacity(2);
+    for (position, field) in record.fields().iter().enumerate() {
+        if field.as_string().is_none() {
+            diagnostics.extend(type_mismatch(field, &path.index(position), "string"));
+        }
+    }
+    diagnostics
+}
+
+/// Validate a document include closure: text paths to pinned source revisions.
+///
+/// A closure entry names exact source bytes, so it must be a revision pin and
+/// not a snapshot-local, external or unresolved reference; otherwise a rendered
+/// document could depend on bytes it never recorded.
+fn validate_include_map_field(
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+    index: Option<&crate::pointer::SnapshotIndex>,
+) -> Vec<crate::problem::Diagnostic> {
+    let Some(entries) = value.as_dictionary() else {
+        return type_mismatch(
+            value,
+            path,
+            "dictionary of include paths to pinned source revisions",
+        );
+    };
+    // One entry yields at most one type mismatch or one reference validation,
+    // and a reference validation reports at most three diagnostics.
+    let mut diagnostics = Vec::with_capacity(entries.len().saturating_mul(3));
+    for (position, (key, reference_value)) in entries.iter().enumerate() {
+        let entry_path = match key.as_string() {
+            Some(text) => path.named(text),
+            None => path.index(position),
+        };
+        if key.as_string().is_none() {
+            diagnostics.extend(type_mismatch(key, &entry_path, "include path string"));
+            continue;
+        }
+        match crate::pointer::Reference::from_value(reference_value, &entry_path) {
+            Err(diagnostic) => diagnostics.push(diagnostic),
+            Ok(reference) => {
+                if matches!(reference, crate::pointer::Reference::Pinned { .. }) {
+                    diagnostics.extend(validate_reference(
+                        &reference,
+                        Some(RecordKind::SourceRevision),
+                        ReferenceValidation {
+                            allow_external: false,
+                            allow_unresolved: false,
+                        },
+                        &entry_path,
+                        index,
+                    ));
+                } else {
+                    diagnostics.extend(type_mismatch(
+                        reference_value,
+                        &entry_path,
+                        "pinned source-revision reference",
+                    ));
+                }
+            }
+        }
+    }
+    diagnostics
 }
 
 fn validate_scalar_field(
@@ -1102,5 +1239,149 @@ mod tests {
         ] {
             assert_eq!(Origin::parse(origin.symbol()), Some(origin));
         }
+    }
+
+    #[test]
+    fn lifecycle_converts_to_the_kernel_state() {
+        for (lifecycle, kernel) in [
+            (
+                Lifecycle::Proposed,
+                mneme_kernel::claim::Lifecycle::Proposed,
+            ),
+            (
+                Lifecycle::Accepted,
+                mneme_kernel::claim::Lifecycle::Accepted,
+            ),
+            (
+                Lifecycle::Disputed,
+                mneme_kernel::claim::Lifecycle::Disputed,
+            ),
+            (
+                Lifecycle::Superseded,
+                mneme_kernel::claim::Lifecycle::Superseded,
+            ),
+            (
+                Lifecycle::Retracted,
+                mneme_kernel::claim::Lifecycle::Retracted,
+            ),
+        ] {
+            assert_eq!(lifecycle.to_kernel(), kernel, "{}", lifecycle.symbol());
+        }
+    }
+
+    #[test]
+    fn malformed_extraction_is_refused_by_the_assertion_schema() {
+        let registry = SchemaRegistry::production();
+        let assertion = registry
+            .schema(2)
+            .and_then(|schema| schema.kind(RecordKind::Assertion))
+            .expect("assertion v2");
+        let extraction = assertion.field("extraction").expect("extraction");
+        assert_eq!(extraction.ty, FieldType::Extraction);
+        let path = crate::problem::Path::root();
+
+        // A free-text model note is not an extraction record.
+        let note = crate::typed::Value::string("free-text model note");
+        let error = validate_field(extraction.ty, &note, &path, None);
+        assert_eq!(error[0].code, crate::problem::ErrorCode::TypeMismatch);
+
+        // The declared label with a non-string prompt is refused at that field.
+        let wrong_prompt = crate::typed::Value::record_named(
+            "extraction",
+            vec![
+                crate::typed::Value::string("model"),
+                crate::typed::Value::integer(1_i64),
+            ],
+        );
+        let error = validate_field(extraction.ty, &wrong_prompt, &path, None);
+        assert_eq!(error.len(), 1);
+        assert_eq!(error[0].code, crate::problem::ErrorCode::TypeMismatch);
+        assert_eq!(error[0].path.to_string(), "$[1]");
+
+        // The shape every consumer parses stays valid.
+        let valid = crate::typed::Value::record_named(
+            "extraction",
+            vec![
+                crate::typed::Value::string("model"),
+                crate::typed::Value::string("prompt"),
+            ],
+        );
+        assert!(validate_field(extraction.ty, &valid, &path, None).is_empty());
+    }
+
+    #[test]
+    fn malformed_include_map_is_refused_by_the_document_schema() {
+        let registry = SchemaRegistry::production();
+        let document = registry
+            .schema(3)
+            .and_then(|schema| schema.kind(RecordKind::Document))
+            .expect("document v3");
+        let includes = document.field("includes").expect("includes");
+        assert_eq!(includes.ty, FieldType::IncludeMap);
+        let path = crate::problem::Path::root();
+
+        let pin = pinned_source(RecordKind::SourceRevision);
+        let valid = include_entry("chapters/one.adoc", pin);
+        assert!(validate_field(includes.ty, &valid, &path, None).is_empty());
+
+        // An integer is not a reference to pinned bytes.
+        let untyped = include_entry("x.adoc", crate::typed::Value::integer(1_i64));
+        let error = validate_field(includes.ty, &untyped, &path, None);
+        assert_eq!(error[0].path.to_string(), "$[\"x.adoc\"]");
+
+        // A snapshot-local reference does not pin the bytes that were included.
+        let source = crate::ids::RecordId::from_bytes([2; 16]);
+        let local_reference = crate::pointer::Reference::local(source, RecordKind::SourceRevision);
+        let local = include_entry("x.adoc", local_reference.to_value());
+        let error = validate_field(includes.ty, &local, &path, None);
+        assert_eq!(error[0].code, crate::problem::ErrorCode::TypeMismatch);
+
+        // A pin of the wrong kind cannot be an included source revision.
+        let wrong_pin = pinned_source(RecordKind::Entity);
+        let wrong_kind = include_entry("x.adoc", wrong_pin);
+        let error = validate_field(includes.ty, &wrong_kind, &path, None);
+        assert_eq!(
+            error[0].code,
+            crate::problem::ErrorCode::ReferenceKindMismatch
+        );
+    }
+
+    fn include_entry(path: &str, value: crate::typed::Value) -> crate::typed::Value {
+        let key = crate::typed::Value::string(path);
+        crate::typed::Value::dictionary([(key, value)])
+    }
+
+    fn pinned_source(revision_kind: RecordKind) -> crate::typed::Value {
+        let source = crate::ids::RecordId::from_bytes([2; 16]);
+        let revision = crate::ids::RevisionId::from_bytes([3; 16]);
+        let reference = crate::pointer::Reference::pinned(source, revision, revision_kind);
+        reference.to_value()
+    }
+
+    #[test]
+    fn earlier_versions_use_the_type_a_later_version_declares() {
+        let registry = SchemaRegistry::production();
+        let extraction = registry
+            .later_field(RecordKind::Assertion, "extraction", 1)
+            .expect("version 2 declares extraction");
+        assert_eq!(extraction.ty, FieldType::Extraction);
+        // The declared name is static, so diagnostics address the field the
+        // same way a record of the declaring version does.
+        assert_eq!(extraction.name, "extraction");
+        let includes = registry
+            .later_field(RecordKind::Document, "includes", 1)
+            .expect("version 3 declares includes");
+        assert_eq!(includes.ty, FieldType::IncludeMap);
+        assert_eq!(includes.name, "includes");
+        // A name no version declares stays a plain retained extension.
+        assert_eq!(
+            registry.later_field(RecordKind::Assertion, "x-ext", 1),
+            None
+        );
+        // Nothing is later than the newest registered version.
+        assert_eq!(
+            registry.later_field(RecordKind::Document, "includes", 3),
+            None
+        );
     }
 }

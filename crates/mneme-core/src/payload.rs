@@ -35,9 +35,15 @@ impl SourceSpan {
         self.end
     }
 
-    /// Number of bytes covered.
-    pub fn length(self) -> u64 {
-        self.end - self.start + 1
+    /// Number of bytes covered, or `None` when the inclusive length is not
+    /// representable in `u64`.
+    ///
+    /// Only the span `<span 0 18446744073709551615>` is unrepresentable: it
+    /// covers `2^64` bytes. Both offsets are otherwise ordered because
+    /// [`SourceSpan::new`] and [`SourceSpan::from_value`] refuse a span whose
+    /// end precedes its start, so this method cannot wrap or panic.
+    pub fn length(self) -> Option<u64> {
+        mneme_kernel::extent::span_length(self.start, self.end)?.checked_add(1)
     }
 
     /// Encode as `<span start end>`.
@@ -245,7 +251,10 @@ mod tests {
                 .expect("decode"),
             span
         );
-        assert_eq!(span.length(), 7);
+        assert_eq!(span.length(), Some(7));
+        let single = SourceSpan::new(0, 0).expect("single byte");
+        assert_eq!(single.length(), Some(1));
+        assert!(SourceSpan::new(9, 3).is_err(), "construction must refuse");
         let inverted = crate::typed::Value::record_named(
             "span",
             vec![
@@ -259,6 +268,26 @@ mod tests {
                 .code,
             crate::problem::ErrorCode::InvalidInterval
         );
+    }
+
+    #[test]
+    fn maximum_span_length_is_reported_instead_of_wrapping() {
+        // The widest span the decoder accepts covers 2^64 bytes, which no u64
+        // can hold; the length must report that rather than overflow.
+        let root = crate::problem::Path::root();
+        let decoded = crate::typed::Value::record_named(
+            "span",
+            vec![
+                crate::typed::Value::integer(0_i64),
+                crate::typed::Value::integer(i64::MAX),
+            ],
+        );
+        let span = SourceSpan::from_value(&decoded, &root).expect("ordered span");
+        assert_eq!(span.length(), Some(9_223_372_036_854_775_808));
+        let widest = SourceSpan::new(0, u64::MAX).expect("ordered offsets");
+        assert_eq!(widest.length(), None);
+        let nearly_widest = SourceSpan::new(1, u64::MAX).expect("ordered offsets");
+        assert_eq!(nearly_widest.length(), Some(u64::MAX));
     }
 
     #[test]

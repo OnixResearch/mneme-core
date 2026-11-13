@@ -5,7 +5,9 @@
 //! ordered by their encoded representation, integers use minimal two's
 //! complement bytes, and length varints use their shortest form. Decoding
 //! rejects non-canonical spellings, duplicate set elements or dictionary keys,
-//! trailing bytes, and inputs that exceed the declared nesting bound.
+//! trailing bytes, integers larger than [`MAX_INTEGER_BYTES`], and nesting
+//! deeper than [`MAX_DEPTH`]; the tagged JSON transport enforces the same two
+//! bounds, so a value crosses both codecs or neither.
 //!
 //! The decoder skips annotations, which are presentation metadata under the
 //! Mneme profile. A decoder is therefore value-preserving for every
@@ -28,10 +30,22 @@ const TAG_SEQUENCE: u8 = 0xB5;
 const TAG_SET: u8 = 0xB6;
 const TAG_DICTIONARY: u8 = 0xB7;
 
-/// Maximum compound nesting accepted by the decoder.
-pub const MAX_DEPTH: usize = 256;
+/// Maximum number of nested compound values accepted by the codecs.
+///
+/// The binary decoder and the tagged JSON transport share this one bound so a
+/// value either crosses both codecs or neither. It is low enough that every
+/// accepted value also fits the JSON transport: a chain of `MAX_DEPTH`
+/// dictionaries nests `2 + 3 * MAX_DEPTH` JSON containers, which stays below
+/// the 128-container recursion bound of the JSON parser.
+pub const MAX_DEPTH: usize = 40;
 /// Maximum number of annotations skipped around a single value.
 pub const MAX_ANNOTATIONS: usize = 10_000;
+/// Maximum size of an integer, in bytes of minimal two's-complement encoding.
+///
+/// Both decoders check the declared size before reading or converting the
+/// bytes, so decoding an integer costs time linear in the input and no
+/// conversion ever runs on an arbitrarily large number.
+pub const MAX_INTEGER_BYTES: usize = 4096;
 
 /// Encode a value in canonical Preserves binary form.
 pub fn encode(value: &crate::typed::Value) -> Vec<u8> {
@@ -203,11 +217,7 @@ fn build_encoded(task: EncodeTask<'_>, values: &mut Vec<Vec<u8>>) -> Vec<u8> {
 
 /// Decode one complete value and reject trailing bytes.
 pub fn decode(bytes: &[u8]) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
-    let mut decoder = Decoder {
-        bytes,
-        position: 0,
-        annotations: 0,
-    };
+    let mut decoder = Decoder { bytes, position: 0 };
     let value = decoder.value(&crate::problem::Path::root(), 0)?;
     if decoder.position != bytes.len() {
         return Err(crate::problem::Diagnostic::new(
@@ -268,10 +278,17 @@ fn minimal_signed_bytes(value: &num_bigint::BigInt) -> Vec<u8> {
     bytes
 }
 
+/// Whether `value` fits the declared integer size bound.
+///
+/// The tagged JSON transport applies this to the integer it parsed, so both
+/// codecs accept exactly the same integers.
+pub(crate) fn integer_within_byte_limit(value: &num_bigint::BigInt) -> bool {
+    minimal_signed_bytes(value).len() <= MAX_INTEGER_BYTES
+}
+
 struct Decoder<'a> {
     bytes: &'a [u8],
     position: usize,
-    annotations: usize,
 }
 
 impl Decoder<'_> {
@@ -365,12 +382,15 @@ impl Decoder<'_> {
         path: &crate::problem::Path,
         depth: usize,
     ) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
+        // Annotations are not values in the nesting sense, but each one
+        // recurses through here, so this bound also caps how many of them can
+        // be chained. Compound nesting itself is bounded at `enter_compound`.
         if depth > MAX_DEPTH {
             return Err(crate::problem::Diagnostic::new(
                 crate::problem::Stage::Syntax,
                 crate::problem::ErrorCode::DepthLimitExceeded,
                 path.clone(),
-                format!("compound nesting exceeds {MAX_DEPTH} levels"),
+                format!("value nesting exceeds {MAX_DEPTH} levels"),
             ));
         }
         self.skip_annotations(path, depth)?;
@@ -378,17 +398,40 @@ impl Decoder<'_> {
         self.decode_tag(tag, path, depth)
     }
 
+    /// Refuse a compound value nested deeper than [`MAX_DEPTH`].
+    ///
+    /// `depth` is the number of compound values already open, so the value
+    /// about to be entered would sit at nesting level `depth + 1`.
+    fn enter_compound(
+        &self,
+        path: &crate::problem::Path,
+        depth: usize,
+    ) -> Result<(), crate::problem::Diagnostic> {
+        if depth >= MAX_DEPTH {
+            return Err(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Syntax,
+                crate::problem::ErrorCode::DepthLimitExceeded,
+                path.clone(),
+                format!("compound nesting exceeds {MAX_DEPTH} levels"),
+            ));
+        }
+        Ok(())
+    }
+
     fn skip_annotations(
         &mut self,
         path: &crate::problem::Path,
         depth: usize,
     ) -> Result<(), crate::problem::Diagnostic> {
+        // The limit counts annotations around this one value, not annotations
+        // in the document, so a long sequence of annotated elements is fine.
+        let mut annotations: usize = 0;
         loop {
             match self.peek() {
                 Some(TAG_ANNOTATION) => {
                     self.position += 1;
-                    self.annotations += 1;
-                    if self.annotations > MAX_ANNOTATIONS {
+                    annotations += 1;
+                    if annotations > MAX_ANNOTATIONS {
                         return Err(crate::problem::Diagnostic::new(
                             crate::problem::Stage::Syntax,
                             crate::problem::ErrorCode::AnnotationLimitExceeded,
@@ -427,11 +470,26 @@ impl Decoder<'_> {
             TAG_STRING => self.decode_string(path),
             TAG_BYTESTRING => self.decode_bytes(path),
             TAG_SYMBOL => self.decode_symbol(path),
-            TAG_RECORD => self.record(path, depth),
-            TAG_SEQUENCE => self.sequence(path, depth),
-            TAG_SET => self.set(path, depth),
-            TAG_DICTIONARY => self.dictionary(path, depth),
-            TAG_EMBEDDED => self.decode_embedded(path, depth),
+            TAG_RECORD => {
+                self.enter_compound(path, depth)?;
+                self.record(path, depth)
+            }
+            TAG_SEQUENCE => {
+                self.enter_compound(path, depth)?;
+                self.sequence(path, depth)
+            }
+            TAG_SET => {
+                self.enter_compound(path, depth)?;
+                self.set(path, depth)
+            }
+            TAG_DICTIONARY => {
+                self.enter_compound(path, depth)?;
+                self.dictionary(path, depth)
+            }
+            TAG_EMBEDDED => {
+                self.enter_compound(path, depth)?;
+                self.decode_embedded(path, depth)
+            }
             TAG_END => Err(crate::problem::Diagnostic::new(
                 crate::problem::Stage::Syntax,
                 crate::problem::ErrorCode::MalformedEncoding,
@@ -480,6 +538,16 @@ impl Decoder<'_> {
                 "integer length exceeds the address space",
             )
         })?;
+        // Checked before the bytes are read or converted, so the cost of a
+        // hostile integer is bounded by the header rather than by its size.
+        if length > MAX_INTEGER_BYTES {
+            return Err(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Syntax,
+                crate::problem::ErrorCode::LimitExceeded,
+                path.clone(),
+                format!("integer of {length} byte(s) exceeds the {MAX_INTEGER_BYTES}-byte limit"),
+            ));
+        }
         let bytes = self.take(length, path)?;
         let integer = if bytes.is_empty() {
             num_bigint::BigInt::from(0)
