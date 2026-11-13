@@ -1,6 +1,6 @@
 # Mneme Core
 
-Mneme Core is the standalone Rust library workspace for Mneme's typed memory engine and its independently checked decision kernel. This private repository contains eleven libraries and the kernel's preserved Lean proof sources; it does not contain an application binary.
+Mneme Core is the standalone Rust library workspace for Mneme's typed memory engine and its independently checked decision kernel. This public repository contains eleven libraries and the kernel's preserved Lean proof sources; it does not contain an application binary.
 
 ## Crate roles
 
@@ -25,6 +25,11 @@ The source is **`OnixResearch/mneme` at commit `b77325d65aa2904f45234d1d90290819
 The kernel proof owner is this repository: `crates/mneme-kernel` and `proofs/kernel` are kept together. Consumers should pin one exact `mneme-core` revision and run that revision's `scripts/verify-kernel-proofs.mjs`; the verifier locates its Rust kernel, proof sources, and lockfile relative to its own checkout.
 
 ## Development and verification
+
+The source can be cloned without authentication. The pinned Nix environment
+still fetches private OnixResearch verification tooling (Octet and its
+dependencies), so those Nix commands require authorized SSH access. The Cargo
+library workspace itself uses only local crates and crates.io dependencies.
 
 Enter the pinned development shell to obtain Rust 1.99.1, the pinned Octet runner, the real Scryer Prolog test engine, and—on `x86_64-linux`—the matching Charon/Aeneas/Lean tools:
 
@@ -68,4 +73,4 @@ profile must remain clean without a baseline.
 
 ## Repository status and licensing
 
-This repository is private. No `LICENSE` or `NOTICE` file existed at the cited source commit, and this extraction adds neither. **This extraction makes no license grant.**
+This repository is publicly readable. No `LICENSE` or `NOTICE` file existed at the cited source commit, and this extraction adds neither. **Public visibility does not add a license grant.**
