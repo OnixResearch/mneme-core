@@ -1322,6 +1322,7 @@ version = "0.1.0"
 dependencies = [
  "mneme-core",
  "mneme-datalog",
+ "mneme-kernel",
  "mneme-memory",
  "mneme-recall",
  "mneme-retention",
@@ -1338,10 +1339,15 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "mneme-api",
+ "mneme-consolidation",
  "mneme-core",
+ "mneme-datalog",
  "mneme-doc",
  "mneme-eval",
+ "mneme-kernel",
  "mneme-memory",
+ "mneme-prolog",
+ "mneme-recall",
  "mneme-retention",
  "mneme-store",
  "serde",
@@ -1354,7 +1360,10 @@ name = "mneme-consolidation"
 version = "0.1.0"
 dependencies = [
  "mneme-core",
+ "mneme-kernel",
+ "mneme-memory",
  "mneme-recall",
+ "mneme-store",
  "serde",
  "serde_json",
  "tempfile",
@@ -1364,6 +1373,7 @@ dependencies = [
 name = "mneme-core"
 version = "0.1.0"
 dependencies = [
+ "mneme-kernel",
  "num-bigint",
  "num-traits",
  "serde",
@@ -1376,6 +1386,7 @@ name = "mneme-datalog"
 version = "0.1.0"
 dependencies = [
  "mneme-core",
+ "mneme-kernel",
  "mneme-memory",
  "mneme-retention",
  "mneme-store",
@@ -1389,7 +1400,6 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "iced-widgets",
- "mneme-api",
  "mneme-core",
  "mneme-doc",
  "mneme-memory",
@@ -1408,6 +1418,7 @@ name = "mneme-doc"
 version = "0.1.0"
 dependencies = [
  "mneme-core",
+ "mneme-kernel",
  "mneme-memory",
  "mneme-store",
  "tempfile",
@@ -1424,21 +1435,28 @@ dependencies = [
  "mneme-datalog",
  "mneme-desktop",
  "mneme-doc",
+ "mneme-kernel",
  "mneme-memory",
  "mneme-prolog",
  "mneme-recall",
  "mneme-retention",
  "mneme-store",
+ "rustix 1.1.6",
  "serde",
  "serde_json",
  "tempfile",
 ]
 
 [[package]]
+name = "mneme-kernel"
+version = "0.1.0"
+
+[[package]]
 name = "mneme-memory"
 version = "0.1.0"
 dependencies = [
  "mneme-core",
+ "mneme-kernel",
  "mneme-store",
  "tempfile",
  "thiserror 2.0.21",
@@ -1450,8 +1468,10 @@ version = "0.1.0"
 dependencies = [
  "mneme-core",
  "mneme-datalog",
+ "mneme-kernel",
  "mneme-memory",
  "mneme-store",
+ "rustix 1.1.6",
  "tempfile",
  "thiserror 2.0.21",
 ]
@@ -1462,6 +1482,7 @@ version = "0.1.0"
 dependencies = [
  "mneme-core",
  "mneme-datalog",
+ "mneme-kernel",
  "mneme-memory",
  "mneme-retention",
  "mneme-store",
@@ -1474,6 +1495,7 @@ name = "mneme-retention"
 version = "0.1.0"
 dependencies = [
  "mneme-core",
+ "mneme-kernel",
  "mneme-memory",
  "mneme-store",
  "tempfile",
@@ -1486,6 +1508,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "mneme-core",
+ "mneme-kernel",
  "rusqlite",
  "sha2",
  "tempfile",

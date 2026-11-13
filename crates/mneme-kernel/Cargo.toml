@@ -1,0 +1,15 @@
+[package]
+name = "mneme-kernel"
+description = "Pure decision kernel for Mneme, extracted with Charon and Aeneas and proved in Lean"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["debug"]
+# `Debug` impls are for callers and tests. The proof extraction builds without
+# this feature so the generated Lean contains no formatting machinery.
+debug = []
+
+[lints]
+workspace = true

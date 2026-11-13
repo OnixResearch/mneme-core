@@ -1,0 +1,1035 @@
+{
+  "format": "mneme-kernel-proof-inventory",
+  "version": 1,
+  "theorems": [
+    {
+      "name": "mneme_kernel.admission.decide_commit_fresh",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::decide_commit"
+      ],
+      "statement": "(facts : CommitFacts) (h : facts.stored = none) : decide_commit facts = ok (if facts.base_is_current = false then CommitDecision.StaleBase else if facts.generation_is_pinned = false then CommitDecision.BarrierAdvanced else CommitDecision.Proceed)"
+    },
+    {
+      "name": "mneme_kernel.admission.decide_commit_total",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::decide_commit"
+      ],
+      "statement": "(facts : CommitFacts) : ∃ d : CommitDecision, decide_commit facts = ok d"
+    },
+    {
+      "name": "mneme_kernel.admission.decide_commit_proceed",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::decide_commit"
+      ],
+      "statement": "(facts : CommitFacts) : ∃ d, decide_commit facts = ok d ∧ (d = CommitDecision.Proceed → facts.stored = none ∧ facts.base_is_current = true ∧ facts.generation_is_pinned = true)"
+    },
+    {
+      "name": "mneme_kernel.admission.decide_commit_stored",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::decide_commit"
+      ],
+      "statement": "(facts : CommitFacts) (s : StoredCommand) (h : facts.stored = some s) : ∃ d, decide_commit facts = ok d ∧ (d = CommitDecision.Replay ∨ d = CommitDecision.IdempotencyConflict)"
+    },
+    {
+      "name": "mneme_kernel.admission.decide_commit_replay",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::decide_commit",
+        "admission::same_request"
+      ],
+      "statement": "(facts : CommitFacts) : ∃ d, decide_commit facts = ok d ∧ (d = CommitDecision.Replay → ∃ s, facts.stored = some s ∧ ((∃ k, s.fingerprint = some k ∧ facts.fingerprint = some k) ∨ ((s.fingerprint = none ∨ facts.fingerprint = none) ∧ s.command = facts.command)))"
+    },
+    {
+      "name": "mneme_kernel.admission.decide_commit_conflict_of_distinct_fingerprints",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::decide_commit",
+        "admission::same_request"
+      ],
+      "statement": "(facts : CommitFacts) (s : StoredCommand) (k o : hashing.Digest) (hs : facts.stored = some s) (hk : s.fingerprint = some k) (ho : facts.fingerprint = some o) (hne : k ≠ o) : decide_commit facts = ok CommitDecision.IdempotencyConflict"
+    },
+    {
+      "name": "mneme_kernel.admission.decide_replay_fresh_iff",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::decide_replay"
+      ],
+      "statement": "(stored : Option StoredCommand) (fp : hashing.Digest) : ∃ d, decide_replay stored fp = ok d ∧ (d = ReplayDecision.Fresh ↔ stored = none)"
+    },
+    {
+      "name": "mneme_kernel.admission.decide_replay_replay_iff",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::decide_replay"
+      ],
+      "statement": "(stored : Option StoredCommand) (fp : hashing.Digest) : ∃ d, decide_replay stored fp = ok d ∧ (d = ReplayDecision.Replay ↔ ∃ s, stored = some s ∧ s.fingerprint = some fp)"
+    },
+    {
+      "name": "mneme_kernel.budget.charge_total",
+      "file": "MnemeKernelProofs/Budget.lean",
+      "subjects": [
+        "budget::charge"
+      ],
+      "statement": "(used cost limit : U64) : ∃ charged, charge used cost limit = ok charged"
+    },
+    {
+      "name": "mneme_kernel.budget.charge_some_iff",
+      "file": "MnemeKernelProofs/Budget.lean",
+      "subjects": [
+        "budget::charge"
+      ],
+      "statement": "(used cost limit total : U64) : charge used cost limit = ok (some total) ↔ total.val = used.val + cost.val ∧ used.val + cost.val ≤ limit.val"
+    },
+    {
+      "name": "mneme_kernel.budget.charge_none_iff",
+      "file": "MnemeKernelProofs/Budget.lean",
+      "subjects": [
+        "budget::charge"
+      ],
+      "statement": "(used cost limit : U64) : charge used cost limit = ok none ↔ limit.val < used.val + cost.val"
+    },
+    {
+      "name": "mneme_kernel.budget.charge_never_exceeds",
+      "file": "MnemeKernelProofs/Budget.lean",
+      "subjects": [
+        "budget::charge"
+      ],
+      "statement": "(used cost limit total : U64) (h : charge used cost limit = ok (some total)) : total.val ≤ limit.val ∧ used.val ≤ total.val"
+    },
+    {
+      "name": "mneme_kernel.claim.transition_allowed_total",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::transition_allowed"
+      ],
+      "statement": "(prior : Option Lifecycle) (next : Lifecycle) : ∃ allowed, transition_allowed prior next = ok allowed"
+    },
+    {
+      "name": "mneme_kernel.claim.transition_allowed_new_iff",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::transition_allowed"
+      ],
+      "statement": "(next : Lifecycle) : transition_allowed none next = ok true ↔ next = Lifecycle.Proposed"
+    },
+    {
+      "name": "mneme_kernel.claim.retracted_is_terminal",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::transition_allowed"
+      ],
+      "statement": "(next : Lifecycle) : transition_allowed (some Lifecycle.Retracted) next = ok false"
+    },
+    {
+      "name": "mneme_kernel.claim.superseded_only_retracts",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::transition_allowed"
+      ],
+      "statement": "(next : Lifecycle) : transition_allowed (some Lifecycle.Superseded) next = ok true ↔ next = Lifecycle.Retracted"
+    },
+    {
+      "name": "mneme_kernel.claim.no_return_to_proposed",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::transition_allowed"
+      ],
+      "statement": "(previous : Lifecycle) (h : previous ≠ Lifecycle.Proposed) : transition_allowed (some previous) Lifecycle.Proposed = ok false"
+    },
+    {
+      "name": "mneme_kernel.claim.required_decision_total",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::required_decision"
+      ],
+      "statement": "(state : Lifecycle) : ∃ required, required_decision state = ok required"
+    },
+    {
+      "name": "mneme_kernel.claim.required_decision_none_iff",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::required_decision"
+      ],
+      "statement": "(state : Lifecycle) : required_decision state = ok none ↔ state = Lifecycle.Proposed"
+    },
+    {
+      "name": "mneme_kernel.claim.required_decision_table",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::required_decision"
+      ],
+      "statement": ": required_decision Lifecycle.Proposed = ok none ∧ required_decision Lifecycle.Accepted = ok (some DecisionKind.Acceptance) ∧ required_decision Lifecycle.Disputed = ok (some DecisionKind.ConflictResolution) ∧ required_decision Lifecycle.Superseded = ok (some DecisionKind.Supersession) ∧ required_decision Lifecycle.Retracted = ok (some DecisionKind.Retraction)"
+    },
+    {
+      "name": "mneme_kernel.claim.kind_eq_total",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::kind_eq"
+      ],
+      "statement": "(left right : DecisionKind) : ∃ same, kind_eq left right = ok same"
+    },
+    {
+      "name": "mneme_kernel.claim.kind_eq_iff",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::kind_eq"
+      ],
+      "statement": "(left right : DecisionKind) : kind_eq left right = ok true ↔ left = right"
+    },
+    {
+      "name": "mneme_kernel.claim.decision_backs_total",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::decision_backs"
+      ],
+      "statement": "(state : Lifecycle) (cited : Option CitedDecision) : ∃ backed, decision_backs state cited = ok backed"
+    },
+    {
+      "name": "mneme_kernel.claim.decision_backs_proposed_iff",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::decision_backs"
+      ],
+      "statement": "(cited : Option CitedDecision) : decision_backs Lifecycle.Proposed cited = ok true ↔ cited = none"
+    },
+    {
+      "name": "mneme_kernel.claim.decision_backs_non_proposed_iff",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::decision_backs"
+      ],
+      "statement": "(state : Lifecycle) (cited : Option CitedDecision) (h : state ≠ Lifecycle.Proposed) : decision_backs state cited = ok true ↔ ∃ decision, cited = some decision ∧ required_decision state = ok (some decision.kind) ∧ decision.outcome_matches = true ∧ decision.targets_assertion = true ∧ decision.binds_replaced_revision = true"
+    },
+    {
+      "name": "mneme_kernel.claim.revision_admissible_total",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::revision_admissible"
+      ],
+      "statement": "(prior : Option Lifecycle) (next : Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) : ∃ admissible, revision_admissible prior next cited commit = ok admissible"
+    },
+    {
+      "name": "mneme_kernel.claim.revision_admissible_sound",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::revision_admissible"
+      ],
+      "statement": "(prior : Option Lifecycle) (next : Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) (h : revision_admissible prior next cited commit = ok true) : transition_allowed prior next = ok true ∧ decision_backs next cited = ok true ∧ (cited ≠ none → commit.decision_in_batch = true ∧ commit.actor_is_committer = true)"
+    },
+    {
+      "name": "mneme_kernel.claim.revision_admissible_complete",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::revision_admissible"
+      ],
+      "statement": "(prior : Option Lifecycle) (next : Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) (htransition : transition_allowed prior next = ok true) (hbacked : decision_backs next cited = ok true) (hfresh : cited ≠ none → commit.decision_in_batch = true ∧ commit.actor_is_committer = true) : revision_admissible prior next cited commit = ok true"
+    },
+    {
+      "name": "mneme_kernel.claim.accepted_needs_fresh_bound_acceptance",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::decision_backs",
+        "claim::revision_admissible",
+        "claim::transition_allowed"
+      ],
+      "statement": "(prior : Option Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) (h : revision_admissible prior Lifecycle.Accepted cited commit = ok true) : ∃ decision, cited = some decision ∧ decision.kind = DecisionKind.Acceptance ∧ decision.outcome_matches = true ∧ decision.targets_assertion = true ∧ decision.binds_replaced_revision = true ∧ commit.decision_in_batch = true ∧ commit.actor_is_committer = true ∧ (prior = some Lifecycle.Proposed ∨ prior = some Lifecycle.Accepted ∨ prior = some Lifecycle.Disputed)"
+    },
+    {
+      "name": "mneme_kernel.cleanup.is_settled_iff",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::is_settled"
+      ],
+      "statement": "(st : LocationState) : (∃ b, is_settled st = ok b) ∧ (is_settled st = ok true ↔ st = LocationState.Purged ∨ st = LocationState.Absent ∨ st = LocationState.Verified)"
+    },
+    {
+      "name": "mneme_kernel.cleanup.needs_attempt_iff",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::needs_attempt"
+      ],
+      "statement": "(st : LocationState) : (∃ b, needs_attempt st = ok b) ∧ (needs_attempt st = ok true ↔ st = LocationState.Pending ∨ st = LocationState.Failed ∨ st = LocationState.RetainedShared ∨ st = LocationState.Unavailable)"
+    },
+    {
+      "name": "mneme_kernel.cleanup.settled_or_needs_attempt",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::is_settled",
+        "cleanup::needs_attempt"
+      ],
+      "statement": "(st : LocationState) : (∃ a, is_settled st = ok a) ∧ (∃ b, needs_attempt st = ok b) ∧ (is_settled st = ok true ∨ needs_attempt st = ok true) ∧ ¬ (is_settled st = ok true ∧ needs_attempt st = ok true)"
+    },
+    {
+      "name": "mneme_kernel.cleanup.physically_complete_total",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::physically_complete"
+      ],
+      "statement": "(s : Slice LocationState) : ∃ b, physically_complete s = ok b"
+    },
+    {
+      "name": "mneme_kernel.cleanup.physically_complete_iff",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::physically_complete"
+      ],
+      "statement": "(s : Slice LocationState) : (∃ b, physically_complete s = ok b) ∧ (physically_complete s = ok true ↔ s.val ≠ [] ∧ ∀ x ∈ s.val, x = LocationState.Purged ∨ x = LocationState.Absent ∨ x = LocationState.Verified)"
+    },
+    {
+      "name": "mneme_kernel.cleanup.physical_cleanup_incomplete_when_empty",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::physically_complete"
+      ],
+      "statement": "(s : Slice LocationState) (h : s.val = []) : physically_complete s = ok false"
+    },
+    {
+      "name": "mneme_kernel.cleanup.summarize_total",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::summarize"
+      ],
+      "statement": "(s : Slice LocationState) : ∃ r, summarize s = ok r"
+    },
+    {
+      "name": "mneme_kernel.cleanup.summarize_complete_iff",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::summarize"
+      ],
+      "statement": "(s : Slice LocationState) : (∃ r, summarize s = ok r) ∧ (∃ b, physically_complete s = ok b) ∧ (summarize s = ok JobSummary.Complete ↔ physically_complete s = ok true)"
+    },
+    {
+      "name": "mneme_kernel.cleanup.summarize_pending_iff",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::summarize"
+      ],
+      "statement": "(s : Slice LocationState) : (∃ r, summarize s = ok r) ∧ (summarize s = ok JobSummary.Pending ↔ LocationState.Pending ∈ s.val)"
+    },
+    {
+      "name": "mneme_kernel.cleanup.summarize_failed_iff",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::summarize"
+      ],
+      "statement": "(s : Slice LocationState) : (∃ r, summarize s = ok r) ∧ (summarize s = ok JobSummary.Failed ↔ LocationState.Failed ∈ s.val ∧ LocationState.Pending ∉ s.val)"
+    },
+    {
+      "name": "mneme_kernel.cleanup.summarize_partial_iff",
+      "file": "MnemeKernelProofs/Cleanup.lean",
+      "subjects": [
+        "cleanup::summarize"
+      ],
+      "statement": "(s : Slice LocationState) : (∃ r, summarize s = ok r) ∧ (summarize s = ok JobSummary.Partial ↔ LocationState.Pending ∉ s.val ∧ LocationState.Failed ∉ s.val ∧ (s.val = [] ∨ LocationState.RetainedShared ∈ s.val ∨ LocationState.Unavailable ∈ s.val))"
+    },
+    {
+      "name": "mneme_kernel.completeness.answer_complete_total",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::answer_complete"
+      ],
+      "statement": "(facts : AnswerFacts) : ∃ complete, answer_complete facts = ok complete"
+    },
+    {
+      "name": "mneme_kernel.completeness.answer_complete_iff",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::answer_complete"
+      ],
+      "statement": "(facts : AnswerFacts) : answer_complete facts = ok true ↔ facts.exhaustive = true ∧ facts.coverage = Coverage.Complete ∧ facts.limit_reached = false ∧ facts.declaration_valid = true ∧ facts.generation_current = true"
+    },
+    {
+      "name": "mneme_kernel.completeness.absence_established_total",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::absence_established"
+      ],
+      "statement": "(facts : AnswerFacts) : ∃ established, absence_established facts = ok established"
+    },
+    {
+      "name": "mneme_kernel.completeness.absence_established_iff",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::absence_established"
+      ],
+      "statement": "(facts : AnswerFacts) : absence_established facts = ok true ↔ facts.rows.val = 0 ∧ facts.exhaustive = true ∧ facts.coverage = Coverage.Complete ∧ facts.limit_reached = false ∧ facts.declaration_valid = true ∧ facts.generation_current = true"
+    },
+    {
+      "name": "mneme_kernel.completeness.absence_implies_complete",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::absence_established",
+        "completeness::answer_complete"
+      ],
+      "statement": "(facts : AnswerFacts) (h : absence_established facts = ok true) : answer_complete facts = ok true"
+    },
+    {
+      "name": "mneme_kernel.completeness.combine_coverage_total",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::combine_coverage"
+      ],
+      "statement": "(left right : Coverage) : ∃ combined, combine_coverage left right = ok combined"
+    },
+    {
+      "name": "mneme_kernel.completeness.combine_coverage_comm",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::combine_coverage"
+      ],
+      "statement": "(left right : Coverage) : ∃ combined, combine_coverage left right = ok combined ∧ combine_coverage right left = ok combined"
+    },
+    {
+      "name": "mneme_kernel.completeness.combine_coverage_assoc",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::combine_coverage"
+      ],
+      "statement": "(first second third : Coverage) : ∃ left right combined, combine_coverage first second = ok left ∧ combine_coverage second third = ok right ∧ combine_coverage left third = ok combined ∧ combine_coverage first right = ok combined"
+    },
+    {
+      "name": "mneme_kernel.completeness.combine_coverage_complete_iff",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::combine_coverage"
+      ],
+      "statement": "(left right : Coverage) : combine_coverage left right = ok Coverage.Complete ↔ left = Coverage.Complete ∧ right = Coverage.Complete"
+    },
+    {
+      "name": "mneme_kernel.completeness.combine_coverage_unknown_absorbs",
+      "file": "MnemeKernelProofs/Completeness.lean",
+      "subjects": [
+        "completeness::combine_coverage"
+      ],
+      "statement": "(left right : Coverage) (h : left = Coverage.Unknown ∨ right = Coverage.Unknown) : combine_coverage left right = ok Coverage.Unknown"
+    },
+    {
+      "name": "mneme_kernel.extent.span_length_some_iff",
+      "file": "MnemeKernelProofs/Extent.lean",
+      "subjects": [
+        "extent::span_length"
+      ],
+      "statement": "(a b n : U64) : ∃ o, span_length a b = ok o ∧ (o = some n ↔ a.val ≤ b.val ∧ n.val = b.val - a.val)"
+    },
+    {
+      "name": "mneme_kernel.extent.span_length_none_iff",
+      "file": "MnemeKernelProofs/Extent.lean",
+      "subjects": [
+        "extent::span_length"
+      ],
+      "statement": "(a b : U64) : ∃ o, span_length a b = ok o ∧ (o = none ↔ b.val < a.val)"
+    },
+    {
+      "name": "mneme_kernel.extent.span_in_text_iff",
+      "file": "MnemeKernelProofs/Extent.lean",
+      "subjects": [
+        "extent::span_in_text"
+      ],
+      "statement": "(start stop text_len : U64) : ∃ v, span_in_text start stop text_len = ok v ∧ (v = true ↔ start.val ≤ stop.val ∧ stop.val ≤ text_len.val)"
+    },
+    {
+      "name": "mneme_kernel.extent.excerpt_window_total",
+      "file": "MnemeKernelProofs/Extent.lean",
+      "subjects": [
+        "extent::excerpt_window"
+      ],
+      "statement": "(r : ExcerptRequest) : ∃ o, excerpt_window r = ok o"
+    },
+    {
+      "name": "mneme_kernel.extent.excerpt_window_none_iff",
+      "file": "MnemeKernelProofs/Extent.lean",
+      "subjects": [
+        "extent::excerpt_window"
+      ],
+      "statement": "(r : ExcerptRequest) : ∃ o, excerpt_window r = ok o ∧ (o = none ↔ ¬ (r.start.val ≤ r.stop.val ∧ r.stop.val ≤ r.text_len.val))"
+    },
+    {
+      "name": "mneme_kernel.extent.excerpt_window_spec",
+      "file": "MnemeKernelProofs/Extent.lean",
+      "subjects": [
+        "extent::excerpt_window"
+      ],
+      "statement": "(r : ExcerptRequest) (w : Window) (h : excerpt_window r = ok (some w)) : w.start = r.start ∧ w.start.val ≤ w.stop.val ∧ w.stop.val ≤ r.stop.val ∧ w.stop.val ≤ r.text_len.val ∧ w.stop.val - w.start.val ≤ r.max_bytes.val ∧ (w.truncated = true ↔ r.max_bytes.val < r.stop.val - r.start.val) ∧ (w.truncated = false → w.stop = r.stop) ∧ (w.truncated = true → w.stop.val = r.start.val + r.max_bytes.val)"
+    },
+    {
+      "name": "mneme_kernel.extent.is_continuation_iff",
+      "file": "MnemeKernelProofs/Extent.lean",
+      "subjects": [
+        "extent::is_continuation"
+      ],
+      "statement": "(b : U8) : ∃ v, is_continuation b = ok v ∧ (v = true ↔ 128 ≤ b.val ∧ b.val < 192)"
+    },
+    {
+      "name": "mneme_kernel.extent.floor_boundary_spec",
+      "file": "MnemeKernelProofs/Extent.lean",
+      "subjects": [
+        "extent::floor_boundary"
+      ],
+      "statement": "(bytes : Slice U8) (i : Usize) : ∃ p, floor_boundary bytes i = ok p ∧ p.val ≤ bytes.val.length ∧ (bytes.val.length ≤ i.val → p.val = bytes.val.length) ∧ (i.val < bytes.val.length → p.val ≤ i.val ∧ (p.val = 0 ∨ ∃ b, bytes.val[p.val]? = some b ∧ ¬ Continuation b) ∧ ∀ j, p.val < j → j ≤ i.val → ∃ b, bytes.val[j]? = some b ∧ Continuation b)"
+    },
+    {
+      "name": "mneme_kernel.hashing.digest_eq_iff",
+      "file": "MnemeKernelProofs/Hashing.lean",
+      "subjects": [
+        "hashing::digest_eq"
+      ],
+      "statement": "(a b : Digest) : ∃ r : Bool, digest_eq a b = ok r ∧ (r = true ↔ a = b)"
+    },
+    {
+      "name": "mneme_kernel.hashing.optional_digest_eq_iff",
+      "file": "MnemeKernelProofs/Hashing.lean",
+      "subjects": [
+        "hashing::optional_digest_eq"
+      ],
+      "statement": "(a b : Option Digest) : ∃ r : Bool, optional_digest_eq a b = ok r ∧ (r = true ↔ a = b)"
+    },
+    {
+      "name": "mneme_kernel.isolation.reference_allowed_total",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::reference_allowed"
+      ],
+      "statement": "(facts : ReferenceFacts) : ∃ allowed, reference_allowed facts = ok allowed"
+    },
+    {
+      "name": "mneme_kernel.isolation.reference_allowed_same_scope",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::reference_allowed"
+      ],
+      "statement": "(facts : ReferenceFacts) (h : facts.same_scope = true) : reference_allowed facts = ok true"
+    },
+    {
+      "name": "mneme_kernel.isolation.reference_allowed_cross_scope_iff",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::reference_allowed"
+      ],
+      "statement": "(facts : ReferenceFacts) (h : facts.same_scope = false) : reference_allowed facts = ok true ↔ facts.target_authorized = true ∧ ¬ (facts.source_class = ScopeClass.Operational ∧ facts.target_class = ScopeClass.Hypothesis)"
+    },
+    {
+      "name": "mneme_kernel.isolation.reference_allowed_needs_authorization",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::reference_allowed"
+      ],
+      "statement": "(facts : ReferenceFacts) (h : reference_allowed facts = ok true) : facts.same_scope = true ∨ facts.target_authorized = true"
+    },
+    {
+      "name": "mneme_kernel.isolation.operational_never_depends_on_foreign_hypothesis",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::reference_allowed"
+      ],
+      "statement": "(facts : ReferenceFacts) (hscope : facts.same_scope = false) (hsource : facts.source_class = ScopeClass.Operational) (htarget : facts.target_class = ScopeClass.Hypothesis) : reference_allowed facts = ok false"
+    },
+    {
+      "name": "mneme_kernel.isolation.content_readable_total",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::content_readable"
+      ],
+      "statement": "(facts : ContentFacts) : ∃ readable, content_readable facts = ok readable"
+    },
+    {
+      "name": "mneme_kernel.isolation.content_readable_iff",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::content_readable"
+      ],
+      "statement": "(facts : ContentFacts) : content_readable facts = ok true ↔ facts.same_scope = true ∨ facts.target_authorized = true"
+    },
+    {
+      "name": "mneme_kernel.isolation.revision_scope_structural_total",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::revision_scope_structural"
+      ],
+      "statement": "(change : ScopeChange) : ∃ allowed, revision_scope_structural change = ok allowed"
+    },
+    {
+      "name": "mneme_kernel.isolation.revision_scope_structural_iff",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::revision_scope_structural"
+      ],
+      "statement": "(change : ScopeChange) : revision_scope_structural change = ok true ↔ change.same_scope = true ∨ (change.prior_class = ScopeClass.Hypothesis ∧ change.next_class = ScopeClass.Operational)"
+    },
+    {
+      "name": "mneme_kernel.isolation.revision_scope_allowed_total",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::revision_scope_allowed"
+      ],
+      "statement": "(facts : RevisionFacts) : ∃ allowed, revision_scope_allowed facts = ok allowed"
+    },
+    {
+      "name": "mneme_kernel.isolation.revision_scope_allowed_same_scope",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::revision_scope_allowed"
+      ],
+      "statement": "(facts : RevisionFacts) (h : facts.same_scope = true) : revision_scope_allowed facts = ok true"
+    },
+    {
+      "name": "mneme_kernel.isolation.revision_scope_allowed_cross_scope_iff",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::revision_scope_allowed"
+      ],
+      "statement": "(facts : RevisionFacts) (h : facts.same_scope = false) : revision_scope_allowed facts = ok true ↔ facts.prior_class = ScopeClass.Hypothesis ∧ facts.next_class = ScopeClass.Operational ∧ facts.carries_acceptance = true ∧ facts.both_authorized = true"
+    },
+    {
+      "name": "mneme_kernel.isolation.revision_scope_allowed_implies_structural",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::revision_scope_allowed"
+      ],
+      "statement": "(facts : RevisionFacts) (h : revision_scope_allowed facts = ok true) : revision_scope_structural { same_scope"
+    },
+    {
+      "name": "mneme_kernel.isolation.record_visible_total",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::record_visible"
+      ],
+      "statement": "(facts : VisibilityFacts) : ∃ visible, record_visible facts = ok visible"
+    },
+    {
+      "name": "mneme_kernel.isolation.record_visible_iff",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::record_visible"
+      ],
+      "statement": "(facts : VisibilityFacts) : record_visible facts = ok true ↔ facts.same_scope = true ∨ (facts.include_hypothetical = true ∧ facts.record_class = ScopeClass.Hypothesis ∧ facts.record_scope_authorized = true)"
+    },
+    {
+      "name": "mneme_kernel.isolation.record_visible_never_widens_to_unauthorized",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::record_visible"
+      ],
+      "statement": "(facts : VisibilityFacts) (hscope : facts.same_scope = false) (hauthorized : facts.record_scope_authorized = false) : record_visible facts = ok false"
+    },
+    {
+      "name": "mneme_kernel.isolation.blob_claim_allowed_total",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::blob_claim_allowed"
+      ],
+      "statement": "(facts : BlobClaimFacts) : ∃ allowed, blob_claim_allowed facts = ok allowed"
+    },
+    {
+      "name": "mneme_kernel.isolation.blob_claim_allowed_iff",
+      "file": "MnemeKernelProofs/Isolation.lean",
+      "subjects": [
+        "isolation::blob_claim_allowed"
+      ],
+      "statement": "(facts : BlobClaimFacts) : blob_claim_allowed facts = ok true ↔ facts.bytes_supplied = true ∨ facts.bound_in_scope = true"
+    },
+    {
+      "name": "mneme_kernel.publish.decide_publication_total",
+      "file": "MnemeKernelProofs/Publish.lean",
+      "subjects": [
+        "publish::decide_publication"
+      ],
+      "statement": "(facts : PublicationFacts) : ∃ d : PublicationDecision, decide_publication facts = ok d"
+    },
+    {
+      "name": "mneme_kernel.publish.decide_publication_already_iff",
+      "file": "MnemeKernelProofs/Publish.lean",
+      "subjects": [
+        "publish::decide_publication"
+      ],
+      "statement": "(facts : PublicationFacts) : ∃ d, decide_publication facts = ok d ∧ (d = PublicationDecision.AlreadyPublished ↔ facts.observed = some facts.desired)"
+    },
+    {
+      "name": "mneme_kernel.publish.decide_publication_replace_iff",
+      "file": "MnemeKernelProofs/Publish.lean",
+      "subjects": [
+        "publish::decide_publication"
+      ],
+      "statement": "(facts : PublicationFacts) : ∃ d, decide_publication facts = ok d ∧ (d = PublicationDecision.Replace ↔ facts.observed = facts.expected ∧ facts.observed ≠ some facts.desired)"
+    },
+    {
+      "name": "mneme_kernel.publish.decide_publication_diverged_iff",
+      "file": "MnemeKernelProofs/Publish.lean",
+      "subjects": [
+        "publish::decide_publication"
+      ],
+      "statement": "(facts : PublicationFacts) : ∃ d, decide_publication facts = ok d ∧ (d = PublicationDecision.Diverged ↔ facts.observed ≠ facts.expected ∧ facts.observed ≠ some facts.desired)"
+    },
+    {
+      "name": "mneme_kernel.publish.should_attempt_iff",
+      "file": "MnemeKernelProofs/Publish.lean",
+      "subjects": [
+        "publish::should_attempt"
+      ],
+      "statement": "(p : PublicationPhase) : ∃ r : Bool, should_attempt p = ok r ∧ (r = true ↔ p = PublicationPhase.Pending ∨ p = PublicationPhase.Failed)"
+    },
+    {
+      "name": "mneme_kernel.purge.decide_working_total",
+      "file": "MnemeKernelProofs/Purge.lean",
+      "subjects": [
+        "purge::decide_working"
+      ],
+      "statement": "(facts : WorkingFacts) : ∃ d : WorkingDecision, decide_working facts = ok d"
+    },
+    {
+      "name": "mneme_kernel.purge.decide_working_purge_iff",
+      "file": "MnemeKernelProofs/Purge.lean",
+      "subjects": [
+        "purge::decide_working"
+      ],
+      "statement": "(facts : WorkingFacts) : ∃ d, decide_working facts = ok d ∧ (d = WorkingDecision.Purge ↔ facts.kind = EntryKind.Regular ∧ facts.observed = some facts.planned)"
+    },
+    {
+      "name": "mneme_kernel.purge.decide_working_absent_iff",
+      "file": "MnemeKernelProofs/Purge.lean",
+      "subjects": [
+        "purge::decide_working"
+      ],
+      "statement": "(facts : WorkingFacts) : ∃ d, decide_working facts = ok d ∧ (d = WorkingDecision.AlreadyAbsent ↔ facts.kind = EntryKind.Absent)"
+    },
+    {
+      "name": "mneme_kernel.purge.decide_working_external_edit_iff",
+      "file": "MnemeKernelProofs/Purge.lean",
+      "subjects": [
+        "purge::decide_working"
+      ],
+      "statement": "(facts : WorkingFacts) : ∃ d, decide_working facts = ok d ∧ (d = WorkingDecision.ExternalEdit ↔ facts.kind = EntryKind.Regular ∧ ∃ found, facts.observed = some found ∧ found ≠ facts.planned)"
+    },
+    {
+      "name": "mneme_kernel.purge.decide_blob_total",
+      "file": "MnemeKernelProofs/Purge.lean",
+      "subjects": [
+        "purge::decide_blob"
+      ],
+      "statement": "(facts : BlobFacts) : ∃ d : BlobDecision, decide_blob facts = ok d"
+    },
+    {
+      "name": "mneme_kernel.purge.decide_blob_purge_iff",
+      "file": "MnemeKernelProofs/Purge.lean",
+      "subjects": [
+        "purge::decide_blob"
+      ],
+      "statement": "(facts : BlobFacts) : ∃ d, decide_blob facts = ok d ∧ (d = BlobDecision.Purge ↔ facts.required = false ∧ facts.present = true)"
+    },
+    {
+      "name": "mneme_kernel.purge.decide_blob_required",
+      "file": "MnemeKernelProofs/Purge.lean",
+      "subjects": [
+        "purge::decide_blob"
+      ],
+      "statement": "(facts : BlobFacts) (h : facts.required = true) : decide_blob facts = ok BlobDecision.RetainShared"
+    },
+    {
+      "name": "mneme_kernel.restore.may_serve_iff",
+      "file": "MnemeKernelProofs/Restore.lean",
+      "subjects": [
+        "restore::may_serve"
+      ],
+      "statement": "(marker : Marker) : ∃ r : Bool, may_serve marker = ok r ∧ (r = true ↔ marker = Marker.Clear)"
+    },
+    {
+      "name": "mneme_kernel.restore.decide_ledger_total",
+      "file": "MnemeKernelProofs/Restore.lean",
+      "subjects": [
+        "restore::decide_ledger"
+      ],
+      "statement": "(facts : LedgerFacts) : ∃ d : LedgerDecision, decide_ledger facts = ok d"
+    },
+    {
+      "name": "mneme_kernel.restore.decide_ledger_apply_iff",
+      "file": "MnemeKernelProofs/Restore.lean",
+      "subjects": [
+        "restore::decide_ledger"
+      ],
+      "statement": "(facts : LedgerFacts) : ∃ d, decide_ledger facts = ok d ∧ (d = LedgerDecision.Apply ↔ facts.same_workspace = true ∧ facts.restored_generation.val ≤ facts.ledger_generation.val)"
+    },
+    {
+      "name": "mneme_kernel.restore.decide_ledger_foreign_iff",
+      "file": "MnemeKernelProofs/Restore.lean",
+      "subjects": [
+        "restore::decide_ledger"
+      ],
+      "statement": "(facts : LedgerFacts) : ∃ d, decide_ledger facts = ok d ∧ (d = LedgerDecision.ForeignWorkspace ↔ facts.same_workspace = false)"
+    },
+    {
+      "name": "mneme_kernel.text.is_lower_hex_byte_iff",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_lower_hex_byte"
+      ],
+      "statement": "(b : U8) : ∃ v, is_lower_hex_byte b = ok v ∧ (v = true ↔ LowerHex b)"
+    },
+    {
+      "name": "mneme_kernel.text.is_atom_start_iff",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_atom_start"
+      ],
+      "statement": "(b : U8) : ∃ v, is_atom_start b = ok v ∧ (v = true ↔ AtomStart b)"
+    },
+    {
+      "name": "mneme_kernel.text.is_atom_continue_iff",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_atom_continue"
+      ],
+      "statement": "(b : U8) : ∃ v, is_atom_continue b = ok v ∧ (v = true ↔ AtomContinue b)"
+    },
+    {
+      "name": "mneme_kernel.text.is_lower_hex_iff",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_lower_hex"
+      ],
+      "statement": "(s : Slice U8) : ∃ v, is_lower_hex s = ok v ∧ (v = true ↔ ∀ b ∈ s.val, LowerHex b)"
+    },
+    {
+      "name": "mneme_kernel.text.is_safe_atom_iff",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_safe_atom"
+      ],
+      "statement": "(s : Slice U8) : ∃ v, is_safe_atom s = ok v ∧ (v = true ↔ ∃ first rest, s.val = first :: rest ∧ AtomStart first ∧ ∀ b ∈ rest, AtomContinue b)"
+    },
+    {
+      "name": "mneme_kernel.text.is_safe_atom_not_empty",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_safe_atom"
+      ],
+      "statement": "(s : Slice U8) (h : is_safe_atom s = ok true) : s.val ≠ []"
+    },
+    {
+      "name": "mneme_kernel.text.is_safe_atom_alphanumeric",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_safe_atom"
+      ],
+      "statement": "(s : Slice U8) (h : is_safe_atom s = ok true) : ∀ b ∈ s.val, AtomContinue b"
+    },
+    {
+      "name": "mneme_kernel.text.is_safe_atom_not_variable",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_safe_atom"
+      ],
+      "statement": "(s : Slice U8) (h : is_safe_atom s = ok true) : ∃ first, s.val.head? = some first ∧ AtomStart first"
+    },
+    {
+      "name": "mneme_kernel.text.segment_ok_iff",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [],
+      "statement": "(len : U8) (dots : Bool) : ∃ v, segment_ok len dots = ok v ∧ (v = true ↔ 0 < len.val ∧ ¬ (dots = true ∧ len.val ≤ 2))"
+    },
+    {
+      "name": "mneme_kernel.text.path_step_spec",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::path_step"
+      ],
+      "statement": "(scan : PathScan) (b : U8) : ∃ next, path_step scan b = ok next ∧ (b.val = 0 ∨ b.val = 92 → next.valid = false ∧ next.segment_len = scan.segment_len ∧ next.only_dots = scan.only_dots) ∧ (b.val = 47 → next.valid = (scan.valid && decide (0 < scan.segment_len.val ∧ ¬ (scan.only_dots = true ∧ scan.segment_len.val ≤ 2))) ∧ next.segment_len.val = 0 ∧ next.only_dots = true) ∧ (b.val ≠ 0 → b.val ≠ 92 → b.val ≠ 47 → next.valid = scan.valid ∧ next.segment_len.val = min 3 (scan.segment_len.val + 1) ∧ next.only_dots = (scan.only_dots && decide (b.val = 46)))"
+    },
+    {
+      "name": "mneme_kernel.text.segments_spec",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [],
+      "statement": "(l : List U8) : segments l = List.splitOn (47#u8) l ∧ List.intercalate [47#u8] (segments l) = l ∧ ∀ seg ∈ segments l, ∀ b ∈ seg, b.val ≠ 47"
+    },
+    {
+      "name": "mneme_kernel.text.is_canonical_relative_path_iff",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_canonical_relative_path",
+        "text::path_step"
+      ],
+      "statement": "(s : Slice U8) : is_canonical_relative_path s = ok (canonicalSpec s.val)"
+    },
+    {
+      "name": "mneme_kernel.text.is_canonical_relative_path_total",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_canonical_relative_path"
+      ],
+      "statement": "(s : Slice U8) : ∃ v, is_canonical_relative_path s = ok v"
+    },
+    {
+      "name": "mneme_kernel.text.canonical_path_not_empty",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_canonical_relative_path"
+      ],
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : s.val ≠ []"
+    },
+    {
+      "name": "mneme_kernel.text.canonical_path_no_nul_or_backslash",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_canonical_relative_path"
+      ],
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∀ b ∈ s.val, b.val ≠ 0 ∧ b.val ≠ 92"
+    },
+    {
+      "name": "mneme_kernel.text.canonical_path_no_leading_slash",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_canonical_relative_path"
+      ],
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∃ b, s.val.head? = some b ∧ b.val ≠ 47"
+    },
+    {
+      "name": "mneme_kernel.text.canonical_path_no_trailing_slash",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_canonical_relative_path"
+      ],
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∃ b, s.val.getLast? = some b ∧ b.val ≠ 47"
+    },
+    {
+      "name": "mneme_kernel.text.canonical_path_no_empty_segment",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_canonical_relative_path"
+      ],
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∀ i a b, s.val[i]? = some a → s.val[i + 1]? = some b → ¬ (a.val = 47 ∧ b.val = 47)"
+    },
+    {
+      "name": "mneme_kernel.text.canonical_path_no_dot_segments",
+      "file": "MnemeKernelProofs/Text.lean",
+      "subjects": [
+        "text::is_canonical_relative_path"
+      ],
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∀ seg ∈ segments s.val, seg.map UScalar.val ≠ [46] ∧ seg.map UScalar.val ≠ [46, 46]"
+    },
+    {
+      "name": "mneme_kernel.verdict.merge_total",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::merge"
+      ],
+      "statement": "(a b : Status) : ∃ r, merge a b = ok r"
+    },
+    {
+      "name": "mneme_kernel.verdict.merge_comm",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::merge",
+        "verdict::severity"
+      ],
+      "statement": "(a b : Status) : ∃ r, merge a b = ok r ∧ merge b a = ok r"
+    },
+    {
+      "name": "mneme_kernel.verdict.merge_assoc",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::merge"
+      ],
+      "statement": "(a b c : Status) : ∃ ab bc r, merge a b = ok ab ∧ merge b c = ok bc ∧ merge ab c = ok r ∧ merge a bc = ok r"
+    },
+    {
+      "name": "mneme_kernel.verdict.merge_idem",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::merge"
+      ],
+      "statement": "(a : Status) : merge a a = ok a"
+    },
+    {
+      "name": "mneme_kernel.verdict.merge_passed_identity",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::merge"
+      ],
+      "statement": "(a : Status) : merge Status.Passed a = ok a ∧ merge a Status.Passed = ok a"
+    },
+    {
+      "name": "mneme_kernel.verdict.merge_failed_absorbs",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::merge"
+      ],
+      "statement": "(a : Status) : merge Status.Failed a = ok Status.Failed ∧ merge a Status.Failed = ok Status.Failed"
+    },
+    {
+      "name": "mneme_kernel.verdict.merge_eq_passed_iff",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::merge",
+        "verdict::severity"
+      ],
+      "statement": "(a b : Status) : (∃ r, merge a b = ok r) ∧ (merge a b = ok Status.Passed ↔ a = Status.Passed ∧ b = Status.Passed)"
+    },
+    {
+      "name": "mneme_kernel.verdict.case_status_failed",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::case_status"
+      ],
+      "statement": "(declaration : SkipDeclaration) : case_status declaration Status.Failed = ok Status.Failed"
+    },
+    {
+      "name": "mneme_kernel.verdict.case_status_passed_iff",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::case_status"
+      ],
+      "statement": "(declaration : SkipDeclaration) (observed : Status) : (∃ r, case_status declaration observed = ok r) ∧ (case_status declaration observed = ok Status.Passed ↔ declaration = SkipDeclaration.NotDeclared ∧ observed = Status.Passed)"
+    },
+    {
+      "name": "mneme_kernel.verdict.aggregate_total",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::aggregate"
+      ],
+      "statement": "(s : Slice Status) : ∃ r, aggregate s = ok r"
+    },
+    {
+      "name": "mneme_kernel.verdict.aggregate_empty",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::aggregate"
+      ],
+      "statement": "(s : Slice Status) (h : s.val = []) : aggregate s = ok Status.Unimplemented"
+    },
+    {
+      "name": "mneme_kernel.verdict.aggregate_passed_iff",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::aggregate"
+      ],
+      "statement": "(s : Slice Status) : (∃ r, aggregate s = ok r) ∧ (aggregate s = ok Status.Passed ↔ s.val ≠ [] ∧ ∀ x ∈ s.val, x = Status.Passed)"
+    },
+    {
+      "name": "mneme_kernel.verdict.aggregate_failed_iff",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::aggregate"
+      ],
+      "statement": "(s : Slice Status) : (∃ r, aggregate s = ok r) ∧ (aggregate s = ok Status.Failed ↔ Status.Failed ∈ s.val)"
+    },
+    {
+      "name": "mneme_kernel.verdict.acceptance_satisfied_iff",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::acceptance_satisfied"
+      ],
+      "statement": "(s : Slice Status) : (∃ b, acceptance_satisfied s = ok b) ∧ (acceptance_satisfied s = ok true ↔ s.val ≠ [] ∧ ∀ x ∈ s.val, x = Status.Passed)"
+    },
+    {
+      "name": "mneme_kernel.verdict.acceptance_not_satisfied_when_empty",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::acceptance_satisfied"
+      ],
+      "statement": "(s : Slice Status) (h : s.val = []) : acceptance_satisfied s = ok false"
+    }
+  ]
+}
