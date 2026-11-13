@@ -87,6 +87,14 @@ impl Stop {
             Stop::WorkLimit => "work-budget",
         }
     }
+
+    /// How a requested mode is reported when this stop ended the attempt.
+    fn mode_status(self) -> crate::model::ModeStatus {
+        match self {
+            Stop::Cancelled => crate::model::ModeStatus::Omitted,
+            Stop::Timeout | Stop::WorkLimit => crate::model::ModeStatus::TimedOut,
+        }
+    }
 }
 
 /// A recall attempt either fails or stops on its own budget.
@@ -1297,7 +1305,11 @@ fn stopped_response(context: StoppedContext<'_>, stop: Stop) -> crate::model::Re
             fusion_policy: FUSION_POLICY_VERSION.to_owned(),
         },
         status: stop.outcome(),
-        modes: Vec::new(),
+        modes: request
+            .modes
+            .iter()
+            .map(|mode| stopped_mode(*mode, stop))
+            .collect(),
         candidates: Vec::new(),
         exhaustive: false,
         absence_established: false,
@@ -1311,6 +1323,24 @@ fn stopped_response(context: StoppedContext<'_>, stop: Stop) -> crate::model::Re
         omissions: Vec::new(),
         reason: Some(stop.reason().to_owned()),
         boundary: crate::model::DataBoundary::default(),
+    }
+}
+
+/// Report a requested mode that a stopped attempt could not finish.
+///
+/// A stopped attempt returns no candidates, so no mode contributed. Each
+/// requested mode is still named with the stop that prevented it, so the
+/// response never leaves a missing mode undisclosed.
+fn stopped_mode(mode: crate::model::Mode, stop: Stop) -> crate::model::ModeReport {
+    crate::model::ModeReport {
+        mode,
+        status: stop.mode_status(),
+        index_version: None,
+        revision: None,
+        coverage: crate::model::IndexCoverage::incomplete(0, 0, stop.reason().to_owned()),
+        candidates: 0,
+        relation_exhaustive: None,
+        reason: Some(stop.reason().to_owned()),
     }
 }
 

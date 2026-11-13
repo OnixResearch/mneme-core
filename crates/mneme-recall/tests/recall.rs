@@ -1186,6 +1186,7 @@ fn cancellation_never_looks_successful() {
     cancelled.cancellation = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
         true,
     )));
+    cancelled.modes.insert(mneme_recall::Mode::Vector);
     let response = mneme_recall::Service::new(&mut harness.workspace)
         .recall(cancelled)
         .expect("cancelled response");
@@ -1193,6 +1194,30 @@ fn cancellation_never_looks_successful() {
     assert!(response.candidates.is_empty());
     assert!(!response.absence_established);
     assert!(!response.exhaustive);
+    // Every requested mode is still named, as omitted by the cancellation.
+    let reported: Vec<(mneme_recall::Mode, mneme_recall::ModeStatus)> = response
+        .modes
+        .iter()
+        .map(|mode| (mode.mode, mode.status))
+        .collect();
+    assert_eq!(
+        reported,
+        vec![
+            (
+                mneme_recall::Mode::Lexical,
+                mneme_recall::ModeStatus::Omitted
+            ),
+            (
+                mneme_recall::Mode::Vector,
+                mneme_recall::ModeStatus::Omitted
+            ),
+        ]
+    );
+    for mode in &response.modes {
+        assert_eq!(mode.candidates, 0);
+        assert_eq!(mode.reason.as_deref(), Some("recall cancelled"));
+        assert!(!mode.coverage.complete);
+    }
 }
 
 #[test]
@@ -1210,6 +1235,11 @@ fn a_spent_time_budget_is_an_explicit_timeout() {
     assert!(!response.exhaustive);
     let reason = response.reason.as_deref().expect("reason");
     assert!(reason.contains("time budget"));
+    // The mode that could not run is named with the limit that stopped it.
+    assert_eq!(response.modes.len(), 1);
+    assert_eq!(response.modes[0].mode, mneme_recall::Mode::Lexical);
+    assert_eq!(response.modes[0].status, mneme_recall::ModeStatus::TimedOut);
+    assert_eq!(response.modes[0].reason.as_deref(), Some(reason));
 }
 
 #[test]
