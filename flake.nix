@@ -191,11 +191,29 @@
               outputHashes = cargoOutputHashes;
             };
             buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+            nativeBuildInputs = [
+              pkgs.makeWrapper
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.desktop-file-utils ];
             doCheck = false;
             postInstall = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               wrapProgram $out/bin/mneme-desktop \
                 --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath nativeUiLibraries}"
+              # The launcher entry. Its basename and StartupWMClass match the
+              # window's application id (mneme_desktop::APP_ID).
+              mkdir -p $out/share/applications
+              cat > $out/share/applications/mneme.desktop <<EOF
+              [Desktop Entry]
+              Type=Application
+              Name=Mneme
+              GenericName=Knowledge workspace
+              Comment=Local knowledge workspace and durable agent memory
+              Exec=$out/bin/mneme-desktop
+              Terminal=false
+              Categories=Office;
+              Keywords=notes;knowledge;memory;
+              StartupWMClass=mneme
+              EOF
+              desktop-file-validate $out/share/applications/mneme.desktop
             '';
             meta = {
               description = "Local knowledge workspace and durable external agent memory";

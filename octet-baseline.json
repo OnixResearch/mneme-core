@@ -10,7 +10,7 @@
     "profile_hash": "b3:0e2e26107a7d6b0042aac93f23a2dbfce2abd5c8943c7a997adac3b0a61dad29",
     "config_hash": "b3:b065a7ffe479551539355f2da753fdc11a7e39910ebdaa1a65a02093ce66d2b1"
   },
-  "baseline_hash": "b3:5d70524ad1a93a2af845b4dd470c4c211bf3c471e3c400b27dcb0f1f276520ce",
+  "baseline_hash": "b3:bf29de30b2cd0acc135967e2f19b56d5ba3a1e6f72f8d13d7ad735dd1d7fd5d9",
   "findings": [
     {
       "stable_id": "b3:002cd10692d692b9",
@@ -254,7 +254,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1655,
+      "line": 1701,
       "column": 54,
       "message": "function `move_table_cell` has 0 assertion(s) in 49 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -280,7 +280,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 847,
+      "line": 864,
       "column": 82,
       "message": "function `link_row` has 0 assertion(s) in 26 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -436,7 +436,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 987,
+      "line": 1064,
       "column": 13,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_desktop"
@@ -735,7 +735,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1223,
+      "line": 1269,
       "column": 9,
       "message": "same-crate enum `PanelScope` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme-desktop"
@@ -1242,7 +1242,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2193,
+      "line": 2239,
       "column": 23,
       "message": "same-crate enum `DraftAction` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme-desktop"
@@ -1346,7 +1346,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 894,
+      "line": 911,
       "column": 75,
       "message": "function `property_settings_section` has 0 assertion(s) in 64 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -1996,7 +1996,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2154,
+      "line": 2200,
       "column": 76,
       "message": "function `open_next_note` has 0 assertion(s) in 29 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -2061,7 +2061,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1111,
+      "line": 1128,
       "column": 97,
       "message": "function `draft_controls` has 0 assertion(s) in 32 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -2243,7 +2243,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 2013,
+      "line": 2030,
       "column": 33,
       "message": "function `inspector_ancestry_section` has 0 assertion(s) in 26 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -2360,7 +2360,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 955,
+      "line": 1032,
       "column": 9,
       "message": "same-crate enum `design::ShellRegion` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_desktop"
@@ -3036,7 +3036,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 850,
+      "line": 927,
       "column": 1,
       "message": "2 `u32` parameters are easy to swap by accident",
       "crate_name": "mneme_desktop"
@@ -3192,7 +3192,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1240,
+      "line": 1286,
       "column": 5,
       "message": "same-crate enum `LoadDispatch` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme-desktop"
@@ -3231,7 +3231,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1536,
+      "line": 1553,
       "column": 38,
       "message": "function `graph_nodes` has 0 assertion(s) in 31 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -3608,7 +3608,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 923,
+      "line": 969,
       "column": 5,
       "message": "`limit` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme-desktop"
@@ -3634,7 +3634,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 722,
+      "line": 768,
       "column": 67,
       "message": "function `shortcut_for` has 0 assertion(s) in 70 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -4082,19 +4082,6 @@
       "crate_name": "mneme"
     },
     {
-      "stable_id": "b3:24e0ca78ca5b6de6",
-      "semantic_id": "b3:24e0ca78ca5b6de6",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/lib.rs",
-      "line": 6,
-      "column": 1,
-      "message": "module exposes 56 public items (limit: 12) — split unrelated public surface into focused modules",
-      "crate_name": "mneme_desktop"
-    },
-    {
       "stable_id": "b3:25183e1bcc1f9f48",
       "semantic_id": "b3:25183e1bcc1f9f48",
       "identity_status": "computed",
@@ -4492,7 +4479,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 2167,
+      "line": 2184,
       "column": 33,
       "message": "function `checkpoint_snapshot` has 0 assertion(s) in 33 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -4739,7 +4726,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1668,
+      "line": 1685,
       "column": 99,
       "message": "function `claims_detail` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -4778,7 +4765,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1876,
+      "line": 1893,
       "column": 41,
       "message": "function `inspector_proposal_controls` has 0 assertion(s) in 38 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -4791,7 +4778,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1586,
+      "line": 1632,
       "column": 63,
       "message": "function `apply_checkpoints` has 0 assertion(s) in 39 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -5246,7 +5233,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1059,
+      "line": 1076,
       "column": 73,
       "message": "function `property_value_controls` has 0 assertion(s) in 39 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -5545,7 +5532,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2363,
+      "line": 2409,
       "column": 77,
       "message": "function `handle_commit_property` has 0 assertion(s) in 50 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -5636,7 +5623,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1221,
+      "line": 1267,
       "column": 82,
       "message": "function `begin_panel_load` has 0 assertion(s) in 34 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -5779,7 +5766,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2177,
+      "line": 2223,
       "column": 9,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme-desktop"
@@ -5857,7 +5844,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1626,
+      "line": 1672,
       "column": 56,
       "message": "function `select_graph_node` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -6442,10 +6429,23 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 785,
+      "line": 802,
       "column": 33,
       "message": "function `backlinks` has 0 assertion(s) in 61 lines (need 2+)",
       "crate_name": "mneme-desktop"
+    },
+    {
+      "stable_id": "b3:3a0f8e349214c245",
+      "semantic_id": "b3:3a0f8e349214c245",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/design.rs",
+      "line": 783,
+      "column": 9,
+      "message": "same-crate enum `design::ShellLayout` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_desktop"
     },
     {
       "stable_id": "b3:3a19140a6dcb874a",
@@ -6559,7 +6559,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1685,
+      "line": 1731,
       "column": 33,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme-desktop"
@@ -6654,6 +6654,19 @@
       "column": 45,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:3d5111d3bd4a5286",
+      "semantic_id": "b3:3d5111d3bd4a5286",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/design.rs",
+      "line": 878,
+      "column": 33,
+      "message": "function `shell_frame` has 0 assertion(s) in 30 lines (need 2+)",
+      "crate_name": "mneme_desktop"
     },
     {
       "stable_id": "b3:3d5d52b24c97be1a",
@@ -6767,7 +6780,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2452,
+      "line": 2498,
       "column": 9,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme-desktop"
@@ -7046,6 +7059,19 @@
       "crate_name": "mneme_doc"
     },
     {
+      "stable_id": "b3:40f679a57da85400",
+      "semantic_id": "b3:40f679a57da85400",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/design.rs",
+      "line": 1269,
+      "column": 73,
+      "message": "function `labelled_shell` has 0 assertion(s) in 29 lines (need 2+)",
+      "crate_name": "mneme_desktop"
+    },
+    {
       "stable_id": "b3:4117c4a904b8bda2",
       "semantic_id": "b3:4117c4a904b8bda2",
       "identity_status": "computed",
@@ -7261,7 +7287,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 173,
+      "line": 187,
       "column": 67,
       "message": "function `sidebar_note_rows` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -7313,7 +7339,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 770,
+      "line": 832,
       "column": 9,
       "message": "same-crate enum `design::ShellRegion` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_desktop"
@@ -7573,7 +7599,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 1015,
+      "line": 1092,
       "column": 5,
       "message": "`#[allow(...)]` without justification comment",
       "crate_name": "mneme_desktop"
@@ -7846,7 +7872,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 521,
+      "line": 535,
       "column": 66,
       "message": "function `note_editor_body` has 0 assertion(s) in 44 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -7889,6 +7915,19 @@
       "column": 78,
       "message": "function `merge_premises` has 0 assertion(s) in 27 lines (need 2+)",
       "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:4926d4cc14389b0e",
+      "semantic_id": "b3:4926d4cc14389b0e",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/views.rs",
+      "line": 102,
+      "column": 33,
+      "message": "function `sidebar` has 0 assertion(s) in 51 lines (need 2+)",
+      "crate_name": "mneme-desktop"
     },
     {
       "stable_id": "b3:492b9b83d50cc8d8",
@@ -7963,7 +8002,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 330,
+      "line": 376,
       "column": 5,
       "message": "`table_limit` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme-desktop"
@@ -8015,7 +8054,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1096,
+      "line": 1142,
       "column": 5,
       "message": "same-crate enum `PanelScope` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme-desktop"
@@ -8054,7 +8093,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1590,
+      "line": 1607,
       "column": 29,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme-desktop"
@@ -8119,7 +8158,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1322,
+      "line": 1339,
       "column": 74,
       "message": "function `table_section` has 0 assertion(s) in 27 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -8418,7 +8457,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 959,
+      "line": 976,
       "column": 83,
       "message": "function `property_metadata_section` has 0 assertion(s) in 37 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -8509,7 +8548,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 329,
+      "line": 375,
       "column": 5,
       "message": "`table_offset` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme-desktop"
@@ -8808,7 +8847,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 314,
+      "line": 360,
       "column": 5,
       "message": "`backlink_limit` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme-desktop"
@@ -8879,6 +8918,19 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:52b21c1583da934c",
+      "semantic_id": "b3:52b21c1583da934c",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/main.rs",
+      "line": 88,
+      "column": 27,
+      "message": "function `main` has 0 assertion(s) in 40 lines (need 2+)",
+      "crate_name": "mneme-desktop"
+    },
+    {
       "stable_id": "b3:52c05692d8272e24",
       "semantic_id": "b3:52c05692d8272e24",
       "identity_status": "computed",
@@ -8938,7 +8990,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1250,
+      "line": 1267,
       "column": 100,
       "message": "function `code_block` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -9094,7 +9146,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1745,
+      "line": 1791,
       "column": 23,
       "message": "same-crate enum `NoteSettingsAction` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme-desktop"
@@ -9302,7 +9354,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 2334,
+      "line": 2351,
       "column": 85,
       "message": "function `recall_response` has 0 assertion(s) in 36 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -9393,7 +9445,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 653,
+      "line": 670,
       "column": 19,
       "message": "same-crate enum `ContextTab` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme-desktop"
@@ -9484,7 +9536,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 2422,
+      "line": 2439,
       "column": 85,
       "message": "function `recall_superseded_responses` has 0 assertion(s) in 27 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -9627,7 +9679,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1820,
+      "line": 1837,
       "column": 33,
       "message": "function `inspector_claim_summary` has 0 assertion(s) in 52 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -10095,7 +10147,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1156,
+      "line": 1173,
       "column": 65,
       "message": "function `preview_content` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -10160,7 +10212,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1694,
+      "line": 1711,
       "column": 99,
       "message": "function `evidence_detail` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -10530,19 +10582,6 @@
       "crate_name": "mneme_doc"
     },
     {
-      "stable_id": "b3:61e7b87418a96bc0",
-      "semantic_id": "b3:61e7b87418a96bc0",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/main.rs",
-      "line": 88,
-      "column": 27,
-      "message": "function `main` has 0 assertion(s) in 40 lines (need 2+)",
-      "crate_name": "mneme-desktop"
-    },
-    {
       "stable_id": "b3:61ed673b521e363f",
       "semantic_id": "b3:61ed673b521e363f",
       "identity_status": "computed",
@@ -10641,7 +10680,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 1002,
+      "line": 1079,
       "column": 17,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_desktop"
@@ -10797,7 +10836,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1505,
+      "line": 1551,
       "column": 55,
       "message": "function `apply_panels` has 0 assertion(s) in 27 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -10914,7 +10953,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2177,
+      "line": 2223,
       "column": 10,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -11265,7 +11304,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2099,
+      "line": 2145,
       "column": 32,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -11668,7 +11707,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1955,
+      "line": 1972,
       "column": 33,
       "message": "function `inspector_evidence_section` has 0 assertion(s) in 55 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -11772,7 +11811,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 338,
+      "line": 384,
       "column": 5,
       "message": "`graph_detail_limit` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme-desktop"
@@ -12038,19 +12077,6 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:6ed07c23f533300d",
-      "semantic_id": "b3:6ed07c23f533300d",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/views.rs",
-      "line": 88,
-      "column": 68,
-      "message": "function `sidebar` has 0 assertion(s) in 51 lines (need 2+)",
-      "crate_name": "mneme-desktop"
-    },
-    {
       "stable_id": "b3:6ee33cf66aa9be5b",
       "semantic_id": "b3:6ee33cf66aa9be5b",
       "identity_status": "computed",
@@ -12136,7 +12162,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2175,
+      "line": 2221,
       "column": 9,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -12266,7 +12292,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 2203,
+      "line": 2220,
       "column": 33,
       "message": "function `checkpoint_episodes` has 0 assertion(s) in 42 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -12344,7 +12370,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 403,
+      "line": 417,
       "column": 33,
       "message": "function `note_heading` has 0 assertion(s) in 32 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -12409,7 +12435,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2089,
+      "line": 2135,
       "column": 87,
       "message": "function `handle_focus_next` has 0 assertion(s) in 21 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -12747,7 +12773,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2284,
+      "line": 2330,
       "column": 78,
       "message": "function `handle_edit` has 0 assertion(s) in 40 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -12786,7 +12812,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 566,
+      "line": 580,
       "column": 68,
       "message": "function `empty_note_content` has 0 assertion(s) in 43 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -13072,7 +13098,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 2400,
+      "line": 2417,
       "column": 84,
       "message": "function `recall_candidate_line` has 0 assertion(s) in 21 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -13163,7 +13189,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 137,
+      "line": 183,
       "column": 88,
       "message": "function `parse_arguments` has 0 assertion(s) in 49 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -13189,7 +13215,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1016,
+      "line": 1033,
       "column": 68,
       "message": "function `property_edit_form` has 0 assertion(s) in 41 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -13215,7 +13241,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 907,
+      "line": 984,
       "column": 89,
       "message": "function `shell_ink` has 0 assertion(s) in 57 lines (need 2+)",
       "crate_name": "mneme_desktop"
@@ -13267,7 +13293,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1640,
+      "line": 1686,
       "column": 9,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme-desktop"
@@ -13436,7 +13462,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1209,
+      "line": 1226,
       "column": 81,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -13462,7 +13488,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1257,
+      "line": 1303,
       "column": 93,
       "message": "function `panel_load_input` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -13592,7 +13618,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 919,
+      "line": 965,
       "column": 1,
       "message": "2 `usize` parameters are easy to swap by accident",
       "crate_name": "mneme-desktop"
@@ -13748,7 +13774,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2225,
+      "line": 2271,
       "column": 78,
       "message": "function `handle_inspect_selected` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -13852,7 +13878,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2100,
+      "line": 2146,
       "column": 33,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme-desktop"
@@ -13930,7 +13956,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/lib.rs",
-      "line": 17,
+      "line": 21,
       "column": 58,
       "message": "function `headless_render_smoke` has 0 assertion(s) in 26 lines (need 2+)",
       "crate_name": "mneme_desktop"
@@ -14177,7 +14203,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1170,
+      "line": 1216,
       "column": 26,
       "message": "function `begin_note_load` has 0 assertion(s) in 25 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -14242,7 +14268,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 2105,
+      "line": 2122,
       "column": 65,
       "message": "function `checkpoint_list` has 0 assertion(s) in 39 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -14272,6 +14298,19 @@
       "column": 96,
       "message": "function `validate_inputs` has 0 assertion(s) in 36 lines (need 2+)",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:8157d282d9b171ce",
+      "semantic_id": "b3:8157d282d9b171ce",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/design.rs",
+      "line": 791,
+      "column": 9,
+      "message": "same-crate enum `design::ShellLayout` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_desktop"
     },
     {
       "stable_id": "b3:818a5c068ed1731c",
@@ -14931,7 +14970,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1915,
+      "line": 1932,
       "column": 94,
       "message": "function `inspector_proposal_validation` has 0 assertion(s) in 37 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -15052,19 +15091,6 @@
       "column": 9,
       "message": "same-crate enum `adapter::Failure` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_consolidation"
-    },
-    {
-      "stable_id": "b3:87f0f5d6378222d9",
-      "semantic_id": "b3:87f0f5d6378222d9",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/views.rs",
-      "line": 8,
-      "column": 71,
-      "message": "function `header_bar` has 0 assertion(s) in 44 lines (need 2+)",
-      "crate_name": "mneme-desktop"
     },
     {
       "stable_id": "b3:881941080eb5663d",
@@ -15340,6 +15366,19 @@
       "crate_name": "mneme_eval"
     },
     {
+      "stable_id": "b3:8b2a4149d49078f3",
+      "semantic_id": "b3:8b2a4149d49078f3",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/design.rs",
+      "line": 879,
+      "column": 44,
+      "message": "same-crate enum `design::ShellLayout` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_desktop"
+    },
+    {
       "stable_id": "b3:8b2c5caf8769d4ab",
       "semantic_id": "b3:8b2c5caf8769d4ab",
       "identity_status": "computed",
@@ -15529,7 +15568,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1290,
+      "line": 1307,
       "column": 90,
       "message": "function `rich_spans` has 0 assertion(s) in 31 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -15841,7 +15880,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1685,
+      "line": 1731,
       "column": 34,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -16517,7 +16556,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 2042,
+      "line": 2059,
       "column": 33,
       "message": "function `inspector_derivation_section` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -16738,7 +16777,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 362,
+      "line": 376,
       "column": 59,
       "message": "function `note_pane` has 0 assertion(s) in 36 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -16894,7 +16933,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1705,
+      "line": 1751,
       "column": 76,
       "message": "function `decide_proposal` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -17076,7 +17115,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1735,
+      "line": 1781,
       "column": 94,
       "message": "function `apply_note_settings` has 0 assertion(s) in 26 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -17258,7 +17297,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 453,
+      "line": 467,
       "column": 68,
       "message": "function `note_path_revision` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -17492,7 +17531,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1630,
+      "line": 1647,
       "column": 41,
       "message": "function `graph_node_detail` has 0 assertion(s) in 36 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -17674,7 +17713,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1181,
+      "line": 1227,
       "column": 5,
       "message": "same-crate enum `LoadDispatch` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme-desktop"
@@ -17804,7 +17843,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 534,
+      "line": 580,
       "column": 35,
       "message": "function `refresh_preview` has 0 assertion(s) in 23 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -17999,7 +18038,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1644,
+      "line": 1690,
       "column": 33,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme-desktop"
@@ -18038,7 +18077,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1722,
+      "line": 1739,
       "column": 41,
       "message": "function `graph_edge_detail` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -18337,7 +18376,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 145,
+      "line": 191,
       "column": 48,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme-desktop"
@@ -18571,7 +18610,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 455,
+      "line": 501,
       "column": 9,
       "message": "same-crate enum `LoadDispatch` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme-desktop"
@@ -18584,7 +18623,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2470,
+      "line": 2516,
       "column": 12,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -18623,7 +18662,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 972,
+      "line": 1049,
       "column": 28,
       "message": "function `region_ink` has 0 assertion(s) in 34 lines (need 2+)",
       "crate_name": "mneme_desktop"
@@ -18714,7 +18753,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 2432,
+      "line": 2449,
       "column": 16,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme-desktop"
@@ -18809,6 +18848,19 @@
       "column": 9,
       "message": "same-crate enum `coordinator::FactAccess` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:aaf153ad0d2c75f1",
+      "semantic_id": "b3:aaf153ad0d2c75f1",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/design.rs",
+      "line": 799,
+      "column": 22,
+      "message": "same-crate enum `design::ShellLayout` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_desktop"
     },
     {
       "stable_id": "b3:aaf6fb4aac52d462",
@@ -19078,7 +19130,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 505,
+      "line": 551,
       "column": 7,
       "message": "function `load_property_form_from` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -19377,7 +19429,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1050,
+      "line": 1096,
       "column": 49,
       "message": "function `load_note` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -19416,7 +19468,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 714,
+      "line": 731,
       "column": 63,
       "message": "function `links_section` has 0 assertion(s) in 33 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -19715,7 +19767,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2131,
+      "line": 2177,
       "column": 78,
       "message": "function `handle_return_to_result` has 0 assertion(s) in 21 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -19871,7 +19923,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1388,
+      "line": 1405,
       "column": 38,
       "message": "function `table_rows` has 0 assertion(s) in 53 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -19897,7 +19949,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1747,
+      "line": 1764,
       "column": 78,
       "message": "function `inspector_section` has 0 assertion(s) in 40 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -20118,7 +20170,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 476,
+      "line": 490,
       "column": 74,
       "message": "function `active_note_actions` has 0 assertion(s) in 44 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -20137,6 +20189,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:b65cf1de4a8fa277",
+      "semantic_id": "b3:b65cf1de4a8fa277",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/views.rs",
+      "line": 11,
+      "column": 33,
+      "message": "function `header_bar` has 0 assertion(s) in 50 lines (need 2+)",
+      "crate_name": "mneme-desktop"
+    },
+    {
       "stable_id": "b3:b671c21bf3316345",
       "semantic_id": "b3:b671c21bf3316345",
       "identity_status": "computed",
@@ -20144,7 +20209,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1476,
+      "line": 1493,
       "column": 74,
       "message": "function `graph_section` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -20989,7 +21054,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1091,
+      "line": 1137,
       "column": 48,
       "message": "function `read_panels` has 0 assertion(s) in 45 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -22016,7 +22081,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 152,
+      "line": 166,
       "column": 65,
       "message": "function `sidebar_listing` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -22029,7 +22094,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 922,
+      "line": 968,
       "column": 5,
       "message": "`offset` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme-desktop"
@@ -23082,7 +23147,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1643,
+      "line": 1689,
       "column": 32,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -23160,7 +23225,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 796,
+      "line": 858,
       "column": 9,
       "message": "same-crate enum `design::ShellRegion` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_desktop"
@@ -23212,7 +23277,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2561,
+      "line": 2607,
       "column": 72,
       "message": "function `handle_run_recall` has 0 assertion(s) in 26 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -23602,7 +23667,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 752,
+      "line": 769,
       "column": 33,
       "message": "function `outgoing_links` has 0 assertion(s) in 26 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -23641,7 +23706,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1644,
+      "line": 1690,
       "column": 34,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -23823,7 +23888,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1326,
+      "line": 1372,
       "column": 26,
       "message": "function `apply_note_load` has 0 assertion(s) in 70 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -24187,7 +24252,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 347,
+      "line": 393,
       "column": 5,
       "message": "`checkpoint_limit` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme-desktop"
@@ -24395,7 +24460,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2036,
+      "line": 2082,
       "column": 5,
       "message": "same-crate enum `ContextTab` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme-desktop"
@@ -24499,7 +24564,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1178,
+      "line": 1195,
       "column": 13,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme-desktop"
@@ -24525,7 +24590,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2030,
+      "line": 2076,
       "column": 63,
       "message": "function `available_focus_targets` has 0 assertion(s) in 31 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -24642,7 +24707,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1208,
+      "line": 1225,
       "column": 66,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme-desktop"
@@ -24824,7 +24889,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2498,
+      "line": 2544,
       "column": 79,
       "message": "function `handle_commit_table_cell` has 0 assertion(s) in 32 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -24960,6 +25025,19 @@
       "crate_name": "mneme_doc"
     },
     {
+      "stable_id": "b3:e38f7556e779ba10",
+      "semantic_id": "b3:e38f7556e779ba10",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/views.rs",
+      "line": 669,
+      "column": 33,
+      "message": "function `context_pane` has 0 assertion(s) in 26 lines (need 2+)",
+      "crate_name": "mneme-desktop"
+    },
+    {
       "stable_id": "b3:e395cbcca11d725f",
       "semantic_id": "b3:e395cbcca11d725f",
       "identity_status": "computed",
@@ -24993,7 +25071,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1571,
+      "line": 1588,
       "column": 38,
       "message": "function `graph_edges` has 0 assertion(s) in 43 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -25136,7 +25214,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1684,
+      "line": 1730,
       "column": 32,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -25322,19 +25400,6 @@
       "column": 48,
       "message": "function `resolve_note` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_desktop"
-    },
-    {
-      "stable_id": "b3:e63d37a3d99ae8f3",
-      "semantic_id": "b3:e63d37a3d99ae8f3",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/views.rs",
-      "line": 652,
-      "column": 73,
-      "message": "function `context_pane` has 0 assertion(s) in 26 lines (need 2+)",
-      "crate_name": "mneme-desktop"
     },
     {
       "stable_id": "b3:e64cef5d213407c2",
@@ -25569,6 +25634,19 @@
       "column": 31,
       "message": "function `validate_bindings` has 0 assertion(s) in 45 lines (need 2+)",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:e8b8ba084b56734f",
+      "semantic_id": "b3:e8b8ba084b56734f",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-desktop/src/lib.rs",
+      "line": 6,
+      "column": 1,
+      "message": "module exposes 62 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_desktop"
     },
     {
       "stable_id": "b3:e8ef74b03287e526",
@@ -26091,19 +26169,6 @@
       "crate_name": "documents"
     },
     {
-      "stable_id": "b3:edc42187b5e7e1cf",
-      "semantic_id": "b3:edc42187b5e7e1cf",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-desktop/src/design.rs",
-      "line": 1164,
-      "column": 73,
-      "message": "function `labelled_shell` has 0 assertion(s) in 28 lines (need 2+)",
-      "crate_name": "mneme_desktop"
-    },
-    {
       "stable_id": "b3:edefaca3d3a6c313",
       "semantic_id": "b3:edefaca3d3a6c313",
       "identity_status": "computed",
@@ -26423,7 +26488,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1394,
+      "line": 1411,
       "column": 13,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme-desktop"
@@ -26553,7 +26618,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 2100,
+      "line": 2146,
       "column": 34,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme-desktop"
@@ -26566,7 +26631,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 255,
+      "line": 269,
       "column": 33,
       "message": "function `search_results` has 0 assertion(s) in 65 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -26969,7 +27034,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 966,
+      "line": 1043,
       "column": 1,
       "message": "4 `f32` parameters are easy to swap by accident",
       "crate_name": "mneme_desktop"
@@ -27372,7 +27437,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1007,
+      "line": 1053,
       "column": 77,
       "message": "function `apply_boot` has 0 assertion(s) in 39 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -27411,7 +27476,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/main.rs",
-      "line": 1452,
+      "line": 1498,
       "column": 63,
       "message": "function `invalidate_content_caches` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme-desktop"
@@ -27450,7 +27515,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/views.rs",
-      "line": 1595,
+      "line": 1612,
       "column": 29,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme-desktop"
@@ -27853,7 +27918,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/lib.rs",
-      "line": 49,
+      "line": 53,
       "column": 56,
       "message": "function `themed_render_smoke` has 0 assertion(s) in 31 lines (need 2+)",
       "crate_name": "mneme_desktop"
@@ -27879,7 +27944,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-desktop/src/design.rs",
-      "line": 854,
+      "line": 931,
       "column": 34,
       "message": "function `render_shell` has 0 assertion(s) in 32 lines (need 2+)",
       "crate_name": "mneme_desktop"
