@@ -1,8 +1,9 @@
 //! In-memory lexical and local token-vector index over one scoped snapshot.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
-/// Index schema and tokenizer version.
-pub const LEXICAL_INDEX_VERSION: &str = "mneme-lexical-token-v1";
+/// Index schema, term and weighting version: English Snowball stems with their
+/// counts, weighted by BM25 over the request's own index.
+pub const LEXICAL_INDEX_VERSION: &str = "mneme-lexical-bm25-v2";
 /// Sparse character-trigram vector projection. This is not a learned model.
 pub const VECTOR_INDEX_VERSION: &str = "mneme-trigram-hash-v1";
 
@@ -565,7 +566,7 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
         ancestry_roots,
     } = input;
     let normalized = text.to_lowercase();
-    let terms = tokenize(&normalized);
+    let (term_counts, term_total) = term_counts(&normalized);
     let trigrams = trigram_counts(&normalized);
     let trigram_norm = trigrams
         .values()
@@ -577,7 +578,8 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
         kind,
         text,
         normalized,
-        terms,
+        term_counts,
+        term_total,
         trigrams,
         trigram_norm,
         field_path,
@@ -593,7 +595,38 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
     }
 }
 
-/// Tokenize lower-case alphanumeric runs for lexical candidate generation.
+/// The lexical terms of a text, in order and with repeats: each run of
+/// alphanumeric characters, lowercased and reduced to its English Snowball
+/// stem. Documents and queries are both read this way, so "joined" and "join"
+/// meet at "join".
+pub fn lexical_terms(text: &str) -> Vec<String> {
+    stems(&text.to_lowercase())
+}
+
+/// Stems of an already lowercased text.
+fn stems(lowercase: &str) -> Vec<String> {
+    let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
+    lowercase
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| stemmer.stem(word).into_owned())
+        .collect()
+}
+
+/// Occurrences of each stem of an already lowercased text, and their total.
+fn term_counts(lowercase: &str) -> (std::collections::BTreeMap<String, u32>, usize) {
+    let terms = stems(lowercase);
+    let total = terms.len();
+    let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for term in terms {
+        let entry = counts.entry(term).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+    (counts, total)
+}
+
+/// The distinct lowercase alphanumeric words of a text, unstemmed. Excerpt
+/// placement searches the source for these surface forms.
 pub(crate) fn tokenize(text: &str) -> std::collections::BTreeSet<String> {
     text.split(|character: char| !character.is_alphanumeric())
         .filter(|term| !term.is_empty())
@@ -742,4 +775,18 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod lexical_term_tests {
+    #[test]
+    fn terms_are_lowercase_stems_in_order_with_repeats() {
+        assert_eq!(
+            super::lexical_terms("Joined the CHOIRS; joined again, 2023-05"),
+            vec!["join", "the", "choir", "join", "again", "2023", "05"]
+        );
+        let (counts, total) = super::term_counts("joined the choir joined");
+        assert_eq!(counts.get("join"), Some(&2));
+        assert_eq!(total, 4);
+    }
 }

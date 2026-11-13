@@ -11,6 +11,7 @@ mneme-core.workspace = true
 mneme-store.workspace = true
 mneme-memory.workspace = true
 mneme-datalog.workspace = true
+rust-stemmers.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

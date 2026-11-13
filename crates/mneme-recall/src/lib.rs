@@ -16,7 +16,7 @@ pub mod model;
 
 pub use engine::{FUSION_POLICY_VERSION, Service};
 pub use failure::{QueryError, Result};
-pub use lookup::{LEXICAL_INDEX_VERSION, VECTOR_INDEX_VERSION};
+pub use lookup::{LEXICAL_INDEX_VERSION, VECTOR_INDEX_VERSION, lexical_terms};
 pub use model::{
     BudgetUse, Candidate, ClaimStatus, ContentKind, Context, DataBoundary, Evidence, Execution,
     IndexCoverage, Mode, ModeReport, ModeStatus, Omission, Request, Response, StructuredRequest,

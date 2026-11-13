@@ -1349,27 +1349,65 @@ fn lexical_rank(
     request: &crate::model::Request,
     budget: &mut WorkBudget,
 ) -> AttemptResult<Vec<(String, f64)>> {
-    let query_terms = crate::lookup::tokenize(&request.query.to_lowercase());
+    let query_terms: std::collections::BTreeSet<String> =
+        crate::lookup::lexical_terms(&request.query)
+            .into_iter()
+            .collect();
     if query_terms.is_empty() {
         return Ok(Vec::new());
     }
+    let weights: Vec<(&str, f64)> = query_terms
+        .iter()
+        .map(|term| (term.as_str(), index.lexical.idf(term)))
+        .collect();
+    // The largest sum this query can reach, as every term's frequency grows
+    // without bound; dividing by it keeps the weighted part below 1.
+    let ceiling: f64 = weights
+        .iter()
+        .map(|(_, idf)| idf * (LEXICAL_K1 + 1.0))
+        .sum();
     let query_lower = request.query.to_lowercase();
     let mut entries = Vec::with_capacity(index.documents.len());
     for document in &index.documents {
         budget.charge(1)?;
-        let matched = query_terms
-            .iter()
-            .filter(|term| document.terms.contains(*term))
-            .count();
-        if matched == 0 {
+        let Some(weighted) = bm25(&index.lexical, document, &weights) else {
             continue;
-        }
+        };
         let is_phrase = !query_lower.is_empty() && document.normalized.contains(&query_lower);
-        let score = matched as f64 / query_terms.len() as f64 + if is_phrase { 0.5 } else { 0.0 };
+        // A full-query phrase scores above every weighted sum, which is below 1.
+        let score = weighted / ceiling + if is_phrase { 1.0 } else { 0.0 };
         entries.push((document.id.clone(), score));
     }
     sort_rank(&mut entries);
     Ok(entries)
+}
+
+/// BM25 term-frequency saturation for lexical ranking.
+const LEXICAL_K1: f64 = 1.2;
+/// BM25 length normalisation for lexical ranking. It is mild because indexed
+/// records range from three-word path hints to whole notes: full normalisation
+/// would rank short records first for being short.
+const LEXICAL_B: f64 = 0.25;
+
+/// The BM25 sum of the query terms a document contains, or nothing when it
+/// contains none of them.
+fn bm25(
+    statistics: &crate::model::LexicalStatistics,
+    document: &crate::model::IndexedDocument,
+    weights: &[(&str, f64)],
+) -> Option<f64> {
+    let norm = LEXICAL_K1 * (1.0 - LEXICAL_B + LEXICAL_B * statistics.relative_length(document));
+    let mut sum = 0.0;
+    let mut is_matched = false;
+    for (term, idf) in weights {
+        let Some(count) = document.term_counts.get(*term) else {
+            continue;
+        };
+        let frequency = f64::from(*count);
+        sum += idf * frequency * (LEXICAL_K1 + 1.0) / (frequency + norm);
+        is_matched = true;
+    }
+    is_matched.then_some(sum)
 }
 
 fn vector_rank(

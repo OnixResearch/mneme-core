@@ -468,13 +468,16 @@ pub(crate) struct CachedIndex {
     pub revision: mneme_core::WorkspaceRevisionId,
     pub coverage: IndexCoverage,
     pub(crate) documents: Vec<IndexedDocument>,
+    /// Lexical weighting statistics over exactly `documents`.
+    pub(crate) lexical: LexicalStatistics,
     /// Document position by candidate identity, so a ranking result never
     /// copies the corpus it was computed from.
     positions: std::collections::BTreeMap<String, usize>,
 }
 
 impl CachedIndex {
-    /// Build an index from its documents.
+    /// Build an index from its documents and the lexical statistics they
+    /// determine.
     pub(crate) fn new(
         revision: mneme_core::WorkspaceRevisionId,
         coverage: IndexCoverage,
@@ -485,10 +488,12 @@ impl CachedIndex {
             .enumerate()
             .map(|(position, document)| (document.id.clone(), position))
             .collect();
+        let lexical = LexicalStatistics::of(&documents);
         CachedIndex {
             revision,
             coverage,
             documents,
+            lexical,
             positions,
         }
     }
@@ -501,6 +506,76 @@ impl CachedIndex {
     }
 }
 
+/// The corpus statistics lexical ranking weights terms with.
+///
+/// They are computed from the documents of one index and nothing else. An index
+/// holds only records the request may read and sources that are still
+/// available, and it is cached under the request's revision, scope,
+/// authorization and eligibility generation, so a document outside the
+/// authorization or a forgotten source never changes a weight.
+#[derive(Clone, Debug)]
+pub(crate) struct LexicalStatistics {
+    documents: usize,
+    /// Number of documents that contain each stem.
+    frequencies: std::collections::BTreeMap<String, usize>,
+    /// Mean number of stems per document.
+    average_length: f64,
+}
+
+impl LexicalStatistics {
+    fn of(documents: &[IndexedDocument]) -> Self {
+        // Every document lists each of its stems once, so after sorting the
+        // run length of a stem is the number of documents that contain it.
+        let mut stems: Vec<&String> = documents
+            .iter()
+            .flat_map(|document| document.term_counts.keys())
+            .collect();
+        stems.sort_unstable();
+        let frequencies = stems
+            .chunk_by(|left, right| left == right)
+            .filter_map(|run| run.first().map(|stem| ((*stem).clone(), run.len())))
+            .collect();
+        let total_length = documents.iter().fold(0_usize, |total, document| {
+            total.saturating_add(document.term_total)
+        });
+        let average_length = if documents.is_empty() {
+            0.0
+        } else {
+            count(total_length) / count(documents.len())
+        };
+        LexicalStatistics {
+            documents: documents.len(),
+            frequencies,
+            average_length,
+        }
+    }
+
+    /// Inverse document frequency, `ln(1 + (N - n + 0.5) / (n + 0.5))`.
+    ///
+    /// It is positive for every term, so any shared term contributes, and it
+    /// falls as more documents contain the term.
+    pub(crate) fn idf(&self, term: &str) -> f64 {
+        let containing = count(self.frequencies.get(term).copied().unwrap_or(0));
+        ((count(self.documents) - containing + 0.5) / (containing + 0.5)).ln_1p()
+    }
+
+    /// A document's length relative to the mean, for length normalisation.
+    /// An index whose documents hold no terms has no length to normalise.
+    pub(crate) fn relative_length(&self, document: &IndexedDocument) -> f64 {
+        if self.average_length > 0.0 {
+            count(document.term_total) / self.average_length
+        } else {
+            1.0
+        }
+    }
+}
+
+/// A count as a float. Counts of indexed documents and terms stay far below
+/// 2^53, where every integer is exact.
+fn count(value: usize) -> f64 {
+    value as f64
+}
+
 /// A text document in the built lexical/vector index.
 #[derive(Clone, Debug)]
 pub(crate) struct IndexedDocument {
@@ -508,7 +583,10 @@ pub(crate) struct IndexedDocument {
     pub kind: ContentKind,
     pub text: String,
     pub normalized: String,
-    pub terms: std::collections::BTreeSet<String>,
+    /// Occurrences of each lexical stem.
+    pub term_counts: std::collections::BTreeMap<String, u32>,
+    /// Number of lexical stems, repeats included.
+    pub term_total: usize,
     pub trigrams: std::collections::BTreeMap<u64, u32>,
     pub trigram_norm: f64,
     pub field_path: String,
@@ -525,3 +603,33 @@ pub(crate) struct IndexedDocument {
 
 /// Constants exported for evaluation and cache identity.
 pub const RECALL_CONTEXT_SCHEMA_VERSION: u32 = crate::INDEX_SCHEMA_VERSION;
+
+#[cfg(test)]
+mod idf_tests {
+    fn corpus(documents: usize, frequencies: &[(&str, usize)]) -> super::LexicalStatistics {
+        super::LexicalStatistics {
+            documents,
+            frequencies: frequencies
+                .iter()
+                .map(|(term, containing)| ((*term).to_owned(), *containing))
+                .collect(),
+            average_length: 4.0,
+        }
+    }
+
+    #[test]
+    fn rarer_terms_weigh_more_and_every_weight_is_positive() {
+        let statistics = corpus(4, &[("everywhere", 4), ("common", 3), ("rare", 1)]);
+        let everywhere = statistics.idf("everywhere");
+        let common = statistics.idf("common");
+        let rare = statistics.idf("rare");
+        let absent = statistics.idf("absent");
+        // A term every document contains still counts, or a match on it would
+        // lower a score.
+        assert!(everywhere > 0.0, "{everywhere}");
+        assert!(common > everywhere);
+        assert!(rare > common);
+        assert!(absent > rare);
+        assert!((rare - (3.5_f64 / 1.5).ln_1p()).abs() < 1e-12);
+    }
+}
