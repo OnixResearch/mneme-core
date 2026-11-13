@@ -1,15 +1,17 @@
-# Consumer-owned Octet configuration.
+# Consumer-owned Octet configuration for the strict required check.
 #
 # Runner scope lives in Cargo.toml:
 #   [workspace.metadata.octet]
-#   default_scope = ["-p", "mneme-core"]
-#   cargo_check_args = ["--lib"]
+#   default_scope = ["--workspace"]
+#   cargo_check_args = ["--all-targets", "--all-features", "--ignore-rust-version"]
 #
-# First adoption profile: the low-noise starter set stays enabled; the
-# high-noise, purity-effect, inventory-only, and rollout families are disabled
-# explicitly below. This is temporary rollout debt, not permanent policy. Each
-# entry is re-evaluated when the gate expands beyond `mneme-core`. There is no
-# baseline file hiding findings.
+# The gate covers every workspace crate and target. This profile keeps the
+# high-signal families at deny and disables the families listed below; that is
+# temporary rollout debt, not permanent policy, and it is not a claim that every
+# lint is clean. The full-catalog ratchet (`octet-all`, which copies
+# dylint-all.toml over this file and records accepted debt in
+# octet-baseline.json) is the profile that registers every lint; this file is
+# the narrower required check that fails the build.
 
 [octet]
 disabled_lints = [
@@ -75,16 +77,20 @@ disabled_lints = [
   "path_segment_repetition",
   "excessive_file_length",
   "module_file_count",
-  # Two distinct Value types coexist in the transport module; aliases are the
-  # clearest readable form. Re-evaluate if the import surface is split.
+  # No `use ... as` aliases remain in crates/*/src, so this entry no longer
+  # suppresses anything; it is kept only until the all-lint ratchet owns this
+  # profile and removes the dead entry.
   "renamed_imports",
-  # The transport module path is part of the public API; renaming the file
-  # would break it for a style rule.
+  # No `_` module filenames remain in crates/*/src either; obsolete for the same
+  # reason.
   "underscore_in_module_filename",
 ]
 
-# Gate semantics: every remaining enabled lint is deny-level. A finding fails
-# the check; there is no baseline hiding findings in the first adoption.
+# Gate semantics: the 62 lints disabled above plus the 15 below account for all
+# 77 the pinned runner registers. The eight deny-level lints fail the check on a
+# finding. The seven Octet leaves at warn are named explicitly because Octet maps
+# warn-level findings to exit 0: they are visible here, but only `octet-all`
+# fails on them.
 [octet.lint_levels]
 ambient_clock = "deny"
 compound_assertion = "deny"
@@ -94,3 +100,10 @@ negated_predicate = "deny"
 raw_bool_parameter = "deny"
 usize_in_public_api = "deny"
 fallible_int_fallback = "deny"
+discarded_sync_result = "warn"
+drop_must_use = "warn"
+flush_only_durability = "warn"
+magic_number = "warn"
+raw_bool_parameter_suppression = "warn"
+retry_sync_after_error = "warn"
+state_machine_exhaustiveness = "warn"

@@ -1,5 +1,30 @@
-# Full 72-lint Octet profile used by the baseline ratchet check.
-# The strict required check keeps its consumer profile in dylint.toml.
+# Full-catalog Octet profile used by the baseline ratchet check (`octet-all`).
+# The strict required check keeps its consumer profile in dylint.toml. The pinned
+# runner registers 77 lints; this profile must not disable any of them.
 [octet]
 # Cohesive modules exceed the 300-line default; splitting remains a structural backlog.
 excessive_file_length_max = 5000
+
+# Octet declares these lints Allow by default, so an all-lint profile that does
+# not raise them never registers them and cannot report on the full catalog.
+# They stay at warn (not deny) so the ratchet reports them as findings through
+# octet-baseline.json instead of failing on debt this profile has not burned down.
+[octet.lint_levels]
+allocation_in_loop = "warn"
+ambiguous_params = "warn"
+assertion_density = "warn"
+compound_condition = "warn"
+defaulting_trait_method = "warn"
+float_for_currency = "warn"
+foreign_enum_catch_all = "warn"
+fragile_exhaustive_enum_match = "warn"
+missing_const_fn = "warn"
+multi_lock_ordering = "warn"
+newtype_invariant_bypass = "warn"
+nondeterministic_output = "warn"
+numeric_units = "warn"
+primitive_domain_alias = "warn"
+raw_arithmetic_overflow = "warn"
+raw_domain_value = "warn"
+type_accumulation = "warn"
+unjustified_allow = "warn"

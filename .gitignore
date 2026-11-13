@@ -10,3 +10,6 @@ target/
 /result-*
 .mneme-loop/
 /vendor/
+
+# Lean build output and fetched Lake packages
+.lake/

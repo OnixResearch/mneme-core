@@ -1,10 +1,14 @@
 {
-  description = "Mneme Rust development environment and planning checks";
+  description = "Mneme: Rust workspace, command-line and desktop applications, development shell and checks";
 
   inputs = {
     # Pinned Octet checked path: lint runner, Dylint library, and its toolchain.
     # Octet remains a development/CI tool; it is not linked into Mneme.
     octet.url = "git+ssh://git@github.com/OnixResearch/octet?rev=2bdd581980eef7f6ec8363ffa20ab9f3c798c9ee";
+    # Pinned extractor for the kernel proof gate: Charon and Aeneas at one
+    # revision, with the Rust nightly Charon is built against. Development
+    # tools only; nothing from this input is linked into Mneme.
+    aeneas.url = "github:AeneasVerif/aeneas/505b6ca35217e7be5c96c3e2f8045edfbdf47291";
     crane.url = "github:ipetkov/crane";
     # Update these revisions deliberately with the lockfile and verification.
     nixpkgs.url = "github:NixOS/nixpkgs/ac588ef1c914865dad517b337ea0eb9694a4021c";
@@ -20,6 +24,7 @@
       nixpkgs,
       rust-overlay,
       octet,
+      aeneas,
       crane,
       ...
     }:
@@ -65,6 +70,39 @@
         rev = "6be26efd727611b10232fb6657653ea2b15ff651";
         narHash = "sha256-DgXeyiEdHYlTf1KV77OKfDLlloEOw8qYhheXq7MIdu4=";
       };
+      # The Lean release the kernel proofs are checked with. Upstream bytes are
+      # fixed by hash; Nix only patches the ELF interpreter.
+      leanReleaseFor =
+        pkgs:
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "mneme-lean-release";
+          version = "4.35.0";
+          src = pkgs.fetchurl {
+            url = "https://github.com/leanprover/lean4/releases/download/v4.35.0/lean-4.35.0-linux.tar.zst";
+            hash = "sha256-colZekRUMkbJInuMrlAXZ+CVzhf21Ei5X8So3Jcmj20=";
+          };
+          nativeBuildInputs = [
+            pkgs.zstd
+            pkgs.autoPatchelfHook
+          ];
+          buildInputs = [ pkgs.stdenv.cc.cc.lib ];
+          dontConfigure = true;
+          dontBuild = true;
+          dontStrip = true;
+          installPhase = ''
+            mkdir -p "$out"
+            cp -r ./. "$out/"
+          '';
+        };
+      # Extractor, its Rust toolchain and Lean exist for x86_64-linux only.
+      hasProofTools = system: system == "x86_64-linux";
+      proofToolsFor =
+        system: pkgs:
+        pkgs.lib.optionals (hasProofTools system) [
+          aeneas.packages.${system}.aeneas
+          aeneas.packages.${system}.charon
+          (leanReleaseFor pkgs)
+        ];
     in
     {
       devShells = forAllSystems (
@@ -95,7 +133,10 @@
                 just
                 nixfmt
                 octet.packages.${system}.cargo-octet
+                # The pinned engine for the optional bounded Prolog profile.
+                scryer-prolog
               ])
+              ++ proofToolsFor system pkgs
               ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
                 pkgs.xorg-server
                 pkgs.xvfb-run
@@ -108,9 +149,16 @@
             ++ nativeUiLibraries;
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
             OPENSPEC_TELEMETRY = "0";
-            shellHook = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath nativeUiLibraries}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-            '';
+            MNEME_SCRYER_PROLOG = "${pkgs.scryer-prolog}/bin/scryer-prolog";
+            shellHook =
+              pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath nativeUiLibraries}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              ''
+              # Charon compiles the kernel with the nightly it was built
+              # against; the proof gate puts this directory first on PATH.
+              + pkgs.lib.optionalString (hasProofTools system) ''
+                export MNEME_EXTRACTION_TOOLCHAIN_BIN="${aeneas.inputs.charon.packages.${system}.rustToolchain}/bin"
+              '';
           };
         }
       );
@@ -204,7 +252,7 @@
             pkgs.wayland
           ];
           # Octet resolves the whole Cargo workspace, so the ignored Rats
-          # vendor tree must exist even though the first scope is mneme-core.
+          # vendor tree must exist before the runner starts.
           octetSrc = pkgs.runCommand "mneme-octet-source" { } ''
             mkdir -p "$out"
             cp -R ${self}/. "$out/"
@@ -311,9 +359,13 @@
             };
             buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
             doCheck = true;
+            # Real-engine Prolog tests run against the pinned engine.
+            MNEME_SCRYER_PROLOG = "${pkgs.scryer-prolog}/bin/scryer-prolog";
             checkPhase = ''
               cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings
-              cargo test --offline --locked --workspace --all-targets --all-features
+              # Run every test binary, so one sandbox-only failure does not
+              # hide the next.
+              cargo test --offline --locked --workspace --all-targets --all-features --no-fail-fast
             '';
             installPhase = "touch $out";
           };
