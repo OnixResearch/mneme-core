@@ -1670,6 +1670,10 @@ impl Workspace {
 
     /// Register a payload-bearing component only after it declares
     /// invalidation, purge, generation checks, and a storage inventory entry.
+    ///
+    /// Clients register their participants every time they open the
+    /// workspace, so an unchanged registration is only read: rewriting it
+    /// would turn every read-only open into a ledger write.
     pub fn register_retention_participant(
         &mut self,
         participant: crate::lifecycle::RetentionParticipant,
@@ -1677,6 +1681,9 @@ impl Workspace {
         participant
             .validate()
             .map_err(crate::error::Failure::InvalidCommand)?;
+        if self.retention_participant(&participant.name)?.as_ref() == Some(&participant) {
+            return Ok(participant);
+        }
         self.connection.execute(
             "INSERT INTO retention_participants (name, storage_role, supports_invalidation,
                  supports_purge, checks_generation, inventory_locator, registered_at_ns)

@@ -2020,3 +2020,61 @@ fn recovery_sweeps_orphan_blobs_through_a_streaming_walk() {
         "a name that is not a digest is not a blob file"
     );
 }
+
+/// The participant the desktop registers on every workspace open.
+fn drafts_participant(storage_role: &str) -> mneme_store::RetentionParticipant {
+    mneme_store::RetentionParticipant {
+        name: "drafts".to_owned(),
+        storage_role: storage_role.to_owned(),
+        supports_invalidation: true,
+        supports_purge: true,
+        checks_generation: true,
+        inventory_locator: "drafts/".to_owned(),
+    }
+}
+
+/// SQLite's count of commits by other connections, as seen from `ledger`.
+fn data_version(ledger: &rusqlite::Connection) -> i64 {
+    ledger
+        .query_row("PRAGMA data_version", [], |row| row.get(0))
+        .expect("data version")
+}
+
+#[test]
+fn registering_an_unchanged_participant_does_not_write_the_ledger() {
+    // A client registers its participants on every open, and a desktop opens
+    // a handle for every periodic revalidation: an unchanged registration must
+    // stay a read, or an idle window writes the ledger every few seconds.
+    let temp = tempfile::tempdir().expect("temp");
+    drop(mneme_store::Workspace::create(temp.path(), config(1_000)).expect("create"));
+    let ledger = open_ledger(temp.path());
+    let mut first = open(temp.path(), 2_000);
+    first
+        .register_retention_participant(drafts_participant("document-keyed-files"))
+        .expect("first registration");
+    let registered = data_version(&ledger);
+    let mut again = open(temp.path(), 3_000);
+    let stored = again
+        .register_retention_participant(drafts_participant("document-keyed-files"))
+        .expect("repeated registration");
+    assert_eq!(stored, drafts_participant("document-keyed-files"));
+    assert_eq!(
+        data_version(&ledger),
+        registered,
+        "an unchanged registration committed a write"
+    );
+    // A changed declaration is still stored.
+    let changed = again
+        .register_retention_participant(drafts_participant("note-drafts"))
+        .expect("changed registration");
+    assert_eq!(changed.storage_role, "note-drafts");
+    assert_ne!(data_version(&ledger), registered);
+    assert_eq!(
+        open(temp.path(), 4_000)
+            .retention_participant("drafts")
+            .expect("read")
+            .expect("registered")
+            .storage_role,
+        "note-drafts"
+    );
+}
