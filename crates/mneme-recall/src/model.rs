@@ -32,7 +32,8 @@ pub enum TemporalMode {
     /// Retained accepted, disputed, superseded, and retracted claims without
     /// substituting recorded time for valid time.
     Historical,
-    /// Every retained claim, including proposed and hypothetical material.
+    /// Every retained claim visible to the caller, including proposed material
+    /// and hypothetical claims in authorized hypothesis scopes.
     Inspection,
 }
 
@@ -65,6 +66,11 @@ pub struct StructuredRequest {
 pub struct Request {
     pub actor: String,
     pub scope: mneme_core::ScopeId,
+    /// The caller's scope authorization.
+    ///
+    /// The request scope is always readable; `include_hypothetical` widens the
+    /// view only to hypothesis scopes listed here.
+    pub access: mneme_memory::Access,
     pub revision: mneme_core::WorkspaceRevisionId,
     pub query: String,
     /// Instant used by `TemporalMode::Current` for valid-time eligibility.
@@ -95,6 +101,10 @@ pub struct Request {
 
 impl Request {
     /// A current-mode, lexical-only request with conservative budgets.
+    ///
+    /// The caller is authorized for exactly the requested scope; a session that
+    /// may read further scopes must build the request with its own
+    /// [`mneme_memory::Access`].
     pub fn lexical(
         actor: impl Into<String>,
         scope: mneme_core::ScopeId,
@@ -104,6 +114,7 @@ impl Request {
     ) -> Self {
         Request {
             actor: actor.into(),
+            access: mneme_memory::Access::scopes([scope.clone()]),
             scope,
             revision,
             query: query.into(),
@@ -121,6 +132,21 @@ impl Request {
             max_quote_bytes: 1024,
             max_time_ms: 500,
             cancellation: None,
+        }
+    }
+
+    /// The authorization a memory view is built with.
+    ///
+    /// A caller asking for a scope is reading it, so the request scope joins the
+    /// explicit set; every other scope still needs `access`.
+    pub(crate) fn view_access(&self) -> mneme_memory::Access {
+        match &self.access {
+            mneme_memory::Access::Operator => mneme_memory::Access::Operator,
+            mneme_memory::Access::Scopes(scopes) => {
+                let mut scopes = scopes.clone();
+                scopes.insert(self.scope.clone());
+                mneme_memory::Access::Scopes(scopes)
+            }
         }
     }
 }
@@ -151,6 +177,9 @@ impl Execution {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModeStatus {
     Used,
+    /// The mode ran and contributed candidates under declared incomplete
+    /// coverage. This is not a failure of the mode.
+    Partial,
     Unavailable,
     Omitted,
     TimedOut,
@@ -161,6 +190,7 @@ impl ModeStatus {
     pub const fn name(self) -> &'static str {
         match self {
             ModeStatus::Used => "used",
+            ModeStatus::Partial => "partial",
             ModeStatus::Unavailable => "unavailable",
             ModeStatus::Omitted => "omitted",
             ModeStatus::TimedOut => "timed_out",
@@ -221,8 +251,19 @@ pub struct Context {
     pub scope: mneme_core::ScopeId,
     pub requested_revision: mneme_core::WorkspaceRevisionId,
     pub served_revision: mneme_core::WorkspaceRevisionId,
+    /// The workspace head observed while serving.
+    pub current_revision: mneme_core::WorkspaceRevisionId,
+    /// The served revision is older than `current_revision`, which the caller
+    /// explicitly permitted with `allow_stale`.
+    pub stale: bool,
     pub eligibility_generation: u64,
     pub temporal: TemporalMode,
+    /// The instant the request was evaluated at, copied from the request.
+    ///
+    /// Results depend on it: `Current` valid-time eligibility, and therefore
+    /// every candidate and coverage decision drawn from this context, is
+    /// decided at this instant rather than at delivery time.
+    pub at: mneme_core::Timestamp,
     pub index_versions: std::collections::BTreeMap<String, String>,
     pub fusion_policy: String,
 }
@@ -288,6 +329,21 @@ pub struct Evidence {
     pub source_revision: Option<mneme_core::RevisionId>,
     pub span: Option<mneme_core::SourceSpan>,
     pub availability: mneme_memory::SourceAvailability,
+    /// Whether the record supports or challenges the claim. A challenge is
+    /// never counted as independent support.
+    pub relation: mneme_memory::SupportRelation,
+    /// A withdrawal suppression covers this record, so it no longer grounds
+    /// the claim it belongs to.
+    pub withdrawn: bool,
+    /// The memory engine judges this citation eligible to contribute to current
+    /// support: its declared ancestry resolved, nothing withdrew it, and every
+    /// record it needs is readable. `false` is the fail-closed default, and the
+    /// flag is only raised by the support walk over a ranked claim.
+    pub eligible: bool,
+    /// The resolved, readable roots the memory engine derives for this
+    /// citation. A citation that declares ancestry roots at its ancestors'
+    /// roots, so this is empty when that ancestry could not be resolved and it
+    /// never falls back to the cited source.
     pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
 }
 
@@ -313,6 +369,12 @@ pub struct Candidate {
     pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
     /// False when another selected candidate shares this candidate's ancestry.
     pub independent_support: bool,
+    /// The support set is incomplete: a declared citation could not be resolved
+    /// to a root (unresolved ancestry, a withdrawal, unreadable records) or the
+    /// bounded support walk truncated. Such a candidate is never counted or
+    /// labelled as independent support, because an empty root set cannot be
+    /// read as "no ancestry declared".
+    pub support_limited: bool,
     pub origins: std::collections::BTreeSet<Mode>,
     pub score: f64,
     pub score_components: std::collections::BTreeMap<String, f64>,
@@ -347,6 +409,36 @@ impl Default for DataBoundary {
     }
 }
 
+/// Used and allowed amounts of every limit one recall request carries.
+///
+/// A limit is reported as a pair: `*_allowed` is the limit that applied, and
+/// `*_used` is what the response actually returned or spent, so a caller can
+/// verify the amount by counting the response. A response whose status is
+/// complete never reports a used amount above its allowed amount; a timeout,
+/// cancellation or failure may, because the stop itself is what ended work that
+/// was already in progress.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BudgetUse {
+    /// Candidates returned, against the request's item limit.
+    pub items_used: u64,
+    pub items_allowed: u64,
+    /// Bytes of returned candidate text, against the request's context budget.
+    /// Attribution fields are not counted, exactly as the limit counts them.
+    pub text_bytes_used: u64,
+    pub text_bytes_allowed: u64,
+    /// Bytes of the longest returned excerpt, against the per-excerpt limit.
+    pub excerpt_bytes_used: u64,
+    pub excerpt_bytes_allowed: u64,
+    /// Whole milliseconds elapsed, against the request's time budget, as the
+    /// last budget observation measured them.
+    pub elapsed_ms_used: u64,
+    pub elapsed_ms_allowed: u64,
+    /// Work units charged, against the deterministic recall work limit, which
+    /// is the crate's own bound rather than a request field.
+    pub work_used: u64,
+    pub work_allowed: u64,
+}
+
 /// One recall response.
 #[derive(Clone, Debug)]
 pub struct Response {
@@ -354,11 +446,17 @@ pub struct Response {
     pub status: Execution,
     pub modes: Vec<ModeReport>,
     pub candidates: Vec<Candidate>,
-    /// Whether this ranked result is exhaustive. Always false for recall.
+    /// Whether this answer is complete, decided by
+    /// [`mneme_kernel::completeness::answer_complete`]. A ranked result is
+    /// never exhaustive; only an exhaustive structured relation can be.
     pub exhaustive: bool,
-    /// Whether recall established a factual absence. Always false.
+    /// Whether an empty answer establishes absence, decided by
+    /// [`mneme_kernel::completeness::absence_established`].
     pub absence_established: bool,
     pub truncated: bool,
+    /// What this answer returned and spent, against every limit the request
+    /// carries.
+    pub budget: BudgetUse,
     pub omissions: Vec<Omission>,
     pub reason: Option<String>,
     pub boundary: DataBoundary,
@@ -370,6 +468,37 @@ pub(crate) struct CachedIndex {
     pub revision: mneme_core::WorkspaceRevisionId,
     pub coverage: IndexCoverage,
     pub(crate) documents: Vec<IndexedDocument>,
+    /// Document position by candidate identity, so a ranking result never
+    /// copies the corpus it was computed from.
+    positions: std::collections::BTreeMap<String, usize>,
+}
+
+impl CachedIndex {
+    /// Build an index from its documents.
+    pub(crate) fn new(
+        revision: mneme_core::WorkspaceRevisionId,
+        coverage: IndexCoverage,
+        documents: Vec<IndexedDocument>,
+    ) -> Self {
+        let positions = documents
+            .iter()
+            .enumerate()
+            .map(|(position, document)| (document.id.clone(), position))
+            .collect();
+        CachedIndex {
+            revision,
+            coverage,
+            documents,
+            positions,
+        }
+    }
+
+    /// The document with this candidate identity.
+    pub(crate) fn document(&self, id: &str) -> Option<&IndexedDocument> {
+        self.positions
+            .get(id)
+            .and_then(|position| self.documents.get(*position))
+    }
 }
 
 /// A text document in the built lexical/vector index.

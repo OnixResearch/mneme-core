@@ -8,10 +8,14 @@
 #![allow(unknown_lints)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![cfg_attr(test, allow(clippy::expect_used))]
 
+pub mod adapter;
 pub mod commands;
 pub mod flow;
 pub mod proposals;
 pub mod runner;
+
+/// The text a redacted proposal carries in place of content it may no longer show.
+const SUPPRESSED_MARKER: &str = "suppressed";
 
 /// Resource limits for one consolidation job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,12 +72,85 @@ pub enum InputKind {
     Document,
 }
 
+impl InputKind {
+    /// Stable name for reports and run identity.
+    pub fn name(self) -> &'static str {
+        match self {
+            InputKind::Episode => "episode",
+            InputKind::SourceRevision => "source-revision",
+            InputKind::Assertion => "assertion",
+            InputKind::Document => "document",
+        }
+    }
+}
+
 /// Whether input bytes remain available for quotation/extraction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputAvailability {
+    /// The exact bytes are retained and readable.
     Retained,
+    /// An authorized pruning step removed the bytes.
     Pruned { reason: String },
+    /// An authorized forget (erasure) removed the bytes.
     Forgotten { reason: String },
+    /// The bytes cannot be read: corrupt, inaccessible, or no longer present.
+    Unavailable { reason: String },
+}
+
+impl InputAvailability {
+    /// Stable name for reports.
+    pub fn name(&self) -> &'static str {
+        match self {
+            InputAvailability::Retained => "retained",
+            InputAvailability::Pruned { .. } => "pruned",
+            InputAvailability::Forgotten { .. } => "forgotten",
+            InputAvailability::Unavailable { .. } => "unavailable",
+        }
+    }
+
+    /// Whether the exact bytes may be quoted or re-extracted.
+    pub fn is_retained(&self) -> bool {
+        matches!(self, InputAvailability::Retained)
+    }
+
+    /// The recorded reason, when the bytes are not retained.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            InputAvailability::Retained => None,
+            InputAvailability::Pruned { reason }
+            | InputAvailability::Forgotten { reason }
+            | InputAvailability::Unavailable { reason } => Some(reason),
+        }
+    }
+
+    /// Map a memory-layer source status onto a batch availability.
+    ///
+    /// Anything other than an exact retained read is unavailable: a pruned,
+    /// erased, corrupt or inaccessible source can never be quoted again.
+    pub fn from_source_availability(availability: &mneme_memory::SourceAvailability) -> Self {
+        match availability {
+            mneme_memory::SourceAvailability::Retained => InputAvailability::Retained,
+            mneme_memory::SourceAvailability::Pruned => InputAvailability::Pruned {
+                reason: "source bytes were pruned".to_owned(),
+            },
+            mneme_memory::SourceAvailability::Erased => InputAvailability::Forgotten {
+                reason: "source bytes were forgotten".to_owned(),
+            },
+            mneme_memory::SourceAvailability::Corrupt { reason } => {
+                InputAvailability::Unavailable {
+                    reason: format!("source bytes are corrupt: {reason}"),
+                }
+            }
+            mneme_memory::SourceAvailability::Inaccessible => InputAvailability::Unavailable {
+                reason: "source bytes are inaccessible".to_owned(),
+            },
+            mneme_memory::SourceAvailability::Unavailable { reason } => {
+                InputAvailability::Unavailable {
+                    reason: reason.clone(),
+                }
+            }
+        }
+    }
 }
 
 /// One exact input unit and its source availability.
@@ -82,6 +159,46 @@ pub struct InputUnit {
     pub key: InputKey,
     pub kind: InputKind,
     pub availability: InputAvailability,
+    /// The authority this unit's content carries.
+    pub authority: ProposalAuthority,
+    /// The derivation record a derived unit came from, when recall names one.
+    pub derivation: Option<mneme_core::RecordId>,
+    /// The distinct ancestry roots this unit stands for.
+    pub ancestry_roots: std::collections::BTreeSet<InputKey>,
+}
+
+impl InputUnit {
+    /// A unit whose only ancestry root is its own exact revision.
+    pub fn new(key: InputKey, kind: InputKind, availability: InputAvailability) -> Self {
+        InputUnit {
+            key,
+            kind,
+            availability,
+            authority: ProposalAuthority::Observed,
+            derivation: None,
+            ancestry_roots: std::collections::BTreeSet::from([key]),
+        }
+    }
+
+    /// Replace the ancestry roots this unit stands for.
+    pub fn with_ancestry(mut self, ancestry_roots: std::collections::BTreeSet<InputKey>) -> Self {
+        if !ancestry_roots.is_empty() {
+            self.ancestry_roots = ancestry_roots;
+        }
+        self
+    }
+
+    /// Record the authority this unit's content carries.
+    pub fn with_authority(mut self, authority: ProposalAuthority) -> Self {
+        self.authority = authority;
+        self
+    }
+
+    /// Record the derivation record this unit came from.
+    pub fn with_derivation(mut self, derivation: mneme_core::RecordId) -> Self {
+        self.derivation = Some(derivation);
+        self
+    }
 }
 
 /// Retained limitations from the recall result that selected a batch.
@@ -149,14 +266,39 @@ impl InputBatch {
     /// The response remains a ranked, non-exhaustive source selection. Its
     /// omissions, truncation, mode failures, and unpinned candidates are
     /// retained so proposals cannot infer absence or cleanup.
+    ///
+    /// Availability is read from the source's own status in `view`, not from
+    /// the candidate's evidence list: a pruned, erased or corrupt source keeps
+    /// its candidate in a ranked result, so trusting the candidate would let a
+    /// generator quote bytes that are gone.
     #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn from_recall(
         scope: mneme_core::ScopeId,
         expected_revision: mneme_core::WorkspaceRevisionId,
         response: &mneme_recall::Response,
+        view: &mneme_memory::View,
     ) -> Result<Self, String> {
+        Self::from_recall_with(scope, expected_revision, response, |source, revision| {
+            source_availability(view, source, revision)
+        })
+    }
+
+    /// Build a pinned batch from a recall response and an availability source.
+    ///
+    /// The resolver is the caller's authority on whether exact bytes still
+    /// exist; production callers pass the pinned view, tests pass the state
+    /// they are exercising.
+    pub fn from_recall_with<F>(
+        scope: mneme_core::ScopeId,
+        expected_revision: mneme_core::WorkspaceRevisionId,
+        response: &mneme_recall::Response,
+        availability: F,
+    ) -> Result<Self, String>
+    where
+        F: Fn(mneme_core::RecordId, mneme_core::RevisionId) -> InputAvailability,
+    {
         Self::validate_recall_response(&scope, expected_revision, response)?;
-        let (units, unpinned_candidates) = Self::recall_units(response);
+        let (units, unpinned_candidates) = Self::recall_units(response, availability);
         let reviewed = units
             .iter()
             .map(|unit| unit.key)
@@ -201,7 +343,13 @@ impl InputBatch {
         Ok(())
     }
 
-    fn recall_units(response: &mneme_recall::Response) -> (Vec<InputUnit>, usize) {
+    fn recall_units<F>(
+        response: &mneme_recall::Response,
+        availability: F,
+    ) -> (Vec<InputUnit>, usize)
+    where
+        F: Fn(mneme_core::RecordId, mneme_core::RevisionId) -> InputAvailability,
+    {
         let mut units = Vec::with_capacity(response.candidates.len());
         let mut seen = std::collections::BTreeSet::new();
         let mut unpinned_candidates = 0;
@@ -218,25 +366,23 @@ impl InputBatch {
             if !seen.insert(key) {
                 continue;
             }
-            let availability = candidate
-                .evidence
+            let ancestry = candidate
+                .ancestry_roots
                 .iter()
-                .find(|evidence| evidence.source == source)
-                .map(|evidence| {
-                    if evidence.availability.name() == "pruned" {
-                        InputAvailability::Pruned {
-                            reason: "source bytes were pruned".to_owned(),
-                        }
-                    } else {
-                        InputAvailability::Retained
-                    }
+                .map(|(record_id, revision_id)| InputKey {
+                    record_id: *record_id,
+                    revision_id: *revision_id,
                 })
-                .unwrap_or(InputAvailability::Retained);
-            units.push(InputUnit {
-                key,
-                kind: InputKind::SourceRevision,
-                availability,
-            });
+                .collect::<std::collections::BTreeSet<_>>();
+            units.push(
+                InputUnit::new(
+                    key,
+                    InputKind::SourceRevision,
+                    availability(source, revision),
+                )
+                .with_ancestry(ancestry)
+                .with_authority(unit_authority(candidate.content_kind)),
+            );
         }
         (units, unpinned_candidates)
     }
@@ -279,6 +425,91 @@ impl InputBatch {
             && self.limitations.modes.iter().all(|mode| mode.complete)
     }
 
+    /// Keep at most `max_inputs` units, returning the units that did not fit.
+    ///
+    /// The review cursor must never claim an extent that was not reviewed, so a
+    /// dropped unit leaves both the unit list and the reviewed set.
+    #[allow(unknown_lints, usize_in_public_api)] // matches `JobLimits::max_inputs` and indexes the unit collection
+    pub fn limit_inputs(&self, max_inputs: usize) -> (Self, Vec<InputKey>) {
+        if self.units.len() <= max_inputs {
+            return (self.clone(), Vec::new());
+        }
+        let mut kept = self.clone();
+        let dropped = kept.units.split_off(max_inputs);
+        let dropped = dropped.into_iter().map(|unit| unit.key).collect::<Vec<_>>();
+        for key in &dropped {
+            kept.reviewed.remove(key);
+        }
+        if let Some(extent) = &mut kept.declared_extent {
+            for key in &dropped {
+                extent.remove(key);
+            }
+        }
+        (kept, dropped)
+    }
+
+    /// A digest binding every input that changes a proposal derived from it.
+    ///
+    /// Run identity and progress are both keyed by it, so a batch whose units,
+    /// availability, ancestry, coverage or limitations changed can never resume
+    /// another batch's work.
+    pub fn digest(&self) -> mneme_core::ContentDigest {
+        let units = self.units.iter().map(unit_identity);
+        mneme_core::ContentDigest::of_payload(&mneme_core::Value::record_named(
+            "input-batch",
+            vec![
+                self.scope.to_value(),
+                self.requested_revision.to_value(),
+                self.served_revision.to_value(),
+                mneme_core::Value::string(self.eligibility_generation.to_string()),
+                mneme_core::Value::set(units),
+                mneme_core::Value::set(self.reviewed.iter().map(|key| {
+                    mneme_core::Value::record_named(
+                        "input-key",
+                        vec![key.record_id.to_value(), key.revision_id.to_value()],
+                    )
+                })),
+                mneme_core::Value::set(self.declared_extent.iter().flat_map(|extent| {
+                    extent.iter().map(|key| {
+                        mneme_core::Value::record_named(
+                            "input-key",
+                            vec![key.record_id.to_value(), key.revision_id.to_value()],
+                        )
+                    })
+                })),
+                coverage_value(&self.coverage),
+                mneme_core::Value::string(self.limitations.status.clone()),
+                mneme_core::Value::integer(i64::from(u8::from(self.limitations.exhaustive))),
+                mneme_core::Value::integer(i64::from(u8::from(
+                    self.limitations.absence_established,
+                ))),
+                mneme_core::Value::integer(i64::from(u8::from(self.limitations.truncated))),
+                mneme_core::Value::set(
+                    self.limitations
+                        .omissions
+                        .iter()
+                        .cloned()
+                        .map(mneme_core::Value::string),
+                ),
+                mneme_core::Value::set(self.limitations.modes.iter().map(|mode| {
+                    mneme_core::Value::record_named(
+                        "recall-mode",
+                        vec![
+                            mneme_core::Value::string(mode.mode.clone()),
+                            mneme_core::Value::string(mode.status.clone()),
+                            mneme_core::Value::integer(i64::from(u8::from(mode.complete))),
+                            mode.reason.clone().map_or_else(
+                                || mneme_core::Value::symbol("none"),
+                                mneme_core::Value::string,
+                            ),
+                        ],
+                    )
+                })),
+                mneme_core::Value::string(self.limitations.unpinned_candidates.to_string()),
+            ],
+        ))
+    }
+
     /// Validate identity, reviewed extent, and coverage claims.
     pub fn validate(&self) -> Result<(), String> {
         let mut keys = std::collections::BTreeSet::new();
@@ -286,11 +517,13 @@ impl InputBatch {
             if !keys.insert(unit.key) {
                 return Err("input batch contains a duplicate unit".to_owned());
             }
-            if let InputAvailability::Pruned { reason } | InputAvailability::Forgotten { reason } =
-                &unit.availability
+            if let Some(reason) = unit.availability.reason()
                 && reason.trim().is_empty()
             {
                 return Err("unavailable input needs a reason".to_owned());
+            }
+            if unit.ancestry_roots.is_empty() {
+                return Err("each input unit needs ancestry roots".to_owned());
             }
         }
         if !self.reviewed.is_subset(&keys) {
@@ -312,6 +545,97 @@ impl InputBatch {
             }
         }
         Ok(())
+    }
+}
+
+/// The digest value of one input unit.
+///
+/// Every field a generator reads is bound: identity, kind, availability and its
+/// reason, authority, derivation and ancestry roots.
+fn unit_identity(unit: &InputUnit) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "input-unit",
+        vec![
+            unit.key.record_id.to_value(),
+            unit.key.revision_id.to_value(),
+            mneme_core::Value::symbol(unit.kind.name()),
+            mneme_core::Value::symbol(unit.availability.name()),
+            unit.availability.reason().map_or_else(
+                || mneme_core::Value::symbol("none"),
+                mneme_core::Value::string,
+            ),
+            mneme_core::Value::symbol(unit.authority.name()),
+            unit.derivation.map_or_else(
+                || mneme_core::Value::symbol("none"),
+                mneme_core::RecordId::to_value,
+            ),
+            mneme_core::Value::set(unit.ancestry_roots.iter().map(|root| {
+                mneme_core::Value::record_named(
+                    "input-key",
+                    vec![root.record_id.to_value(), root.revision_id.to_value()],
+                )
+            })),
+        ],
+    )
+}
+
+/// The digest value of a batch's coverage claim.
+fn coverage_value(coverage: &BatchCoverage) -> mneme_core::Value {
+    match coverage {
+        BatchCoverage::Complete => {
+            mneme_core::Value::record_named("coverage", vec![mneme_core::Value::symbol("complete")])
+        }
+        BatchCoverage::Partial { reason } | BatchCoverage::Unknown { reason } => {
+            mneme_core::Value::record_named(
+                "coverage",
+                vec![mneme_core::Value::string(reason.clone())],
+            )
+        }
+    }
+}
+
+/// The availability in force for one pinned source revision.
+///
+/// A suppression, a pruned revision and a corrupt blob all resolve to an
+/// unavailable unit: retention decisions reach every older revision of the
+/// record, so blob presence never outranks them.
+fn source_availability(
+    view: &mneme_memory::View,
+    source: mneme_core::RecordId,
+    revision: mneme_core::RevisionId,
+) -> InputAvailability {
+    let Ok(pinned) = view.source_at(source, revision) else {
+        return InputAvailability::Unavailable {
+            reason: "source revision is not retained".to_owned(),
+        };
+    };
+    if let Some(suppression) = view.suppression_for(&pinned.record) {
+        return match suppression.mode {
+            mneme_store::SuppressionMode::Forgotten => InputAvailability::Forgotten {
+                reason: "source was explicitly forgotten".to_owned(),
+            },
+            mneme_store::SuppressionMode::Withdrawn => InputAvailability::Unavailable {
+                reason: "source was withdrawn".to_owned(),
+            },
+        };
+    }
+    match view.source_status_for(&pinned) {
+        Ok(mneme_memory::SourceStatus::Retained(_)) => InputAvailability::Retained,
+        Ok(status) => InputAvailability::from_source_availability(&status.availability()),
+        Err(_) => InputAvailability::Unavailable {
+            reason: "source bytes could not be read".to_owned(),
+        },
+    }
+}
+
+/// The authority a candidate's content carries.
+fn unit_authority(kind: mneme_recall::ContentKind) -> ProposalAuthority {
+    match kind {
+        mneme_recall::ContentKind::StructuredRow => ProposalAuthority::Derived,
+        mneme_recall::ContentKind::SourceExcerpt
+        | mneme_recall::ContentKind::Claim
+        | mneme_recall::ContentKind::EpisodeSummary
+        | mneme_recall::ContentKind::TypedField => ProposalAuthority::Observed,
     }
 }
 
@@ -390,6 +714,18 @@ pub enum ProposalAuthority {
     Observed,
     Derived,
     ModelExtracted,
+}
+
+impl ProposalAuthority {
+    /// Stable name for reports and run identity.
+    pub fn name(self) -> &'static str {
+        match self {
+            ProposalAuthority::Authored => "authored",
+            ProposalAuthority::Observed => "observed",
+            ProposalAuthority::Derived => "derived",
+            ProposalAuthority::ModelExtracted => "model-extracted",
+        }
+    }
 }
 
 /// A summary candidate. Its text remains an interpretation, not a quote.
@@ -540,6 +876,10 @@ pub struct Proposal {
     pub recorded_at: mneme_core::Timestamp,
     pub base_revision: mneme_core::WorkspaceRevisionId,
     pub scope: mneme_core::ScopeId,
+    /// The consolidation policy the proposal was derived under.
+    pub policy_version: String,
+    /// The eligibility generation the input batch was pinned to.
+    pub eligibility_generation: u64,
     pub operation: ProposalOperation,
     pub premises: Vec<ProposalPremise>,
     pub rationale: String,
@@ -558,15 +898,110 @@ impl Proposal {
             .len()
     }
 
+    /// The records whose current revision this proposal depends on.
+    ///
+    /// An acceptance precondition must pin each of them, so a supersession of a
+    /// rewritten prior, a dispute of a retracted assertion, or a cleanup of a
+    /// record that changed since review is never silently accepted.
+    pub fn operation_targets(&self) -> std::collections::BTreeSet<mneme_core::RecordId> {
+        match &self.operation {
+            ProposalOperation::Supersession(supersession) => {
+                std::collections::BTreeSet::from([supersession.prior])
+            }
+            ProposalOperation::Dispute(dispute) => {
+                std::collections::BTreeSet::from([dispute.assertion])
+            }
+            ProposalOperation::Cleanup(cleanup) => cleanup.records.clone(),
+            ProposalOperation::Absence(_)
+            | ProposalOperation::Assertion(_)
+            | ProposalOperation::Summary(_)
+            | ProposalOperation::Procedure(_) => std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Redact a proposal whose source content was forgotten.
+    ///
+    /// The operation keeps its kind but loses the text, value, rationale, support
+    /// review and citations derived from the forgotten bytes, and the disposition
+    /// becomes terminal so no acceptance or retry can restore forbidden content.
+    /// What remains is the proposal identity, its run identity, the operation
+    /// kind with record identifiers, and the blocking reason — enough to answer a
+    /// later command without retaining derived content.
+    pub fn suppress(&mut self, reason: &str) {
+        let operation = match &self.operation {
+            ProposalOperation::Summary(_) => ProposalOperation::Summary(SummaryProposal {
+                text: String::new(),
+            }),
+            ProposalOperation::Assertion(assertion) => {
+                ProposalOperation::Assertion(AssertionProposal {
+                    subject: assertion.subject,
+                    predicate: assertion.predicate.clone(),
+                    value: mneme_core::Value::symbol("redacted"),
+                    stance: assertion.stance,
+                    valid_time: mneme_core::ValidTime::Unknown,
+                })
+            }
+            ProposalOperation::Dispute(dispute) => ProposalOperation::Dispute(DisputeProposal {
+                assertion: dispute.assertion,
+                reason: SUPPRESSED_MARKER.to_owned(),
+            }),
+            ProposalOperation::Supersession(supersession) => {
+                ProposalOperation::Supersession(SupersessionProposal {
+                    prior: supersession.prior,
+                    prior_authority: supersession.prior_authority,
+                    replacement: mneme_core::Value::symbol("redacted"),
+                    reason: SUPPRESSED_MARKER.to_owned(),
+                    basis: supersession.basis,
+                })
+            }
+            ProposalOperation::Absence(absence) => ProposalOperation::Absence(AbsenceProposal {
+                subject: absence.subject,
+                predicate: absence.predicate.clone(),
+                reason: SUPPRESSED_MARKER.to_owned(),
+            }),
+            ProposalOperation::Cleanup(cleanup) => ProposalOperation::Cleanup(CleanupProposal {
+                records: cleanup.records.clone(),
+                reason: SUPPRESSED_MARKER.to_owned(),
+            }),
+            ProposalOperation::Procedure(procedure) => {
+                ProposalOperation::Procedure(ProcedureProposal {
+                    kind: procedure.kind,
+                    content: String::new(),
+                    validator: procedure.validator.clone(),
+                })
+            }
+        };
+        self.operation = operation;
+        self.premises.clear();
+        self.rationale = "suppressed: source content was forgotten".to_owned();
+        // A support review quotes the cited bytes it judged, so it is derived
+        // content too: the redacted review records only that the claim is no
+        // longer supportable.
+        self.support = SupportReview {
+            actor: SUPPRESSED_MARKER.to_owned(),
+            policy: SUPPRESSED_MARKER.to_owned(),
+            outcome: SupportOutcome::Rejected,
+            detail: "suppressed: the source content was forgotten".to_owned(),
+        };
+        self.disposition = ProposalDisposition::Blocked {
+            reason: reason.to_owned(),
+        };
+    }
+
     /// Validate proposal identity, support, and disposition.
     pub fn validate(&self) -> Result<(), String> {
         if self.proposal_id.trim().is_empty()
             || self.job_id.trim().is_empty()
             || self.rationale.trim().is_empty()
+            || self.policy_version.trim().is_empty()
         {
-            return Err("proposal identity, job identity, and rationale are required".to_owned());
+            return Err(
+                "proposal identity, job identity, policy, and rationale are required".to_owned(),
+            );
         }
-        if self.premises.is_empty() {
+        if self.premises.is_empty()
+            && !matches!(self.disposition, ProposalDisposition::Blocked { .. })
+        {
             return Err("proposal needs at least one source or derivation premise".to_owned());
         }
         if self
@@ -590,10 +1025,17 @@ impl Proposal {
                 return Err("cleanup proposal needs records and a reason".to_owned());
             }
             ProposalOperation::Supersession(supersession)
-                if supersession.basis == SupersessionBasis::LaterIngestion
-                    && supersession.prior_authority == ProposalAuthority::Authored =>
+                if supersession.basis == SupersessionBasis::LaterIngestion =>
             {
-                return Err("later ingestion cannot supersede an authored assertion".to_owned());
+                return Err("ingestion order alone never supersedes an assertion".to_owned());
+            }
+            ProposalOperation::Supersession(supersession)
+                if supersession.reason.trim().is_empty() =>
+            {
+                return Err("a supersession needs an evidence-based reason".to_owned());
+            }
+            ProposalOperation::Dispute(dispute) if dispute.reason.trim().is_empty() => {
+                return Err("a dispute needs an evidence-based reason".to_owned());
             }
             _ => {}
         }
@@ -719,14 +1161,15 @@ pub fn fixture() -> Result<Fixture, String> {
         record_id: mneme_core::RecordId::from_bytes([0x20; 16]),
         revision_id: mneme_core::RevisionId::from_bytes([0x21; 16]),
     };
-    let observation = InputUnit {
-        key: InputKey {
+    let observation = InputUnit::new(
+        InputKey {
             record_id: mneme_core::RecordId::from_bytes([0x10; 16]),
             revision_id: mneme_core::RevisionId::from_bytes([0x11; 16]),
         },
-        kind: InputKind::Episode,
-        availability: InputAvailability::Retained,
-    };
+        InputKind::Episode,
+        InputAvailability::Retained,
+    )
+    .with_authority(ProposalAuthority::Authored);
     let accepted = AcceptedAssertionRef {
         record_id: mneme_core::RecordId::from_bytes([0x40; 16]),
         revision_id: mneme_core::RevisionId::from_bytes([0x41; 16]),
@@ -783,6 +1226,8 @@ fn fixture_summary_proposal(
         recorded_at: mneme_core::Timestamp::from_nanos(1_000),
         base_revision: base,
         scope: scope.clone(),
+        policy_version: "consolidation-policy/v1".to_owned(),
+        eligibility_generation: 0,
         operation: ProposalOperation::Summary(SummaryProposal {
             text: "Cedar uses SQLite.".to_owned(),
         }),
@@ -804,6 +1249,8 @@ fn fixture_assertion_proposal(
         recorded_at: mneme_core::Timestamp::from_nanos(1_000),
         base_revision: base,
         scope: scope.clone(),
+        policy_version: "consolidation-policy/v1".to_owned(),
+        eligibility_generation: 0,
         operation: ProposalOperation::Assertion(AssertionProposal {
             subject: mneme_core::RecordId::from_bytes([0x10; 16]),
             predicate: "storage-engine".to_owned(),
@@ -829,6 +1276,8 @@ fn fixture_procedure_proposal(
         recorded_at: mneme_core::Timestamp::from_nanos(1_000),
         base_revision: base,
         scope: scope.clone(),
+        policy_version: "consolidation-policy/v1".to_owned(),
+        eligibility_generation: 0,
         operation: ProposalOperation::Procedure(ProcedureProposal {
             kind: ProcedureKind::Rule,
             content: "grant_scope(user).".to_owned(),
@@ -856,11 +1305,11 @@ fn fixture_batch(
         eligibility_generation: 0,
         units: vec![
             observation.clone(),
-            InputUnit {
-                key: source,
-                kind: InputKind::SourceRevision,
-                availability: InputAvailability::Retained,
-            },
+            InputUnit::new(
+                source,
+                InputKind::SourceRevision,
+                InputAvailability::Retained,
+            ),
         ],
         reviewed: std::collections::BTreeSet::from([observation.key, source]),
         declared_extent: Some(std::collections::BTreeSet::from([observation.key, source])),
@@ -996,8 +1445,11 @@ mod tests {
                 scope: scope.clone(),
                 requested_revision: revision,
                 served_revision: revision,
+                current_revision: revision,
+                stale: false,
                 eligibility_generation: 3,
                 temporal: mneme_recall::TemporalMode::Current,
+                at: mneme_core::Timestamp::from_nanos(0),
                 index_versions: std::collections::BTreeMap::new(),
                 fusion_policy: "test/v1".to_owned(),
             },
@@ -1027,9 +1479,23 @@ mod tests {
             }],
             reason: Some("ranked recall".to_owned()),
             boundary: mneme_recall::DataBoundary::default(),
+            budget: mneme_recall::BudgetUse {
+                items_used: 0,
+                items_allowed: 8,
+                text_bytes_used: 0,
+                text_bytes_allowed: 4096,
+                excerpt_bytes_used: 0,
+                excerpt_bytes_allowed: 256,
+                elapsed_ms_used: 0,
+                elapsed_ms_allowed: 500,
+                work_used: 0,
+                work_allowed: 1,
+            },
         };
-        let batch = InputBatch::from_recall(scope.clone(), revision, &response)
-            .expect("pinned recall batch");
+        let batch = InputBatch::from_recall_with(scope.clone(), revision, &response, |_, _| {
+            InputAvailability::Retained
+        })
+        .expect("pinned recall batch");
         assert!(matches!(batch.coverage, BatchCoverage::Partial { .. }));
         assert_eq!(batch.eligibility_generation, 3);
         assert_eq!(batch.limitations.omissions.len(), 1);

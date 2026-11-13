@@ -6,9 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mneme-kernel.workspace = true
 mneme-core.workspace = true
 mneme-memory.workspace = true
 mneme-datalog.workspace = true
+rustix.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 

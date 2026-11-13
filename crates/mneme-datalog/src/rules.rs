@@ -1,5 +1,102 @@
 //! Restricted rule validation and stratification.
 
+/// The value kind one column of a canonical extent holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CanonicalKind {
+    /// A `<record-id "…">` identity.
+    RecordId,
+    /// A `<revision-id "…">` identity.
+    RevisionId,
+    /// A Preserves symbol.
+    Symbol,
+    /// A Preserves text string.
+    String,
+    /// Any value, because the loader fills the column from an optional field.
+    Any,
+}
+
+impl CanonicalKind {
+    /// Whether a value can appear in this column.
+    pub(crate) fn accepts(self, value: &mneme_core::Value) -> bool {
+        match self {
+            CanonicalKind::RecordId => identity_record(value, "record-id"),
+            CanonicalKind::RevisionId => identity_record(value, "revision-id"),
+            CanonicalKind::Symbol => value.as_symbol().is_some(),
+            CanonicalKind::String => value.as_string().is_some(),
+            CanonicalKind::Any => true,
+        }
+    }
+
+    /// Stable name for diagnostics.
+    const fn name(self) -> &'static str {
+        match self {
+            CanonicalKind::RecordId => "record-id",
+            CanonicalKind::RevisionId => "revision-id",
+            CanonicalKind::Symbol => "symbol",
+            CanonicalKind::String => "string",
+            CanonicalKind::Any => "any",
+        }
+    }
+}
+
+fn identity_record(value: &mneme_core::Value, label: &str) -> bool {
+    value.as_record().is_some_and(|record| {
+        record.label() == &mneme_core::Value::symbol(label)
+            && record.fields().len() == 1
+            && record
+                .fields()
+                .first()
+                .is_some_and(|field| field.as_string().is_some())
+    })
+}
+
+/// The fixed column kinds of one canonical extent.
+///
+/// The loaders in [`crate::engine`] emit exactly these shapes. A bundle that
+/// declares another arity, or a rule that compares a column against a constant
+/// of another kind, would silently see an empty relation and could then report
+/// a false absence, so both are registration errors rather than empty answers.
+pub(crate) fn canonical_schema(predicate: &str) -> Option<&'static [CanonicalKind]> {
+    match predicate {
+        "entity" => Some(&[
+            CanonicalKind::RecordId,
+            CanonicalKind::Symbol,
+            CanonicalKind::String,
+        ]),
+        "relation" => Some(&[
+            CanonicalKind::Symbol,
+            CanonicalKind::RecordId,
+            CanonicalKind::RecordId,
+        ]),
+        "assertion" | "denial" | "hypothesis" => Some(&[
+            CanonicalKind::RecordId,
+            CanonicalKind::Symbol,
+            CanonicalKind::Any,
+            CanonicalKind::RecordId,
+        ]),
+        "evidence" => Some(&[CanonicalKind::RecordId, CanonicalKind::RecordId]),
+        "document" => Some(&[
+            CanonicalKind::RecordId,
+            // The loader falls back to the `unbound` symbol when a document has
+            // no entity, so the column cannot be narrowed to an identity.
+            CanonicalKind::Any,
+            CanonicalKind::String,
+        ]),
+        "derivation" => Some(&[CanonicalKind::RecordId, CanonicalKind::RecordId]),
+        "source" => Some(&[
+            CanonicalKind::RecordId,
+            CanonicalKind::RevisionId,
+            CanonicalKind::String,
+        ]),
+        _ => None,
+    }
+}
+
+/// The canonical arity of one base extent, if it is a canonical extent.
+pub(crate) fn canonical_arity(predicate: &str) -> Option<usize> {
+    canonical_schema(predicate).map(<[CanonicalKind]>::len)
+}
+
 /// Validate a rule bundle before any evaluation or publication.
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate(
@@ -81,6 +178,17 @@ fn validate_base_predicates(
                 format!("base predicate {predicate:?} has zero arity"),
             ));
         }
+        if let Some(expected) = canonical_arity(predicate)
+            && *arity != expected
+        {
+            diagnostics.push(diag(
+                "predicate-arity",
+                None,
+                format!(
+                    "base predicate {predicate:?} is a canonical extent with {expected} columns, but the bundle declares {arity}"
+                ),
+            ));
+        }
         if arities.len() >= bundle.base_predicates.len() {
             break;
         }
@@ -106,12 +214,26 @@ fn predeclare_rule_heads(
                 format!("invalid head predicate {:?}", rule.head.predicate),
             ));
         }
-        if bundle.base_predicates.contains_key(&rule.head.predicate) {
+        // A rule head may never overwrite a canonical extent, whether the
+        // bundle declares that extent or not: derived facts share the same
+        // store as loaded facts, so a derived `entity` row would merge with
+        // canonical records and negation over the head would see rows the
+        // rules never produced.
+        if canonical_schema(&rule.head.predicate).is_some() {
             diagnostics.push(diag(
                 "base-overwrite",
                 Some(rule.id.clone()),
                 format!(
-                    "rule head {:?} is a canonical base predicate",
+                    "rule head {:?} names a canonical extent and cannot be derived",
+                    rule.head.predicate
+                ),
+            ));
+        } else if bundle.base_predicates.contains_key(&rule.head.predicate) {
+            diagnostics.push(diag(
+                "base-overwrite",
+                Some(rule.id.clone()),
+                format!(
+                    "rule head {:?} is a declared base predicate",
                     rule.head.predicate
                 ),
             ));
@@ -433,6 +555,30 @@ fn validate_atom(
             ),
         ));
     }
+    let Some(schema) = canonical_schema(&atom.predicate) else {
+        return;
+    };
+    for (column, term) in atom.terms.iter().enumerate() {
+        let crate::Term::Constant(value) = term else {
+            continue;
+        };
+        let Some(kind) = schema.get(column) else {
+            continue;
+        };
+        if !kind.accepts(value) {
+            diagnostics.push(diag(
+                "predicate-kind",
+                Some(rule.to_owned()),
+                format!(
+                    "predicate {:?} column {} holds {}, but the rule compares it with a {} constant",
+                    atom.predicate,
+                    column.saturating_add(1),
+                    kind.name(),
+                    value.kind_name()
+                ),
+            ));
+        }
+    }
 }
 
 fn strata(
@@ -447,22 +593,7 @@ fn strata(
     for _ in 0..limit {
         let mut is_changed = false;
         for rule in &bundle.rules {
-            let mut base = 0_usize;
-            let mut is_nonmonotone = false;
-            for literal in &rule.body {
-                match literal {
-                    crate::Literal::Positive(atom) => {
-                        base = base.max(*strata.get(&atom.predicate).unwrap_or(&0));
-                    }
-                    crate::Literal::Negative(atom) => {
-                        base = base.max(*strata.get(&atom.predicate).unwrap_or(&0));
-                        is_nonmonotone = true;
-                    }
-                    crate::Literal::Aggregate { .. } => is_nonmonotone = true,
-                    _ => {}
-                }
-            }
-            let target = base.saturating_add(usize::from(is_nonmonotone));
+            let target = rule_target_stratum(rule, &strata);
             let entry = strata.entry(rule.head.predicate.clone()).or_insert(0);
             if *entry < target {
                 *entry = target;
@@ -478,6 +609,46 @@ fn strata(
         None,
         "rule dependencies require unbounded strata; non-stratified negation or aggregation",
     )])
+}
+
+/// The lowest stratum one rule's head may occupy.
+///
+/// A positive literal only needs its relation's own stratum. A negated literal
+/// needs the next stratum above it, because absence over a relation is decided
+/// after every fact of that relation is fixed; forcing the head above its
+/// *positive* body as well would reject valid programs such as "reachable
+/// without taking a blocked edge". An aggregate rule also needs the next
+/// stratum above its positive inputs, because its output replaces many rows
+/// with one row per group instead of adding monotone facts.
+fn rule_target_stratum(
+    rule: &crate::Rule,
+    strata: &std::collections::BTreeMap<String, usize>,
+) -> usize {
+    let mut target = 0_usize;
+    let mut has_aggregate = false;
+    for literal in &rule.body {
+        match literal {
+            crate::Literal::Positive(atom) => {
+                target = target.max(strata.get(&atom.predicate).copied().unwrap_or(0));
+            }
+            crate::Literal::Negative(atom) => {
+                target = target.max(
+                    strata
+                        .get(&atom.predicate)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1),
+                );
+            }
+            crate::Literal::Aggregate { .. } => has_aggregate = true,
+            _ => {}
+        }
+    }
+    if has_aggregate {
+        target.saturating_add(1)
+    } else {
+        target
+    }
 }
 
 fn head_vars(atom: &crate::Atom) -> Vec<String> {
@@ -520,6 +691,7 @@ pub(crate) struct BuildIdContext<'a> {
     pub(crate) bundle: &'a crate::RuleBundle,
     pub(crate) limits: &'a crate::Limits,
     pub(crate) incomplete_extents: &'a std::collections::BTreeSet<String>,
+    pub(crate) at: Option<mneme_core::Timestamp>,
 }
 
 pub(crate) fn build_id(context: BuildIdContext<'_>) -> String {
@@ -530,12 +702,17 @@ pub(crate) fn build_id(context: BuildIdContext<'_>) -> String {
         bundle,
         limits,
         incomplete_extents,
+        at,
     } = context;
     let incomplete = incomplete_extents
         .iter()
         .cloned()
         .map(mneme_core::Value::string)
         .collect::<std::collections::BTreeSet<_>>();
+    let effective_time = match at {
+        Some(at) => at.to_value(),
+        None => mneme_core::Value::symbol("none"),
+    };
     let value = mneme_core::Value::record_named(
         "datalog-build-context",
         vec![
@@ -555,6 +732,7 @@ pub(crate) fn build_id(context: BuildIdContext<'_>) -> String {
                 ],
             ),
             mneme_core::Value::set(incomplete),
+            effective_time,
         ],
     );
     mneme_core::ContentDigest::of_payload(&value).to_hex()

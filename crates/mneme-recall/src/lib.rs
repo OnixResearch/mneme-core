@@ -18,8 +18,9 @@ pub use engine::{FUSION_POLICY_VERSION, Service};
 pub use failure::{QueryError, Result};
 pub use lookup::{LEXICAL_INDEX_VERSION, VECTOR_INDEX_VERSION};
 pub use model::{
-    Candidate, ClaimStatus, ContentKind, Context, DataBoundary, Evidence, Execution, IndexCoverage,
-    Mode, ModeReport, ModeStatus, Omission, Request, Response, StructuredRequest, TemporalMode,
+    BudgetUse, Candidate, ClaimStatus, ContentKind, Context, DataBoundary, Evidence, Execution,
+    IndexCoverage, Mode, ModeReport, ModeStatus, Omission, Request, Response, StructuredRequest,
+    TemporalMode,
 };
 
 /// Recall contract/index schema version.
