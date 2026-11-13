@@ -1,16 +1,12 @@
 {
-  description = "Mneme: Rust workspace, command-line and desktop applications, development shell and checks";
+  description = "Mneme Core: standalone Rust libraries, verification checks, and a development shell";
 
   inputs = {
-    # Pinned Octet checked path: lint runner, Dylint library, and its toolchain.
-    # Octet remains a development/CI tool; it is not linked into Mneme.
+    # The pinned Octet runner and Dylint library are development tools only.
     octet.url = "git+ssh://git@github.com/OnixResearch/octet?rev=2bdd581980eef7f6ec8363ffa20ab9f3c798c9ee";
-    # Pinned extractor for the kernel proof gate: Charon and Aeneas at one
-    # revision, with the Rust nightly Charon is built against. Development
-    # tools only; nothing from this input is linked into Mneme.
+    # Pinned Charon/Aeneas pair and the Rust nightly Charon is built against.
     aeneas.url = "github:AeneasVerif/aeneas/505b6ca35217e7be5c96c3e2f8045edfbdf47291";
     crane.url = "github:ipetkov/crane";
-    # Update these revisions deliberately with the lockfile and verification.
     nixpkgs.url = "github:NixOS/nixpkgs/ac588ef1c914865dad517b337ea0eb9694a4021c";
     rust-overlay = {
       url = "github:oxalica/rust-overlay/89750a2ef1c6a44db9f4251b16c23deffdcfddff";
@@ -49,29 +45,8 @@
           cargo = toolchainFor pkgs;
           rustc = toolchainFor pkgs;
         };
-      cargoOutputHashes = {
-        "dpi-0.1.1" = "sha256-pQn1lCFSJMkjUfHoggEzMHnm5k+Chnzi5JEDjahnjUA=";
-        "iced-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_core-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_debug-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_futures-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_graphics-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_program-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_renderer-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_runtime-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_tiny_skia-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_widget-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "iced_winit-0.15.0-dev" = "sha256-/lR2oeQxZmyvkOLSve93qm+iQKS/j281sTW/ZAF+hBo=";
-        "winit-0.30.8" = "sha256-pQn1lCFSJMkjUfHoggEzMHnm5k+Chnzi5JEDjahnjUA=";
-      };
-      ratsSrc = builtins.fetchTree {
-        type = "git";
-        url = "ssh://git@github.com/brittonr/rats.git";
-        rev = "6be26efd727611b10232fb6657653ea2b15ff651";
-        narHash = "sha256-DgXeyiEdHYlTf1KV77OKfDLlloEOw8qYhheXq7MIdu4=";
-      };
-      # The Lean release the kernel proofs are checked with. Upstream bytes are
-      # fixed by hash; Nix only patches the ELF interpreter.
+      # The pinned Lean release is needed only by the kernel-proof dev workflow.
+      # Its upstream bytes are fixed by hash; Nix patches only the ELF interpreter.
       leanReleaseFor =
         pkgs:
         pkgs.stdenvNoCC.mkDerivation {
@@ -94,7 +69,6 @@
             cp -r ./. "$out/"
           '';
         };
-      # Extractor, its Rust toolchain and Lean exist for x86_64-linux only.
       hasProofTools = system: system == "x86_64-linux";
       proofToolsFor =
         system: pkgs:
@@ -110,283 +84,113 @@
         let
           pkgs = pkgsFor system;
           rustToolchain = toolchainFor pkgs;
-          # Rats' selected Iced backend loads these at runtime (tiny-skia/softbuffer).
-          nativeUiLibraries = pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.libx11
-            pkgs.libxcursor
-            pkgs.libxi
-            pkgs.libxkbcommon
-            pkgs.libxrandr
-            pkgs.wayland
-          ];
         in
         {
           default = pkgs.mkShell {
-            packages =
-              (with pkgs; [
-                rustToolchain
-                nodejs_22
-                git
-                jq
-                ripgrep
-                fd
-                just
-                nixfmt
-                octet.packages.${system}.cargo-octet
-                # The pinned engine for the optional bounded Prolog profile.
-                scryer-prolog
-              ])
-              ++ proofToolsFor system pkgs
-              ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-                pkgs.xorg-server
-                pkgs.xvfb-run
-              ];
-            nativeBuildInputs = [ pkgs.pkg-config ];
-            buildInputs = [
-              pkgs.openssl
-              pkgs.sqlite
+            packages = [
+              rustToolchain
+              pkgs.nodejs_22
+              pkgs.git
+              pkgs.just
+              pkgs.nixfmt
+              octet.packages.${system}.cargo-octet
+              pkgs.scryer-prolog
             ]
-            ++ nativeUiLibraries;
+            ++ proofToolsFor system pkgs;
             RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
-            OPENSPEC_TELEMETRY = "0";
             MNEME_SCRYER_PROLOG = "${pkgs.scryer-prolog}/bin/scryer-prolog";
-            shellHook =
-              pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-                export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath nativeUiLibraries}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-              ''
-              # Charon compiles the kernel with the nightly it was built
-              # against; the proof gate puts this directory first on PATH.
-              + pkgs.lib.optionalString (hasProofTools system) ''
-                export MNEME_EXTRACTION_TOOLCHAIN_BIN="${aeneas.inputs.charon.packages.${system}.rustToolchain}/bin"
-              '';
+            shellHook = pkgs.lib.optionalString (hasProofTools system) ''
+              # Charon was built with this exact nightly; the proof gate places
+              # it before the regular stable toolchain when extracting the kernel.
+              export MNEME_EXTRACTION_TOOLCHAIN_BIN="${aeneas.inputs.charon.packages.${system}.rustToolchain}/bin"
+            '';
           };
         }
       );
 
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
 
-      packages = forAllSystems (
-        system:
-        let
-          pkgs = pkgsFor system;
-          nativeUiLibraries = pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.libx11
-            pkgs.libxcursor
-            pkgs.libxi
-            pkgs.libxkbcommon
-            pkgs.libxrandr
-            pkgs.wayland
-          ];
-          package = (rustPlatformFor pkgs).buildRustPackage {
-            pname = "mneme";
-            version = "0.1.0";
-            src = self;
-            prePatch = ''
-              rm -rf vendor/rats
-              mkdir -p vendor
-              cp -R ${ratsSrc} vendor/rats
-            '';
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              outputHashes = cargoOutputHashes;
-            };
-            buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
-            nativeBuildInputs = [
-              pkgs.makeWrapper
-            ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.desktop-file-utils ];
-            doCheck = false;
-            postInstall = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-              wrapProgram $out/bin/mneme-desktop \
-                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath nativeUiLibraries}"
-              # The launcher entry. Its basename and StartupWMClass match the
-              # window's application id (mneme_desktop::APP_ID).
-              mkdir -p $out/share/applications
-              cat > $out/share/applications/mneme.desktop <<EOF
-              [Desktop Entry]
-              Type=Application
-              Name=Mneme
-              GenericName=Knowledge workspace
-              Comment=Local knowledge workspace and durable agent memory
-              Exec=$out/bin/mneme-desktop
-              Terminal=false
-              Categories=Office;
-              Keywords=notes;knowledge;memory;
-              StartupWMClass=mneme
-              EOF
-              desktop-file-validate $out/share/applications/mneme.desktop
-            '';
-            meta = {
-              description = "Local knowledge workspace and durable external agent memory";
-              mainProgram = "mneme";
-            };
-          };
-        in
-        {
-          default = package;
-          desktop = package;
-        }
-      );
-
-      apps = forAllSystems (
-        system:
-        let
-          package = self.packages.${system}.default;
-        in
-        {
-          default = {
-            type = "app";
-            program = "${package}/bin/mneme-desktop";
-            meta.description = "Mneme desktop notes (creates a workspace on first run)";
-          };
-          desktop = {
-            type = "app";
-            program = "${package}/bin/mneme-desktop";
-            meta.description = "Mneme desktop notes";
-          };
-          cli = {
-            type = "app";
-            program = "${package}/bin/mneme";
-            meta.description = "Mneme command line, MCP, and evaluation harness";
-          };
-          octet = {
-            type = "app";
-            program = "${octet.packages.${system}.cargo-octet}/bin/cargo-octet";
-            meta.description = "Pinned Octet lint runner";
-          };
-        }
-      );
-
       checks = forAllSystems (
         system:
         let
           pkgs = pkgsFor system;
           rustToolchain = toolchainFor pkgs;
-          nativeUiLibraries = pkgs.lib.optionals pkgs.stdenv.isLinux [
-            pkgs.libx11
-            pkgs.libxcursor
-            pkgs.libxi
-            pkgs.libxkbcommon
-            pkgs.libxrandr
-            pkgs.wayland
-          ];
-          # Octet resolves the whole Cargo workspace, so the ignored Rats
-          # vendor tree must exist before the runner starts.
-          octetSrc = pkgs.runCommand "mneme-octet-source" { } ''
-            mkdir -p "$out"
-            cp -R ${self}/. "$out/"
-            chmod -R u+w "$out"
-            rm -rf "$out/vendor/rats"
-            mkdir -p "$out/vendor"
-            cp -R ${ratsSrc} "$out/vendor/rats"
-          '';
-          octetWorkspace = octet.lib.mkConsumerCheck {
-            inherit system;
-            src = octetSrc;
-            cargoExtraArgs = "--all-targets --all-features --ignore-rust-version --offline";
-            cargoLock = ./Cargo.lock;
-            buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
-          };
-          craneLib = (crane.mkLib pkgs).overrideToolchain (toolchainFor pkgs);
-          octetVendor = craneLib.vendorCargoDeps { cargoLock = ./Cargo.lock; };
-          octetAll = pkgs.runCommand "mneme-octet-all-check"
-            {
-              nativeBuildInputs = [ pkgs.pkg-config octet.packages.${system}.cargo-octet ];
-              buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
-            }
-            ''
-              cp -R ${octetSrc} source
-              chmod -R u+w source
-              cd source
-              cp dylint-all.toml dylint.toml
-              export HOME="$PWD/home"
-              mkdir -p "$HOME"
-              export CARGO_HOME="$PWD/.cargo-home"
-              mkdir -p "$CARGO_HOME"
-              cp ${octetVendor}/config.toml "$CARGO_HOME/config.toml"
-              ${octet.packages.${system}.cargo-octet}/bin/cargo-octet check \
-                --workspace --baseline octet-baseline.json \
-                -- --all-targets --all-features --ignore-rust-version --offline
-              touch "$out"
+          rustChecks = (rustPlatformFor pkgs).buildRustPackage {
+            pname = "mneme-core-rust-checks";
+            version = "0.1.0";
+            src = self;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+            };
+            nativeBuildInputs = [ rustToolchain ];
+            buildInputs = [ pkgs.scryer-prolog ];
+            doCheck = true;
+            cargoBuildFlags = [
+              "--workspace"
+              "--all-features"
+              "--lib"
+            ];
+            MNEME_SCRYER_PROLOG = "${pkgs.scryer-prolog}/bin/scryer-prolog";
+            checkPhase = ''
+              cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings
+              cargo test --offline --locked --workspace --all-targets --all-features --no-fail-fast
+              cargo test --offline --locked --workspace --doc --all-features
             '';
-        in
-        {
-          octet = octetWorkspace;
-          octet-all = octetAll;
-          documentation =
-            pkgs.runCommand "mneme-documentation-check" { nativeBuildInputs = [ pkgs.nodejs_22 ]; }
-              ''
-                cp -R ${self} source
-                chmod -R u+w source
-                cd source
-                node scripts/check-docs.mjs
-                node --test scripts/test-check-docs.mjs
-                touch "$out"
-              '';
-          loop-control =
-            pkgs.runCommand "mneme-loop-control-check"
+            installPhase = ''
+              mkdir -p "$out"
+            '';
+          };
+          rustFormat =
+            pkgs.runCommand "mneme-core-rust-format-check"
               {
-                nativeBuildInputs = [
-                  pkgs.nodejs_22
-                  pkgs.git
-                  pkgs.bash
-                ];
+                nativeBuildInputs = [ rustToolchain ];
               }
               ''
-                cp -R ${self} source
-                chmod -R u+w source
-                cd source
-                node --test scripts/test-loop-state.mjs
-                touch "$out"
-              '';
-          desktop-help =
-            pkgs.runCommand "mneme-desktop-help-check" { }
-              ''
-                export HOME="$TMPDIR/home"
-                mkdir -p "$HOME"
-                ${self.packages.${system}.default}/bin/mneme-desktop --help > help.txt
-                grep -q "Usage: mneme-desktop" help.txt
-                grep -q -- "--workspace <DIR>" help.txt
-                ${self.packages.${system}.default}/bin/mneme-desktop --version > version.txt
-                grep -q "mneme-desktop" version.txt
-                touch "$out"
-              '';
-          # Formatting is cheap and needs no dependency closure.
-          rust-format =
-            pkgs.runCommand "mneme-rust-format-check" { nativeBuildInputs = [ rustToolchain ]; }
-              ''
-                cp -R ${self} source
+                cp -R ${self}/. source
                 chmod -R u+w source
                 cd source
                 cargo fmt --all -- --check
                 touch "$out"
               '';
-          # Clippy and the locked workspace tests compile the real application
-          # sources, including subprocess CLI and evaluation fixtures.
-          rust-checks = (rustPlatformFor pkgs).buildRustPackage {
-            pname = "mneme-rust-checks";
-            version = "0.1.0";
+          craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+          octetVendor = craneLib.vendorCargoDeps { cargoLock = ./Cargo.lock; };
+          octetWorkspace = octet.lib.mkConsumerCheck {
+            inherit system;
             src = self;
-            prePatch = ''
-              rm -rf vendor/rats
-              mkdir -p vendor
-              cp -R ${ratsSrc} vendor/rats
-            '';
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              outputHashes = cargoOutputHashes;
-            };
-            buildInputs = [ pkgs.openssl pkgs.sqlite ] ++ nativeUiLibraries;
-            doCheck = true;
-            # Real-engine Prolog tests run against the pinned engine.
-            MNEME_SCRYER_PROLOG = "${pkgs.scryer-prolog}/bin/scryer-prolog";
-            checkPhase = ''
-              cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings
-              # Run every test binary, so one sandbox-only failure does not
-              # hide the next.
-              cargo test --offline --locked --workspace --all-targets --all-features --no-fail-fast
-            '';
-            installPhase = "touch $out";
+            cargoExtraArgs = "--all-targets --all-features --ignore-rust-version --offline";
+            cargoLock = ./Cargo.lock;
+            buildInputs = [ ];
           };
+          octetAll =
+            pkgs.runCommand "mneme-core-octet-all-check"
+              {
+                nativeBuildInputs = [
+                  rustToolchain
+                  octet.packages.${system}.cargo-octet
+                ];
+              }
+              ''
+                mkdir source
+                cp -R ${self}/. source/
+                chmod -R u+w source
+                cd source
+                cp dylint-all.toml dylint.toml
+                export HOME="$PWD/home"
+                mkdir -p "$HOME"
+                export CARGO_HOME="$PWD/.cargo-home"
+                mkdir -p "$CARGO_HOME"
+                cp ${octetVendor}/config.toml "$CARGO_HOME/config.toml"
+                cargo-octet check \
+                  --workspace --baseline octet-baseline.json \
+                  -- --all-targets --all-features --ignore-rust-version --offline
+                touch "$out"
+              '';
+        in
+        {
+          rust = rustChecks;
+          rust-format = rustFormat;
+          octet = octetWorkspace;
+          octet-all = octetAll;
         }
       );
     };
