@@ -295,6 +295,61 @@ pub enum Stance {
     Hypothesis,
 }
 
+/// The typed shape of a claim, which selects the extra evidence a claim needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaimType {
+    /// A claim that an action completed; it needs an observed outcome.
+    ActionCompleted,
+    /// Any other claim.
+    General,
+}
+
+/// Declared symbol for the completed-action claim type.
+pub const ACTION_COMPLETED_CLAIM_TYPE: &str = "action-completed";
+
+impl ClaimType {
+    /// Classify a claim from its optional declared type and its predicate.
+    ///
+    /// A declared type can never remove the guard: a claim whose predicate is
+    /// the completed-action predicate stays a completed-action claim whatever
+    /// type it declares. Unknown declared types are refused rather than
+    /// silently classified as general claims.
+    fn parse(record: &mneme_core::RecordEnvelope, predicate: &str) -> crate::failure::Result<Self> {
+        let declared = match record.payload.get("claim-type") {
+            None => None,
+            Some(value) => {
+                let Some(symbol) = value.as_symbol() else {
+                    return Err(crate::failure::EvidenceError::invalid(
+                        record.record_id,
+                        "assertion",
+                        "claim-type must be a symbol",
+                    ));
+                };
+                Some(symbol.as_str())
+            }
+        };
+        match declared {
+            Some(ACTION_COMPLETED_CLAIM_TYPE) => Ok(ClaimType::ActionCompleted),
+            Some("general") => Ok(ClaimType::from_predicate(predicate)),
+            Some(other) => Err(crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "assertion",
+                format!("unknown claim type {other}"),
+            )),
+            None => Ok(ClaimType::from_predicate(predicate)),
+        }
+    }
+
+    /// Classify a claim by the predicate conventions of the capability.
+    fn from_predicate(predicate: &str) -> Self {
+        if predicate == crate::beliefs::ACTION_COMPLETED_PREDICATE {
+            ClaimType::ActionCompleted
+        } else {
+            ClaimType::General
+        }
+    }
+}
+
 /// Extraction lineage attached to a model-produced assertion.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Extraction {
@@ -311,6 +366,7 @@ pub struct AssertionView {
     pub value: mneme_core::Value,
     pub stance: Stance,
     pub lifecycle: mneme_core::Lifecycle,
+    pub claim_type: ClaimType,
     pub origin: mneme_core::Origin,
     pub asserted_by: String,
     pub valid_time: mneme_core::ValidTime,
@@ -352,9 +408,11 @@ impl AssertionView {
                     "unknown origin",
                 )
             })?;
+        let predicate = required_symbol_text(&record, "predicate")?;
         Ok(AssertionView {
             subject: required_reference_target(&record, "subject")?,
-            predicate: required_symbol_text(&record, "predicate")?,
+            claim_type: ClaimType::parse(&record, &predicate)?,
+            predicate,
             value: required(&record, "value")?.clone(),
             stance,
             lifecycle,
@@ -422,7 +480,18 @@ pub struct DerivationView {
     pub completeness: String,
 }
 
+/// Declared symbol for a justification its author declares complete.
+pub const COMPLETE_COMPLETENESS: &str = "complete";
+
 impl DerivationView {
+    /// Whether the author declared the justification complete.
+    ///
+    /// Only the complete symbol is complete: any other symbol, including a
+    /// partial or open marker, leaves the justification incomplete.
+    pub fn is_complete(&self) -> bool {
+        self.completeness == COMPLETE_COMPLETENESS
+    }
+
     /// Parse a derivation envelope.
     pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
         expect_kind(&record, mneme_core::RecordKind::Derivation)?;

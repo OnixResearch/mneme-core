@@ -15,38 +15,24 @@ pub(crate) struct RenderOutput {
     pub html: String,
     pub diagnostics: Vec<crate::asciidoc::Diagnostic>,
     pub occurrences: Vec<crate::IncludeOccurrence>,
+    /// Whether a limit stopped the preview before the whole source was
+    /// expanded, so the returned result is explicitly partial.
+    pub truncated: bool,
 }
 
-struct Renderer<'a> {
-    sources: &'a std::collections::BTreeMap<String, RenderSource>,
-    config: &'a crate::RenderConfig,
-    deadline: Option<std::time::Instant>,
-    html: String,
-    diagnostics: Vec<crate::asciidoc::Diagnostic>,
-    occurrences: Vec<crate::IncludeOccurrence>,
-    expanded_bytes: usize,
-    stack: std::collections::BTreeSet<String>,
-}
-
-struct SourceCursor<'a> {
-    pending_anchor: Option<String>,
-    paragraph: Vec<&'a str>,
-    skip_until: usize,
-    mode: Block,
-    mode_start: usize,
-    mode_buffer: String,
-}
-
-struct SourceLineContext<'line, 'context> {
-    source: &'context RenderSource,
-    depth: usize,
-    text: &'line str,
-    includes: &'context std::collections::BTreeMap<usize, crate::asciidoc::IncludeDirective>,
-    anchors: &'context std::collections::BTreeMap<usize, crate::asciidoc::AnchorSpec>,
-    start: usize,
-    line_number: usize,
-    content: &'line str,
-}
+/// Includes one preview may expand. Exponential include fan-out stops here
+/// instead of multiplying work and memory by the fan-out at every level.
+const MAX_RENDER_INCLUDES: u64 = 1_024;
+/// Diagnostics one preview may collect before further ones are suppressed.
+const MAX_RENDER_DIAGNOSTICS: usize = 1_024;
+/// Include nesting a preview follows before it reports the depth limit.
+const MAX_RENDER_DEPTH: usize = 64;
+/// Bytes an inline scan consumes between deadline checks.
+const INLINE_DEADLINE_STRIDE: u64 = 4_096;
+/// Inline bytes one preview may scan, independent of the wall-clock deadline.
+const MAX_INLINE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+/// Marker appended to a preview that a limit stopped before the end.
+const PARTIAL_PREVIEW_MARKER: &str = "<!-- preview is partial: a limit stopped rendering -->";
 
 pub(crate) fn render(
     root: &RenderSource,
@@ -55,45 +41,192 @@ pub(crate) fn render(
     config: &crate::RenderConfig,
     deadline: Option<std::time::Instant>,
 ) -> RenderOutput {
-    let mut renderer = Renderer {
-        sources,
-        config,
-        deadline,
-        html: String::new(),
-        diagnostics: Vec::new(),
-        occurrences: Vec::new(),
-        expanded_bytes: 0,
-        stack: std::collections::BTreeSet::new(),
-    };
-    if config.version != crate::RENDER_CONFIG_VERSION {
-        renderer
-            .diagnostics
-            .push(crate::asciidoc::Diagnostic::warning(
-                "unsupported-render-config",
-                format!(
-                    "render configuration {} is not supported; using {}",
-                    config.version,
-                    crate::RENDER_CONFIG_VERSION
-                ),
+    let mut renderer = Renderer::new(sources, config, deadline);
+    renderer.run(root, metadata);
+    let mut output = renderer.finish();
+    if output.truncated {
+        output.html.push_str(PARTIAL_PREVIEW_MARKER);
+    }
+    output
+}
+
+struct Renderer<'a> {
+    sources: &'a std::collections::BTreeMap<String, RenderSource>,
+    config: &'a crate::RenderConfig,
+    deadline: Option<std::time::Instant>,
+    is_timed_out: bool,
+    is_budget_exhausted: bool,
+    is_refused: bool,
+    is_diagnostic_limited: bool,
+    html: String,
+    diagnostics: Vec<crate::asciidoc::Diagnostic>,
+    occurrences: Vec<crate::IncludeOccurrence>,
+    expanded_bytes: u64,
+    include_count: u64,
+    inline_bytes: u64,
+    stack: std::collections::BTreeSet<String>,
+}
+
+impl<'a> Renderer<'a> {
+    fn new(
+        sources: &'a std::collections::BTreeMap<String, RenderSource>,
+        config: &'a crate::RenderConfig,
+        deadline: Option<std::time::Instant>,
+    ) -> Self {
+        Renderer {
+            sources,
+            config,
+            deadline,
+            is_timed_out: false,
+            is_budget_exhausted: false,
+            is_refused: false,
+            is_diagnostic_limited: false,
+            html: String::new(),
+            diagnostics: Vec::new(),
+            occurrences: Vec::new(),
+            expanded_bytes: 0,
+            include_count: 0,
+            inline_bytes: 0,
+            stack: std::collections::BTreeSet::new(),
+        }
+    }
+
+    fn run(&mut self, root: &RenderSource, metadata: Option<&mneme_core::RecordEnvelope>) {
+        if !self.accepts_config() {
+            return;
+        }
+        if self.expired() {
+            return;
+        }
+        if self.config.include_entity_metadata
+            && let Some(entity) = metadata
+        {
+            self.render_metadata(entity);
+        }
+        self.render_source(root, 0);
+    }
+
+    fn finish(self) -> RenderOutput {
+        let is_truncated = self.is_stopped();
+        RenderOutput {
+            html: self.html,
+            diagnostics: self.diagnostics,
+            occurrences: self.occurrences,
+            truncated: is_truncated,
+        }
+    }
+
+    /// Whether a limit has stopped this preview for good.
+    fn is_stopped(&self) -> bool {
+        self.is_timed_out || self.is_budget_exhausted || self.is_refused
+    }
+
+    /// Refuse a configuration this build cannot honour.
+    ///
+    /// Falling back to another version while the artifact reported the
+    /// requested one made the artifact describe a configuration it never used.
+    fn accepts_config(&mut self) -> bool {
+        if self.config.version == crate::RENDER_CONFIG_VERSION {
+            return true;
+        }
+        let version = self.config.version.clone();
+        self.is_refused = true;
+        self.note(crate::asciidoc::Diagnostic::new(
+            "unsupported-render-config",
+            format!("render configuration {version} is not supported by this processor"),
+            1,
+            1,
+            None,
+        ));
+        false
+    }
+
+    /// Record one diagnostic, bounded by the diagnostic budget.
+    fn note(&mut self, diagnostic: crate::asciidoc::Diagnostic) {
+        if self.diagnostics.len() < MAX_RENDER_DIAGNOSTICS {
+            self.diagnostics.push(diagnostic);
+            return;
+        }
+        if self.is_diagnostic_limited {
+            return;
+        }
+        self.is_diagnostic_limited = true;
+        let limited = crate::asciidoc::Diagnostic::warning(
+            "diagnostic-limit",
+            "further preview diagnostics were suppressed at the configured limit",
+            1,
+            1,
+            None,
+        );
+        self.diagnostics.push(limited);
+    }
+
+    /// Charge one source's bytes before it is expanded.
+    fn charge_expansion(&mut self, bytes: usize) -> bool {
+        let cost = crate::budget_count(bytes);
+        let limit = crate::budget_count(self.config.max_output_bytes);
+        match mneme_kernel::budget::charge(self.expanded_bytes, cost, limit) {
+            Some(used) => {
+                self.expanded_bytes = used;
+                true
+            }
+            None => {
+                self.exhaust("preview stopped: expanded source bytes exceed the configured limit");
+                false
+            }
+        }
+    }
+
+    /// Charge one include expansion before its target is rendered.
+    fn charge_include(&mut self) -> bool {
+        match mneme_kernel::budget::charge(self.include_count, 1, MAX_RENDER_INCLUDES) {
+            Some(used) => {
+                self.include_count = used;
+                true
+            }
+            None => {
+                self.exhaust("preview stopped: include expansion exceeds the configured limit");
+                false
+            }
+        }
+    }
+
+    fn exhaust(&mut self, message: &'static str) {
+        if self.is_budget_exhausted {
+            return;
+        }
+        self.is_budget_exhausted = true;
+        self.note(crate::asciidoc::Diagnostic::warning(
+            "render-budget-exhausted",
+            message,
+            1,
+            1,
+            None,
+        ));
+    }
+
+    #[allow(unknown_lints, ambient_clock)] // render deadline is the preview shell
+    fn expired(&mut self) -> bool {
+        if self.is_timed_out {
+            return true;
+        }
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        if std::time::Instant::now() > deadline {
+            self.is_timed_out = true;
+            self.note(crate::asciidoc::Diagnostic::warning(
+                "render-time-limit",
+                "preview stopped at the configured time limit",
                 1,
                 1,
                 None,
             ));
+            return true;
+        }
+        false
     }
-    if config.include_entity_metadata
-        && let Some(entity) = metadata
-    {
-        renderer.render_metadata(entity);
-    }
-    renderer.render_source(root, 0);
-    RenderOutput {
-        html: renderer.html,
-        diagnostics: renderer.diagnostics,
-        occurrences: renderer.occurrences,
-    }
-}
 
-impl Renderer<'_> {
     #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_metadata(&mut self, entity: &mneme_core::RecordEnvelope) {
         let entity_type = entity
@@ -139,13 +272,25 @@ impl Renderer<'_> {
         );
     }
 
-    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     fn render_source(&mut self, source: &RenderSource, depth: usize) {
-        if self.expired() {
+        if self.is_stopped() {
+            return;
+        }
+        if depth > MAX_RENDER_DEPTH {
+            self.note(crate::asciidoc::Diagnostic::warning(
+                "include-depth-limit",
+                "preview stopped at the configured include depth",
+                1,
+                1,
+                None,
+            ));
+            return;
+        }
+        if !self.charge_expansion(source.bytes.len()) {
             return;
         }
         if !self.stack.insert(source.path.clone()) {
-            self.diagnostics.push(crate::asciidoc::Diagnostic::new(
+            self.note(crate::asciidoc::Diagnostic::new(
                 "include-cycle",
                 format!("include cycle at {}", source.path),
                 1,
@@ -154,91 +299,70 @@ impl Renderer<'_> {
             ));
             return;
         }
+        self.render_source_text(source, depth);
+        self.stack.remove(&source.path);
+    }
+
+    fn render_source_text(&mut self, source: &RenderSource, depth: usize) {
         let text = match std::str::from_utf8(&source.bytes) {
             Ok(text) => text,
             Err(error) => {
-                self.diagnostics.push(crate::asciidoc::Diagnostic::new(
+                self.note(crate::asciidoc::Diagnostic::new(
                     "invalid-utf8",
                     "included source is not valid UTF-8",
                     1,
                     error.valid_up_to(),
                     None,
                 ));
-                self.stack.remove(&source.path);
                 return;
             }
         };
-        let line_number = self.render_source_lines(source, depth, text);
-        self.stack.remove(&source.path);
-        self.expanded_bytes += source.bytes.len();
-        if self.expanded_bytes > self.config.max_output_bytes {
-            self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                "expanded-size-limit",
-                "preview expansion exceeded the configured output limit",
-                line_number,
-                1,
-                None,
-            ));
-        }
-        let _ = depth;
+        self.render_source_lines(source, depth, text);
     }
 
-    fn render_source_lines(&mut self, source: &RenderSource, depth: usize, text: &str) -> usize {
-        let includes = crate::asciidoc::scan_includes(text)
-            .into_iter()
-            .map(|directive| (line_start(text, directive.line), directive))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let anchors = crate::asciidoc::scan_anchors(text)
-            .into_iter()
-            .map(|anchor| (line_start(text, anchor.line), anchor))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let mut cursor = SourceCursor {
-            pending_anchor: None,
-            paragraph: Vec::new(),
-            skip_until: 0,
-            mode: Block::Normal,
-            mode_start: 1,
-            mode_buffer: String::new(),
-        };
-        let mut line_number = 0_usize;
-        for line in text.split_inclusive('\n') {
-            line_number += 1;
-            if line_number <= cursor.skip_until {
+    fn render_source_lines(&mut self, source: &RenderSource, depth: usize, text: &str) {
+        let source_lines = crate::asciidoc::lines(text);
+        let (directives, diagnostics) = LineDirectives::scan(text);
+        for diagnostic in diagnostics {
+            self.note(diagnostic);
+        }
+        let mut cursor = SourceCursor::default();
+        for index in 0..source_lines.len() {
+            let line = &source_lines[index];
+            if line.number <= cursor.skip_before {
                 continue;
             }
-            if self.source_render_limit_reached(line_number) {
+            if self.stop_at_line(line.number) {
                 break;
             }
-            let start = line_start(text, line_number);
-            let content = line
-                .strip_suffix('\n')
-                .unwrap_or(line)
-                .strip_suffix('\r')
-                .unwrap_or_else(|| line.strip_suffix('\n').unwrap_or(line));
             self.render_source_line(
-                SourceLineContext {
+                &LineContext {
                     source,
                     depth,
-                    text,
-                    includes: &includes,
-                    anchors: &anchors,
-                    start,
-                    line_number,
-                    content,
+                    source_lines: &source_lines,
+                    index,
                 },
+                &directives,
                 &mut cursor,
             );
         }
-        self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
-        line_number
+        self.close_source_block(&mut cursor);
+        self.flush_paragraph(&mut cursor);
     }
 
-    fn source_render_limit_reached(&mut self, line_number: usize) -> bool {
+    fn stop_at_line(&mut self, line_number: usize) -> bool {
         if self.expired() {
             return true;
         }
+        if self.is_stopped() {
+            return true;
+        }
+        if self.inline_bytes >= MAX_INLINE_SCAN_BYTES {
+            self.exhaust("preview stopped: inline scanning exceeds the configured work limit");
+            return true;
+        }
         if self.html.len() > self.config.max_output_bytes {
-            self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
+            self.note(crate::asciidoc::Diagnostic::warning(
                 "output-size-limit",
                 "preview stopped at the configured output limit",
                 line_number,
@@ -250,203 +374,124 @@ impl Renderer<'_> {
         false
     }
 
-    fn render_source_line<'line, 'context>(
+    fn render_source_line<'source>(
         &mut self,
-        line: SourceLineContext<'line, 'context>,
-        cursor: &mut SourceCursor<'line>,
+        line_context: &LineContext<'_, 'source>,
+        directives: &LineDirectives,
+        cursor: &mut SourceCursor<'source>,
     ) {
-        if self.render_source_block_line(line.content, cursor) {
+        let line = &line_context.source_lines[line_context.index];
+        if self.render_block_line(line, cursor) {
             return;
         }
-        self.render_source_normal_line(line, cursor);
+        if cursor.state.apply(line.text) {
+            cursor.block_start = line.number;
+            cursor.block_buffer.clear();
+            return;
+        }
+        self.render_normal_line(line_context, directives, cursor);
     }
 
-    fn render_source_block_line(&mut self, content: &str, cursor: &mut SourceCursor<'_>) -> bool {
-        let trimmed = content.trim();
-        let is_closes = match cursor.mode {
-            Block::Listing => trimmed == "----" || trimmed == "....",
-            Block::Passthrough => trimmed == "++++",
-            Block::Comment => trimmed == "////",
-            Block::Table => trimmed == "|===",
-            Block::Normal => return false,
+    /// Feed one line to the open delimited block.
+    fn render_block_line(
+        &mut self,
+        line: &crate::asciidoc::Line<'_>,
+        cursor: &mut SourceCursor<'_>,
+    ) -> bool {
+        let Some(kind) = cursor.state.kind() else {
+            return false;
         };
-        if is_closes {
-            self.finish_source_block(cursor);
-            cursor.mode = Block::Normal;
-            cursor.mode_buffer.clear();
-        } else if cursor.mode != Block::Comment {
-            cursor.mode_buffer.push_str(content);
-            cursor.mode_buffer.push('\n');
+        if cursor.state.apply(line.text) {
+            self.finish_block(kind, cursor);
+        } else if kind != crate::asciidoc::BlockKind::Comment {
+            cursor.block_buffer.push_str(line.text);
+            cursor.block_buffer.push('\n');
         }
         true
     }
 
-    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
-    fn finish_source_block(&mut self, cursor: &SourceCursor<'_>) {
-        match cursor.mode {
-            Block::Listing => {
-                let _ = write!(
-                    self.html,
-                    "<pre class=\"listing\">{}</pre>",
-                    escape_html(&cursor.mode_buffer)
-                );
-            }
-            Block::Passthrough => {
-                self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                    "raw-passthrough-escaped",
-                    "raw passthrough content was escaped, not executed",
-                    cursor.mode_start,
-                    1,
-                    None,
-                ));
-                let _ = write!(
-                    self.html,
-                    "<pre class=\"unsafe-passthrough\">{}</pre>",
-                    escape_html(&cursor.mode_buffer)
-                );
-            }
-            Block::Table => {
-                self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                    "unsupported-table",
-                    "table content is escaped in the supported preview subset",
-                    cursor.mode_start,
-                    1,
-                    None,
-                ));
-                let _ = write!(
-                    self.html,
-                    "<pre class=\"unsupported-table\">{}</pre>",
-                    escape_html(&cursor.mode_buffer)
-                );
-            }
-            Block::Comment | Block::Normal => {}
-        }
-    }
-
-    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
-    fn render_source_normal_line<'line, 'context>(
+    fn render_normal_line<'source>(
         &mut self,
-        line: SourceLineContext<'line, 'context>,
-        cursor: &mut SourceCursor<'line>,
+        line_context: &LineContext<'_, 'source>,
+        directives: &LineDirectives,
+        cursor: &mut SourceCursor<'source>,
     ) {
-        if let Some(anchor) = line.anchors.get(&line.start) {
+        let line = &line_context.source_lines[line_context.index];
+        let trimmed = line.text.trim();
+        if trimmed.starts_with("//") {
+            self.flush_paragraph(cursor);
+            return;
+        }
+        if directives.is_header_attribute(line.number, trimmed) {
+            self.flush_paragraph(cursor);
+            return;
+        }
+        if let Some(anchor) = directives.anchors.get(&line.number) {
             cursor.pending_anchor = Some(anchor.anchor.clone());
             return;
         }
-        if let Some(directive) = line.includes.get(&line.start) {
-            self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
-            if let Some(anchor) = cursor.pending_anchor.take() {
-                let _ = write!(self.html, "<span id=\"{}\"></span>", escape_html(&anchor));
-            }
-            self.render_include(line.source, directive, line.depth);
+        if let Some(directive) = directives.includes.get(&line.number) {
+            self.flush_paragraph(cursor);
+            self.flush_pending_anchor(cursor);
+            self.render_include(line_context.source, directive, line_context.depth);
             return;
         }
-        if self.render_source_delimiter(line.content, line.line_number, cursor) {
-            return;
-        }
-        self.render_source_content_line(
-            line.text,
-            line.start,
-            line.line_number,
-            line.content,
-            cursor,
-        );
+        self.render_content_line(line_context.source_lines, line_context.index, cursor);
     }
 
-    fn render_source_delimiter(
+    fn render_content_line<'source>(
         &mut self,
-        content: &str,
-        line_number: usize,
-        cursor: &mut SourceCursor<'_>,
-    ) -> bool {
+        source_lines: &[crate::asciidoc::Line<'source>],
+        index: usize,
+        cursor: &mut SourceCursor<'source>,
+    ) {
+        let line = &source_lines[index];
+        let content = line.text;
         let trimmed = content.trim();
         if trimmed.is_empty() {
-            self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
-            return true;
-        }
-        let (mode, starts_at_line) = match trimmed {
-            "----" | "...." => (Block::Listing, true),
-            "++++" => (Block::Passthrough, true),
-            "////" => (Block::Comment, false),
-            "|===" => (Block::Table, true),
-            _ => return false,
-        };
-        self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
-        cursor.mode = mode;
-        if starts_at_line {
-            cursor.mode_start = line_number;
-        }
-        true
-    }
-
-    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
-    fn render_source_content_line<'a>(
-        &mut self,
-        text: &'a str,
-        start: usize,
-        line_number: usize,
-        content: &'a str,
-        cursor: &mut SourceCursor<'a>,
-    ) {
-        if self.render_unsupported_conditional(content, start, line_number, cursor) {
+            self.flush_paragraph(cursor);
             return;
+        }
+        if crate::asciidoc::is_conditional(trimmed) {
+            self.flush_paragraph(cursor);
+            self.note(crate::asciidoc::Diagnostic::warning(
+                "unsupported-conditional",
+                "conditional directive was not evaluated",
+                line.number,
+                1,
+                line.span(),
+            ));
+            self.push_pre("unsupported-conditional", trimmed);
+            return;
+        }
+        if let Some(name) = block_macro(trimmed) {
+            self.note(crate::asciidoc::Diagnostic::warning(
+                "unsupported-block-macro",
+                format!("block macro {name:?} was not executed"),
+                line.number,
+                1,
+                line.span(),
+            ));
         }
         if self.render_heading_line(content, cursor) {
             return;
         }
         if content.starts_with(' ') || content.starts_with('\t') {
-            self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
-            let _ = write!(
-                self.html,
-                "<pre class=\"literal\">{}</pre>",
-                escape_html(content)
-            );
+            self.flush_paragraph(cursor);
+            self.push_pre("literal", content);
             return;
         }
-        if self.render_list_line(text, content, line_number, cursor) {
+        if self.render_list_line(source_lines, index, cursor) {
             return;
         }
         cursor.paragraph.push(content);
     }
 
-    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
-    fn render_unsupported_conditional(
-        &mut self,
-        content: &str,
-        start: usize,
-        line_number: usize,
-        cursor: &mut SourceCursor<'_>,
-    ) -> bool {
-        let trimmed = content.trim();
-        if !trimmed.starts_with("ifdef::")
-            && !trimmed.starts_with("ifndef::")
-            && !trimmed.starts_with("ifeval::")
-        {
-            return false;
-        }
-        self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
-        self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
-            "unsupported-conditional",
-            "conditional directive was not evaluated",
-            line_number,
-            1,
-            mneme_core::SourceSpan::new(start as u64, (start + content.len().max(1) - 1) as u64)
-                .ok(),
-        ));
-        let _ = write!(
-            self.html,
-            "<pre class=\"unsupported-conditional\">{}</pre>",
-            escape_html(content)
-        );
-        true
-    }
-
-    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_heading_line(&mut self, content: &str, cursor: &mut SourceCursor<'_>) -> bool {
         let Some((level, heading)) = heading(content) else {
             return false;
         };
-        self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
+        self.flush_paragraph(cursor);
         let id = cursor.pending_anchor.take();
         let id_attribute = id
             .as_deref()
@@ -454,173 +499,585 @@ impl Renderer<'_> {
             .map(|anchor| format!(" id=\"{}\"", escape_html(anchor)))
             .unwrap_or_default();
         let level = level.min(6);
-        let _ = write!(
-            self.html,
+        self.html.push_str(&format!(
             "<h{level}{id_attribute}>{}</h{level}>",
             escape_html(heading)
-        );
+        ));
         true
     }
 
-    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
+    /// Render a list from the current line, consuming its items.
     fn render_list_line(
         &mut self,
-        text: &str,
-        content: &str,
-        line_number: usize,
+        source_lines: &[crate::asciidoc::Line<'_>],
+        index: usize,
         cursor: &mut SourceCursor<'_>,
     ) -> bool {
-        if !is_list_item(content, '*') && !is_list_item(content, '.') {
+        let Some(marker) = list_marker(source_lines[index].text) else {
             return false;
-        }
-        self.flush_paragraph(&mut cursor.paragraph, &mut cursor.pending_anchor);
-        let is_ordered = is_list_item(content, '.');
-        let mut current_line = line_number;
-        let mut current_content = content.to_owned();
-        let tag = if is_ordered { "ol" } else { "ul" };
-        let _ = write!(self.html, "<{tag}>");
-        for next in text.split_inclusive('\n').skip(line_number) {
-            let next_number = current_line + 1;
-            let next_content = next
-                .strip_suffix('\n')
-                .unwrap_or(next)
-                .strip_suffix('\r')
-                .unwrap_or_else(|| next.strip_suffix('\n').unwrap_or(next));
-            if is_list_item(next_content, '*') || is_list_item(next_content, '.') {
-                if is_list_item(next_content, '.') != is_ordered {
-                    break;
-                }
-                let text = current_content
-                    .trim_start()
-                    .strip_prefix(if is_ordered { "." } else { "*" })
-                    .unwrap_or(&current_content)
-                    .trim();
-                let (rendered, diagnostics) = inline(text, line_number, &self.config.version);
-                self.diagnostics.extend(diagnostics);
-                let _ = write!(self.html, "<li>{rendered}</li>");
-                current_content = next_content.to_owned();
-                current_line = next_number;
-            } else {
+        };
+        self.flush_paragraph(cursor);
+        let tag = if marker == '.' { "ol" } else { "ul" };
+        self.html.push_str(&format!("<{tag}>"));
+        let mut item = index;
+        while item < source_lines.len() {
+            let line = &source_lines[item];
+            if list_marker(line.text) != Some(marker) {
                 break;
             }
+            let text = line.text.trim_start();
+            let content = text.strip_prefix(marker).unwrap_or(text).trim();
+            let rendered = self.inline(content, line.number);
+            self.html.push_str("<li>");
+            self.html.push_str(&rendered);
+            self.html.push_str("</li>");
+            cursor.skip_before = line.number;
+            item += 1;
         }
-        let text = current_content
-            .trim_start()
-            .strip_prefix(if is_ordered { "." } else { "*" })
-            .unwrap_or(&current_content)
-            .trim();
-        let (rendered, diagnostics) = inline(text, line_number, &self.config.version);
-        self.diagnostics.extend(diagnostics);
-        let _ = write!(self.html, "<li>{rendered}</li>");
-        cursor.skip_until = current_line;
-        let _ = write!(self.html, "</{tag}>");
+        self.html.push_str(&format!("</{tag}>"));
         true
     }
 
-    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
     fn render_include(
         &mut self,
         source: &RenderSource,
         directive: &crate::asciidoc::IncludeDirective,
         depth: usize,
     ) {
+        if !self.charge_include() {
+            return;
+        }
         let path = match crate::asciidoc::normalize_include_path(&source.path, &directive.target) {
             Ok(path) => path,
             Err(diagnostic) => {
-                self.diagnostics.push(diagnostic);
+                self.note(diagnostic);
                 return;
             }
         };
-        let Some(target) = self.sources.get(&path) else {
-            self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                if directive.optional {
-                    "include-optional-missing"
-                } else {
-                    "include-unavailable"
-                },
+        let sources = self.sources;
+        let Some(target) = sources.get(&path) else {
+            let code = if directive.optional {
+                "include-optional-missing"
+            } else {
+                "include-unavailable"
+            };
+            self.note(crate::asciidoc::Diagnostic::warning(
+                code,
                 format!("include target {path:?} is unavailable"),
                 directive.line,
                 directive.column,
                 Some(directive.span),
             ));
-            let _ = write!(
-                self.html,
-                "<pre class=\"include-unavailable\">include unavailable: {}</pre>",
-                escape_html(&path)
+            self.push_pre(
+                "include-unavailable",
+                &format!("include unavailable: {path}"),
             );
             return;
         };
         self.occurrences.push(crate::IncludeOccurrence {
             including_path: source.path.clone(),
-            target_path: path.clone(),
+            target_path: path,
             directive_span: directive.span,
             source: target.pin,
         });
         self.render_source(target, depth + 1);
     }
 
-    #[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
-    fn flush_paragraph(&mut self, paragraph: &mut Vec<&str>, pending_anchor: &mut Option<String>) {
-        if paragraph.is_empty() {
-            return;
-        }
-        let text = paragraph.join("\n");
-        paragraph.clear();
-        let (rendered, diagnostics) = inline(&text, 0, &self.config.version);
-        self.diagnostics.extend(diagnostics);
-        let id = pending_anchor.take();
-        if let Some(anchor) = id {
-            let _ = write!(
-                self.html,
-                "<span id=\"{}\"></span><p>{rendered}</p>",
-                escape_html(&anchor)
-            );
-        } else {
-            let _ = write!(self.html, "<p>{rendered}</p>");
+    /// Emit an escaped preformatted block.
+    fn push_pre(&mut self, class: &str, content: &str) {
+        self.html.push_str("<pre class=\"");
+        self.html.push_str(class);
+        self.html.push_str("\">");
+        self.html.push_str(&escape_html(content));
+        self.html.push_str("</pre>");
+    }
+
+    fn finish_block(&mut self, kind: crate::asciidoc::BlockKind, cursor: &mut SourceCursor<'_>) {
+        let buffer = std::mem::take(&mut cursor.block_buffer);
+        let start = cursor.block_start;
+        match kind {
+            crate::asciidoc::BlockKind::Listing | crate::asciidoc::BlockKind::Literal => {
+                self.push_pre("listing", &buffer);
+            }
+            crate::asciidoc::BlockKind::Passthrough => {
+                self.note(crate::asciidoc::Diagnostic::warning(
+                    "raw-passthrough-escaped",
+                    "raw passthrough content was escaped, not executed",
+                    start,
+                    1,
+                    None,
+                ));
+                self.push_pre("unsafe-passthrough", &buffer);
+            }
+            crate::asciidoc::BlockKind::Table => {
+                self.note(crate::asciidoc::Diagnostic::warning(
+                    "unsupported-table",
+                    "table content is escaped in the supported preview subset",
+                    start,
+                    1,
+                    None,
+                ));
+                self.push_pre("unsupported-table", &buffer);
+            }
+            crate::asciidoc::BlockKind::Comment => {}
         }
     }
 
-    #[allow(unknown_lints, ambient_clock)] // render deadline is the preview shell
-    fn expired(&mut self) -> bool {
-        let Some(deadline) = self.deadline else {
-            return false;
+    /// Close the block that is still open at the end of a source.
+    ///
+    /// AsciiDoc extends an unterminated delimited block to the end of input, so
+    /// the buffered content is kept and the missing delimiter is reported
+    /// instead of dropping the rest of the document without a signal.
+    fn close_source_block(&mut self, cursor: &mut SourceCursor<'_>) {
+        let Some(kind) = cursor.state.kind() else {
+            return;
         };
-        if std::time::Instant::now() > deadline {
-            self.diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                "render-time-limit",
-                "preview stopped at the configured time limit",
-                1,
-                1,
-                None,
-            ));
-            self.deadline = None;
-            return true;
+        self.note(crate::asciidoc::Diagnostic::warning(
+            "unterminated-block",
+            "delimited block is not closed; it extends to the end of the source",
+            cursor.block_start,
+            1,
+            None,
+        ));
+        self.finish_block(kind, cursor);
+        cursor.state = crate::asciidoc::BlockState::default();
+    }
+
+    fn flush_pending_anchor(&mut self, cursor: &mut SourceCursor<'_>) {
+        if let Some(anchor) = cursor.pending_anchor.take() {
+            let anchor = escape_html(&anchor);
+            self.html
+                .push_str(&format!("<span id=\"{anchor}\"></span>"));
         }
-        false
+    }
+
+    fn flush_paragraph(&mut self, cursor: &mut SourceCursor<'_>) {
+        if cursor.paragraph.is_empty() {
+            return;
+        }
+        let text = cursor.paragraph.join("\n");
+        cursor.paragraph.clear();
+        let rendered = self.inline(&text, 0);
+        self.flush_pending_anchor(cursor);
+        self.html.push_str("<p>");
+        self.html.push_str(&rendered);
+        self.html.push_str("</p>");
+    }
+
+    /// Render inline markup for one authored block.
+    ///
+    /// Every bracket search starts at or after the previous one and the
+    /// deadline is re-checked every [`INLINE_DEADLINE_STRIDE`] bytes, so an
+    /// unclosed macro on a long line costs one pass instead of a rescan.
+    fn inline(&mut self, text: &str, line: usize) -> String {
+        let mut scan = InlineScan::new(text);
+        let mut html = String::with_capacity(text.len());
+        let mut next_check = INLINE_DEADLINE_STRIDE;
+        while scan.position < text.len() {
+            if scan.scanned >= next_check {
+                next_check = scan.scanned.saturating_add(INLINE_DEADLINE_STRIDE);
+                if self.expired() {
+                    break;
+                }
+            }
+            if let Some(consumed) = self.render_inline_passthrough(&mut scan, line, &mut html) {
+                scan.advance(consumed);
+                continue;
+            }
+            if let Some(consumed) = self.render_inline_macro(&mut scan, line, &mut html) {
+                scan.advance(consumed);
+                continue;
+            }
+            let consumed = self.render_inline_character(&mut scan, line, &mut html);
+            scan.advance(consumed);
+        }
+        self.inline_bytes = self.inline_bytes.saturating_add(scan.scanned);
+        html
+    }
+
+    fn render_inline_passthrough(
+        &mut self,
+        scan: &mut InlineScan<'_>,
+        line: usize,
+        html: &mut String,
+    ) -> Option<usize> {
+        let rest = scan.rest();
+        if !rest.starts_with("pass:[") {
+            return None;
+        }
+        let position = scan.position;
+        let end = scan
+            .close_bracket
+            .find(position, &mut scan.scanned)
+            .map_or(scan.text.len(), |close| close + 1);
+        let literal = &scan.text[position..end];
+        self.note(crate::asciidoc::Diagnostic::warning(
+            "passthrough-inline-escaped",
+            "inline passthrough content was escaped",
+            line,
+            1,
+            None,
+        ));
+        html.push_str(&escape_html(literal));
+        Some(literal.len())
+    }
+
+    fn render_inline_macro(
+        &mut self,
+        scan: &mut InlineScan<'_>,
+        line: usize,
+        html: &mut String,
+    ) -> Option<usize> {
+        let kind = inline_macro_kind(scan.rest())?;
+        let (consumed, target, label) = parse_inline_macro(scan)?;
+        match kind {
+            InlineMacroKind::Image => {
+                self.note(crate::asciidoc::Diagnostic::warning(
+                    "external-asset-not-fetched",
+                    "image target was not fetched or embedded",
+                    line,
+                    1,
+                    None,
+                ));
+                let text =
+                    label.unwrap_or_else(|| target.rsplit('/').next().unwrap_or(target).to_owned());
+                html.push_str("<span class=\"image-alt\">");
+                html.push_str(&escape_html(&text));
+                html.push_str("</span>");
+            }
+            InlineMacroKind::Link => self.render_link(html, target, label, line),
+            InlineMacroKind::Xref => self.render_xref(html, target, label, line),
+        }
+        Some(consumed)
+    }
+
+    fn render_xref(&mut self, html: &mut String, target: &str, label: Option<String>, line: usize) {
+        if crate::asciidoc::valid_anchor(target) {
+            let label_text = label.as_deref().unwrap_or(target);
+            html.push_str(&format!(
+                "<a href=\"#{}\">{}</a>",
+                escape_html(target),
+                escape_html(label_text)
+            ));
+            return;
+        }
+        self.note(crate::asciidoc::Diagnostic::warning(
+            "xref-unavailable",
+            "cross-reference target is not a safe local anchor",
+            line,
+            1,
+            None,
+        ));
+        html.push_str(&escape_html(target));
+    }
+
+    fn render_link(&mut self, html: &mut String, target: &str, label: Option<String>, line: usize) {
+        let label = label.unwrap_or_else(|| target.to_owned());
+        if let Some(anchor) = target.strip_prefix('#')
+            && crate::asciidoc::valid_anchor(anchor)
+        {
+            html.push_str(&format!(
+                "<a href=\"#{}\">{}</a>",
+                escape_html(anchor),
+                escape_html(&label)
+            ));
+            return;
+        }
+        self.note(crate::asciidoc::Diagnostic::warning(
+            "external-navigation-not-automatic",
+            "external link target was not made navigable by the preview",
+            line,
+            1,
+            None,
+        ));
+        html.push_str("<span class=\"external-link\">");
+        html.push_str(&escape_html(&label));
+        html.push_str("</span>");
+    }
+
+    /// Escape one character of prose; returns the bytes it consumed.
+    fn render_inline_character(
+        &mut self,
+        scan: &mut InlineScan<'_>,
+        line: usize,
+        html: &mut String,
+    ) -> usize {
+        let rest = scan.rest();
+        let Some(character) = rest.chars().next() else {
+            return 1;
+        };
+        match character {
+            '<' => {
+                self.note(crate::asciidoc::Diagnostic::warning(
+                    "raw-html-escaped",
+                    "raw HTML was escaped",
+                    line,
+                    1,
+                    None,
+                ));
+                html.push_str("&lt;");
+            }
+            '>' => {
+                self.note(crate::asciidoc::Diagnostic::warning(
+                    "raw-html-escaped",
+                    "raw HTML was escaped",
+                    line,
+                    1,
+                    None,
+                ));
+                html.push_str("&gt;");
+            }
+            '&' => html.push_str("&amp;"),
+            '"' => html.push_str("&quot;"),
+            '\'' => html.push_str("&#39;"),
+            '{' => {
+                self.note(crate::asciidoc::Diagnostic::warning(
+                    "attribute-substitution-not-evaluated",
+                    "attribute substitution was not evaluated",
+                    line,
+                    1,
+                    None,
+                ));
+                html.push('{');
+            }
+            ':' => {
+                self.diagnose_custom_macro(scan, line);
+                html.push(':');
+            }
+            other => html.push(other),
+        }
+        character.len_utf8()
+    }
+
+    /// Report a `name:target[]` custom macro the processor will not execute.
+    fn diagnose_custom_macro(&mut self, scan: &mut InlineScan<'_>, line: usize) {
+        let position = scan.position;
+        if position == 0 {
+            return;
+        }
+        let has_prefix = scan.text[..position]
+            .chars()
+            .next_back()
+            .is_some_and(|character| character.is_ascii_alphanumeric());
+        if !has_prefix {
+            return;
+        }
+        if scan.rest().starts_with("::") {
+            return;
+        }
+        if scan
+            .open_bracket
+            .find(position + 1, &mut scan.scanned)
+            .is_none()
+        {
+            return;
+        }
+        self.note(crate::asciidoc::Diagnostic::warning(
+            "unsupported-macro",
+            "custom macro was not executed",
+            line,
+            1,
+            None,
+        ));
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Block {
-    Normal,
-    Listing,
-    Passthrough,
-    Comment,
-    Table,
+enum InlineMacroKind {
+    Image,
+    Link,
+    Xref,
 }
 
-fn line_start(text: &str, line_number: usize) -> usize {
-    if line_number <= 1 {
-        return 0;
+fn inline_macro_kind(rest: &str) -> Option<InlineMacroKind> {
+    if rest.starts_with("image:") {
+        return Some(InlineMacroKind::Image);
     }
-    let mut start = 0;
-    for (index, line) in text.split_inclusive('\n').enumerate() {
-        if index + 1 == line_number {
-            return start;
+    if rest.starts_with("link:") {
+        return Some(InlineMacroKind::Link);
+    }
+    if rest.starts_with("xref:") {
+        return Some(InlineMacroKind::Xref);
+    }
+    None
+}
+
+/// Parse `name:target[label]`; returns the bytes it covers.
+fn parse_inline_macro<'a>(scan: &mut InlineScan<'a>) -> Option<(usize, &'a str, Option<String>)> {
+    let position = scan.position;
+    let colon = scan.rest().find(':')?;
+    let target_start = position + colon + 1;
+    let open = scan.open_bracket.find(target_start, &mut scan.scanned)?;
+    let close = scan.close_bracket.find(open + 1, &mut scan.scanned)?;
+    let target = &scan.text[target_start..open];
+    let label = scan.text[open + 1..close].trim();
+    Some((
+        close + 1 - position,
+        target,
+        (!label.is_empty()).then(|| label.to_owned()),
+    ))
+}
+
+/// Inline scan state: the position reached and the memoized bracket searches.
+struct InlineScan<'a> {
+    text: &'a str,
+    position: usize,
+    scanned: u64,
+    open_bracket: Finder<'a>,
+    close_bracket: Finder<'a>,
+}
+
+impl<'a> InlineScan<'a> {
+    fn new(text: &'a str) -> Self {
+        InlineScan {
+            text,
+            position: 0,
+            scanned: 0,
+            open_bracket: Finder::new(text, '['),
+            close_bracket: Finder::new(text, ']'),
         }
-        start += line.len();
     }
-    text.len()
+
+    fn rest(&self) -> &'a str {
+        &self.text[self.position..]
+    }
+
+    fn advance(&mut self, consumed: usize) {
+        let step = consumed.min(self.text.len().saturating_sub(self.position));
+        self.position += step;
+        self.scanned = self.scanned.saturating_add(crate::budget_count(step));
+    }
+}
+
+/// Memoized forward search for one character.
+///
+/// Callers scan left to right, so a search either reuses the previous hit or
+/// starts where the last search stopped: every byte is examined once.
+struct Finder<'a> {
+    text: &'a str,
+    needle: char,
+    /// A position from which an earlier search found no needle at or after it.
+    searched_to_end_from: Option<usize>,
+    /// The most recent search start and its hit, reused for later positions.
+    last_hit: Option<(usize, usize)>,
+}
+
+impl<'a> Finder<'a> {
+    fn new(text: &'a str, needle: char) -> Self {
+        Finder {
+            text,
+            needle,
+            searched_to_end_from: None,
+            last_hit: None,
+        }
+    }
+
+    /// Next position of the needle at or after `position`, charging the bytes
+    /// it examined to `scanned`.
+    ///
+    /// A scan that already reached the end answers every later position
+    /// without searching again, so a forward caller examines each byte once.
+    fn find(&mut self, position: usize, scanned: &mut u64) -> Option<usize> {
+        if let Some(bound) = self.searched_to_end_from
+            && position >= bound
+        {
+            return None;
+        }
+        if let Some((start, hit)) = self.last_hit
+            && position >= start
+            && hit >= position
+        {
+            return Some(hit);
+        }
+        if position >= self.text.len() {
+            return None;
+        }
+        match self.text[position..].find(self.needle) {
+            Some(offset) => {
+                let hit = position + offset;
+                *scanned = scanned.saturating_add(crate::budget_count(offset + 1));
+                self.last_hit = Some((position, hit));
+                Some(hit)
+            }
+            None => {
+                let examined = self.text.len().saturating_sub(position);
+                *scanned = scanned.saturating_add(crate::budget_count(examined));
+                self.searched_to_end_from = Some(position);
+                None
+            }
+        }
+    }
+}
+
+/// Include directives and anchors of one source, keyed by line number, plus the
+/// number of leading header lines.
+struct LineDirectives {
+    includes: std::collections::BTreeMap<usize, crate::asciidoc::IncludeDirective>,
+    anchors: std::collections::BTreeMap<usize, crate::asciidoc::AnchorSpec>,
+    header_lines: usize,
+}
+
+impl LineDirectives {
+    fn scan(text: &str) -> (Self, Vec<crate::asciidoc::Diagnostic>) {
+        let (includes, diagnostics) = crate::asciidoc::scan_includes_checked(text);
+        let includes = includes
+            .into_iter()
+            .map(|directive| (directive.line, directive))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let anchors = crate::asciidoc::scan_anchors(text)
+            .into_iter()
+            .map(|anchor| (anchor.line, anchor))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let header_lines = crate::asciidoc::header_extent(text).unwrap_or(0);
+        (
+            LineDirectives {
+                includes,
+                anchors,
+                header_lines,
+            },
+            diagnostics,
+        )
+    }
+
+    /// Whether the line is a header attribute entry, which is configuration
+    /// rather than body prose.
+    fn is_header_attribute(&self, line_number: usize, content: &str) -> bool {
+        line_number <= self.header_lines && crate::asciidoc::is_attribute_entry(content)
+    }
+}
+
+#[derive(Default)]
+struct SourceCursor<'a> {
+    pending_anchor: Option<String>,
+    paragraph: Vec<&'a str>,
+    skip_before: usize,
+    state: crate::asciidoc::BlockState,
+    block_start: usize,
+    block_buffer: String,
+}
+
+/// One source line as the renderer walks it: the document being laid out, its
+/// include depth, and the position of the line within that document.
+struct LineContext<'a, 'source> {
+    source: &'a RenderSource,
+    depth: usize,
+    source_lines: &'a [crate::asciidoc::Line<'source>],
+    index: usize,
+}
+
+/// Recognize a block macro such as `gist::12345[]`.
+fn block_macro(line: &str) -> Option<&str> {
+    let (name, rest) = line.split_once("::")?;
+    if name.is_empty() || matches!(name, "include" | "endif") {
+        return None;
+    }
+    let is_name = name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-');
+    if !is_name || !rest.contains('[') || !rest.ends_with(']') {
+        return None;
+    }
+    Some(name)
 }
 
 fn heading(line: &str) -> Option<(usize, &str)> {
@@ -646,254 +1103,11 @@ fn is_list_item(line: &str, marker: char) -> bool {
         && !trimmed.starts_with("**")
 }
 
-#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-fn inline(
-    text: &str,
-    line: usize,
-    config_version: &str,
-) -> (String, Vec<crate::asciidoc::Diagnostic>) {
-    let mut diagnostics = Vec::with_capacity(text.len().saturating_add(1));
-    if config_version != crate::RENDER_CONFIG_VERSION {
-        diagnostics.push(crate::asciidoc::Diagnostic::warning(
-            "unsupported-inline-config",
-            "inline rendering used the supported configuration",
-            line,
-            1,
-            None,
-        ));
-    }
-    let mut output = String::with_capacity(text.len());
-    let mut index = 0;
-    while index < text.len() {
-        let rest = &text[index..];
-        if let Some(consumed) = render_inline_passthrough(rest, line, &mut output, &mut diagnostics)
-        {
-            index += consumed;
-            continue;
-        }
-        if let Some(consumed) = render_inline_macro(rest, line, &mut output, &mut diagnostics) {
-            index += consumed;
-            continue;
-        }
-        let Some(character) = rest.chars().next() else {
-            break;
-        };
-        render_inline_character(InlineCharacterContext {
-            text,
-            index,
-            rest,
-            character,
-            line,
-            output: &mut output,
-            diagnostics: &mut diagnostics,
-        });
-        index += character.len_utf8();
-    }
-    (output, diagnostics)
-}
-
-fn render_inline_passthrough(
-    rest: &str,
-    line: usize,
-    output: &mut String,
-    diagnostics: &mut Vec<crate::asciidoc::Diagnostic>,
-) -> Option<usize> {
-    if !rest.starts_with("pass:[") {
-        return None;
-    }
-    let literal = rest.find(']').map(|end| &rest[..=end]).unwrap_or(rest);
-    diagnostics.push(crate::asciidoc::Diagnostic::warning(
-        "passthrough-inline-escaped",
-        "inline passthrough content was escaped",
-        line,
-        1,
-        None,
-    ));
-    output.push_str(&escape_html(literal));
-    Some(literal.len())
-}
-
-#[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
-fn render_inline_macro(
-    rest: &str,
-    line: usize,
-    output: &mut String,
-    diagnostics: &mut Vec<crate::asciidoc::Diagnostic>,
-) -> Option<usize> {
-    if !rest.starts_with("image:") && !rest.starts_with("link:") && !rest.starts_with("xref:") {
-        return None;
-    }
-    let kind = if rest.starts_with("image:") {
-        "image"
-    } else if rest.starts_with("link:") {
-        "link"
-    } else {
-        "xref"
-    };
-    let (end, target, label) = parse_macro(rest)?;
-    match kind {
-        "image" => {
-            diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                "external-asset-not-fetched",
-                "image target was not fetched or embedded",
-                line,
-                1,
-                None,
-            ));
-            let text =
-                label.unwrap_or_else(|| target.rsplit('/').next().unwrap_or(target).to_owned());
-            let _ = write!(
-                output,
-                "<span class=\"image-alt\">{}</span>",
-                escape_html(&text)
-            );
-        }
-        "link" => render_link(output, diagnostics, target, label, line),
-        _ => render_xref(output, diagnostics, target, label, line),
-    }
-    Some(end)
-}
-
-struct InlineCharacterContext<'input, 'output> {
-    text: &'input str,
-    index: usize,
-    rest: &'input str,
-    character: char,
-    line: usize,
-    output: &'output mut String,
-    diagnostics: &'output mut Vec<crate::asciidoc::Diagnostic>,
-}
-
-fn render_inline_character(context: InlineCharacterContext<'_, '_>) {
-    let InlineCharacterContext {
-        text,
-        index,
-        rest,
-        character,
-        line,
-        output,
-        diagnostics,
-    } = context;
-    match character {
-        '<' | '>' => {
-            diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                "raw-html-escaped",
-                "raw HTML was escaped",
-                line,
-                1,
-                None,
-            ));
-            output.push_str(&escape_html(&character.to_string()));
-        }
-        '&' => output.push_str("&amp;"),
-        '"' => output.push_str("&quot;"),
-        '\'' => output.push_str("&#39;"),
-        '{' => {
-            diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                "attribute-substitution-not-evaluated",
-                "attribute substitution was not evaluated",
-                line,
-                1,
-                None,
-            ));
-            output.push('{');
-        }
-        ':' => {
-            let prefix = &text[..index];
-            if prefix
-                .chars()
-                .last()
-                .is_some_and(|character| character.is_ascii_alphanumeric())
-                && rest[1..].contains('[')
-                && !rest.starts_with("::")
-            {
-                diagnostics.push(crate::asciidoc::Diagnostic::warning(
-                    "unsupported-macro",
-                    "custom macro was not executed",
-                    line,
-                    1,
-                    None,
-                ));
-            }
-            output.push(':');
-        }
-        other => output.push_str(&escape_html(&other.to_string())),
-    }
-}
-
-#[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
-fn render_xref(
-    output: &mut String,
-    diagnostics: &mut Vec<crate::asciidoc::Diagnostic>,
-    target: &str,
-    label: Option<String>,
-    line: usize,
-) {
-    if crate::asciidoc::valid_anchor(target) {
-        let label_text = label.as_deref().unwrap_or(target);
-        let _ = write!(
-            output,
-            "<a href=\"#{}\">{}</a>",
-            escape_html(target),
-            escape_html(label_text)
-        );
-        return;
-    }
-    diagnostics.push(crate::asciidoc::Diagnostic::warning(
-        "xref-unavailable",
-        "cross-reference target is not a safe local anchor",
-        line,
-        1,
-        None,
-    ));
-    output.push_str(&escape_html(target));
-}
-
-#[allow(unknown_lints, ignored_result)] // lint boundary documented at the implementation
-fn render_link(
-    output: &mut String,
-    diagnostics: &mut Vec<crate::asciidoc::Diagnostic>,
-    target: &str,
-    label: Option<String>,
-    line: usize,
-) {
-    let label = label.unwrap_or_else(|| target.to_owned());
-    if let Some(anchor) = target.strip_prefix('#')
-        && crate::asciidoc::valid_anchor(anchor)
-    {
-        let _ = write!(
-            output,
-            "<a href=\"#{}\">{}</a>",
-            escape_html(anchor),
-            escape_html(&label)
-        );
-        return;
-    }
-    diagnostics.push(crate::asciidoc::Diagnostic::warning(
-        "external-navigation-not-automatic",
-        "external link target was not made navigable by the preview",
-        line,
-        1,
-        None,
-    ));
-    let _ = write!(
-        output,
-        "<span class=\"external-link\">{}</span>",
-        escape_html(&label)
-    );
-}
-
-fn parse_macro(text: &str) -> Option<(usize, &str, Option<String>)> {
-    let colon = text.find(':')?;
-    let open = text[colon + 1..].find('[')? + colon + 1;
-    let close = text[open + 1..].find(']')? + open + 1;
-    let target = &text[colon + 1..open];
-    let label = text[open + 1..close].trim();
-    Some((
-        close + 1,
-        target,
-        (!label.is_empty()).then(|| label.to_owned()),
-    ))
+/// The list marker of a list item line.
+fn list_marker(line: &str) -> Option<char> {
+    ['*', '.']
+        .into_iter()
+        .find(|&marker| is_list_item(line, marker))
 }
 
 fn escape_html(text: &str) -> String {
@@ -925,4 +1139,175 @@ fn display_value(value: &mneme_core::Value) -> String {
         return boolean.to_string();
     }
     "<structured value>".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(path: &str, bytes: &[u8]) -> RenderSource {
+        RenderSource {
+            path: path.to_owned(),
+            pin: crate::SourcePin {
+                source: mneme_core::RecordId::from_bytes([0x11; 16]),
+                revision: mneme_core::RevisionId::from_bytes([0x12; 16]),
+            },
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn unclosed_inline_macros_are_scanned_once() {
+        let text = "link:".repeat(20_000);
+        let sources = std::collections::BTreeMap::new();
+        let config = crate::RenderConfig::default();
+        let mut renderer = Renderer::new(&sources, &config, None);
+        let before = renderer.inline_bytes;
+        let html = renderer.inline(&text, 1);
+        let scanned = renderer.inline_bytes.saturating_sub(before);
+        let bound = u64::try_from(text.len())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(4);
+        assert!(scanned <= bound);
+        assert_eq!(html.len(), text.len());
+    }
+
+    #[test]
+    fn a_timed_out_document_stops_every_later_render() {
+        let mut sources = std::collections::BTreeMap::new();
+        sources.insert(
+            "root.adoc".to_owned(),
+            source("root.adoc", b"= Root\n\nbody\n"),
+        );
+        let config = crate::RenderConfig::default();
+        let mut renderer = Renderer::new(&sources, &config, None);
+        renderer.is_timed_out = true;
+        renderer.run(&sources["root.adoc"], None);
+        assert!(renderer.html.is_empty());
+        renderer.run(&sources["root.adoc"], None);
+        assert!(renderer.html.is_empty());
+        assert!(renderer.is_stopped());
+        let output = renderer.finish();
+        assert!(output.truncated);
+    }
+
+    #[test]
+    fn exponential_include_fan_out_stops_at_the_include_budget() {
+        let leaf = b"leaf prose\n";
+        let mut shared = Vec::new();
+        for _ in 0..10 {
+            shared.extend_from_slice(b"include::leaf.adoc[]\n");
+        }
+        let mut middle = Vec::new();
+        for _ in 0..10 {
+            middle.extend_from_slice(b"include::shared.adoc[]\n");
+        }
+        // One source per fan-out branch, so the map is built at exactly that
+        // size instead of growing one insert at a time.
+        let fan_out = 10;
+        let mut sources: std::collections::BTreeMap<String, RenderSource> = (0..fan_out)
+            .map(|index| {
+                let path = format!("l1-{index}.adoc");
+                let render_source = source(&path, &middle);
+                (path, render_source)
+            })
+            .collect();
+        let mut root = String::from("= Root\n\n");
+        for index in 0..fan_out {
+            root.push_str(&format!("include::l1-{index}.adoc[]\n"));
+        }
+        sources.insert("shared.adoc".to_owned(), source("shared.adoc", &shared));
+        sources.insert("leaf.adoc".to_owned(), source("leaf.adoc", leaf));
+        sources.insert("root.adoc".to_owned(), source("root.adoc", root.as_bytes()));
+        let config = crate::RenderConfig::default();
+        let mut renderer = Renderer::new(&sources, &config, None);
+        renderer.run(&sources["root.adoc"], None);
+        let output = renderer.finish();
+        assert!(output.truncated);
+        assert_eq!(count_code_in(&output, "render-budget-exhausted"), 1);
+        assert_eq!(output.occurrences.len(), 1_024);
+    }
+
+    #[test]
+    fn a_refused_include_attribute_is_reported_by_the_renderer() {
+        let mut sources = std::collections::BTreeMap::new();
+        sources.insert(
+            "notes.adoc".to_owned(),
+            source("notes.adoc", b"Target prose.\n"),
+        );
+        sources.insert(
+            "root.adoc".to_owned(),
+            source("root.adoc", b"= Root\n\ninclude::notes.adoc[tag=public]\n"),
+        );
+        let config = crate::RenderConfig::default();
+        let mut renderer = Renderer::new(&sources, &config, None);
+        renderer.run(&sources["root.adoc"], None);
+        let output = renderer.finish();
+        assert_eq!(count_code_in(&output, "include-attribute-unsupported"), 1);
+        assert!(!output.html.contains("Target prose."));
+        assert!(output.occurrences.is_empty());
+    }
+
+    #[test]
+    fn an_unterminated_block_keeps_its_content_and_reports_the_missing_delimiter() {
+        let mut sources = std::collections::BTreeMap::new();
+        sources.insert(
+            "root.adoc".to_owned(),
+            source(
+                "root.adoc",
+                b"= Root\n\nBefore.\n\n----\nnever closed\n\ntrailing prose\n",
+            ),
+        );
+        let config = crate::RenderConfig::default();
+        let mut renderer = Renderer::new(&sources, &config, None);
+        renderer.run(&sources["root.adoc"], None);
+        let output = renderer.finish();
+        assert!(output.html.contains("trailing prose"));
+        assert_eq!(count_code_in(&output, "unterminated-block"), 1);
+    }
+
+    #[test]
+    fn header_attribute_entries_are_not_body_prose() {
+        let mut sources = std::collections::BTreeMap::new();
+        sources.insert(
+            "root.adoc".to_owned(),
+            source(
+                "root.adoc",
+                b"= Probe\n:entity-id: 01010101010101010101010101010101\n\nBody prose.\n",
+            ),
+        );
+        let config = crate::RenderConfig::default();
+        let mut renderer = Renderer::new(&sources, &config, None);
+        renderer.run(&sources["root.adoc"], None);
+        let output = renderer.finish();
+        assert!(!output.html.contains("entity-id"));
+        assert!(output.html.contains("<h1>Probe</h1>"));
+        assert!(output.html.contains("Body prose."));
+    }
+
+    #[test]
+    fn an_unsupported_configuration_is_refused() {
+        let mut sources = std::collections::BTreeMap::new();
+        sources.insert(
+            "root.adoc".to_owned(),
+            source("root.adoc", b"= Root\n\nbody\n"),
+        );
+        let config = crate::RenderConfig {
+            version: "mneme-preview/v99-strict".to_owned(),
+            ..crate::RenderConfig::default()
+        };
+        let output = render(&sources["root.adoc"], &sources, None, &config, None);
+        assert!(!output.html.contains("<p>"));
+        assert!(output.html.contains("preview is partial"));
+        assert!(output.truncated);
+        assert_eq!(count_code_in(&output, "unsupported-render-config"), 1);
+    }
+
+    fn count_code_in(output: &RenderOutput, code: &str) -> usize {
+        output
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == code)
+            .count()
+    }
 }

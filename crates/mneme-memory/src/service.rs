@@ -20,12 +20,16 @@ pub struct Batch {
 /// The memory service over one mutable workspace handle.
 pub struct Engine<'w> {
     workspace: &'w mut mneme_store::Workspace,
+    access: crate::authorization::Access,
 }
 
 impl<'w> Engine<'w> {
-    /// Wrap a workspace.
-    pub fn new(workspace: &'w mut mneme_store::Workspace) -> Self {
-        Engine { workspace }
+    /// Wrap a workspace for a caller authorized over `access`.
+    pub fn new(
+        workspace: &'w mut mneme_store::Workspace,
+        access: crate::authorization::Access,
+    ) -> Self {
+        Engine { workspace, access }
     }
 
     /// The current pinned view.
@@ -40,16 +44,16 @@ impl<'w> Engine<'w> {
     ) -> crate::failure::Result<crate::beliefs::View> {
         let revision = self.workspace.current_revision()?;
         let snapshot = self.workspace.snapshot_at(revision, pinned_generation)?;
-        let history = load_history(self.workspace, &snapshot)?;
-        let sequences = self.workspace.revision_sequences()?;
+        let context = view_context(self.workspace, &snapshot)?;
         let suppressions = self.workspace.active_suppressions()?;
         Ok(crate::beliefs::View::with_retention(
             snapshot,
             self.workspace.root(),
-            history,
-            sequences,
+            context.history,
+            context.revision_sequences,
             suppressions,
-        ))
+        )
+        .with_access(self.access.clone()))
     }
 
     /// All retained revisions of one record.
@@ -87,7 +91,8 @@ impl<'w> Engine<'w> {
         self.view()?.current_beliefs(view)
     }
 
-    /// Conflicts among currently eligible claims.
+    /// Conflicts among currently eligible claims that apply at the view
+    /// instant.
     pub fn conflicts(
         &self,
         view: &crate::beliefs::BeliefView,
@@ -97,8 +102,7 @@ impl<'w> Engine<'w> {
 
     /// Validate and commit a memory batch.
     pub fn commit(&mut self, batch: Batch) -> crate::failure::Result<mneme_store::CommitOutcome> {
-        let base = self.workspace.current_revision()?;
-        self.commit_at_base(batch, base)
+        self.commit_inner(batch, None)
     }
 
     /// Validate and commit a memory batch against a caller-supplied base
@@ -109,47 +113,191 @@ impl<'w> Engine<'w> {
         batch: Batch,
         base: mneme_core::WorkspaceRevisionId,
     ) -> crate::failure::Result<mneme_store::CommitOutcome> {
+        self.commit_inner(batch, Some(base))
+    }
+
+    /// Commit one batch, replaying a recorded outcome before any validation.
+    ///
+    /// A lost-response retry must return the original outcome even when its
+    /// base is no longer current, and a genuinely stale base must be reported
+    /// as stale rather than as invalid input, so the stored outcome and the
+    /// base are both decided before memory validation runs. The request
+    /// fingerprint covers every input that changes the outcome; only a
+    /// caller-supplied base is included, because [`Engine::commit`] derives
+    /// its base from the workspace and a retry must still replay.
+    /// Validation then runs against exactly the snapshot at that base.
+    fn commit_inner(
+        &mut self,
+        batch: Batch,
+        supplied_base: Option<mneme_core::WorkspaceRevisionId>,
+    ) -> crate::failure::Result<mneme_store::CommitOutcome> {
+        let fingerprint = request_fingerprint(&batch, supplied_base);
+        if let Some(outcome) = self.workspace.replay_outcome(
+            &batch.actor,
+            &batch.scope,
+            &batch.idempotency_key,
+            &fingerprint,
+        )? {
+            return Ok(outcome);
+        }
         let snapshot = self.workspace.snapshot()?;
-        let history = load_history(self.workspace, &snapshot)?;
-        let sequences = self.workspace.revision_sequences()?;
+        let base = match supplied_base {
+            Some(base) => {
+                if base != snapshot.revision {
+                    return Err(mneme_store::Failure::StaleBase {
+                        base,
+                        current: snapshot.revision,
+                    }
+                    .into());
+                }
+                base
+            }
+            None => snapshot.revision,
+        };
+        let context = view_context(self.workspace, &snapshot)?;
         let suppressions = self.workspace.active_suppressions()?;
         validate_batch(BatchValidationInputs {
             snapshot: &snapshot,
             root: self.workspace.root(),
             batch: &batch,
-            history: &history,
-            revision_sequences: &sequences,
+            history: &context.history,
+            revision_sequences: &context.revision_sequences,
             suppressions: &suppressions,
+            access: &self.access,
         })?;
-        let outcome = self.workspace.commit(mneme_store::CommitCommand {
-            base,
-            actor: batch.actor,
-            scope: batch.scope,
-            idempotency_key: batch.idempotency_key,
-            records: batch.records,
-            source_blobs: batch.source_blobs,
-            publications: batch.publications,
-            import_candidates: Vec::new(),
-            retention: None,
-        })?;
+        let outcome = self.workspace.commit_bound(
+            mneme_store::CommitCommand {
+                base,
+                actor: batch.actor,
+                scope: batch.scope,
+                idempotency_key: batch.idempotency_key,
+                records: batch.records,
+                source_blobs: batch.source_blobs,
+                publications: batch.publications,
+                import_candidates: Vec::new(),
+                retention: None,
+            },
+            fingerprint,
+        )?;
         Ok(outcome)
     }
 }
 
-#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-fn load_history(
+/// The request identity bound to a batch's idempotency key.
+///
+/// It covers every input that changes the committed outcome: the operation,
+/// the actor, scope and idempotency key, each record draft, the supplied source
+/// digests and the publication intents. Only a caller-supplied base is
+/// included, because [`Engine::commit`] derives its base from the workspace and
+/// a retry after an unrelated commit must still replay.
+fn request_fingerprint(
+    batch: &Batch,
+    supplied_base: Option<mneme_core::WorkspaceRevisionId>,
+) -> mneme_core::ContentDigest {
+    let base = match supplied_base {
+        Some(revision) => revision.to_value(),
+        None => mneme_core::Value::symbol("none"),
+    };
+    mneme_core::request_fingerprint(&mneme_core::Value::record_named(
+        "memory-commit-request",
+        vec![
+            mneme_core::Value::symbol("memory-commit"),
+            mneme_core::Value::string(batch.actor.clone()),
+            batch.scope.to_value(),
+            mneme_core::Value::string(batch.idempotency_key.clone()),
+            base,
+            mneme_core::Value::set(batch.records.iter().map(record_draft_value)),
+            mneme_core::Value::set(
+                batch
+                    .source_blobs
+                    .iter()
+                    .map(|blob| blob.digest().to_value()),
+            ),
+            mneme_core::Value::set(batch.publications.iter().map(publication_value)),
+        ],
+    ))
+}
+
+/// One record draft as the coordinator will record its identity and content.
+fn record_draft_value(draft: &mneme_store::RecordDraft) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "draft-record",
+        vec![
+            mneme_core::Value::integer(i64::from(draft.schema_version)),
+            draft.kind.to_value(),
+            draft.record_id.to_value(),
+            draft.revision_id.to_value(),
+            match draft.predecessor {
+                Some(revision) => revision.to_value(),
+                None => mneme_core::Value::symbol("none"),
+            },
+            draft.scope.to_value(),
+            draft.payload.to_value(),
+        ],
+    )
+}
+
+/// One publication intent as an identity-bearing value.
+fn publication_value(draft: &mneme_store::PublicationDraft) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "publication",
+        vec![
+            mneme_core::Value::string(draft.path.clone()),
+            match draft.expected_previous {
+                Some(digest) => digest.to_value(),
+                None => mneme_core::Value::symbol("none"),
+            },
+            draft.desired_digest().to_value(),
+        ],
+    )
+}
+
+/// The retained history and committed sequences one view over a snapshot reads.
+#[derive(Clone, Debug)]
+pub struct ViewContext {
+    /// Every retained revision of every record the snapshot contains, keyed by
+    /// record identity and revision identity.
+    pub history: std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+    /// The sequence of the snapshot revision and of every revision a decision
+    /// or derivation in the snapshot or its history names.
+    pub revision_sequences: std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
+}
+
+/// The history and revision sequences a view over `snapshot` needs.
+///
+/// Both are read set-based: the history of every record the snapshot contains,
+/// and only the sequences of the revisions a view actually looks up. A revision
+/// that is not committed in this workspace stays absent from the sequences,
+/// which every lookup already treats as "not established".
+pub fn view_context(
     workspace: &mneme_store::Workspace,
     snapshot: &mneme_store::Snapshot,
+) -> crate::failure::Result<ViewContext> {
+    let history = flatten_history(workspace.record_histories(snapshot)?)?;
+    let wanted = wanted_revisions(snapshot, &history)?;
+    let revision_sequences = workspace.revision_sequences_for(&wanted)?;
+    Ok(ViewContext {
+        history,
+        revision_sequences,
+    })
+}
+
+/// Flatten per-record histories under the retained history bound.
+fn flatten_history(
+    histories: std::collections::BTreeMap<mneme_core::RecordId, Vec<mneme_core::RecordEnvelope>>,
 ) -> crate::failure::Result<
     std::collections::BTreeMap<
         (mneme_core::RecordId, mneme_core::RevisionId),
         mneme_core::RecordEnvelope,
     >,
 > {
-    let mut history = std::collections::BTreeMap::new();
     let max_history_revisions = 1_000_000;
-    for record in &snapshot.records {
-        for revision in workspace.record_revisions(record.record_id)? {
+    let mut history = std::collections::BTreeMap::new();
+    for revisions in histories.into_values() {
+        for revision in revisions {
             if history.len() >= max_history_revisions {
                 return Err(crate::failure::EvidenceError::policy(
                     "workspace history exceeds the 1M revision bound",
@@ -161,7 +309,49 @@ fn load_history(
     Ok(history)
 }
 
-#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+/// The workspace revisions a view over `snapshot` looks up.
+///
+/// A view resolves a decision's input revision and a derivation's evaluation
+/// revision, so those revisions' sequences are the ones it consults, together
+/// with the pinned revision itself. Records are read from the snapshot and from
+/// its retained history: a decision retained only in history still has its
+/// input revision looked up.
+fn wanted_revisions(
+    snapshot: &mneme_store::Snapshot,
+    history: &std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+) -> crate::failure::Result<std::collections::BTreeSet<mneme_core::WorkspaceRevisionId>> {
+    let mut wanted = std::collections::BTreeSet::new();
+    wanted.insert(snapshot.revision);
+    for record in snapshot.records.iter().chain(history.values()) {
+        match record.kind {
+            mneme_core::RecordKind::Decision => {
+                let decision = crate::model::DecisionView::parse(record.clone())?;
+                wanted.insert(decision.input_revision);
+            }
+            mneme_core::RecordKind::Derivation => {
+                let derivation = crate::model::DerivationView::parse(record.clone())?;
+                wanted.insert(derivation.evaluation_revision);
+            }
+            mneme_core::RecordKind::Entity
+            | mneme_core::RecordKind::Relation
+            | mneme_core::RecordKind::Document
+            | mneme_core::RecordKind::SourceRevision
+            | mneme_core::RecordKind::Episode
+            | mneme_core::RecordKind::Assertion
+            | mneme_core::RecordKind::Evidence
+            | mneme_core::RecordKind::Checkpoint
+            | mneme_core::RecordKind::Proposal
+            | mneme_core::RecordKind::RetentionDirective
+            | mneme_core::RecordKind::DocumentBinding
+            | mneme_core::RecordKind::DocumentAnchor => {}
+        }
+    }
+    Ok(wanted)
+}
+
 fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::failure::Result<()> {
     let BatchValidationInputs {
         snapshot,
@@ -170,6 +360,7 @@ fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::failure::Result<(
         history,
         revision_sequences,
         suppressions,
+        access,
     } = inputs;
     let max_batch_records = 1_000_000;
     if snapshot.records.len().saturating_add(batch.records.len()) > max_batch_records
@@ -185,25 +376,8 @@ fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::failure::Result<(
             .iter()
             .map(|record| (record.record_id, record.clone()))
             .collect();
-    let mut supplied_sources: std::collections::BTreeMap<mneme_core::ContentDigest, Vec<u8>> =
-        std::collections::BTreeMap::new();
-    let max_supplied_sources = batch.source_blobs.len();
-    for source in &batch.source_blobs {
-        if !supplied_sources.contains_key(&source.digest())
-            && supplied_sources.len() >= max_supplied_sources
-        {
-            return Err(crate::failure::EvidenceError::policy(
-                "supplied source map exceeds its batch input bound",
-            ));
-        }
-        if supplied_sources.len() >= max_supplied_sources {
-            return Err(crate::failure::EvidenceError::policy(
-                "supplied source map exceeds its batch input bound",
-            ));
-        }
-        supplied_sources.insert(source.digest(), source.bytes.clone());
-    }
-    extend_batch_records(&mut combined, batch)?;
+    let supplied_sources = supplied_source_map(&batch.source_blobs)?;
+    extend_batch_records(&mut combined, batch, access)?;
     let view = batch_view(BatchViewInputs {
         snapshot,
         root,
@@ -211,8 +385,14 @@ fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::failure::Result<(
         history,
         revision_sequences,
         suppressions,
+        access,
     });
     let context = BatchValidation {
+        access,
+        batch_scope: &batch.scope,
+        actor: &batch.actor,
+        base: snapshot.revision,
+        batch_records: batch.records.iter().map(|draft| draft.record_id).collect(),
         snapshot,
         root,
         combined,
@@ -229,6 +409,31 @@ fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::failure::Result<(
     Ok(())
 }
 
+/// The batch's supplied source bytes, bounded by its own input length.
+fn supplied_source_map(
+    blobs: &[mneme_store::SourceBlobDraft],
+) -> crate::failure::Result<std::collections::BTreeMap<mneme_core::ContentDigest, Vec<u8>>> {
+    let mut supplied_sources: std::collections::BTreeMap<mneme_core::ContentDigest, Vec<u8>> =
+        std::collections::BTreeMap::new();
+    let max_supplied_sources = blobs.len();
+    for source in blobs {
+        if !supplied_sources.contains_key(&source.digest())
+            && supplied_sources.len() >= max_supplied_sources
+        {
+            return Err(crate::failure::EvidenceError::policy(
+                "supplied source map exceeds its batch input bound",
+            ));
+        }
+        if supplied_sources.len() >= max_supplied_sources {
+            return Err(crate::failure::EvidenceError::policy(
+                "supplied source map exceeds its batch input bound",
+            ));
+        }
+        supplied_sources.insert(source.digest(), source.bytes.clone());
+    }
+    Ok(supplied_sources)
+}
+
 struct BatchValidationInputs<'a> {
     snapshot: &'a mneme_store::Snapshot,
     root: &'a std::path::Path,
@@ -239,11 +444,13 @@ struct BatchValidationInputs<'a> {
     >,
     revision_sequences: &'a std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
     suppressions: &'a [mneme_store::RetentionSuppression],
+    access: &'a crate::authorization::Access,
 }
 
 fn extend_batch_records(
     combined: &mut std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
     batch: &Batch,
+    access: &crate::authorization::Access,
 ) -> crate::failure::Result<()> {
     for draft in &batch.records {
         let envelope = draft.clone().into_envelope(mneme_core::RecordedTime::new(
@@ -256,9 +463,50 @@ fn extend_batch_records(
                 envelope.record_id, envelope.scope, batch.scope
             )));
         }
+        if let Some(prior) = combined.get(&envelope.record_id)
+            && prior.scope != envelope.scope
+        {
+            // A record may move only by an authorized hypothesis promotion:
+            // the same batch must commit a cited acceptance decision and the
+            // caller must be authorized for the scope it came from.
+            let facts = mneme_kernel::isolation::RevisionFacts {
+                same_scope: false,
+                prior_class: prior.scope.class().to_kernel(),
+                next_class: envelope.scope.class().to_kernel(),
+                carries_acceptance: carries_acceptance_decision(batch, &envelope),
+                both_authorized: access.allows(&prior.scope),
+            };
+            if !mneme_kernel::isolation::revision_scope_allowed(&facts) {
+                return Err(crate::failure::EvidenceError::policy(
+                    "a new revision may not move a record out of its scope",
+                ));
+            }
+        }
         combined.insert(envelope.record_id, envelope);
     }
     Ok(())
+}
+
+/// Whether the batch commits an acceptance decision that this revision cites.
+fn carries_acceptance_decision(batch: &Batch, envelope: &mneme_core::RecordEnvelope) -> bool {
+    let Some(cited) = crate::model::optional_reference_target(envelope, "decision")
+        .ok()
+        .flatten()
+    else {
+        return false;
+    };
+    batch.records.iter().any(|draft| {
+        draft.kind == mneme_core::RecordKind::Decision
+            && draft.record_id == cited
+            && crate::model::DecisionView::parse(draft.clone().into_envelope(
+                mneme_core::RecordedTime::new(mneme_core::Timestamp::from_nanos(0), 0),
+            ))
+            .is_ok_and(|decision| {
+                decision.decision_kind == crate::model::DecisionKind::Acceptance
+                    && decision.outcome == "accepted"
+                    && decision.target == envelope.record_id
+            })
+    })
 }
 
 #[allow(unknown_lints)] // Octet structural exception: parameter group mirrors one cohesive context
@@ -270,6 +518,7 @@ fn batch_view(inputs: BatchViewInputs<'_>) -> crate::beliefs::View {
         history,
         revision_sequences,
         suppressions,
+        access,
     } = inputs;
     let mut index = mneme_core::SnapshotIndex::new();
     for record in combined.values() {
@@ -291,6 +540,7 @@ fn batch_view(inputs: BatchViewInputs<'_>) -> crate::beliefs::View {
         revision_sequences.clone(),
         suppressions.to_vec(),
     )
+    .with_access(access.clone())
 }
 
 struct BatchViewInputs<'a> {
@@ -303,14 +553,84 @@ struct BatchViewInputs<'a> {
     >,
     revision_sequences: &'a std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
     suppressions: &'a [mneme_store::RetentionSuppression],
+    access: &'a crate::authorization::Access,
 }
 
 struct BatchValidation<'a> {
+    access: &'a crate::authorization::Access,
+    batch_scope: &'a mneme_core::ScopeId,
+    actor: &'a str,
+    base: mneme_core::WorkspaceRevisionId,
+    batch_records: std::collections::BTreeSet<mneme_core::RecordId>,
     snapshot: &'a mneme_store::Snapshot,
     root: &'a std::path::Path,
     combined: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
     supplied_sources: std::collections::BTreeMap<mneme_core::ContentDigest, Vec<u8>>,
     view: crate::beliefs::View,
+}
+
+/// Refusal text for a reference that is missing or outside the caller's
+/// access. Both cases are reported identically, so a response cannot confirm
+/// that another scope holds a record.
+const UNAVAILABLE_REFERENCE: &str = "a referenced record is missing or unavailable";
+
+/// Refusal text for a reference the caller may resolve but the isolation rules
+/// forbid. It names scope classes, never a record identifier.
+const INADMISSIBLE_REFERENCE: &str = "a record may not reference a record of that scope";
+
+impl BatchValidation<'_> {
+    /// Whether the caller is authorized for a scope. The batch's own scope is
+    /// always authorized: authorization for it precedes the engine.
+    fn allows(&self, scope: &mneme_core::ScopeId) -> bool {
+        self.access.allows(scope) || scope == self.batch_scope
+    }
+
+    /// The committed revision of a record, if the workspace already holds one.
+    fn committed(&self, record: mneme_core::RecordId) -> Option<&mneme_core::RecordEnvelope> {
+        self.snapshot
+            .records
+            .iter()
+            .find(|candidate| candidate.record_id == record)
+    }
+
+    /// Resolve one reference from `owner` under the isolation rules.
+    fn reference(
+        &self,
+        owner: &mneme_core::RecordEnvelope,
+        target: mneme_core::RecordId,
+    ) -> crate::failure::Result<&mneme_core::RecordEnvelope> {
+        let Some(record) = self.combined.get(&target) else {
+            return Err(crate::failure::EvidenceError::policy(UNAVAILABLE_REFERENCE));
+        };
+        if !self.allows(&record.scope) {
+            return Err(crate::failure::EvidenceError::policy(UNAVAILABLE_REFERENCE));
+        }
+        let facts = mneme_kernel::isolation::ReferenceFacts {
+            same_scope: record.scope == owner.scope,
+            source_class: owner.scope.class().to_kernel(),
+            target_class: record.scope.class().to_kernel(),
+            target_authorized: self.allows(&record.scope),
+        };
+        if !mneme_kernel::isolation::reference_allowed(&facts) {
+            return Err(crate::failure::EvidenceError::policy(
+                INADMISSIBLE_REFERENCE,
+            ));
+        }
+        Ok(record)
+    }
+
+    /// Whether a record is an intent or attempt episode.
+    fn is_action_episode(&self, record: mneme_core::RecordId) -> bool {
+        self.combined
+            .get(&record)
+            .and_then(|record| crate::model::EpisodeView::parse(record.clone()).ok())
+            .is_some_and(|episode| {
+                matches!(
+                    episode.episode_type,
+                    crate::model::EpisodeType::Intent | crate::model::EpisodeType::Attempt
+                )
+            })
+    }
 }
 
 fn validate_record(
@@ -338,28 +658,43 @@ fn validate_evidence(
         .suppression_for(envelope)
         .is_some_and(|suppression| suppression.mode == mneme_store::SuppressionMode::Withdrawn)
     {
-        return Err(crate::failure::EvidenceError::policy(format!(
-            "evidence {} is withdrawn and cannot be newly cited",
-            evidence.record.record_id
-        )));
+        return Err(crate::failure::EvidenceError::policy(
+            "a withdrawn evidence record cannot be newly cited",
+        ));
+    }
+    // Evidence pins the exact source revision it cites: an unpinned reference
+    // would resolve to whatever revision is current, silently changing the
+    // quotation under the recorded span.
+    if !matches!(
+        &evidence.source_reference,
+        mneme_core::Reference::Pinned { .. }
+    ) {
+        return Err(crate::failure::EvidenceError::policy(
+            "evidence must pin the exact source revision it cites",
+        ));
+    }
+    let assertion = context.reference(&evidence.record, evidence.assertion)?;
+    if assertion.kind != mneme_core::RecordKind::Assertion {
+        return Err(crate::failure::EvidenceError::policy(
+            "evidence must reference an assertion record",
+        ));
+    }
+    context.reference(&evidence.record, evidence.source)?;
+    for ancestor in &evidence.ancestry {
+        context.reference(&evidence.record, *ancestor)?;
     }
     let source = context.view.evidence_source(&evidence).map_err(|_| {
-        crate::failure::EvidenceError::policy(format!(
-            "evidence {} references missing source {}",
-            evidence.record.record_id, evidence.source
-        ))
+        crate::failure::EvidenceError::policy("evidence references a missing source revision")
     })?;
     if let mneme_core::Reference::Pinned { revision, .. } = evidence.source_reference
         && revision != source.record.revision_id
     {
-        return Err(crate::failure::EvidenceError::policy(format!(
-            "evidence {} pins source revision {revision}, but the source record is {}",
-            evidence.record.record_id, source.record.revision_id
-        )));
+        return Err(crate::failure::EvidenceError::policy(
+            "evidence references a missing source revision",
+        ));
     }
     let bytes = source_bytes(&source, &context.supplied_sources, context.root)?;
     validate_evidence_extent(&evidence, &bytes)?;
-    validate_evidence_ancestry(&evidence, &context.combined)?;
     context.view.evidence_roots(evidence.record.record_id)?;
     Ok(())
 }
@@ -373,15 +708,17 @@ fn validate_evidence_extent(
             "evidence requires an exact span or a stable anchor",
         ));
     }
-    if let Some(span) = evidence.span
-        && span.end() >= bytes.len() as u64
-    {
-        return Err(crate::failure::EvidenceError::policy(format!(
-            "evidence {} span ends at byte {} beyond {} retained bytes",
-            evidence.record.record_id,
-            span.end(),
-            bytes.len()
-        )));
+    if let Some(span) = evidence.span {
+        // The citation's end offset is inclusive; the kernel span is half-open,
+        // so a citation ending at the last source byte has `stop == len`.
+        let is_within = span.end().checked_add(1).is_some_and(|stop| {
+            mneme_kernel::extent::span_in_text(span.start(), stop, bytes.len() as u64)
+        });
+        if !is_within {
+            return Err(crate::failure::EvidenceError::policy(
+                "evidence span ends beyond the retained source",
+            ));
+        }
     }
     if let Some(anchor) = &evidence.anchor
         && anchor.trim().is_empty()
@@ -393,56 +730,189 @@ fn validate_evidence_extent(
     Ok(())
 }
 
-fn validate_evidence_ancestry(
-    evidence: &crate::model::EvidenceView,
-    combined: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
-) -> crate::failure::Result<()> {
-    for ancestor in &evidence.ancestry {
-        if !combined.contains_key(ancestor) {
-            return Err(crate::failure::EvidenceError::policy(format!(
-                "evidence {} ancestry names missing record {ancestor}",
-                evidence.record.record_id
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn validate_assertion(
     envelope: &mneme_core::RecordEnvelope,
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<()> {
     let assertion = crate::model::AssertionView::parse(envelope.clone())?;
-    validate_assertion_evidence(&assertion, context)?;
-    if !context.view.lifecycle_decision_valid(&assertion)? {
-        return Err(crate::failure::EvidenceError::policy(format!(
-            "assertion {} lifecycle {} lacks a matching decision",
-            assertion.record.record_id,
-            assertion.lifecycle.symbol()
-        )));
-    }
-    if assertion.origin == mneme_core::Origin::ModelExtraction && assertion.extraction.is_none() {
-        return Err(crate::failure::EvidenceError::policy(format!(
-            "model-extracted assertion {} must retain extraction lineage",
-            assertion.record.record_id
-        )));
-    }
-    if assertion.predicate == crate::beliefs::ACTION_COMPLETED_PREDICATE
-        && !context.view.has_observed_outcome(&assertion)?
+    validate_assertion_lifecycle(&assertion, context)?;
+    validate_assertion_origin(&assertion)?;
+    if assertion.claim_type == crate::model::ClaimType::ActionCompleted
+        && !observed_outcome_linked(&assertion, context)?
     {
-        return Err(crate::failure::EvidenceError::policy(format!(
-            "completed-action assertion {} has no observed outcome episode",
-            assertion.record.record_id
-        )));
+        return Err(crate::failure::EvidenceError::policy(
+            "a completed-action assertion requires an observed outcome episode",
+        ));
     }
     validate_negative_assertion(&assertion)?;
+    context.reference(&assertion.record, assertion.subject)?;
+    if let Some(superseded_by) = assertion.superseded_by {
+        context.reference(&assertion.record, superseded_by)?;
+    }
     for evidence in &assertion.evidence {
-        if !context.combined.contains_key(evidence) {
-            return Err(crate::failure::EvidenceError::policy(format!(
-                "assertion {} evidence reference {evidence} is missing",
-                assertion.record.record_id
-            )));
+        let record = context.reference(&assertion.record, *evidence)?;
+        if record.kind != mneme_core::RecordKind::Evidence {
+            return Err(crate::failure::EvidenceError::policy(
+                "assertion evidence must reference evidence records",
+            ));
         }
+    }
+    validate_assertion_evidence(&assertion, context)?;
+    Ok(())
+}
+
+/// Whether the cited evidence establishes an observed outcome of the action.
+///
+/// Only an outcome episode counts: an observation, attempt or intent cannot
+/// stand in for a result, and the outcome must name the intent or attempt it
+/// concludes, so an unrelated observation or result cannot supply provenance.
+fn observed_outcome_linked(
+    assertion: &crate::model::AssertionView,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<bool> {
+    for evidence_id in &assertion.evidence {
+        let Some(record) = context.combined.get(evidence_id) else {
+            continue;
+        };
+        let Ok(evidence) = crate::model::EvidenceView::parse(record.clone()) else {
+            continue;
+        };
+        for ancestor in &evidence.ancestry {
+            let Some(record) = context.combined.get(ancestor) else {
+                continue;
+            };
+            let Ok(episode) = crate::model::EpisodeView::parse(record.clone()) else {
+                continue;
+            };
+            if episode.episode_type == crate::model::EpisodeType::Outcome
+                && episode
+                    .related
+                    .iter()
+                    .any(|related| context.is_action_episode(*related))
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Decide one assertion revision's lifecycle with the kernel.
+///
+/// The prior lifecycle comes from the record's committed revision (or nothing
+/// for a new record), and every cited decision must be made by the committing
+/// actor against exactly the revision this batch replaces. A decision
+/// committed earlier therefore cannot promote later content, a lost
+/// acceptance cannot be forged, and a retracted assertion stays retracted.
+fn validate_assertion_lifecycle(
+    assertion: &crate::model::AssertionView,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<()> {
+    let prior = context
+        .committed(assertion.record.record_id)
+        .and_then(mneme_core::RecordEnvelope::assertion_lifecycle);
+    let cited = match assertion.decision {
+        Some(decision_id) => Some(cited_decision(assertion, decision_id, context)?),
+        None => None,
+    };
+    let commit = mneme_kernel::claim::CommitTimeFacts {
+        decision_in_batch: assertion
+            .decision
+            .is_some_and(|decision| context.batch_records.contains(&decision)),
+        actor_is_committer: assertion
+            .decision
+            .is_some_and(|decision| decision_actor_is(decision, context)),
+    };
+    let is_admissible = mneme_kernel::claim::revision_admissible(
+        prior.map(mneme_core::Lifecycle::to_kernel),
+        assertion.lifecycle.to_kernel(),
+        &cited,
+        &commit,
+    );
+    if !is_admissible {
+        return Err(crate::failure::EvidenceError::policy(
+            "assertion revision is not an admissible lifecycle transition",
+        ));
+    }
+    Ok(())
+}
+
+/// The facts the lifecycle kernel needs about the decision an assertion cites.
+fn cited_decision(
+    assertion: &crate::model::AssertionView,
+    decision_id: mneme_core::RecordId,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<mneme_kernel::claim::CitedDecision> {
+    let record = context.reference(&assertion.record, decision_id)?;
+    let decision = crate::model::DecisionView::parse(record.clone())?;
+    let kind = kernel_decision_kind(&decision.decision_kind).ok_or_else(|| {
+        crate::failure::EvidenceError::policy("unknown decision kind cannot be committed")
+    })?;
+    Ok(mneme_kernel::claim::CitedDecision {
+        kind,
+        outcome_matches: Some(decision.outcome.as_str()) == lifecycle_outcome(assertion.lifecycle),
+        targets_assertion: decision.target == assertion.record.record_id,
+        binds_replaced_revision: decision.input_revision == context.base,
+    })
+}
+
+/// The outcome word a revision in this lifecycle must record.
+fn lifecycle_outcome(lifecycle: mneme_core::Lifecycle) -> Option<&'static str> {
+    match lifecycle {
+        mneme_core::Lifecycle::Proposed => None,
+        mneme_core::Lifecycle::Accepted => Some("accepted"),
+        mneme_core::Lifecycle::Disputed => Some("disputed"),
+        mneme_core::Lifecycle::Superseded => Some("superseded"),
+        mneme_core::Lifecycle::Retracted => Some("retracted"),
+    }
+}
+
+/// The kernel decision kind for a parsed decision, or nothing when unknown.
+fn kernel_decision_kind(
+    kind: &crate::model::DecisionKind,
+) -> Option<mneme_kernel::claim::DecisionKind> {
+    match kind {
+        crate::model::DecisionKind::Acceptance => {
+            Some(mneme_kernel::claim::DecisionKind::Acceptance)
+        }
+        crate::model::DecisionKind::ConflictResolution => {
+            Some(mneme_kernel::claim::DecisionKind::ConflictResolution)
+        }
+        crate::model::DecisionKind::Retraction => {
+            Some(mneme_kernel::claim::DecisionKind::Retraction)
+        }
+        crate::model::DecisionKind::Supersession => {
+            Some(mneme_kernel::claim::DecisionKind::Supersession)
+        }
+        crate::model::DecisionKind::Other(_) => None,
+    }
+}
+
+/// Whether the cited decision record was made by the committing actor.
+fn decision_actor_is(decision: mneme_core::RecordId, context: &BatchValidation<'_>) -> bool {
+    context
+        .combined
+        .get(&decision)
+        .and_then(|record| crate::model::DecisionView::parse(record.clone()).ok())
+        .is_some_and(|decision| decision.actor == context.actor)
+}
+
+/// Additional evidence every claim needs beyond an ordinary authored claim.
+fn validate_assertion_origin(
+    assertion: &crate::model::AssertionView,
+) -> crate::failure::Result<()> {
+    if assertion.origin != mneme_core::Origin::ModelExtraction {
+        return Ok(());
+    }
+    if assertion.extraction.is_none() {
+        return Err(crate::failure::EvidenceError::policy(
+            "a model-extracted assertion must retain extraction lineage",
+        ));
+    }
+    if assertion.evidence.is_empty() {
+        return Err(crate::failure::EvidenceError::policy(
+            "a model-extracted assertion requires input evidence",
+        ));
     }
     Ok(())
 }
@@ -502,41 +972,50 @@ fn validate_decision(
             "decision actor and policy must be non-empty",
         ));
     }
-    if decision.input_revision != context.snapshot.revision {
+    // Attribution is a property of the committing principal, not of free text
+    // a client supplies: a decision made in another actor's name is refused.
+    if decision.actor != context.actor {
+        return Err(crate::failure::EvidenceError::policy(
+            "a decision must be made by the actor committing the batch",
+        ));
+    }
+    if kernel_decision_kind(&decision.decision_kind).is_none() {
+        return Err(crate::failure::EvidenceError::policy(
+            "unknown decision kind cannot be committed",
+        ));
+    }
+    if decision.input_revision != context.base {
         return Err(crate::failure::EvidenceError::policy(format!(
             "decision {} evaluates revision {}, not the current base {}",
-            decision.record.record_id, decision.input_revision, context.snapshot.revision
+            decision.record.record_id, decision.input_revision, context.base
         )));
     }
-    let target = decision_target(&decision, &context.combined)?;
+    let target = decision_target(&decision, context)?;
     if target.decision != Some(decision.record.record_id) {
-        return Err(crate::failure::EvidenceError::policy(format!(
-            "decision {} is not linked from its target assertion",
-            decision.record.record_id
-        )));
+        return Err(crate::failure::EvidenceError::policy(
+            "decision is not linked from its target assertion",
+        ));
     }
     validate_decision_outcome(&decision, &target)?;
     for evidence in &decision.evidence {
-        if !context.combined.contains_key(evidence) {
-            return Err(crate::failure::EvidenceError::policy(format!(
-                "decision {} evidence {evidence} is missing",
-                decision.record.record_id
-            )));
-        }
+        context.reference(&decision.record, *evidence)?;
+    }
+    for related in &decision.related {
+        context.reference(&decision.record, *related)?;
     }
     Ok(())
 }
 
 fn decision_target(
     decision: &crate::model::DecisionView,
-    combined: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    context: &BatchValidation<'_>,
 ) -> crate::failure::Result<crate::model::AssertionView> {
-    let envelope = combined
-        .get(&decision.target)
-        .ok_or(crate::failure::EvidenceError::policy(format!(
-            "decision {} targets missing assertion {}",
-            decision.record.record_id, decision.target
-        )))?;
+    let envelope = context.reference(&decision.record, decision.target)?;
+    if envelope.kind != mneme_core::RecordKind::Assertion {
+        return Err(crate::failure::EvidenceError::policy(
+            "a decision must target an assertion record",
+        ));
+    }
     crate::model::AssertionView::parse(envelope.clone())
 }
 
@@ -575,25 +1054,28 @@ fn validate_derivation(
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<()> {
     let derivation = crate::model::DerivationView::parse(envelope.clone())?;
-    if derivation.evaluation_revision != context.snapshot.revision {
+    if derivation.evaluation_revision != context.base {
         return Err(crate::failure::EvidenceError::policy(format!(
             "derivation {} evaluates revision {}, not the current base {}",
-            derivation.record.record_id, derivation.evaluation_revision, context.snapshot.revision
+            derivation.record.record_id, derivation.evaluation_revision, context.base
         )));
     }
-    if !context.combined.contains_key(&derivation.conclusion) {
-        return Err(crate::failure::EvidenceError::policy(format!(
-            "derivation {} conclusion {} is missing",
-            derivation.record.record_id, derivation.conclusion
-        )));
+    let conclusion = context.reference(&derivation.record, derivation.conclusion)?;
+    if conclusion.kind != mneme_core::RecordKind::Assertion {
+        return Err(crate::failure::EvidenceError::policy(
+            "a derivation must conclude an assertion record",
+        ));
+    }
+    // A justification its author declared incomplete cannot be the basis of an
+    // accepted conclusion; it may only accompany a proposed one.
+    let conclusion = crate::model::AssertionView::parse(conclusion.clone())?;
+    if !derivation.is_complete() && conclusion.lifecycle == mneme_core::Lifecycle::Accepted {
+        return Err(crate::failure::EvidenceError::policy(
+            "an incomplete derivation cannot support an accepted conclusion",
+        ));
     }
     for premise in &derivation.premises {
-        if !context.combined.contains_key(premise) {
-            return Err(crate::failure::EvidenceError::policy(format!(
-                "derivation {} premise {premise} is missing",
-                derivation.record.record_id
-            )));
-        }
+        context.reference(&derivation.record, *premise)?;
     }
     Ok(())
 }
@@ -603,13 +1085,11 @@ fn validate_episode(
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<()> {
     let episode = crate::model::EpisodeView::parse(envelope.clone())?;
+    if let Some(source) = episode.source {
+        context.reference(&episode.record, source)?;
+    }
     for related in &episode.related {
-        if !context.combined.contains_key(related) {
-            return Err(crate::failure::EvidenceError::policy(format!(
-                "episode {} related record {related} is missing",
-                episode.record.record_id
-            )));
-        }
+        context.reference(&episode.record, *related)?;
     }
     Ok(())
 }
@@ -619,18 +1099,22 @@ fn validate_checkpoint(
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<()> {
     let (revision, episodes, verified) = context.view.checkpoint_revision(envelope.record_id)?;
-    if revision != context.snapshot.revision {
+    if revision != context.base {
         return Err(crate::failure::EvidenceError::policy(format!(
             "checkpoint {} references revision {revision}, not the current base {}",
-            envelope.record_id, context.snapshot.revision
+            envelope.record_id, context.base
         )));
     }
-    for linked in episodes.iter().chain(verified.iter()) {
-        if !context.combined.contains_key(linked) {
-            return Err(crate::failure::EvidenceError::policy(format!(
-                "checkpoint {} references missing record {linked}",
-                envelope.record_id
-            )));
+    for linked in &episodes {
+        context.reference(envelope, *linked)?;
+    }
+    for linked in &verified {
+        let record = context.reference(envelope, *linked)?;
+        let episode = crate::model::EpisodeView::parse(record.clone())?;
+        if episode.episode_type != crate::model::EpisodeType::Outcome {
+            return Err(crate::failure::EvidenceError::policy(
+                "a checkpoint verified outcome must be an outcome episode",
+            ));
         }
     }
     Ok(())

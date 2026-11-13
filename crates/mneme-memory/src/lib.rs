@@ -11,11 +11,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 #![allow(unknown_lints)] // Octet custom lint names are unknown to rustc
 
+pub mod authorization;
 pub mod beliefs;
 pub mod failure;
 pub mod model;
 pub mod service;
 
+pub use authorization::Access;
 pub use beliefs::{
     BeliefView, ConflictGroup, Corroboration, DerivationAlternative, EXPLICIT_AUTHORED_PREDICATE,
     EvidenceExplanation, Explanation, Policy, SourceExcerpt, SourceStatus, ValidatedEvidence, View,
@@ -23,13 +25,13 @@ pub use beliefs::{
 pub use failure::{EvidenceError, Result};
 pub use mneme_core::Origin;
 pub use model::{
-    AssertionView, DecisionKind, DecisionView, DerivationView, EpisodeType, EpisodeView,
+    AssertionView, ClaimType, DecisionKind, DecisionView, DerivationView, EpisodeType, EpisodeView,
     EvidenceView, SourceAvailability, SourceView, Stance, SupportRelation,
 };
 pub use service::{
     Batch, CheckpointOptions, DecisionOptions, DerivationOptions, Engine, EpisodeOptions,
     EvidenceOptions, ProposedAssertionOptions, SourceOptions, UnavailableSourceOptions,
-    UnavailableSourceWithDigestOptions, build_assertion_revision, build_checkpoint, build_decision,
-    build_derivation, build_episode, build_evidence, build_proposed_assertion, build_source,
-    build_unavailable_source, build_unavailable_source_with_digest,
+    UnavailableSourceWithDigestOptions, ViewContext, build_assertion_revision, build_checkpoint,
+    build_decision, build_derivation, build_episode, build_evidence, build_proposed_assertion,
+    build_source, build_unavailable_source, build_unavailable_source_with_digest, view_context,
 };

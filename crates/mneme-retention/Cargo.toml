@@ -6,6 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mneme-kernel.workspace = true
 mneme-core.workspace = true
 mneme-store.workspace = true
 mneme-memory.workspace = true
