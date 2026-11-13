@@ -10,6 +10,7 @@ mneme-kernel.workspace = true
 mneme-core.workspace = true
 mneme-store.workspace = true
 mneme-memory.workspace = true
+image.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

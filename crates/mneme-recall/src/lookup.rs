@@ -205,6 +205,14 @@ impl IndexBuild {
                 ancestry_roots: std::collections::BTreeSet::from([key]),
             }));
         }
+        if is_image_source(&facts.view) {
+            self.skipped += 1;
+            self.skip_reasons.insert(
+                "image pixels are not searched; authored captions remain searchable text"
+                    .to_owned(),
+            );
+            return Ok(());
+        }
         match facts.bytes {
             Some(bytes) => match String::from_utf8(bytes) {
                 Ok(body) => {
@@ -347,26 +355,36 @@ fn source_facts(
     budget.charge(1)?;
     let source = view.source(record.record_id)?;
     let declared = effective_availability(view, &source, states);
-    let (availability, bytes) = if declared == mneme_memory::SourceAvailability::Retained {
-        match view.source_status_for(&source) {
-            Ok(mneme_memory::SourceStatus::Retained(bytes)) => {
-                (mneme_memory::SourceAvailability::Retained, Some(bytes))
+    let (availability, bytes) =
+        if declared == mneme_memory::SourceAvailability::Retained && !is_image_source(&source) {
+            match view.source_status_for(&source) {
+                Ok(mneme_memory::SourceStatus::Retained(bytes)) => {
+                    (mneme_memory::SourceAvailability::Retained, Some(bytes))
+                }
+                Ok(other) => (other.availability(), None),
+                Err(_) => (
+                    mneme_memory::SourceAvailability::Unavailable {
+                        reason: "source could not be read".to_owned(),
+                    },
+                    None,
+                ),
             }
-            Ok(other) => (other.availability(), None),
-            Err(_) => (
-                mneme_memory::SourceAvailability::Unavailable {
-                    reason: "source could not be read".to_owned(),
-                },
-                None,
-            ),
-        }
-    } else {
-        (declared, None)
-    };
+        } else {
+            (declared, None)
+        };
     Ok(SourceFacts {
         view: source,
         availability,
         bytes,
+    })
+}
+
+fn is_image_source(source: &mneme_memory::SourceView) -> bool {
+    source.media_type.as_ref().is_some_and(|media_type| {
+        media_type
+            .as_str()
+            .split_once('/')
+            .is_some_and(|(kind, _)| kind.eq_ignore_ascii_case("image"))
     })
 }
 

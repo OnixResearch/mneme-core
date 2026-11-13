@@ -158,6 +158,13 @@ pub enum ApiCommand {
         scope: mneme_core::ScopeId,
         checkpoint: mneme_core::RecordId,
     },
+    ImageRead {
+        request_id: String,
+        scope: mneme_core::ScopeId,
+        source: mneme_core::RecordId,
+        source_revision: mneme_core::RevisionId,
+        revision: Option<mneme_core::WorkspaceRevisionId>,
+    },
     Forget {
         request_id: String,
         scope: mneme_core::ScopeId,
@@ -194,6 +201,7 @@ impl ApiCommand {
             | ApiCommand::Explain { request_id, .. }
             | ApiCommand::Revise { request_id, .. }
             | ApiCommand::Resume { request_id, .. }
+            | ApiCommand::ImageRead { request_id, .. }
             | ApiCommand::Forget { request_id, .. }
             | ApiCommand::ProposalInspect { request_id, .. }
             | ApiCommand::Capabilities { request_id } => request_id,
@@ -209,6 +217,7 @@ impl ApiCommand {
             ApiCommand::Explain { .. } => "explain",
             ApiCommand::Revise { .. } => "revise",
             ApiCommand::Resume { .. } => "resume",
+            ApiCommand::ImageRead { .. } => "image.read",
             ApiCommand::Forget { .. } => "forget",
             ApiCommand::ProposalInspect { .. } => "proposal.inspect",
             ApiCommand::Capabilities { .. } => "capabilities",
@@ -224,6 +233,7 @@ impl ApiCommand {
             | ApiCommand::Explain { scope, .. }
             | ApiCommand::Revise { scope, .. }
             | ApiCommand::Resume { scope, .. }
+            | ApiCommand::ImageRead { scope, .. }
             | ApiCommand::Forget { scope, .. }
             | ApiCommand::ProposalInspect { scope, .. } => Some(scope),
             ApiCommand::Capabilities { .. } => None,
@@ -261,6 +271,7 @@ impl ApiCommand {
             "explain" => explain(request_id, payload),
             "revise" => revise(request_id, payload),
             "resume" => resume(request_id, payload),
+            "image.read" => image_read(request_id, payload),
             "forget" => forget(request_id, payload),
             "proposal.inspect" => proposal_inspect(request_id, payload),
             "capabilities" => {
@@ -481,6 +492,24 @@ fn resume(request_id: String, payload: &mneme_core::Value) -> Result<ApiCommand,
         request_id,
         scope: fields.scope("scope")?,
         checkpoint: fields.record("checkpoint")?,
+    })
+}
+
+fn image_read(
+    request_id: String,
+    payload: &mneme_core::Value,
+) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::checked(
+        payload,
+        &["scope", "source", "source-revision", "revision"],
+        &payload_path(),
+    )?;
+    Ok(ApiCommand::ImageRead {
+        request_id,
+        scope: fields.scope("scope")?,
+        source: fields.record("source")?,
+        source_revision: fields.revision_id("source-revision")?,
+        revision: fields.optional_revision("revision")?,
     })
 }
 

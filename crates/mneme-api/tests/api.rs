@@ -1647,6 +1647,13 @@ fn scope_is_authorized_before_content_or_receipt_lookup() {
             scope: birch(),
             checkpoint: rid(0xc9),
         },
+        mneme_api::ApiCommand::ImageRead {
+            request_id: "image".to_owned(),
+            scope: birch(),
+            source: seeded.source,
+            source_revision: rev(CEDAR_IDS.source_revision),
+            revision: Some(before),
+        },
         mneme_api::ApiCommand::Forget {
             request_id: "forget".to_owned(),
             scope: birch(),

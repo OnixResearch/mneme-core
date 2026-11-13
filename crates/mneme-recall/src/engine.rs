@@ -2,8 +2,9 @@
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Ranking/fusion policy version.
-pub const FUSION_POLICY_VERSION: &str = "rrf-k60-v1";
+pub const FUSION_POLICY_VERSION: &str = "weighted-rrf-k60-lex4-vector1-v2";
 const RRF_K: f64 = 60.0;
+const VECTOR_RRF_WEIGHT_WITH_LEXICAL: f64 = 0.25;
 /// Smallest item text that can carry its attribution inside the context budget.
 const MIN_ITEM_BYTES: usize = 32;
 /// Longest accepted query text.
@@ -1525,10 +1526,18 @@ fn fuse(
     rankings: &[(crate::model::Mode, Vec<(String, f64)>)],
 ) -> Vec<crate::model::Candidate> {
     let mut fused = candidates;
+    let has_lexical_ranking = rankings
+        .iter()
+        .any(|(mode, ranking)| *mode == crate::model::Mode::Lexical && !ranking.is_empty());
     for (mode, ranking) in rankings {
+        let weight = if *mode == crate::model::Mode::Vector && has_lexical_ranking {
+            VECTOR_RRF_WEIGHT_WITH_LEXICAL
+        } else {
+            1.0
+        };
         for (rank, (id, _raw)) in ranking.iter().enumerate() {
             if let Some(candidate) = fused.get_mut(id) {
-                let contribution = 1.0 / (RRF_K + rank as f64 + 1.0);
+                let contribution = weight / (RRF_K + rank as f64 + 1.0);
                 candidate.score += contribution;
                 candidate
                     .score_components
@@ -1903,6 +1912,105 @@ fn structured_id(predicate: &str, values: &[mneme_core::Value]) -> String {
 
 #[cfg(test)]
 mod tests {
+    fn candidate(id: &str) -> crate::model::Candidate {
+        crate::model::Candidate {
+            id: id.to_owned(),
+            content_kind: crate::model::ContentKind::SourceExcerpt,
+            text: String::new(),
+            text_truncated: false,
+            source: None,
+            source_revision: None,
+            span: None,
+            field_path: String::new(),
+            assertion: None,
+            episode: None,
+            entity: None,
+            claim_status: None,
+            quote: false,
+            evidence: Vec::new(),
+            derivations: Vec::new(),
+            ancestry_roots: std::collections::BTreeSet::new(),
+            independent_support: true,
+            support_limited: false,
+            origins: std::collections::BTreeSet::new(),
+            score: 0.0,
+            score_components: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn vector_rrf_is_downweighted_only_when_lexical_has_candidates() {
+        let mut candidates = std::collections::BTreeMap::new();
+        let mut vector_candidate = candidate("vector");
+        vector_candidate
+            .score_components
+            .insert("vector".to_owned(), 0.75);
+        candidates.insert(vector_candidate.id.clone(), vector_candidate);
+        let vector_only = super::fuse(
+            candidates.clone(),
+            &[(
+                crate::model::Mode::Vector,
+                vec![("vector".to_owned(), 0.75)],
+            )],
+        );
+        assert_eq!(vector_only[0].score_components["rrf-vector"], 1.0 / 61.0);
+        assert_eq!(vector_only[0].score_components["vector"], 0.75);
+
+        let empty_lexical = super::fuse(
+            candidates.clone(),
+            &[
+                (crate::model::Mode::Lexical, Vec::new()),
+                (
+                    crate::model::Mode::Vector,
+                    vec![("vector".to_owned(), 0.75)],
+                ),
+            ],
+        );
+        assert_eq!(empty_lexical[0].score_components["rrf-vector"], 1.0 / 61.0);
+
+        let mut mixed_candidates = candidates;
+        let mut lexical_candidate = candidate("lexical");
+        lexical_candidate
+            .score_components
+            .insert("lexical".to_owned(), 0.5);
+        mixed_candidates.insert("lexical".to_owned(), lexical_candidate);
+        mixed_candidates.insert("structured".to_owned(), candidate("structured"));
+        let mixed = super::fuse(
+            mixed_candidates,
+            &[
+                (
+                    crate::model::Mode::Lexical,
+                    vec![("lexical".to_owned(), 1.0)],
+                ),
+                (
+                    crate::model::Mode::Structured,
+                    vec![("structured".to_owned(), 1.0)],
+                ),
+                (
+                    crate::model::Mode::Vector,
+                    vec![("vector".to_owned(), 0.75)],
+                ),
+            ],
+        );
+        let lexical = mixed
+            .iter()
+            .find(|candidate| candidate.id == "lexical")
+            .expect("lexical candidate survives fusion");
+        let vector = mixed
+            .iter()
+            .find(|candidate| candidate.id == "vector")
+            .expect("vector candidate survives fusion");
+        let structured = mixed
+            .iter()
+            .find(|candidate| candidate.id == "structured")
+            .expect("structured candidate survives fusion");
+        assert_eq!(lexical.score_components["rrf-lexical"], 1.0 / 61.0);
+        assert_eq!(lexical.score_components["lexical"], 0.5);
+        assert_eq!(structured.score_components["rrf-structured"], 1.0 / 61.0);
+        assert_eq!(vector.score_components["rrf-vector"], 0.25 / 61.0);
+        assert_eq!(vector.score_components["vector"], 0.75);
+    }
+
     fn barrier() -> crate::failure::QueryError {
         crate::failure::QueryError::BarrierAdvanced {
             pinned: 1,

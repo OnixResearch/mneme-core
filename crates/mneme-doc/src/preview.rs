@@ -7,6 +7,7 @@ use std::fmt::Write;
 pub(crate) struct RenderSource {
     pub path: String,
     pub pin: crate::SourcePin,
+    pub scope: mneme_core::ScopeId,
     pub bytes: Vec<u8>,
 }
 
@@ -31,26 +32,28 @@ const MAX_RENDER_DEPTH: usize = 64;
 const INLINE_DEADLINE_STRIDE: u64 = 4_096;
 /// Inline bytes one preview may scan, independent of the wall-clock deadline.
 const MAX_INLINE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum unique images decoded while rendering one preview.
+const MAX_RENDER_IMAGES: usize = 256;
+/// Hard ceiling for cumulative HTML output, including embedded image data.
+const MAX_IMAGE_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 /// Marker appended to a preview that a limit stopped before the end.
 const PARTIAL_PREVIEW_MARKER: &str = "<!-- preview is partial: a limit stopped rendering -->";
 
-pub(crate) fn render(
-    root: &RenderSource,
-    sources: &std::collections::BTreeMap<String, RenderSource>,
-    metadata: Option<&mneme_core::RecordEnvelope>,
-    config: &crate::RenderConfig,
-    deadline: Option<std::time::Instant>,
-) -> RenderOutput {
-    let mut renderer = Renderer::new(sources, config, deadline);
-    renderer.run(root, metadata);
-    let mut output = renderer.finish();
-    if output.truncated {
-        output.html.push_str(PARTIAL_PREVIEW_MARKER);
-    }
-    output
+#[derive(Clone)]
+struct EncodedImage {
+    media_type: &'static str,
+    width: u32,
+    height: u32,
+    base64: String,
 }
 
-struct Renderer<'a> {
+type ImageLoader<'a> = dyn FnMut(
+        &mneme_core::ScopeId,
+        crate::SourcePin,
+    ) -> Option<(crate::images::Loaded, crate::images::Decoded)>
+    + 'a;
+
+pub(crate) struct Renderer<'a> {
     sources: &'a std::collections::BTreeMap<String, RenderSource>,
     config: &'a crate::RenderConfig,
     deadline: Option<std::time::Instant>,
@@ -65,9 +68,25 @@ struct Renderer<'a> {
     include_count: u64,
     inline_bytes: u64,
     stack: std::collections::BTreeSet<String>,
+    image_loader: Option<&'a mut ImageLoader<'a>>,
+    image_cache:
+        std::collections::BTreeMap<(mneme_core::ScopeId, crate::SourcePin), Option<EncodedImage>>,
 }
 
 impl<'a> Renderer<'a> {
+    pub(crate) fn render(
+        mut self,
+        root: &RenderSource,
+        metadata: Option<&mneme_core::RecordEnvelope>,
+    ) -> RenderOutput {
+        self.run(root, metadata);
+        let mut output = self.finish();
+        if output.truncated {
+            output.html.push_str(PARTIAL_PREVIEW_MARKER);
+        }
+        output
+    }
+
     fn new(
         sources: &'a std::collections::BTreeMap<String, RenderSource>,
         config: &'a crate::RenderConfig,
@@ -88,7 +107,20 @@ impl<'a> Renderer<'a> {
             include_count: 0,
             inline_bytes: 0,
             stack: std::collections::BTreeSet::new(),
+            image_loader: None,
+            image_cache: std::collections::BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn new_with_images(
+        sources: &'a std::collections::BTreeMap<String, RenderSource>,
+        config: &'a crate::RenderConfig,
+        deadline: Option<std::time::Instant>,
+        image_loader: &'a mut ImageLoader<'a>,
+    ) -> Self {
+        let mut renderer = Self::new(sources, config, deadline);
+        renderer.image_loader = Some(image_loader);
+        renderer
     }
 
     fn run(&mut self, root: &RenderSource, metadata: Option<&mneme_core::RecordEnvelope>) {
@@ -436,11 +468,17 @@ impl<'a> Renderer<'a> {
             self.render_include(line_context.source, directive, line_context.depth);
             return;
         }
-        self.render_content_line(line_context.source_lines, line_context.index, cursor);
+        self.render_content_line(
+            line_context.source,
+            line_context.source_lines,
+            line_context.index,
+            cursor,
+        );
     }
 
     fn render_content_line<'source>(
         &mut self,
+        source: &RenderSource,
         source_lines: &[crate::asciidoc::Line<'source>],
         index: usize,
         cursor: &mut SourceCursor<'source>,
@@ -464,6 +502,12 @@ impl<'a> Renderer<'a> {
             self.push_pre("unsupported-conditional", trimmed);
             return;
         }
+        if let Some((target, caption)) = crate::images::parse_block(trimmed) {
+            self.flush_paragraph(cursor);
+            self.flush_pending_anchor(cursor);
+            self.render_image(source, target, &caption, line.number);
+            return;
+        }
         if let Some(name) = block_macro(trimmed) {
             self.note(crate::asciidoc::Diagnostic::warning(
                 "unsupported-block-macro",
@@ -485,6 +529,220 @@ impl<'a> Renderer<'a> {
             return;
         }
         cursor.paragraph.push(content);
+    }
+
+    fn render_image(&mut self, source: &RenderSource, target: &str, caption: &str, line: usize) {
+        let pin = match crate::images::parse_target(target) {
+            Ok(pin) => pin,
+            Err(_) => {
+                self.unavailable_image(caption, line);
+                return;
+            }
+        };
+        let key = (source.scope.clone(), pin);
+        if !self.image_cache.contains_key(&key) {
+            if self.image_cache.len() >= MAX_RENDER_IMAGES {
+                self.note(crate::asciidoc::Diagnostic::warning(
+                    "image-limit",
+                    "preview stopped resolving images at the configured image limit",
+                    line,
+                    1,
+                    None,
+                ));
+                self.unavailable_image(caption, line);
+                return;
+            }
+            let loaded = self
+                .image_loader
+                .as_deref_mut()
+                .and_then(|loader| loader(&source.scope, pin));
+            let Some((loaded, decoded)) = loaded else {
+                self.image_cache.insert(key.clone(), None);
+                self.unavailable_image(caption, line);
+                return;
+            };
+            if loaded.pin != pin
+                || !matches!(decoded.media_type, "image/png" | "image/jpeg")
+                || loaded.media_type != decoded.media_type
+                || loaded.bytes.len() > crate::images::MAX_ENCODED_BYTES
+            {
+                self.image_cache.insert(key.clone(), None);
+                self.unavailable_image(caption, line);
+                return;
+            }
+            let Some(encoded_length) = base64_length(loaded.bytes.len()) else {
+                self.exhaust_image_output(line);
+                return;
+            };
+            if !self.image_markup_fits(
+                encoded_length,
+                decoded.media_type,
+                decoded.width,
+                decoded.height,
+                caption,
+            ) {
+                self.exhaust_image_output(line);
+                return;
+            }
+            let base64 = mneme_core::base64::encode(&loaded.bytes);
+            let encoded = EncodedImage {
+                media_type: decoded.media_type,
+                width: decoded.width,
+                height: decoded.height,
+                base64,
+            };
+            self.image_cache.insert(key.clone(), Some(encoded));
+        }
+        self.append_cached_image(caption, line, key);
+    }
+
+    fn append_cached_image(
+        &mut self,
+        caption: &str,
+        line: usize,
+        key: (mneme_core::ScopeId, crate::SourcePin),
+    ) {
+        match self.image_cache.remove(&key) {
+            Some(Some(image)) => {
+                self.append_image(&image, caption, line);
+                self.image_cache.insert(key, Some(image));
+            }
+            Some(None) => {
+                self.image_cache.insert(key, None);
+                self.unavailable_image(caption, line);
+            }
+            None => self.unavailable_image(caption, line),
+        }
+    }
+
+    fn append_image(&mut self, image: &EncodedImage, caption: &str, line: usize) {
+        if !self.image_markup_fits(
+            image.base64.len(),
+            image.media_type,
+            image.width,
+            image.height,
+            caption,
+        ) {
+            self.exhaust_image_output(line);
+            return;
+        }
+        let escaped_caption = escape_html(caption);
+        self.html
+            .push_str("<figure class=\"mneme-image\"><img alt=\"");
+        self.html.push_str(&escaped_caption);
+        self.html.push_str("\" width=\"");
+        self.html.push_str(&image.width.to_string());
+        self.html.push_str("\" height=\"");
+        self.html.push_str(&image.height.to_string());
+        self.html.push_str("\" src=\"data:");
+        self.html.push_str(image.media_type);
+        self.html.push_str(";base64,");
+        self.html.push_str(&image.base64);
+        self.html.push_str("\">");
+        if !caption.is_empty() {
+            self.html.push_str("<figcaption>");
+            self.html.push_str(&escaped_caption);
+            self.html.push_str("</figcaption>");
+        }
+        self.html.push_str("</figure>");
+    }
+
+    fn unavailable_image(&mut self, caption: &str, line: usize) {
+        self.note(crate::asciidoc::Diagnostic::warning(
+            "image-unavailable",
+            "pinned image is unavailable or unsupported",
+            line,
+            1,
+            None,
+        ));
+        let Some(caption_length) = escaped_html_length(caption) else {
+            self.exhaust_image_output(line);
+            return;
+        };
+        let markup_length =
+            "<figure class=\"mneme-image-unavailable\"><span>image unavailable</span></figure>"
+                .len()
+                .saturating_add(if caption.is_empty() {
+                    0
+                } else {
+                    "<figcaption></figcaption>"
+                        .len()
+                        .saturating_add(caption_length)
+                });
+        if !self.image_markup_length_fits(markup_length) {
+            self.exhaust_image_output(line);
+            return;
+        }
+        self.html
+            .push_str("<figure class=\"mneme-image-unavailable\"><span>image unavailable</span>");
+        if !caption.is_empty() {
+            self.html.push_str("<figcaption>");
+            self.html.push_str(&escape_html(caption));
+            self.html.push_str("</figcaption>");
+        }
+        self.html.push_str("</figure>");
+    }
+
+    fn image_markup_fits(
+        &self,
+        base64_length: usize,
+        media_type: &str,
+        width: u32,
+        height: u32,
+        caption: &str,
+    ) -> bool {
+        let Some(caption_length) = escaped_html_length(caption) else {
+            return false;
+        };
+        let width_length = width.to_string().len();
+        let height_length = height.to_string().len();
+        let mut markup_length = 0_usize;
+        for length in [
+            "<figure class=\"mneme-image\"><img alt=\"".len(),
+            caption_length,
+            "\" width=\"".len(),
+            width_length,
+            "\" height=\"".len(),
+            height_length,
+            "\" src=\"data:".len(),
+            media_type.len(),
+            ";base64,".len(),
+            base64_length,
+            "\">".len(),
+            if caption.is_empty() {
+                0
+            } else {
+                "<figcaption></figcaption>"
+                    .len()
+                    .saturating_add(caption_length)
+            },
+            "</figure>".len(),
+        ] {
+            let Some(total) = markup_length.checked_add(length) else {
+                return false;
+            };
+            markup_length = total;
+        }
+        self.image_markup_length_fits(markup_length)
+    }
+
+    fn image_markup_length_fits(&self, markup_length: usize) -> bool {
+        let limit = self.config.max_output_bytes.min(MAX_IMAGE_OUTPUT_BYTES);
+        self.html
+            .len()
+            .checked_add(markup_length)
+            .is_some_and(|total| total <= limit)
+    }
+
+    fn exhaust_image_output(&mut self, line: usize) {
+        self.note(crate::asciidoc::Diagnostic::warning(
+            "image-output-limit",
+            "preview stopped because embedded image output exceeds its byte budget",
+            line,
+            1,
+            None,
+        ));
+        self.is_budget_exhausted = true;
     }
 
     fn render_heading_line(&mut self, content: &str, cursor: &mut SourceCursor<'_>) -> bool {
@@ -1125,6 +1383,25 @@ fn escape_html(text: &str) -> String {
     output
 }
 
+fn escaped_html_length(text: &str) -> Option<usize> {
+    text.chars().try_fold(0_usize, |length, character| {
+        length.checked_add(match character {
+            '&' => "&amp;".len(),
+            '<' => "&lt;".len(),
+            '>' => "&gt;".len(),
+            '"' => "&quot;".len(),
+            '\'' => "&#39;".len(),
+            other => other.len_utf8(),
+        })
+    })
+}
+
+fn base64_length(byte_length: usize) -> Option<usize> {
+    byte_length
+        .checked_add(2)
+        .and_then(|length| (length / 3).checked_mul(4))
+}
+
 fn display_value(value: &mneme_core::Value) -> String {
     if let Some(text) = value.as_string() {
         return text.to_owned();
@@ -1152,8 +1429,130 @@ mod tests {
                 source: mneme_core::RecordId::from_bytes([0x11; 16]),
                 revision: mneme_core::RevisionId::from_bytes([0x12; 16]),
             },
+            scope: mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar")
+                .expect("fixture scope"),
             bytes: bytes.to_vec(),
         }
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        let pixels =
+            image::RgbaImage::from_raw(1, 1, vec![255, 0, 0, 255]).expect("fixture pixels");
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        pixels
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .expect("encode fixture PNG");
+        encoded.into_inner()
+    }
+
+    fn fixture_image(pin: crate::SourcePin) -> (crate::images::Loaded, crate::images::Decoded) {
+        let bytes = tiny_png();
+        let decoded = crate::images::decode(&bytes).expect("decode fixture PNG");
+        let loaded = crate::images::Loaded {
+            pin,
+            digest: mneme_core::ContentDigest::of_source_bytes(&bytes),
+            media_type: decoded.media_type,
+            width: decoded.width,
+            height: decoded.height,
+            bytes,
+            generation: 1,
+            workspace_revision: mneme_core::WorkspaceRevisionId::from_bytes([0x13; 16]),
+        };
+        (loaded, decoded)
+    }
+
+    #[test]
+    fn only_authorized_pinned_images_become_escaped_data_urls() {
+        let pin = source("root.adoc", b"").pin;
+        let (loaded, decoded) = fixture_image(pin);
+        let target = crate::images::target(pin);
+        let root = source(
+            "root.adoc",
+            format!("image::{target}[<Caption & \"quote\">]\n").as_bytes(),
+        );
+        let sources = std::collections::BTreeMap::new();
+        let config = crate::RenderConfig::default();
+        let expected_scope = root.scope.clone();
+        let mut payload = Some((loaded, decoded));
+        let mut calls = 0_usize;
+        let mut loader = |scope: &mneme_core::ScopeId, target: crate::SourcePin| {
+            calls += 1;
+            if scope == &expected_scope && target == pin {
+                payload.take()
+            } else {
+                None
+            }
+        };
+        let rendered =
+            Renderer::new_with_images(&sources, &config, None, &mut loader).render(&root, None);
+        assert!(rendered.html.contains("src=\"data:image/png;base64,"));
+        assert!(
+            rendered
+                .html
+                .contains("alt=\"&lt;Caption &amp; &quot;quote&quot;&gt;\"")
+        );
+        assert!(
+            rendered
+                .html
+                .contains("<figcaption>&lt;Caption &amp; &quot;quote&quot;&gt;</figcaption>")
+        );
+        assert_eq!(calls, 1);
+        assert!(!rendered.truncated);
+    }
+
+    #[test]
+    fn external_and_data_targets_are_visible_but_never_fetched() {
+        let root = source(
+            "root.adoc",
+            b"image::https://example.invalid/x.png[remote]\nimage::data:image/png;base64,AA==[active]\nimage::../photo.png[path]\n",
+        );
+        let sources = std::collections::BTreeMap::new();
+        let config = crate::RenderConfig::default();
+        let mut calls = 0_usize;
+        let mut loader = |_scope: &mneme_core::ScopeId, _pin: crate::SourcePin| {
+            calls += 1;
+            None
+        };
+        let rendered =
+            Renderer::new_with_images(&sources, &config, None, &mut loader).render(&root, None);
+        assert_eq!(calls, 0);
+        assert!(!rendered.html.contains("<img"));
+        assert_eq!(rendered.html.matches("image unavailable").count(), 3);
+        assert!(rendered.html.contains("<figcaption>remote</figcaption>"));
+        assert!(rendered.html.contains("<figcaption>active</figcaption>"));
+        assert!(rendered.html.contains("<figcaption>path</figcaption>"));
+    }
+
+    #[test]
+    fn repeated_images_obey_the_cumulative_html_budget() {
+        let pin = source("root.adoc", b"").pin;
+        let (loaded, decoded) = fixture_image(pin);
+        let target = crate::images::target(pin);
+        let one = source(
+            "root.adoc",
+            format!("image::{target}[caption]\n").as_bytes(),
+        );
+        let sources = std::collections::BTreeMap::new();
+        let default_config = crate::RenderConfig::default();
+        let mut payload = Some((loaded.clone(), decoded.clone()));
+        let mut loader = |_scope: &mneme_core::ScopeId, _pin: crate::SourcePin| payload.take();
+        let first = Renderer::new_with_images(&sources, &default_config, None, &mut loader)
+            .render(&one, None);
+        let first_length = first.html.len();
+        let repeated = source(
+            "root.adoc",
+            format!("image::{target}[caption]\nimage::{target}[caption]\n").as_bytes(),
+        );
+        let config = crate::RenderConfig {
+            max_output_bytes: first_length.saturating_add(1),
+            ..crate::RenderConfig::default()
+        };
+        let mut payload = Some((loaded, decoded));
+        let mut loader = |_scope: &mneme_core::ScopeId, _pin: crate::SourcePin| payload.take();
+        let rendered =
+            Renderer::new_with_images(&sources, &config, None, &mut loader).render(&repeated, None);
+        assert_eq!(rendered.html.matches("<img ").count(), 1);
+        assert!(rendered.truncated);
     }
 
     #[test]
@@ -1296,7 +1695,8 @@ mod tests {
             version: "mneme-preview/v99-strict".to_owned(),
             ..crate::RenderConfig::default()
         };
-        let output = render(&sources["root.adoc"], &sources, None, &config, None);
+        let output = Renderer::new_with_images(&sources, &config, None, &mut |_, _| None)
+            .render(&sources["root.adoc"], None);
         assert!(!output.html.contains("<p>"));
         assert!(output.html.contains("preview is partial"));
         assert!(output.truncated);

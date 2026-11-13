@@ -129,6 +129,7 @@ impl ApiService {
             crate::command::ApiCommand::Explain { .. } => self.dispatch_explain(command),
             crate::command::ApiCommand::Revise { .. } => self.dispatch_revise(command),
             crate::command::ApiCommand::Resume { .. } => self.dispatch_resume(command),
+            crate::command::ApiCommand::ImageRead { .. } => self.dispatch_image(command),
             crate::command::ApiCommand::Forget { .. } => self.dispatch_forget(command),
             crate::command::ApiCommand::ProposalInspect { .. } => {
                 self.dispatch_proposal_inspect(command)
@@ -639,6 +640,52 @@ impl ApiService {
                 generation,
             }),
         ))
+    }
+
+    fn dispatch_image(
+        &self,
+        command: &crate::command::ApiCommand,
+    ) -> crate::error::CallResult<Dispatch> {
+        let crate::command::ApiCommand::ImageRead {
+            scope,
+            source,
+            source_revision,
+            revision,
+            ..
+        } = command
+        else {
+            return Err(crate::error::ApiError::invalid(
+                "image dispatch requires an image read",
+            ));
+        };
+        let mut workspace = self.open()?;
+        let image = mneme_doc::images::load(
+            &mut workspace,
+            scope,
+            mneme_doc::SourcePin {
+                source: *source,
+                revision: *source_revision,
+            },
+            *revision,
+        )
+        .map_err(|_| crate::error::ApiError::missing())?;
+        let context = Context {
+            revision: image.workspace_revision,
+            scope: scope.clone(),
+            generation: image.generation,
+        };
+        let value = image_value(image);
+        if workspace
+            .eligibility_generation()
+            .map_err(crate::error::ApiError::from_store)?
+            != context.generation
+        {
+            return Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Conflict,
+                "eligibility barrier advanced during image read",
+            ));
+        }
+        Ok(Dispatch::ok(value, Some(context)))
     }
 
     fn dispatch_forget(
@@ -2734,6 +2781,39 @@ fn location_value(location: &mneme_store::RetentionLocationStateRecord) -> mneme
     ])
 }
 
+fn image_value(image: mneme_doc::images::Loaded) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("source"),
+            image.pin.source.to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("source-revision"),
+            image.pin.revision.to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("digest"),
+            mneme_core::Value::string(image.digest.to_hex()),
+        ),
+        (
+            mneme_core::Symbol::from("media-type"),
+            mneme_core::Value::string(image.media_type),
+        ),
+        (
+            mneme_core::Symbol::from("width"),
+            mneme_core::Value::integer(image.width),
+        ),
+        (
+            mneme_core::Symbol::from("height"),
+            mneme_core::Value::integer(image.height),
+        ),
+        (
+            mneme_core::Symbol::from("bytes"),
+            mneme_core::Value::bytes(image.bytes),
+        ),
+    ])
+}
+
 fn capabilities_value() -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
@@ -2750,6 +2830,7 @@ fn capabilities_value() -> mneme_core::Value {
                     "explain",
                     "revise",
                     "resume",
+                    "image.read",
                     "forget",
                     "proposal.inspect",
                 ]

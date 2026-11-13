@@ -764,6 +764,7 @@ pub fn scan_paragraphs(text: &str) -> Vec<Paragraph> {
             continue;
         }
         if content.starts_with("include::")
+            || content.starts_with("image::")
             || content.starts_with("[[")
             || content.starts_with("[#")
             || content.starts_with("//")

@@ -8,13 +8,14 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod asciidoc;
+pub mod images;
 
 pub use asciidoc::{AnchorSpec, Diagnostic, Header, IncludeDirective};
 
 /// The document schema version emitted by this build.
 pub const DOCUMENT_SCHEMA_VERSION: u32 = 3;
 /// The preview processor version.
-pub const PROCESSOR_VERSION: &str = "mneme-asciidoc/0.1";
+pub const PROCESSOR_VERSION: &str = "mneme-asciidoc/0.2";
 /// The preview configuration version.
 pub const RENDER_CONFIG_VERSION: &str = "mneme-preview/v1";
 const MAX_INCLUDE_ENTRIES: usize = 1_000_000;
@@ -1082,6 +1083,7 @@ impl IncludeResolver<'_> {
             preview::RenderSource {
                 path: path.clone(),
                 pin: source_pin,
+                scope: self.scope.clone(),
                 bytes: included.clone(),
             },
         );
@@ -1930,6 +1932,7 @@ fn render_prepared_source(
         preview::RenderSource {
             path: preparation.request.path.clone(),
             pin: preparation.source,
+            scope: preparation.request.scope.clone(),
             bytes: preparation.bytes.to_vec(),
         },
     );
@@ -1950,13 +1953,17 @@ fn render_prepared_source(
             .min(preparation.request.policy.max_expanded_bytes),
         ..preparation.request.render_config.clone()
     };
-    let rendered = preview::render(
-        &root_render,
+    // Candidate bytes are not yet committed. Do not expose pinned image data
+    // in this dry-run rendering; committed previews resolve through the shared
+    // authorized image service below.
+    let mut unavailable_image_loader = |_: &mneme_core::ScopeId, _: SourcePin| None;
+    let rendered = preview::Renderer::new_with_images(
         &render_sources,
-        metadata,
         &render_config,
         Some(analysis.deadline),
-    );
+        &mut unavailable_image_loader,
+    )
+    .render(&root_render, metadata);
     let includes = analysis
         .resolved
         .closure
@@ -2682,12 +2689,8 @@ impl Documents<'_> {
             .get(&document_id)
             .cloned()
             .ok_or(DocumentError::Missing(document_id))?;
-        let source_view = context.source(document.source).ok();
-        let source_digest = source_view
-            .as_ref()
-            .and_then(|source| source.digest().or(source.prior_digest));
         let sources = load_preview_sources(&context, &document)?;
-        render_preview_artifact(&context, &document, &config, source_digest, sources)
+        render_preview_artifact(self.workspace, &context, &document, &config, sources)
     }
 
     /// Extract revision-bound authored paragraphs without accepting assertions.
@@ -2733,24 +2736,7 @@ fn load_preview_sources(
     // not the relative targets already written into the source, so resolving
     // against the new path would substitute a different document or drop the
     // include entirely.
-    let origin = source_origin_path(context, document.source, document.path.as_deref());
-    let root = match context.source_bytes(document.source) {
-        Ok(Some(bytes)) => Some(preview::RenderSource {
-            path: origin.clone(),
-            pin: document.source,
-            bytes,
-        }),
-        Ok(None) | Err(_) => {
-            diagnostics.push(Diagnostic::warning(
-                "source-unavailable",
-                "document source bytes are unavailable",
-                1,
-                1,
-                None,
-            ));
-            None
-        }
-    };
+    let root = load_root_preview(context, document, &mut diagnostics);
     let mut sources = std::collections::BTreeMap::new();
     let mut included = Vec::with_capacity(document.includes.len());
     for (path, pin) in &document.includes {
@@ -2775,6 +2761,10 @@ fn load_preview_sources(
                     preview::RenderSource {
                         path: path.clone(),
                         pin: *pin,
+                        scope: source
+                            .as_ref()
+                            .map(|source| source.record.scope.clone())
+                            .unwrap_or_else(|| document.record.scope.clone()),
                         bytes,
                     },
                 );
@@ -2796,6 +2786,35 @@ fn load_preview_sources(
     })
 }
 
+fn load_root_preview(
+    context: &DocumentContext,
+    document: &DocumentView,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<preview::RenderSource> {
+    let origin = source_origin_path(context, document.source, document.path.as_deref());
+    match context.source_bytes(document.source) {
+        Ok(Some(bytes)) => Some(preview::RenderSource {
+            path: origin,
+            pin: document.source,
+            scope: context
+                .source(document.source)
+                .map(|source| source.record.scope)
+                .unwrap_or_else(|_| document.record.scope.clone()),
+            bytes,
+        }),
+        Ok(None) | Err(_) => {
+            diagnostics.push(Diagnostic::warning(
+                "source-unavailable",
+                "document source bytes are unavailable",
+                1,
+                1,
+                None,
+            ));
+            None
+        }
+    }
+}
+
 /// The logical path one pinned source was committed under.
 ///
 /// Relative include targets are resolved against the path recorded on the
@@ -2812,22 +2831,40 @@ fn source_origin_path(context: &DocumentContext, pin: SourcePin, fallback: Optio
 
 #[allow(unknown_lints, ambient_clock)] // preview deadline is the render shell
 fn render_preview_artifact(
+    workspace: &mut mneme_store::Workspace,
     context: &DocumentContext,
     document: &DocumentView,
     config: &RenderConfig,
-    source_digest: Option<mneme_core::ContentDigest>,
     mut sources: PreviewSources,
 ) -> Result<PreviewArtifact> {
+    let source_digest = context
+        .source(document.source)
+        .ok()
+        .and_then(|source| source.digest().or(source.prior_digest));
     let metadata = document
         .entity
         .and_then(|entity| context.entities.get(&entity));
     let max_time_ms = u64::try_from(config.max_time_ms)
         .map_err(|_| DocumentError::Invalid("preview time budget exceeds u64 milliseconds"))?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_time_ms);
-    let rendered = sources
-        .root
-        .as_ref()
-        .map(|root| preview::render(root, &sources.sources, metadata, config, Some(deadline)));
+    let generation = context.generation;
+    let revision = context.view.revision();
+    let mut image_loader = |scope: &mneme_core::ScopeId,
+                            pin: SourcePin|
+     -> Option<(images::Loaded, images::Decoded)> {
+        let (loaded, decoded) = images::load_decoded(workspace, scope, pin, Some(revision)).ok()?;
+        (loaded.generation == generation).then_some((loaded, decoded))
+    };
+    let rendered = sources.root.as_ref().map(|root| {
+        preview::Renderer::new_with_images(
+            &sources.sources,
+            config,
+            Some(deadline),
+            &mut image_loader,
+        )
+        .render(root, metadata)
+    });
+    workspace.recheck(context.view.snapshot())?;
     if let Some(rendered) = &rendered {
         sources.diagnostics.extend(rendered.diagnostics.clone());
     }
@@ -2882,6 +2919,10 @@ fn load_extraction_sources(
         preview::RenderSource {
             path: root_path.clone(),
             pin: document.source,
+            scope: context
+                .source(document.source)
+                .map(|source| source.record.scope)
+                .unwrap_or_else(|_| document.record.scope.clone()),
             bytes: root_bytes,
         },
     );
@@ -2898,6 +2939,10 @@ fn load_extraction_sources(
             preview::RenderSource {
                 path: path.clone(),
                 pin: *pin,
+                scope: context
+                    .source(*pin)
+                    .map(|source| source.record.scope)
+                    .unwrap_or_else(|_| document.record.scope.clone()),
                 bytes,
             },
         );

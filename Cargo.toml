@@ -39,6 +39,7 @@ mneme-desktop = { path = "crates/mneme-desktop" }
 mneme-eval = { path = "crates/mneme-eval" }
 clap = { version = "4.5", features = ["derive"] }
 getrandom = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 num-bigint = "0.4"
 num-traits = "0.2"
 rusqlite = { version = "0.41", features = ["bundled"] }

@@ -1848,3 +1848,39 @@ fn a_cancelled_response_still_reports_its_budget() {
     );
     assert_eq!(response.budget.text_bytes_used, 0);
 }
+
+#[test]
+fn utf8_image_markup_is_not_quoted_as_text_evidence() {
+    let mut harness = Harness::new();
+    let source = rid(0xe7);
+    let (record, blob) = mneme_memory::build_source(
+        source,
+        rev(0xe8),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"<svg><text>quartzbeacon</text></svg>",
+            media_type: "image/svg+xml",
+            entity: None,
+            path_hint: None,
+        },
+    )
+    .expect("generic source");
+    harness.commit(scope(), "svg-source", vec![record], vec![blob]);
+    let request = harness.request("quartzbeacon");
+    let response = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("recall");
+    assert!(
+        !response
+            .candidates
+            .iter()
+            .any(|candidate| candidate.source == Some(source))
+    );
+    let lexical = response
+        .modes
+        .iter()
+        .find(|mode| mode.mode == mneme_recall::Mode::Lexical)
+        .expect("lexical mode");
+    assert!(!lexical.coverage.complete);
+    assert_eq!(lexical.coverage.documents_skipped, 1);
+}
