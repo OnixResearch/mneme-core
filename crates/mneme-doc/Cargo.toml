@@ -1,6 +1,6 @@
 [package]
 name = "mneme-doc"
-description = "Source-first AsciiDoc documents, bounded includes, safe preview, and anchors"
+description = "Source-first AsciiDoc and Markdown documents, bounded includes, safe preview, and anchors"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

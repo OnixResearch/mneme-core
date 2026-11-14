@@ -349,7 +349,21 @@ impl<'a> Renderer<'a> {
                 return;
             }
         };
+        if crate::markdown::is_note_path(&source.path) {
+            self.render_markdown(text);
+            return;
+        }
         self.render_source_lines(source, depth, text);
+    }
+
+    /// Render a Markdown source within the remaining output budget.
+    fn render_markdown(&mut self, text: &str) {
+        let remaining = self.config.max_output_bytes.saturating_sub(self.html.len());
+        let rendered = crate::markdown::render(text, remaining);
+        self.html.push_str(&rendered.html);
+        if rendered.is_truncated {
+            self.exhaust("preview stopped at the configured output limit");
+        }
     }
 
     fn render_source_lines(&mut self, source: &RenderSource, depth: usize, text: &str) {

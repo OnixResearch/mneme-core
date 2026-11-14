@@ -9,7 +9,7 @@ Mneme Core is the standalone Rust library workspace for Mneme's typed memory eng
 - **`mneme-store`** — durable workspace history, SQLite ledger, immutable source blobs, and publication/recovery operations.
 - **`mneme-memory`** — attributed evidence, assertion lifecycle, support, and bounded explanations over stored snapshots.
 - **`mneme-retention`** — scoped retention barriers, dependency-aware withdrawal, and accountable cleanup.
-- **`mneme-doc`** — source-first AsciiDoc handling, bounded includes, images, and safe previews.
+- **`mneme-doc`** — source-first AsciiDoc and Markdown handling, bounded includes, images, and safe previews.
 - **`mneme-datalog`** — bounded, explainable relational projections over committed snapshots.
 - **`mneme-recall`** — scoped lexical, structured, and local-vector recall.
 - **`mneme-consolidation`** — evidence-preserving proposal generation and resumable workspace jobs.

@@ -1,21 +1,25 @@
-//! Source-first AsciiDoc documents over the committed workspace.
+//! Source-first AsciiDoc and Markdown documents over the committed workspace.
 //!
 //! Exact source bytes are authoritative. Documents have stable identities,
 //! optional literal entity bindings, pinned include closures, explicit anchors,
 //! a restricted sanitized preview, and revision-bound extraction candidates.
+//! A `.md` or `.markdown` path selects Markdown: front matter carries the title
+//! and binding, and there are no includes or anchors (see [`markdown`]).
 #![allow(unknown_lints)] // Octet structural exception: domain-qualified names and macro-only imports are intentional
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod asciidoc;
 pub mod images;
+pub mod markdown;
 
 pub use asciidoc::{AnchorSpec, Diagnostic, Header, IncludeDirective};
 
 /// The document schema version emitted by this build.
 pub const DOCUMENT_SCHEMA_VERSION: u32 = 3;
-/// The preview processor version.
-pub const PROCESSOR_VERSION: &str = "mneme-asciidoc/0.2";
+/// The preview processor version. Version 0.3 renders Markdown sources as
+/// Markdown instead of AsciiDoc, so earlier previews of them are stale.
+pub const PROCESSOR_VERSION: &str = "mneme-doc/0.3";
 /// The preview configuration version.
 pub const RENDER_CONFIG_VERSION: &str = "mneme-preview/v1";
 const MAX_INCLUDE_ENTRIES: usize = 1_000_000;
@@ -1116,6 +1120,10 @@ impl IncludeResolver<'_> {
                 None,
             )])
         })?;
+        if markdown::is_note_path(origin_path) {
+            // Markdown has no include syntax: `include::` lines are text.
+            return Ok(());
+        }
         // An include attribute the supported subset cannot honour is a fatal
         // source-local diagnostic: rendering or extracting the whole file
         // instead would include content the directive excluded.
@@ -1738,7 +1746,7 @@ impl<'w> Documents<'w> {
             &request.import.scope,
             Some(request.import.base_revision),
         )?;
-        let patched = patch_entity_header(&bytes, request.entity)?;
+        let patched = patch_entity_header(&request.import.path, &bytes, request.entity)?;
         let is_publish = request.publish;
         let import = request.import;
         let prepared = self.prepare_source(&import, &patched)?;
@@ -1931,7 +1939,7 @@ impl<'w> Documents<'w> {
                 &preparation.request.scope,
                 mneme_memory::SourceOptions {
                     bytes: preparation.bytes,
-                    media_type: "text/asciidoc",
+                    media_type: source_media_type(&preparation.request.path),
                     entity: analysis.entity,
                     path_hint: Some(&preparation.request.path),
                 },
@@ -2278,7 +2286,7 @@ fn invalid_utf8_document(input: InvalidUtf8DocumentInput<'_>) -> PreparedDocumen
         records: Vec::new(),
         source_blob: mneme_store::SourceBlobDraft {
             bytes: input.bytes.to_vec(),
-            media_type: mneme_core::Symbol::from("text/asciidoc"),
+            media_type: mneme_core::Symbol::from(source_media_type(&input.request.path)),
         },
         document_id: input.document_id,
         existing_source: input.existing_source,
@@ -2290,7 +2298,12 @@ fn source_header(
     preparation: &SourcePreparation<'_>,
 ) -> (String, Option<mneme_core::RecordId>, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
-    let header = match asciidoc::parse_header(preparation.text) {
+    let parsed = if markdown::is_note_path(&preparation.request.path) {
+        markdown::parse_header(preparation.text)
+    } else {
+        asciidoc::parse_header(preparation.text)
+    };
+    let header = match parsed {
         Ok(header) => header,
         Err(errors) => {
             diagnostics.extend(errors);
@@ -2338,6 +2351,15 @@ fn source_header(
     (title, entity, diagnostics)
 }
 
+/// The media type a source at `path` is stored with.
+fn source_media_type(path: &str) -> &'static str {
+    if markdown::is_note_path(path) {
+        "text/markdown"
+    } else {
+        "text/asciidoc"
+    }
+}
+
 #[allow(unknown_lints, ambient_clock)] // include deadline is the import shell
 fn source_dependencies(
     preparation: &SourcePreparation<'_>,
@@ -2373,7 +2395,12 @@ fn source_dependencies(
         Err(error) => return Err(error),
     };
     diagnostics.extend(resolved.diagnostics.clone());
-    let mut anchors = asciidoc::scan_anchors(preparation.text);
+    // Markdown has no anchor syntax: `[[...]]` there is a wiki link.
+    let mut anchors = if markdown::is_note_path(&preparation.request.path) {
+        Vec::new()
+    } else {
+        asciidoc::scan_anchors(preparation.text)
+    };
     let mut seen_anchors = std::collections::BTreeSet::new();
     anchors.retain(|anchor| {
         if seen_anchors.insert(anchor.anchor.clone()) {
@@ -2468,7 +2495,7 @@ fn build_source_records(
         &request.scope,
         mneme_memory::SourceOptions {
             bytes: preparation.bytes,
-            media_type: "text/asciidoc",
+            media_type: source_media_type(&request.path),
             entity: analysis.entity,
             path_hint: Some(&request.path),
         },
@@ -3271,6 +3298,9 @@ fn extraction_include_occurrences(
     for source in sources.values() {
         let text = std::str::from_utf8(&source.bytes)
             .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
+        if markdown::is_note_path(&source.path) {
+            continue;
+        }
         for directive in asciidoc::scan_includes(text) {
             let path = asciidoc::normalize_include_path(&source.path, &directive.target)
                 .map_err(|diagnostic| DocumentError::Diagnostics(vec![diagnostic]))?;
@@ -3305,7 +3335,12 @@ fn extraction_candidates(
     for source in sources.values() {
         let text = std::str::from_utf8(&source.bytes)
             .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
-        for paragraph in asciidoc::scan_paragraphs(text) {
+        let paragraphs = if markdown::is_note_path(&source.path) {
+            markdown::scan_paragraphs(text)
+        } else {
+            asciidoc::scan_paragraphs(text)
+        };
+        for paragraph in paragraphs {
             insert_extraction_candidate(
                 &mut candidates,
                 document_id,
@@ -3400,16 +3435,28 @@ fn header_lines(text: &str) -> Vec<HeaderLine<'_>> {
     lines
 }
 
-/// Rewrite only the literal `:entity-id:` header entry.
+/// Rewrite only the literal entity binding: the `:entity-id:` header entry of
+/// an AsciiDoc source, or the `entity-id` front matter entry of a Markdown one.
 ///
 /// The header ends at the first blank line, exactly as the header parser reads
 /// it, so prose or a listing that happens to start with `:entity-id:` is never
 /// touched. The patched bytes are re-parsed and must bind exactly the requested
 /// entity (or nothing, when clearing); otherwise the patch is refused instead
 /// of reporting a binding the document does not carry.
-fn patch_entity_header(bytes: &[u8], entity: Option<mneme_core::RecordId>) -> Result<Vec<u8>> {
+fn patch_entity_header(
+    path: &str,
+    bytes: &[u8],
+    entity: Option<mneme_core::RecordId>,
+) -> Result<Vec<u8>> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
+    if markdown::is_note_path(path) {
+        return verify_binding_patch(
+            markdown::patch_entity(text, entity),
+            entity,
+            markdown::parse_header,
+        );
+    }
     let lines = header_lines(text);
     let mut entity_line: Option<&HeaderLine<'_>> = None;
     let mut insert_at = 0;
@@ -3432,9 +3479,18 @@ fn patch_entity_header(bytes: &[u8], entity: Option<mneme_core::RecordId>) -> Re
         (None, Some(line)) => remove_entity_line(text, line),
         (None, None) => return Ok(bytes.to_vec()),
     };
+    verify_binding_patch(patched, entity, asciidoc::parse_header)
+}
+
+/// Refuse a patched source whose header does not bind exactly `entity`.
+fn verify_binding_patch(
+    patched: Vec<u8>,
+    entity: Option<mneme_core::RecordId>,
+    parse: fn(&str) -> std::result::Result<Header, Vec<Diagnostic>>,
+) -> Result<Vec<u8>> {
     let patched_text = std::str::from_utf8(&patched)
         .map_err(|_| DocumentError::Invalid("document source is not UTF-8"))?;
-    let header = asciidoc::parse_header(patched_text).map_err(DocumentError::Diagnostics)?;
+    let header = parse(patched_text).map_err(DocumentError::Diagnostics)?;
     if header.entity_id != entity {
         return Err(DocumentError::Diagnostics(vec![Diagnostic::new(
             "binding-patch",

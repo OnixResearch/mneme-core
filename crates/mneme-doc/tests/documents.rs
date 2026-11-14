@@ -740,6 +740,96 @@ fn binding_patch_changes_only_the_header_attribute() {
 }
 
 #[test]
+fn markdown_notes_bind_through_front_matter_and_keep_links_as_text() {
+    let mut harness = Harness::new();
+    let body = "# Garden plan\n\ninclude::secret.adoc[]\n\nSee [[Seed list]] and **water** daily.\n\n```\n[[not a link]]\n```\n";
+    harness.write_file("notes/garden.md", body.as_bytes());
+    let imported = harness.import(harness.request("garden", None, "notes/garden.md", None));
+    assert!(imported.includes.is_empty(), "Markdown has no includes");
+    assert!(
+        imported.anchors.is_empty(),
+        "[[...]] is a wiki link, not an anchor"
+    );
+    let view = mneme_doc::Documents::new(&mut harness.workspace)
+        .document(imported.document_id)
+        .expect("document");
+    assert_eq!(view.title, "Garden plan");
+    let source = harness
+        .workspace
+        .snapshot()
+        .expect("snapshot")
+        .records
+        .into_iter()
+        .find(|record| {
+            record.record_id == imported.source.source
+                && record.revision_id == imported.source.revision
+        })
+        .expect("source revision");
+    let source = mneme_memory::SourceView::parse(source).expect("source view");
+    assert_eq!(
+        source.media_type.as_ref().map(mneme_core::Symbol::as_str),
+        Some("text/markdown")
+    );
+    let binding = harness.binding_request(
+        "bind-garden",
+        imported.document_id,
+        "notes/garden.md",
+        Some(entity_source_id()),
+        false,
+    );
+    let bound = mneme_doc::Documents::new(&mut harness.workspace)
+        .patch_binding(binding)
+        .expect("bind");
+    assert_eq!(bound.entity, Some(entity_source_id()));
+    let bytes = mneme_doc::Documents::new(&mut harness.workspace)
+        .source_bytes(imported.document_id)
+        .expect("source");
+    let expected = format!(
+        "---\nentity-id: {}\n---\n{body}",
+        entity_source_id().to_hex()
+    );
+    assert_eq!(bytes, expected.as_bytes());
+    let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
+    let preview = documents
+        .preview(
+            imported.document_id,
+            None,
+            mneme_doc::RenderConfig {
+                version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+                include_entity_metadata: false,
+                max_output_bytes: 8 * 1024 * 1024,
+                max_time_ms: 1_000,
+            },
+        )
+        .expect("preview");
+    assert!(
+        preview.html.contains("<h1>Garden plan</h1>"),
+        "{}",
+        preview.html
+    );
+    assert!(preview.html.contains("<p>include::secret.adoc[]</p>"));
+    assert!(preview.html.contains("data-target=\"Seed list\""));
+    assert!(preview.html.contains("<strong>water</strong>"));
+    assert!(
+        !preview.html.contains("entity-id"),
+        "front matter is not rendered"
+    );
+    let paragraphs = documents
+        .extract_proposals(imported.document_id)
+        .expect("extract")
+        .into_iter()
+        .map(|candidate| candidate.text)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paragraphs,
+        vec![
+            "include::secret.adoc[]".to_owned(),
+            "See [[Seed list]] and **water** daily.".to_owned()
+        ]
+    );
+}
+
+#[test]
 fn publication_recovery_does_not_overwrite_an_external_edit() {
     let mut harness = Harness::new();
     harness.reopen_with(Box::new(mneme_store::FaultAt(
