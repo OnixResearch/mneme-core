@@ -3684,3 +3684,77 @@ fn participant_files_are_purged_and_unregistered_payload_stores_are_reported() {
         "a registered participant directory is not unregistered"
     );
 }
+
+#[test]
+fn a_folder_workspace_keeps_notes_in_place_and_never_touches_hidden_paths() {
+    let temp = tempfile::tempdir().expect("temp");
+    let folder = temp.path().join("notes");
+    std::fs::create_dir_all(folder.join("garden")).expect("folder");
+    std::fs::create_dir_all(folder.join(".obsidian")).expect("hidden");
+    std::fs::write(folder.join("garden/plan.md"), b"# Plan\n").expect("note");
+    std::fs::write(folder.join(".obsidian/app.json"), b"{}").expect("settings");
+
+    let workspace =
+        mneme_store::Workspace::create_for_folder(&folder, config(1_000)).expect("create");
+    let root = folder
+        .canonicalize()
+        .expect("canonical")
+        .join(mneme_store::FOLDER_WORKSPACE_DIRECTORY);
+    assert_eq!(workspace.root(), root.as_path());
+    assert_eq!(
+        mneme_store::payload::WorkingTree::of(&root).expect("layout"),
+        mneme_store::payload::WorkingTree::Parent
+    );
+    assert!(!root.join(mneme_store::payload::WORKING_DIRECTORY).exists());
+    assert_eq!(
+        mneme_store::payload::working_directory(&root)
+            .expect("working")
+            .canonicalize()
+            .expect("canonical working"),
+        folder.canonicalize().expect("canonical folder")
+    );
+    assert_eq!(
+        mneme_store::payload::read_working_file(&root, "garden/plan.md").expect("read"),
+        Some(b"# Plan\n".to_vec()),
+        "an existing note is read in place"
+    );
+    mneme_store::payload::publish_working_file(&root, "garden/seeds.md", b"# Seeds\n")
+        .expect("publish");
+    assert_eq!(
+        std::fs::read(folder.join("garden/seeds.md")).expect("published"),
+        b"# Seeds\n"
+    );
+    for hidden in [
+        ".mneme/ledger.sqlite",
+        ".obsidian/app.json",
+        "garden/.draft.md",
+    ] {
+        assert!(
+            matches!(
+                mneme_store::payload::read_working_file(&root, hidden),
+                Err(mneme_store::Failure::PathEscapes(_))
+            ),
+            "{hidden} is not a working file"
+        );
+    }
+    assert!(matches!(
+        mneme_store::payload::publish_working_file(&root, ".mneme/blobs/x", b"x"),
+        Err(mneme_store::Failure::PathEscapes(_))
+    ));
+    assert!(!root.join("blobs/x").exists());
+
+    std::fs::write(folder.join("garden/.mneme-tmp-left"), b"t").expect("temporary");
+    std::fs::write(folder.join(".obsidian/.mneme-tmp-other"), b"t").expect("hidden temporary");
+    assert_eq!(
+        mneme_store::payload::cleanup_working_temporaries(&root).expect("cleanup"),
+        1,
+        "only the temporary outside hidden directories is a working temporary"
+    );
+    assert!(folder.join(".obsidian/.mneme-tmp-other").exists());
+    drop(workspace);
+    open(&root, 2_000);
+    assert!(
+        mneme_store::Workspace::create_for_folder(&folder, config(3_000)).is_err(),
+        "an existing folder workspace is not created again"
+    );
+}

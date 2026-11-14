@@ -23,6 +23,83 @@ pub const BLOB_DIRECTORY: &str = "blobs";
 pub const STAGING_DIRECTORY: &str = "staging";
 /// Directory holding published working files.
 pub const WORKING_DIRECTORY: &str = "working";
+/// Workspace-root file whose presence makes the directory containing the
+/// workspace root its working tree. Its only content is `..`.
+pub const WORKING_TREE_FILE: &str = "working-tree";
+
+/// Where a workspace's working files live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkingTree {
+    /// The `working/` directory inside the workspace root.
+    Internal,
+    /// The directory containing the workspace root: a folder of notes that
+    /// keeps its workspace in a hidden subdirectory. Hidden directories and
+    /// files there, the workspace among them, are never working files.
+    Parent,
+}
+
+impl WorkingTree {
+    /// The layout of the workspace at `root`, read from its
+    /// [`WORKING_TREE_FILE`].
+    pub fn of(root: &std::path::Path) -> crate::error::Result<WorkingTree> {
+        let marker = root.join(WORKING_TREE_FILE);
+        match std::fs::read(&marker) {
+            Ok(bytes) if bytes.trim_ascii() == b".." => Ok(WorkingTree::Parent),
+            Ok(_) => Err(crate::error::Failure::UnsupportedLayout(format!(
+                "{} must contain ..",
+                marker.display()
+            ))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(WorkingTree::Internal),
+            Err(error) => Err(crate::error::Failure::io(&marker, error)),
+        }
+    }
+
+    /// The working directory of the workspace at `root` in this layout.
+    pub fn directory(self, root: &std::path::Path) -> std::path::PathBuf {
+        match self {
+            WorkingTree::Internal => root.join(WORKING_DIRECTORY),
+            WorkingTree::Parent => root.join(".."),
+        }
+    }
+
+    /// Whether a canonical relative path may name a working file: every path in
+    /// an internal tree, and in a parent tree only a path without a hidden
+    /// directory or file name.
+    pub fn admits(self, relative: &std::path::Path) -> bool {
+        self == WorkingTree::Internal
+            || !relative
+                .components()
+                .any(|component| is_hidden_name(component.as_os_str()))
+    }
+
+    /// Whether a walk of this tree skips the directory named `name`.
+    fn skips_directory(self, name: &std::ffi::OsStr) -> bool {
+        self == WorkingTree::Parent && is_hidden_name(name)
+    }
+}
+
+/// Whether a file or directory name starts with a dot.
+fn is_hidden_name(name: &std::ffi::OsStr) -> bool {
+    name.as_encoded_bytes().first() == Some(&b'.')
+}
+
+/// The working directory of the workspace at `root`.
+pub fn working_directory(root: &std::path::Path) -> crate::error::Result<std::path::PathBuf> {
+    Ok(WorkingTree::of(root)?.directory(root))
+}
+
+/// A validated working path and the working directory it lives under.
+fn working_location(
+    root: &std::path::Path,
+    relative: &str,
+) -> crate::error::Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let path = validate_relative_path(relative)?;
+    let tree = WorkingTree::of(root)?;
+    if !tree.admits(&path) {
+        return Err(crate::error::Failure::PathEscapes(relative.to_owned()));
+    }
+    Ok((path, tree.directory(root)))
+}
 const TEMP_PREFIX: &str = ".mneme-tmp-";
 const QUARANTINE_PREFIX: &str = ".mneme-quarantine-";
 
@@ -319,10 +396,9 @@ pub fn prepare_working_target(
     root: &std::path::Path,
     relative: &str,
 ) -> crate::error::Result<std::path::PathBuf> {
-    let relative = validate_relative_path(relative)?;
+    let (relative, working) = working_location(root, relative)?;
     let escaped = relative.to_string_lossy().into_owned();
-    let target = prepare_working_parent(root, &relative)?;
-    let working = root.join(WORKING_DIRECTORY);
+    let target = prepare_working_parent(&working, &relative)?;
     let working_root = std::fs::canonicalize(&working)
         .map_err(|error| crate::error::Failure::io(&working, error))?;
     match std::fs::symlink_metadata(&target) {
@@ -354,18 +430,18 @@ pub fn prepare_working_target(
 
 /// The path a validated working-relative path names, with its parent present.
 ///
-/// Missing parent directories are created one segment at a time beneath
-/// `working/`, and every existing segment must be a real directory. A symbolic
-/// link or a non-directory segment is refused before anything is created below
-/// it, so no publication can create a directory outside the workspace.
+/// Missing parent directories are created one segment at a time beneath the
+/// working directory, and every existing segment must be a real directory. A
+/// symbolic link or a non-directory segment is refused before anything is
+/// created below it, so no publication can create a directory outside the
+/// working tree.
 fn prepare_working_parent(
-    root: &std::path::Path,
+    working: &std::path::Path,
     relative: &std::path::Path,
 ) -> crate::error::Result<std::path::PathBuf> {
     let escaped = relative.to_string_lossy().into_owned();
-    let working = root.join(WORKING_DIRECTORY);
-    ensure_working_directory(&working, &escaped)?;
-    let mut parent = working.clone();
+    ensure_working_directory(working, &escaped)?;
+    let mut parent = working.to_path_buf();
     if let Some(directory) = relative.parent() {
         for component in directory.components() {
             let std::path::Component::Normal(name) = component else {
@@ -418,9 +494,8 @@ pub fn inspect_working_file(
     root: &std::path::Path,
     relative: &str,
 ) -> crate::error::Result<WorkingEntry> {
-    let relative = validate_relative_path(relative)?;
-    let escaped = relative.to_string_lossy().into_owned();
-    let target = root.join(WORKING_DIRECTORY).join(&relative);
+    let (relative, working) = working_location(root, relative)?;
+    let target = working.join(&relative);
     // The final component is inspected, never resolved: a symbolic link is
     // reported as such, not read through.
     match std::fs::symlink_metadata(&target) {
@@ -434,13 +509,14 @@ pub fn inspect_working_file(
         }
         Err(error) => return Err(crate::error::Failure::io(&target, error)),
     }
-    let working = root.join(WORKING_DIRECTORY);
     let working_root = std::fs::canonicalize(&working)
         .map_err(|error| crate::error::Failure::io(&working, error))?;
     let canonical = std::fs::canonicalize(&target)
         .map_err(|error| crate::error::Failure::io(&target, error))?;
     if !canonical.starts_with(&working_root) {
-        return Err(crate::error::Failure::PathEscapes(escaped));
+        return Err(crate::error::Failure::PathEscapes(
+            relative.to_string_lossy().into_owned(),
+        ));
     }
     read_regular_bounded(&target)
 }
@@ -682,10 +758,9 @@ pub fn quarantine_working_file(
     root: &std::path::Path,
     relative: &str,
 ) -> crate::error::Result<QuarantineGuard> {
-    let relative = validate_relative_path(relative)?;
+    let (relative, working) = working_location(root, relative)?;
     let escaped = relative.to_string_lossy().into_owned();
-    let target = root.join(WORKING_DIRECTORY).join(&relative);
-    let working = root.join(WORKING_DIRECTORY);
+    let target = working.join(&relative);
     let working_root = std::fs::canonicalize(&working)
         .map_err(|error| crate::error::Failure::io(&working, error))?;
     let parent = target.parent().ok_or_else(|| {
@@ -827,10 +902,11 @@ pub fn cleanup_orphans(
 /// Remove temporary publication files left under `working/`.
 #[allow(unknown_lints, usize_in_public_api)] // local directory-entry count
 pub fn cleanup_working_temporaries(root: &std::path::Path) -> crate::error::Result<usize> {
-    let working = root.join(WORKING_DIRECTORY);
+    let tree = WorkingTree::of(root)?;
+    let working = tree.directory(root);
     let mut removed = 0;
     if working.is_dir() {
-        removed += cleanup_temporaries_in(&working)?;
+        removed += cleanup_temporaries_in(&working, tree)?;
     }
     Ok(removed)
 }
@@ -851,23 +927,28 @@ pub fn purge_targeted_temporaries(
     let mut inspected = 0;
     let staging = root.join(STAGING_DIRECTORY);
     if staging.is_dir() {
-        let (found_removed, found_inspected) = purge_targeted_in(&staging, targets, false)?;
+        let (found_removed, found_inspected) =
+            purge_targeted_in(&staging, targets, false, WorkingTree::Internal)?;
         removed += found_removed;
         inspected += found_inspected;
     }
-    let working = root.join(WORKING_DIRECTORY);
+    let tree = WorkingTree::of(root)?;
+    let working = tree.directory(root);
     if working.is_dir() {
-        let (found_removed, found_inspected) = purge_targeted_in(&working, targets, true)?;
+        let (found_removed, found_inspected) = purge_targeted_in(&working, targets, true, tree)?;
         removed += found_removed;
         inspected += found_inspected;
     }
     Ok((removed, inspected))
 }
 
+/// Remove files under `directory` whose bytes have a targeted digest, skipping
+/// the directories `tree` keeps out of a working tree.
 fn purge_targeted_in(
     directory: &std::path::Path,
     targets: &std::collections::BTreeSet<[u8; 32]>,
     temporaries_only: bool,
+    tree: WorkingTree,
 ) -> crate::error::Result<(usize, usize)> {
     let max_entries = 100_000_usize;
     let mut removed = 0_usize;
@@ -882,6 +963,9 @@ fn purge_targeted_in(
                 .file_type()
                 .map_err(|error| crate::error::Failure::io(entry.path(), error))?;
             if file_type.is_dir() {
+                if tree.skips_directory(&entry.file_name()) {
+                    continue;
+                }
                 if pending.len() >= max_entries {
                     return Err(crate::error::Failure::io(
                         &directory,
@@ -919,7 +1003,12 @@ fn purge_targeted_in(
     Ok((removed, inspected))
 }
 
-fn cleanup_temporaries_in(directory: &std::path::Path) -> crate::error::Result<usize> {
+/// Remove publication temporaries under `directory`, skipping the directories
+/// `tree` keeps out of a working tree.
+fn cleanup_temporaries_in(
+    directory: &std::path::Path,
+    tree: WorkingTree,
+) -> crate::error::Result<usize> {
     let mut removed = 0;
     let mut pending = vec![directory.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -931,6 +1020,9 @@ fn cleanup_temporaries_in(directory: &std::path::Path) -> crate::error::Result<u
                 .file_type()
                 .map_err(|error| crate::error::Failure::io(entry.path(), error))?;
             if file_type.is_dir() {
+                if tree.skips_directory(&entry.file_name()) {
+                    continue;
+                }
                 if pending.len() >= 100_000 {
                     return Err(crate::error::Failure::io(
                         &directory,
@@ -1119,7 +1211,8 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn write_flushed(path: &std::path::Path, bytes: &[u8]) -> crate::error::Result<()> {
+/// Write a new file and flush it to disk; an existing file is refused.
+pub(crate) fn write_flushed(path: &std::path::Path, bytes: &[u8]) -> crate::error::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
         .write(true)

@@ -67,6 +67,9 @@ pub const LEDGER_FILE: &str = "ledger.sqlite3";
 /// orphan payload and never an unregistered payload entry.
 pub const LOCK_FILE: &str = "workspace.lock";
 
+/// The hidden directory a folder of notes keeps its workspace in.
+pub const FOLDER_WORKSPACE_DIRECTORY: &str = ".mneme";
+
 /// The supported on-disk layout version.
 pub const LAYOUT_VERSION: i64 = 1;
 
@@ -1269,12 +1272,47 @@ impl Workspace {
         root: impl AsRef<std::path::Path>,
         config: WorkspaceConfig,
     ) -> crate::error::Result<Self> {
-        let requested = root.as_ref();
+        Self::create_with_tree(root.as_ref(), config, crate::payload::WorkingTree::Internal)
+    }
+
+    /// Create the workspace of an existing folder of notes.
+    ///
+    /// The workspace lives in the folder's hidden [`FOLDER_WORKSPACE_DIRECTORY`]
+    /// and the folder itself is the working tree: existing files stay where
+    /// they are, published files land beside them, and hidden directories are
+    /// never working files. Returns the workspace, whose root is the hidden
+    /// directory.
+    pub fn create_for_folder(
+        folder: impl AsRef<std::path::Path>,
+        config: WorkspaceConfig,
+    ) -> crate::error::Result<Self> {
+        let folder = folder.as_ref();
+        let folder = std::fs::canonicalize(folder)
+            .map_err(|error| crate::error::Failure::io(folder, error))?;
+        if !folder.is_dir() {
+            return Err(crate::error::Failure::UnsupportedLayout(format!(
+                "{} is not a directory",
+                folder.display()
+            )));
+        }
+        Self::create_with_tree(
+            &folder.join(FOLDER_WORKSPACE_DIRECTORY),
+            config,
+            crate::payload::WorkingTree::Parent,
+        )
+    }
+
+    /// Create a workspace whose working files live as `tree` says.
+    fn create_with_tree(
+        requested: &std::path::Path,
+        config: WorkspaceConfig,
+        tree: crate::payload::WorkingTree,
+    ) -> crate::error::Result<Self> {
         if requested.exists() {
             let root = std::fs::canonicalize(requested)
                 .map_err(|error| crate::error::Failure::io(requested, error))?;
             clear_incomplete_workspace(&root)?;
-            Self::initialize(&root, &config)?;
+            Self::initialize(&root, &config, tree)?;
             return Self::open(&root, config);
         }
         let parent = requested
@@ -1298,7 +1336,7 @@ impl Workspace {
             crate::payload::random_hex(8)?
         ));
         crate::payload::create_directory_chain_flushed(&temporary)?;
-        let initialized = Self::initialize(&temporary, &config).and_then(|()| {
+        let initialized = Self::initialize(&temporary, &config, tree).and_then(|()| {
             std::fs::rename(&temporary, &root)
                 .map_err(|error| crate::error::Failure::io(&root, error))
         });
@@ -1314,14 +1352,30 @@ impl Workspace {
     }
 
     /// Write the ledger, the genesis revision and the meta rows into an empty
-    /// directory. One transaction makes them appear together.
-    fn initialize(root: &std::path::Path, config: &WorkspaceConfig) -> crate::error::Result<()> {
+    /// directory. One transaction makes them appear together. A parent working
+    /// tree is recorded in the [`crate::payload::WORKING_TREE_FILE`] before the
+    /// ledger exists, so no opened workspace lacks it.
+    fn initialize(
+        root: &std::path::Path,
+        config: &WorkspaceConfig,
+        tree: crate::payload::WorkingTree,
+    ) -> crate::error::Result<()> {
         for directory in [
             crate::payload::BLOB_DIRECTORY,
             crate::payload::STAGING_DIRECTORY,
-            crate::payload::WORKING_DIRECTORY,
         ] {
             crate::payload::create_directory_chain_flushed(&root.join(directory))?;
+        }
+        match tree {
+            crate::payload::WorkingTree::Internal => {
+                crate::payload::create_directory_chain_flushed(
+                    &root.join(crate::payload::WORKING_DIRECTORY),
+                )?
+            }
+            crate::payload::WorkingTree::Parent => crate::payload::write_flushed(
+                &root.join(crate::payload::WORKING_TREE_FILE),
+                b"..\n",
+            )?,
         }
         drop(open_lock_file(root)?);
         let mut connection = open_connection(root)?;
@@ -3105,7 +3159,9 @@ fn is_ledger_artifact(name: &std::ffi::OsStr) -> bool {
 
 /// Whether a directory entry names a store-owned file in the workspace root.
 fn is_artifact_file(name: &std::ffi::OsStr) -> bool {
-    is_ledger_artifact(name) || name == std::ffi::OsStr::new(LOCK_FILE)
+    is_ledger_artifact(name)
+        || name == std::ffi::OsStr::new(LOCK_FILE)
+        || name == std::ffi::OsStr::new(crate::payload::WORKING_TREE_FILE)
 }
 
 /// Open the store-owned advisory lock file, creating it when it is absent.
