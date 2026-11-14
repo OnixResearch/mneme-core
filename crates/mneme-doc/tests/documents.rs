@@ -2452,3 +2452,253 @@ fn a_move_publication_is_completed_by_publish_pending_after_a_crash() {
         .expect("document");
     assert_eq!(document.path.as_deref(), Some("docs/diary.adoc"));
 }
+
+/// A view over every retained revision, the reference the document reads must
+/// match.
+fn full_history_view(workspace: &mneme_store::Workspace) -> mneme_memory::View {
+    let snapshot = workspace.snapshot().expect("snapshot");
+    let context = mneme_memory::view_context(workspace, &snapshot).expect("full history");
+    mneme_memory::View::with_retention(
+        snapshot,
+        workspace.root(),
+        context.history,
+        context.revision_sequences,
+        workspace.active_suppressions().expect("suppressions"),
+    )
+    .with_access(mneme_memory::Access::Operator)
+}
+
+#[test]
+fn document_reads_answer_exactly_as_the_full_retained_history() {
+    let mut harness = Harness::new();
+    harness.write_file("docs/part.adoc", b"= Part\n\nfirst part text\n");
+    let part = harness.import(harness.request("part", None, "docs/part.adoc", None));
+    harness.write_file("docs/root.adoc", b"= Root\n\ninclude::part.adoc[]\n");
+    let root = harness.import(harness.request("root", None, "docs/root.adoc", None));
+    // Saving the part again leaves the root's include pinned to a revision that
+    // is no longer the part source's current one.
+    harness.write_file("docs/part.adoc", b"= Part\n\nsecond part text\n");
+    harness.import(harness.request("part-2", Some(part.document_id), "docs/part.adoc", None));
+    harness.write_file("docs/pruned.adoc", b"= Pruned\n\nbytes that go away\n");
+    let pruned = harness.import(harness.request("pruned", None, "docs/pruned.adoc", None));
+    let mut unavailable = mneme_memory::build_unavailable_source_with_digest(
+        pruned.source.source,
+        rev(0x73),
+        &scope(),
+        mneme_memory::UnavailableSourceWithDigestOptions {
+            reason: "source bytes pruned under retention policy",
+            availability: "pruned",
+            prior_digest: Some(pruned.source_digest),
+            entity: None,
+            path_hint: Some("docs/pruned.adoc"),
+        },
+    );
+    unavailable.predecessor = Some(pruned.source.revision);
+    let base = harness.workspace.current_revision().expect("base");
+    harness
+        .workspace
+        .commit(mneme_store::CommitCommand {
+            base,
+            actor: "doc-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "prune-equivalence".to_owned(),
+            records: vec![unavailable],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("prune");
+
+    let full = full_history_view(&harness.workspace);
+    let reads = mneme_doc::Documents::new(&mut harness.workspace)
+        .current_reads()
+        .expect("reads");
+    let listed = reads.list_sources();
+    assert_eq!(listed.len(), 3);
+    for summary in reads.list_documents() {
+        let document = reads.document(summary.document_id).expect("document");
+        let expected = full
+            .source_at(document.source.source, document.source.revision)
+            .and_then(|source| full.source_status_for(&source))
+            .expect("full status");
+        let bytes = reads.source_bytes(summary.document_id).ok();
+        match &expected {
+            mneme_memory::SourceStatus::Retained(retained) => {
+                assert_eq!(bytes.as_ref(), Some(retained), "{}", summary.title);
+            }
+            mneme_memory::SourceStatus::Pruned
+            | mneme_memory::SourceStatus::Erased
+            | mneme_memory::SourceStatus::Inaccessible(_)
+            | mneme_memory::SourceStatus::Corrupt(_) => {
+                assert_eq!(bytes, None, "{}", summary.title);
+            }
+        }
+        let listed_bytes = listed
+            .iter()
+            .find(|listed| listed.document_id == summary.document_id)
+            .and_then(|listed| listed.source.clone());
+        assert_eq!(listed_bytes, bytes, "{}", summary.title);
+    }
+    assert_eq!(reads.source_bytes(pruned.document_id).ok(), None);
+    // The historical include pin resolves to the bytes the root was saved with.
+    let preview = mneme_doc::Documents::new(&mut harness.workspace)
+        .preview(root.document_id, None, render_config())
+        .expect("preview");
+    assert!(preview.html.contains("first part text"), "{}", preview.html);
+    assert!(!preview.html.contains("second part text"));
+    assert!(
+        preview
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.fatal)
+    );
+}
+
+#[test]
+fn a_scoped_source_listing_reads_only_its_scope() {
+    let mut harness = Harness::new();
+    harness.write_file("docs/cedar.adoc", b"= Cedar\n\ncedar text\n");
+    harness.import(harness.request("cedar", None, "docs/cedar.adoc", None));
+    let birch = mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "birch").expect("scope");
+    harness.write_file("docs/birch.adoc", b"= Birch\n\nbirch text\n");
+    let mut request = harness.request("birch", None, "docs/birch.adoc", None);
+    request.scope = birch.clone();
+    harness.import(request);
+    let reads = mneme_doc::Documents::new(&mut harness.workspace)
+        .current_reads()
+        .expect("reads");
+    let cedar: Vec<String> = reads
+        .list_sources_in(&scope())
+        .into_iter()
+        .map(|source| source.title)
+        .collect();
+    assert_eq!(cedar, vec!["Cedar".to_owned()]);
+    let birch_titles: Vec<String> = reads
+        .list_sources_in(&birch)
+        .into_iter()
+        .map(|source| source.title)
+        .collect();
+    assert_eq!(birch_titles, vec!["Birch".to_owned()]);
+    assert_eq!(reads.list_sources().len(), 2);
+    assert_eq!(reads.revision(), reads.snapshot().revision);
+}
+
+fn batch(harness: &Harness, key: &str, paths: &[&str]) -> mneme_doc::BatchImportRequest {
+    mneme_doc::BatchImportRequest {
+        actor: "doc-author".to_owned(),
+        scope: scope(),
+        base_revision: harness.workspace.current_revision().expect("base"),
+        idempotency_key: key.to_owned(),
+        documents: paths
+            .iter()
+            .map(|path| mneme_doc::BatchDocument {
+                path: (*path).to_owned(),
+                title: None,
+                document_id: None,
+            })
+            .collect(),
+        policy: mneme_doc::DocumentPolicy {
+            allowed_roots: vec![String::new()],
+            max_depth: 8,
+            max_inputs: 64,
+            max_total_source_bytes: 4 * 1024 * 1024,
+            max_expanded_bytes: 8 * 1024 * 1024,
+            max_time_ms: 1_000,
+        },
+        render_config: render_config(),
+    }
+}
+
+fn render_config() -> mneme_doc::RenderConfig {
+    mneme_doc::RenderConfig {
+        version: mneme_doc::RENDER_CONFIG_VERSION.to_owned(),
+        include_entity_metadata: true,
+        max_output_bytes: 8 * 1024 * 1024,
+        max_time_ms: 1_000,
+    }
+}
+
+#[test]
+fn a_batch_import_commits_every_member_in_one_revision_and_replays() {
+    let mut harness = Harness::new();
+    let paths: Vec<String> = (0..25)
+        .map(|index| format!("vault/note-{index}.adoc"))
+        .collect();
+    for (index, path) in paths.iter().enumerate() {
+        harness.write_file(path, format!("= Note {index}\n\nbody {index}\n").as_bytes());
+    }
+    let path_refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let request = batch(&harness, "batch", &path_refs);
+    let before = harness.workspace.snapshot().expect("before").sequence;
+    let receipts = mneme_doc::Documents::new(&mut harness.workspace)
+        .import_working_files(request.clone())
+        .expect("batch");
+    assert_eq!(receipts.len(), 25);
+    let after = harness.workspace.snapshot().expect("after").sequence;
+    assert_eq!(after, before + 1, "one batch is one committed revision");
+    assert!(receipts.iter().all(|receipt| receipt.sequence == after));
+    for (index, receipt) in receipts.iter().enumerate() {
+        assert_eq!(receipt.path, paths[index]);
+        let bytes = mneme_doc::Documents::new(&mut harness.workspace)
+            .source_bytes(receipt.document_id)
+            .expect("source");
+        assert_eq!(
+            bytes,
+            format!("= Note {index}\n\nbody {index}\n").into_bytes()
+        );
+    }
+    let replayed = mneme_doc::Documents::new(&mut harness.workspace)
+        .import_working_files(request)
+        .expect("replay");
+    assert_eq!(replayed, receipts);
+    assert_eq!(
+        harness.workspace.snapshot().expect("replayed").sequence,
+        after
+    );
+}
+
+#[test]
+fn one_invalid_member_refuses_the_whole_batch() {
+    let mut harness = Harness::new();
+    harness.write_file("vault/good.adoc", b"= Good\n\nfine\n");
+    harness.write_file("vault/bad.adoc", b"\xff\xfe not utf-8\n");
+    let before = harness.workspace.current_revision().expect("before");
+    let request = batch(&harness, "mixed", &["vault/good.adoc", "vault/bad.adoc"]);
+    let error = mneme_doc::Documents::new(&mut harness.workspace)
+        .import_working_files(request)
+        .expect_err("invalid member");
+    assert!(
+        matches!(error, mneme_doc::DocumentError::Diagnostics(_)),
+        "{error:?}"
+    );
+    assert_eq!(harness.workspace.current_revision().expect("after"), before);
+    assert!(
+        mneme_doc::Documents::new(&mut harness.workspace)
+            .document_by_path("vault/good.adoc")
+            .expect("lookup")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_batch_refuses_empty_repeated_and_non_canonical_paths() {
+    let mut harness = Harness::new();
+    harness.write_file("vault/one.adoc", b"= One\n");
+    for (request, reason) in [
+        (batch(&harness, "empty", &[]), "needs a document"),
+        (
+            batch(&harness, "twice", &["vault/one.adoc", "vault/one.adoc"]),
+            "names one path twice",
+        ),
+        (
+            batch(&harness, "dotted", &["vault/../one.adoc"]),
+            "canonical",
+        ),
+    ] {
+        let error = mneme_doc::Documents::new(&mut harness.workspace)
+            .import_working_files(request)
+            .expect_err("refused");
+        assert!(error.to_string().contains(reason), "{error}");
+    }
+}

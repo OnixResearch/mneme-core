@@ -306,6 +306,47 @@ pub struct ImportRequest {
     pub render_config: RenderConfig,
 }
 
+/// The most documents one batch import commits.
+pub const MAX_BATCH_DOCUMENTS: usize = 10_000;
+
+/// One managed working file of a batch import.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchDocument {
+    pub path: String,
+    pub title: Option<String>,
+    /// Existing identity for an update; omitted for a new document.
+    pub document_id: Option<mneme_core::RecordId>,
+}
+
+/// A request to import several managed working files as one revision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchImportRequest {
+    pub actor: String,
+    pub scope: mneme_core::ScopeId,
+    pub base_revision: mneme_core::WorkspaceRevisionId,
+    pub idempotency_key: String,
+    pub documents: Vec<BatchDocument>,
+    pub policy: DocumentPolicy,
+    pub render_config: RenderConfig,
+}
+
+impl BatchImportRequest {
+    /// The single-document request one batch member is prepared as.
+    fn member(&self, document: &BatchDocument) -> ImportRequest {
+        ImportRequest {
+            actor: self.actor.clone(),
+            scope: self.scope.clone(),
+            base_revision: self.base_revision,
+            idempotency_key: self.idempotency_key.clone(),
+            document_id: document.document_id,
+            path: document.path.clone(),
+            title: document.title.clone(),
+            policy: self.policy.clone(),
+            render_config: self.render_config.clone(),
+        }
+    }
+}
+
 /// A binding patch request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BindingRequest {
@@ -553,7 +594,14 @@ struct DocumentContext {
 }
 
 impl DocumentContext {
-    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    /// Load the documents of one committed revision.
+    ///
+    /// A document view only consults retained history to resolve a source
+    /// pinned at a revision that is no longer the source record's current one,
+    /// and to explain a removed payload of such a revision. The history read is
+    /// therefore limited to those source records: every answer is the one the
+    /// full retained history would give, and a read of current documents does
+    /// not cost every revision every record ever had.
     fn load(
         workspace: &mneme_store::Workspace,
         revision: Option<mneme_core::WorkspaceRevisionId>,
@@ -566,28 +614,34 @@ impl DocumentContext {
                 "document context exceeds the 1M record bound",
             ));
         }
-        let context =
-            mneme_memory::view_context(workspace, &snapshot).map_err(view_context_error)?;
-        if context.history.len() > max_context_records {
+        let (documents, paths, entities) = index_documents(&snapshot, max_context_records)?;
+        let history = workspace
+            .record_histories_of(&snapshot, &historical_source_pins(&snapshot, &documents))?
+            .into_values()
+            .flatten()
+            .map(|record| ((record.record_id, record.revision_id), record))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if history.len() > max_context_records {
             return Err(DocumentError::Invalid(
                 "document history exceeds the 1M revision bound",
             ));
         }
         let suppressions = workspace.active_suppressions()?;
+        let sequences = std::collections::BTreeMap::from([(snapshot.revision, snapshot.sequence)]);
+        let generation = snapshot.eligibility_generation;
         let view = mneme_memory::View::with_retention(
-            snapshot.clone(),
+            snapshot,
             workspace.root(),
-            context.history,
-            context.revision_sequences,
+            history,
+            sequences,
             suppressions,
         )
         // Document commands are local operator work: every mutating call names
         // its scope and each operation re-checks it, while preview, anchor and
         // extraction reads address one already-authorized document identity.
         .with_access(mneme_memory::Access::Operator);
-        let (documents, paths, entities) = index_documents(&snapshot, max_context_records)?;
         Ok(DocumentContext {
-            generation: snapshot.eligibility_generation,
+            generation,
             view,
             documents,
             paths,
@@ -624,6 +678,181 @@ impl DocumentContext {
             }])),
         }
     }
+}
+
+/// Document reads served from one context loaded at one committed revision.
+///
+/// Every answer describes [`DocumentReads::revision`] at
+/// [`DocumentReads::eligibility_generation`]. A caller that keeps a session
+/// while other work runs must compare both labels with the workspace before
+/// presenting an answer as current: a later commit or erasure barrier makes
+/// the session's answers historical, and a moved generation means content it
+/// read may since have been forgotten.
+pub struct DocumentReads {
+    context: DocumentContext,
+}
+
+impl DocumentReads {
+    /// The committed revision every read of this session describes.
+    pub fn revision(&self) -> mneme_core::WorkspaceRevisionId {
+        self.context.view.revision()
+    }
+
+    /// The erasure generation the session's snapshot was read under.
+    pub fn eligibility_generation(&self) -> u64 {
+        self.context.generation
+    }
+
+    /// The committed snapshot the session reads.
+    pub fn snapshot(&self) -> &mneme_store::Snapshot {
+        self.context.view.snapshot()
+    }
+
+    /// Read the exact source bytes of one current document.
+    pub fn source_bytes(&self, document_id: mneme_core::RecordId) -> Result<Vec<u8>> {
+        let document = self
+            .context
+            .documents
+            .get(&document_id)
+            .ok_or(DocumentError::Missing(document_id))?;
+        Ok(self.context.require_retained_source(document.source)?.1)
+    }
+
+    /// The current document at one logical path.
+    pub fn document_by_path(&self, path: &str) -> Option<DocumentView> {
+        self.context
+            .paths
+            .get(path)
+            .and_then(|document| self.context.documents.get(document))
+            .cloned()
+    }
+
+    /// The current document with one stable identity.
+    pub fn document(&self, document_id: mneme_core::RecordId) -> Result<DocumentView> {
+        self.context
+            .documents
+            .get(&document_id)
+            .cloned()
+            .ok_or(DocumentError::Missing(document_id))
+    }
+
+    /// Current documents in deterministic title, path, and identity order.
+    pub fn list_documents(&self) -> Vec<DocumentSummary> {
+        let mut summaries: Vec<DocumentSummary> = self
+            .context
+            .documents
+            .values()
+            .map(|view| DocumentSummary {
+                document_id: view.record.record_id,
+                revision: view.record.revision_id,
+                scope: view.record.scope.clone(),
+                title: view.title.clone(),
+                path: view.path.clone(),
+                entity: view.entity,
+            })
+            .collect();
+        summaries.sort_by(|left, right| {
+            listing_order(
+                (&left.title, left.path.as_deref(), left.document_id),
+                (&right.title, right.path.as_deref(), right.document_id),
+            )
+        });
+        summaries
+    }
+
+    /// Current documents of every scope with their retained sources.
+    ///
+    /// Suppressed or unavailable sources are `None` rather than empty bytes or
+    /// an error for the whole listing.
+    pub fn list_sources(&self) -> Vec<DocumentSource> {
+        self.sources_where(|_| true)
+    }
+
+    /// Current documents of one scope with their retained sources.
+    ///
+    /// The scope filter runs before any source is read: a document of another
+    /// scope is neither read nor returned.
+    pub fn list_sources_in(&self, scope: &mneme_core::ScopeId) -> Vec<DocumentSource> {
+        self.sources_where(|view| view.record.scope == *scope)
+    }
+
+    fn sources_where(&self, is_selected: impl Fn(&DocumentView) -> bool) -> Vec<DocumentSource> {
+        let mut sources: Vec<DocumentSource> = self
+            .context
+            .documents
+            .values()
+            .filter(|view| is_selected(view))
+            .map(|view| DocumentSource {
+                document_id: view.record.record_id,
+                scope: view.record.scope.clone(),
+                title: view.title.clone(),
+                path: view.path.clone(),
+                source: self.context.source_bytes(view.source).ok().flatten(),
+            })
+            .collect();
+        sources.sort_by(|left, right| {
+            listing_order(
+                (&left.title, left.path.as_deref(), left.document_id),
+                (&right.title, right.path.as_deref(), right.document_id),
+            )
+        });
+        sources
+    }
+
+    /// Explicit anchors of one current document revision.
+    pub fn anchors(&self, document_id: mneme_core::RecordId) -> Result<Vec<AnchorRecord>> {
+        let document = self
+            .context
+            .documents
+            .get(&document_id)
+            .ok_or(DocumentError::Missing(document_id))?;
+        Ok(self
+            .context
+            .view
+            .snapshot()
+            .records
+            .iter()
+            .filter(|record| {
+                record.kind == mneme_core::RecordKind::DocumentAnchor
+                    && optional_reference_target(record, "document") == Some(document_id)
+                    && reference_is_pinned_to(record, "source-revision", document.source)
+            })
+            .map(|record| anchor_record(record, document.source))
+            .collect())
+    }
+}
+
+/// One anchor record of a document revision.
+fn anchor_record(record: &mneme_core::RecordEnvelope, source: SourcePin) -> AnchorRecord {
+    AnchorRecord {
+        record_id: record.record_id,
+        source,
+        span: record.payload.get("span").and_then(|value| {
+            mneme_core::SourceSpan::from_value(value, &mneme_core::Path::root()).ok()
+        }),
+        anchor: record
+            .payload
+            .get("anchor")
+            .and_then(mneme_core::Value::as_string)
+            .unwrap_or_default()
+            .to_owned(),
+        label: record
+            .payload
+            .get("label")
+            .and_then(mneme_core::Value::as_string)
+            .map(str::to_owned),
+    }
+}
+
+/// The document listing order: normalized title, then path, then identity.
+fn listing_order(
+    left: (&str, Option<&str>, mneme_core::RecordId),
+    right: (&str, Option<&str>, mneme_core::RecordId),
+) -> std::cmp::Ordering {
+    normalized_listing_key(left.0)
+        .cmp(&normalized_listing_key(right.0))
+        .then_with(|| left.1.unwrap_or_default().cmp(right.1.unwrap_or_default()))
+        .then_with(|| left.2.to_hex().cmp(&right.2.to_hex()))
 }
 
 impl DocumentView {
@@ -1128,13 +1357,17 @@ struct PreparedDocument {
     /// runs; `None` means a new document, whose file is expected only when one
     /// is already present.
     existing_source: Option<SourcePin>,
+    /// The digest of the committed bytes at `existing_source`, resolved from
+    /// the same context the candidate was prepared from, so a commit does not
+    /// load the base revision a second time.
+    existing_digest: Option<Result<mneme_core::ContentDigest>>,
 }
 
 struct SourcePreparation<'a> {
     request: &'a ImportRequest,
     bytes: &'a [u8],
     text: &'a str,
-    context: DocumentContext,
+    context: &'a DocumentContext,
     existing: Option<DocumentView>,
     document_id: mneme_core::RecordId,
     /// The identity a candidate reports; `None` for a new document.
@@ -1236,6 +1469,93 @@ impl<'w> Documents<'w> {
             },
             fingerprint,
         )
+    }
+
+    /// Import several managed working files as one committed revision.
+    ///
+    /// Every member is prepared against the same base revision and the batch
+    /// commits atomically: one invalid member refuses the whole batch and
+    /// nothing is committed. Paths must be distinct and a batch holds at most
+    /// [`MAX_BATCH_DOCUMENTS`] members. Includes resolve against committed
+    /// documents only, so a member cannot include another member of the same
+    /// batch. A repeated request replays the committed outcome, and the
+    /// receipts are read once from the revision the batch committed.
+    pub fn import_working_files(
+        &mut self,
+        request: BatchImportRequest,
+    ) -> Result<Vec<DocumentRevision>> {
+        validate_batch_request(&request)?;
+        let files = request
+            .documents
+            .iter()
+            .map(|document| {
+                mneme_store::payload::read_working_file(self.workspace.root(), &document.path)?
+                    .ok_or_else(|| DocumentError::Io("working file does not exist".to_owned()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let fingerprint = batch_fingerprint(&request, &files)?;
+        let outcome = match self.workspace.replay_outcome(
+            &request.actor,
+            &request.scope,
+            &request.idempotency_key,
+            &fingerprint,
+        )? {
+            Some(outcome) => outcome,
+            None => self.commit_batch(&request, &files, fingerprint)?,
+        };
+        let context = DocumentContext::load(self.workspace, Some(outcome.revision))?;
+        request
+            .documents
+            .iter()
+            .map(|document| {
+                revision_from_context(
+                    &context,
+                    &request.scope,
+                    document.document_id,
+                    &document.path,
+                    &outcome,
+                )
+            })
+            .collect()
+    }
+
+    /// Prepare every batch member against one base context and commit them.
+    fn commit_batch(
+        &mut self,
+        request: &BatchImportRequest,
+        files: &[Vec<u8>],
+        fingerprint: mneme_core::ContentDigest,
+    ) -> Result<mneme_store::CommitOutcome> {
+        let context = DocumentContext::load(self.workspace, Some(request.base_revision))?;
+        // A member commits its source, document and anchor records; reserve for
+        // the first two and let anchors extend past the reservation.
+        let mut records = Vec::with_capacity(files.len().saturating_mul(2));
+        let mut source_blobs = Vec::with_capacity(files.len());
+        let mut import_candidates = Vec::with_capacity(files.len());
+        for (document, bytes) in request.documents.iter().zip(files) {
+            let prepared = self.prepare_source_with(&context, &request.member(document), bytes)?;
+            self.require_valid(&prepared)?;
+            records.extend(prepared.records);
+            source_blobs.push(prepared.source_blob);
+            import_candidates.push(mneme_store::ImportCandidateDraft {
+                path: document.path.clone(),
+                bytes: bytes.clone(),
+            });
+        }
+        Ok(self.workspace.commit_bound(
+            mneme_store::CommitCommand {
+                base: request.base_revision,
+                actor: request.actor.clone(),
+                scope: request.scope.clone(),
+                idempotency_key: request.idempotency_key.clone(),
+                records,
+                source_blobs,
+                publications: Vec::new(),
+                import_candidates,
+                retention: None,
+            },
+            fingerprint,
+        )?)
     }
 
     /// Save supplied source bytes and publish them to the managed working file.
@@ -1501,7 +1821,17 @@ impl<'w> Documents<'w> {
     fn prepare_source(&self, request: &ImportRequest, bytes: &[u8]) -> Result<PreparedDocument> {
         validate_import_request(request)?;
         let context = DocumentContext::load(self.workspace, Some(request.base_revision))?;
-        let existing = load_existing_document(request, &context)?;
+        self.prepare_source_with(&context, request, bytes)
+    }
+
+    /// Prepare one candidate against an already loaded base context.
+    fn prepare_source_with(
+        &self,
+        context: &DocumentContext,
+        request: &ImportRequest,
+        bytes: &[u8],
+    ) -> Result<PreparedDocument> {
+        let existing = load_existing_document(request, context)?;
         // A dry run must name the identity a real run would use, and for a new
         // document that identity does not exist until the commit assigns it.
         let reported_document_id = existing
@@ -1612,8 +1942,147 @@ impl<'w> Documents<'w> {
                 .existing
                 .as_ref()
                 .map(|document| document.source),
+            existing_digest: preparation
+                .existing
+                .as_ref()
+                .map(|document| committed_source_digest(preparation.context, document.source)),
         })
     }
+}
+
+/// The receipt of one document a commit wrote, read from a context loaded at
+/// exactly the committed revision.
+fn revision_from_context(
+    context: &DocumentContext,
+    scope: &mneme_core::ScopeId,
+    document_id: Option<mneme_core::RecordId>,
+    path: &str,
+    outcome: &mneme_store::CommitOutcome,
+) -> Result<DocumentRevision> {
+    let document_id = match document_id {
+        Some(document_id) => document_id,
+        None => context.paths.get(path).copied().ok_or(DocumentError::Io(
+            "committed document path is missing".to_owned(),
+        ))?,
+    };
+    let document = context
+        .documents
+        .get(&document_id)
+        .cloned()
+        .ok_or(DocumentError::Missing(document_id))?;
+    if document.record.scope != *scope {
+        return Err(DocumentError::Invalid("document scope is not authorized"));
+    }
+    let source_view = context.source(document.source)?;
+    let source_digest =
+        source_view
+            .digest()
+            .or(source_view.prior_digest)
+            .ok_or(DocumentError::Conflict(
+                "document source digest is unavailable",
+            ))?;
+    let includes = document
+        .includes
+        .iter()
+        .map(|(path, pin)| IncludedSource {
+            path: path.clone(),
+            pin: *pin,
+            digest: context
+                .source(*pin)
+                .ok()
+                .and_then(|source| source.digest().or(source.prior_digest)),
+        })
+        .collect();
+    let anchors = context
+        .view
+        .snapshot()
+        .records
+        .iter()
+        .filter(|record| {
+            record.kind == mneme_core::RecordKind::DocumentAnchor
+                && optional_reference_target(record, "document") == Some(document.record.record_id)
+                && reference_is_pinned_to(record, "source-revision", document.source)
+        })
+        .map(|record| record.record_id)
+        .collect();
+    Ok(DocumentRevision {
+        document_id: document.record.record_id,
+        document_revision: document.record.revision_id,
+        source: document.source,
+        source_digest,
+        workspace_revision: outcome.revision,
+        sequence: outcome.sequence,
+        path: document.path.unwrap_or_else(|| path.to_owned()),
+        entity: document.entity,
+        anchors,
+        includes,
+        publications: outcome.publications.clone(),
+        retired_working_copy: None,
+    })
+}
+
+/// Refuse a batch without an actor or key, with no members, with more than
+/// [`MAX_BATCH_DOCUMENTS`] members, or with a non-canonical or repeated path.
+fn validate_batch_request(request: &BatchImportRequest) -> Result<()> {
+    if request.actor.trim().is_empty() || request.idempotency_key.trim().is_empty() {
+        return Err(DocumentError::Invalid(
+            "actor and idempotency key are required",
+        ));
+    }
+    if request.documents.is_empty() {
+        return Err(DocumentError::Invalid("a batch import needs a document"));
+    }
+    if request.documents.len() > MAX_BATCH_DOCUMENTS {
+        return Err(DocumentError::Invalid(
+            "a batch import exceeds the document bound",
+        ));
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for document in &request.documents {
+        validate_logical_path(&document.path)?;
+        if !paths.insert(document.path.as_str()) {
+            return Err(DocumentError::Invalid(
+                "a batch import names one path twice",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The identity of a batch import: every member's path, options and exact
+/// working-file bytes, in order.
+fn batch_fingerprint(
+    request: &BatchImportRequest,
+    files: &[Vec<u8>],
+) -> Result<mneme_core::ContentDigest> {
+    let mut options = Vec::with_capacity(request.documents.len().saturating_add(2));
+    options.push(document_policy_value(&request.policy)?);
+    options.push(render_config_value(&request.render_config)?);
+    for (document, bytes) in request.documents.iter().zip(files) {
+        options.push(mneme_core::Value::record_named(
+            "batch-member",
+            vec![
+                mneme_core::Value::string(document.path.clone()),
+                match &document.title {
+                    Some(title) => mneme_core::Value::string(title.clone()),
+                    None => mneme_core::Value::symbol("none"),
+                },
+                match document.document_id {
+                    Some(document_id) => document_id.to_value(),
+                    None => mneme_core::Value::symbol("none"),
+                },
+                mneme_core::ContentDigest::of_source_bytes(bytes).to_value(),
+            ],
+        ));
+    }
+    Ok(document_request_fingerprint(&BoundDocumentRequest {
+        operation: "document-batch-import",
+        scope: &request.scope,
+        target: None,
+        path: None,
+        source_digest: None,
+        options,
+    }))
 }
 
 /// The exact digest of the source bytes a document revision commits.
@@ -1813,6 +2282,7 @@ fn invalid_utf8_document(input: InvalidUtf8DocumentInput<'_>) -> PreparedDocumen
         },
         document_id: input.document_id,
         existing_source: input.existing_source,
+        existing_digest: None,
     }
 }
 
@@ -1883,7 +2353,7 @@ fn source_dependencies(
         .map_err(|_| DocumentError::Invalid("include time budget exceeds u64 milliseconds"))?;
     let deadline = include_start + std::time::Duration::from_millis(max_time_ms);
     let resolved = match resolve_import_includes(IncludeResolutionRequest {
-        context: &preparation.context,
+        context: preparation.context,
         scope: &preparation.request.scope,
         root_path: &preparation.request.path,
         root_bytes: preparation.bytes,
@@ -2410,16 +2880,14 @@ impl Documents<'_> {
             // file already at its path, if any.
             let working =
                 mneme_store::payload::read_working_file(self.workspace.root(), &request.path)?;
-            let expected_previous = match prepared.existing_source {
-                Some(pin) => match working {
-                    Some(_) => {
-                        let context =
-                            DocumentContext::load(self.workspace, Some(request.base_revision))?;
-                        Some(committed_source_digest(&context, pin)?)
-                    }
-                    None => None,
-                },
-                None => working.map(|bytes| mneme_core::ContentDigest::of_source_bytes(&bytes)),
+            let expected_previous = match (prepared.existing_source, working) {
+                (Some(_), Some(_)) => Some(prepared.existing_digest.ok_or(
+                    DocumentError::Conflict("committed document source digest is unavailable"),
+                )??),
+                (Some(_), None) => None,
+                (None, working) => {
+                    working.map(|bytes| mneme_core::ContentDigest::of_source_bytes(&bytes))
+                }
             };
             vec![mneme_store::PublicationDraft {
                 path: request.path.clone(),
@@ -2471,99 +2939,32 @@ impl Documents<'_> {
         // revision and sequence with a newer document revision, digest and
         // anchor set.
         let context = DocumentContext::load(self.workspace, Some(outcome.revision))?;
-        let document = if let Some(document_id) = document_id {
-            context
-                .documents
-                .get(&document_id)
-                .cloned()
-                .ok_or(DocumentError::Missing(document_id))?
-        } else {
-            let document_id = context.paths.get(path).copied().ok_or(DocumentError::Io(
-                "committed document path is missing".to_owned(),
-            ))?;
-            context
-                .documents
-                .get(&document_id)
-                .cloned()
-                .ok_or(DocumentError::Missing(document_id))?
-        };
-        if document.record.scope != *scope {
-            return Err(DocumentError::Invalid("document scope is not authorized"));
-        }
-        let source_view = context.source(document.source)?;
-        let source_digest =
-            source_view
-                .digest()
-                .or(source_view.prior_digest)
-                .ok_or(DocumentError::Conflict(
-                    "document source digest is unavailable",
-                ))?;
-        let mut included = Vec::with_capacity(document.includes.len());
-        for (path, pin) in &document.includes {
-            let digest = context
-                .source(*pin)
-                .ok()
-                .and_then(|source| source.digest().or(source.prior_digest));
-            included.push(IncludedSource {
-                path: path.clone(),
-                pin: *pin,
-                digest,
-            });
-        }
-        let snapshot = context.view.snapshot();
-        let mut anchors = Vec::with_capacity(snapshot.records.len());
-        for record in &snapshot.records {
-            if record.kind == mneme_core::RecordKind::DocumentAnchor
-                && optional_reference_target(record, "document") == Some(document.record.record_id)
-                && reference_is_pinned_to(record, "source-revision", document.source)
-            {
-                anchors.push(record.record_id);
-            }
-        }
-        Ok(DocumentRevision {
-            document_id: document.record.record_id,
-            document_revision: document.record.revision_id,
-            source: document.source,
-            source_digest,
-            workspace_revision: outcome.revision,
-            sequence: outcome.sequence,
-            path: document.path.unwrap_or_else(|| path.to_owned()),
-            entity: document.entity,
-            anchors,
-            includes: included,
-            publications: outcome.publications,
-            retired_working_copy: None,
+        revision_from_context(&context, scope, document_id, path, &outcome)
+    }
+
+    /// Load the current revision once for several document reads.
+    ///
+    /// Every read of the returned session answers from that one revision; see
+    /// [`DocumentReads`] for what a caller must check before reusing it.
+    pub fn current_reads(&self) -> Result<DocumentReads> {
+        Ok(DocumentReads {
+            context: DocumentContext::load(self.workspace, None)?,
         })
     }
 
     /// Read the exact latest source bytes for a document.
     pub fn source_bytes(&self, document_id: mneme_core::RecordId) -> Result<Vec<u8>> {
-        let context = DocumentContext::load(self.workspace, None)?;
-        let document = context
-            .documents
-            .get(&document_id)
-            .ok_or(DocumentError::Missing(document_id))?;
-        Ok(context.require_retained_source(document.source)?.1)
+        self.current_reads()?.source_bytes(document_id)
     }
 
     /// Resolve the current document at one logical path.
     pub fn document_by_path(&self, path: &str) -> Result<Option<DocumentView>> {
-        let context = DocumentContext::load(self.workspace, None)?;
-        Ok(context
-            .paths
-            .get(path)
-            .and_then(|document| context.documents.get(document))
-            .cloned())
+        Ok(self.current_reads()?.document_by_path(path))
     }
 
     /// Read the current document with one stable identity.
     pub fn document(&self, document_id: mneme_core::RecordId) -> Result<DocumentView> {
-        let context = DocumentContext::load(self.workspace, None)?;
-        context
-            .documents
-            .get(&document_id)
-            .cloned()
-            .ok_or(DocumentError::Missing(document_id))
+        self.current_reads()?.document(document_id)
     }
 
     /// List current documents in deterministic title, path, and identity order.
@@ -2571,31 +2972,7 @@ impl Documents<'_> {
     /// The result is a bounded inventory of one committed snapshot, not a
     /// search index. Callers that need authorization filter on `scope`.
     pub fn list_documents(&self) -> Result<Vec<DocumentSummary>> {
-        let context = DocumentContext::load(self.workspace, None)?;
-        let mut summaries: Vec<DocumentSummary> = context
-            .documents
-            .values()
-            .map(|view| DocumentSummary {
-                document_id: view.record.record_id,
-                revision: view.record.revision_id,
-                scope: view.record.scope.clone(),
-                title: view.title.clone(),
-                path: view.path.clone(),
-                entity: view.entity,
-            })
-            .collect();
-        summaries.sort_by(|left, right| {
-            normalized_listing_key(&left.title)
-                .cmp(&normalized_listing_key(&right.title))
-                .then_with(|| {
-                    left.path
-                        .as_deref()
-                        .unwrap_or_default()
-                        .cmp(right.path.as_deref().unwrap_or_default())
-                })
-                .then_with(|| left.document_id.to_hex().cmp(&right.document_id.to_hex()))
-        });
-        Ok(summaries)
+        Ok(self.current_reads()?.list_documents())
     }
 
     /// List current documents with their retained sources in one snapshot.
@@ -2603,76 +2980,12 @@ impl Documents<'_> {
     /// Suppressed or unavailable sources are returned as `None` rather than as
     /// empty bytes or an error for the whole listing.
     pub fn list_sources(&self) -> Result<Vec<DocumentSource>> {
-        let context = DocumentContext::load(self.workspace, None)?;
-        let mut sources: Vec<DocumentSource> = context
-            .documents
-            .values()
-            .map(|view| DocumentSource {
-                document_id: view.record.record_id,
-                scope: view.record.scope.clone(),
-                title: view.title.clone(),
-                path: view.path.clone(),
-                source: context.source_bytes(view.source).ok().flatten(),
-            })
-            .collect();
-        sources.sort_by(|left, right| {
-            normalized_listing_key(&left.title)
-                .cmp(&normalized_listing_key(&right.title))
-                .then_with(|| {
-                    left.path
-                        .as_deref()
-                        .unwrap_or_default()
-                        .cmp(right.path.as_deref().unwrap_or_default())
-                })
-                .then_with(|| left.document_id.to_hex().cmp(&right.document_id.to_hex()))
-        });
-        Ok(sources)
+        Ok(self.current_reads()?.list_sources())
     }
 
     /// List explicit anchors for the current document revision.
-    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn anchors(&self, document_id: mneme_core::RecordId) -> Result<Vec<AnchorRecord>> {
-        let context = DocumentContext::load(self.workspace, None)?;
-        let document = context
-            .documents
-            .get(&document_id)
-            .ok_or(DocumentError::Missing(document_id))?;
-        let records = &context.view.snapshot().records;
-        let max_anchors = records
-            .iter()
-            .filter(|record| record.kind == mneme_core::RecordKind::DocumentAnchor)
-            .count();
-        let mut anchors = Vec::with_capacity(max_anchors);
-        for record in records {
-            if record.kind != mneme_core::RecordKind::DocumentAnchor
-                || optional_reference_target(record, "document") != Some(document_id)
-                || !reference_is_pinned_to(record, "source-revision", document.source)
-            {
-                continue;
-            }
-            let span = record.payload.get("span").and_then(|value| {
-                mneme_core::SourceSpan::from_value(value, &mneme_core::Path::root()).ok()
-            });
-            let anchor = record
-                .payload
-                .get("anchor")
-                .and_then(mneme_core::Value::as_string)
-                .unwrap_or_default()
-                .to_owned();
-            let label = record
-                .payload
-                .get("label")
-                .and_then(mneme_core::Value::as_string)
-                .map(str::to_owned);
-            anchors.push(AnchorRecord {
-                record_id: record.record_id,
-                source: document.source,
-                span,
-                anchor,
-                label,
-            });
-        }
-        Ok(anchors)
+        self.current_reads()?.anchors(document_id)
     }
 
     /// Render a current or historical document preview.
@@ -3176,24 +3489,43 @@ fn render_config_fingerprint(config: &RenderConfig) -> String {
     )
 }
 
-/// A view-context refusal, with a store refusal kept on its own variant.
-fn view_context_error(error: mneme_memory::EvidenceError) -> DocumentError {
-    match error {
-        mneme_memory::EvidenceError::Store(error) => DocumentError::Store(error),
-        error @ mneme_memory::EvidenceError::InvalidRecord { .. }
-        | error @ mneme_memory::EvidenceError::Missing { .. }
-        | error @ mneme_memory::EvidenceError::Policy(_)
-        | error @ mneme_memory::EvidenceError::Validation(_)
-        | error @ mneme_memory::EvidenceError::Invalid(_)
-        | error @ mneme_memory::EvidenceError::Truncated => DocumentError::Engine(error),
-    }
-}
-
 type DocumentIndexes = (
     std::collections::BTreeMap<mneme_core::RecordId, DocumentView>,
     std::collections::BTreeMap<String, mneme_core::RecordId>,
     std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
 );
+
+/// Source records a document or include pins at a revision other than the
+/// snapshot's current one.
+///
+/// Only these pins are resolved from retained history; a pin of the current
+/// revision is served by the snapshot record itself. A source record absent
+/// from the snapshot is not requested, exactly as the full history read holds
+/// entries only for snapshot records.
+fn historical_source_pins(
+    snapshot: &mneme_store::Snapshot,
+    documents: &std::collections::BTreeMap<mneme_core::RecordId, DocumentView>,
+) -> std::collections::BTreeSet<mneme_core::RecordId> {
+    let current: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RevisionId> =
+        snapshot
+            .records
+            .iter()
+            .filter(|record| record.kind == mneme_core::RecordKind::SourceRevision)
+            .map(|record| (record.record_id, record.revision_id))
+            .collect();
+    documents
+        .values()
+        .flat_map(|document| {
+            std::iter::once(document.source).chain(document.includes.values().copied())
+        })
+        .filter(|pin| {
+            current
+                .get(&pin.source)
+                .is_some_and(|revision| *revision != pin.revision)
+        })
+        .map(|pin| pin.source)
+        .collect()
+}
 
 fn index_documents(
     snapshot: &mneme_store::Snapshot,

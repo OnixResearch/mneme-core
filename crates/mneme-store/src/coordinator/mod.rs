@@ -2645,6 +2645,81 @@ impl Workspace {
         Ok(histories)
     }
 
+    /// The retained history of selected records of a snapshot.
+    ///
+    /// For every requested record the snapshot contains, the list is exactly
+    /// what [`Workspace::record_histories`] returns for it, and the refusals are
+    /// the same: a forgotten identity among the snapshot's records refuses the
+    /// whole read, forgotten revisions are skipped, and the restore gate and the
+    /// barrier explanation for a purged payload apply. A requested record the
+    /// snapshot does not contain gets no entry, as it would in the full read.
+    /// Only the requested records are loaded, so the cost follows the request
+    /// instead of the workspace's whole retained history.
+    pub fn record_histories_of(
+        &self,
+        snapshot: &Snapshot,
+        records: &std::collections::BTreeSet<mneme_core::RecordId>,
+    ) -> crate::error::Result<
+        std::collections::BTreeMap<mneme_core::RecordId, Vec<mneme_core::RecordEnvelope>>,
+    > {
+        self.require_restore_suppression()?;
+        let context = self.current_revision()?;
+        let generation = self.eligibility_generation()?;
+        let transaction = self.connection.unchecked_transaction()?;
+        let loaded =
+            self.record_histories_of_in(&transaction, snapshot, records, context, generation);
+        match loaded {
+            Ok(histories) => {
+                transaction.commit()?;
+                Ok(histories)
+            }
+            Err(error) => {
+                // Dropping the transaction rolls it back, as in the full read.
+                drop(transaction);
+                Err(self.explain_barrier(error, generation))
+            }
+        }
+    }
+
+    /// Read the selected snapshot records' retained history from one ledger state.
+    fn record_histories_of_in(
+        &self,
+        connection: &rusqlite::Connection,
+        snapshot: &Snapshot,
+        records: &std::collections::BTreeSet<mneme_core::RecordId>,
+        context: mneme_core::WorkspaceRevisionId,
+        generation: u64,
+    ) -> crate::error::Result<
+        std::collections::BTreeMap<mneme_core::RecordId, Vec<mneme_core::RecordEnvelope>>,
+    > {
+        self.facts().align(generation);
+        let forgotten = sweep::forgotten_suppressions_in(connection)?;
+        if let Some(record) = snapshot
+            .records
+            .iter()
+            .find(|record| forgotten.identities.contains(&record.record_id))
+        {
+            return Err(crate::error::Failure::RetentionSuppressed {
+                target: record.record_id.to_string(),
+            });
+        }
+        let mut loaded_revisions = 0_usize;
+        snapshot
+            .records
+            .iter()
+            .filter(|record| records.contains(&record.record_id))
+            .map(|record| {
+                let history =
+                    self.record_revisions_in(connection, record.record_id, context, generation)?;
+                loaded_revisions = loaded_revisions.saturating_add(history.len());
+                if loaded_revisions > MAX_HISTORY_REVISIONS {
+                    return Err(crate::error::Failure::HistoryLimitExceeded);
+                }
+                Ok((record.record_id, history))
+            })
+            .collect()
+    }
+
     /// Committed workspace revisions and their monotonic sequences.
     ///
     /// This is the whole inventory, for audit and tests, and it refuses above the
