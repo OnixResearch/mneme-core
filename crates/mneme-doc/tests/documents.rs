@@ -2792,3 +2792,75 @@ fn a_batch_refuses_empty_repeated_and_non_canonical_paths() {
         assert!(error.to_string().contains(reason), "{error}");
     }
 }
+
+#[test]
+fn a_move_and_the_link_updates_it_needs_commit_in_one_revision() {
+    let mut harness = Harness::new();
+    harness.write_file("notes/alpha.md", b"# Alpha\n");
+    let alpha = harness.import(harness.request("alpha", None, "notes/alpha.md", None));
+    harness.write_file("notes/linker.md", b"# Linker\n\nSee [[Alpha]].\n");
+    let linker = harness.import(harness.request("linker", None, "notes/linker.md", None));
+    let before = harness.workspace.current_revision().expect("base");
+    let sequence = harness.workspace.status().expect("status").sequence;
+    let move_request = |key: &str, base| mneme_doc::MoveRequest {
+        actor: "doc-author".to_owned(),
+        scope: scope(),
+        base_revision: base,
+        idempotency_key: key.to_owned(),
+        document_id: alpha.document_id,
+        path: "notes/beta.md".to_owned(),
+        title: Some("Beta".to_owned()),
+    };
+    let updates = |bytes: &[u8], document_id| mneme_doc::SourceUpdates {
+        policy: mneme_doc::DocumentPolicy::default(),
+        render_config: mneme_doc::RenderConfig::default(),
+        documents: vec![mneme_doc::SourceUpdate {
+            document_id,
+            bytes: bytes.to_vec(),
+        }],
+    };
+    let refused = mneme_doc::Documents::new(&mut harness.workspace).move_with_updates(
+        move_request("own", before),
+        updates(b"# Beta\n", alpha.document_id),
+    );
+    assert!(
+        refused.is_err(),
+        "the moved document's own source is not updated"
+    );
+    let moved = mneme_doc::Documents::new(&mut harness.workspace)
+        .move_with_updates(
+            move_request("rename-with-links", before),
+            updates(b"# Linker\n\nSee [[Beta]].\n", linker.document_id),
+        )
+        .expect("move with updates");
+    assert_eq!(moved.path, "notes/beta.md");
+    assert_eq!(
+        harness.workspace.status().expect("status").sequence,
+        sequence + 1,
+        "the move and the update are one revision"
+    );
+    let documents = mneme_doc::Documents::new(&mut harness.workspace);
+    assert_eq!(
+        documents.document(alpha.document_id).expect("alpha").title,
+        "Beta"
+    );
+    assert_eq!(
+        documents.source_bytes(linker.document_id).expect("linker"),
+        b"# Linker\n\nSee [[Beta]].\n"
+    );
+    assert_eq!(
+        documents
+            .document(linker.document_id)
+            .expect("linker")
+            .title,
+        "Linker",
+        "an updated document keeps its title"
+    );
+    assert_eq!(
+        harness.working_file("notes/linker.md").as_deref(),
+        Some(b"# Linker\n\nSee [[Beta]].\n".as_slice()),
+        "the update is published to the working file"
+    );
+    assert!(harness.working_file("notes/alpha.md").is_none());
+    assert!(harness.working_file("notes/beta.md").is_some());
+}

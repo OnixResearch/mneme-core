@@ -372,6 +372,22 @@ pub struct MoveRequest {
     pub title: Option<String>,
 }
 
+/// New source bytes for other documents, committed in the same revision as a
+/// move: typically links whose target the move renames.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceUpdates {
+    pub policy: DocumentPolicy,
+    pub render_config: RenderConfig,
+    pub documents: Vec<SourceUpdate>,
+}
+
+/// New source bytes for one existing document at its current path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceUpdate {
+    pub document_id: mneme_core::RecordId,
+    pub bytes: Vec<u8>,
+}
+
 /// A structured entity-property edit request.
 pub struct EntityPropertyEditRequest<'a> {
     pub actor: &'a str,
@@ -514,18 +530,45 @@ fn u64_field(value: impl TryInto<u64>) -> Result<u64> {
 /// It names only what the caller supplied. The document's current path is
 /// workspace state that the first move changes, so including it would make
 /// every retry of a committed move a conflict.
-fn move_request_fingerprint(request: &MoveRequest) -> mneme_core::ContentDigest {
-    document_request_fingerprint(&BoundDocumentRequest {
+/// The identity of a move. A move without updates keeps the identity it has
+/// always had; updates add their policy and every member's exact bytes.
+fn move_request_fingerprint(
+    request: &MoveRequest,
+    updates: &SourceUpdates,
+) -> Result<mneme_core::ContentDigest> {
+    let mut options = Vec::with_capacity(updates.documents.len().saturating_add(3));
+    options.push(match &request.title {
+        Some(title) => mneme_core::Value::string(title.clone()),
+        None => mneme_core::Value::symbol("none"),
+    });
+    if !updates.documents.is_empty() {
+        options.push(document_policy_value(&updates.policy)?);
+        options.push(render_config_value(&updates.render_config)?);
+        for update in &updates.documents {
+            options.push(mneme_core::Value::record_named(
+                "move-update",
+                vec![
+                    update.document_id.to_value(),
+                    mneme_core::ContentDigest::of_source_bytes(&update.bytes).to_value(),
+                ],
+            ));
+        }
+    }
+    Ok(document_request_fingerprint(&BoundDocumentRequest {
         operation: "document-move",
         scope: &request.scope,
         target: Some(request.document_id),
         path: Some(&request.path),
         source_digest: None,
-        options: vec![match &request.title {
-            Some(title) => mneme_core::Value::string(title.clone()),
-            None => mneme_core::Value::symbol("none"),
-        }],
-    })
+        options,
+    }))
+}
+
+/// The records, sources and publications of the updates a move commits.
+struct PreparedUpdates {
+    records: Vec<mneme_store::RecordDraft>,
+    source_blobs: Vec<mneme_store::SourceBlobDraft>,
+    publications: Vec<mneme_store::PublicationDraft>,
 }
 
 /// The committed side of a move: what the commit retires or publishes besides
@@ -1609,8 +1652,35 @@ impl<'w> Documents<'w> {
 
     /// Move a document to a new logical path without changing identity or source.
     pub fn move_document(&mut self, request: MoveRequest) -> Result<DocumentRevision> {
+        self.move_with_updates(
+            request,
+            SourceUpdates {
+                policy: DocumentPolicy::default(),
+                render_config: RenderConfig::default(),
+                documents: Vec::new(),
+            },
+        )
+    }
+
+    /// Move a document and replace other documents' sources in one revision.
+    ///
+    /// Each update replaces one other document's source at its current path,
+    /// keeping its title, and publishes the new bytes like a save: a working
+    /// file changed outside Mneme since the base revision diverges instead of
+    /// being overwritten. The moved document's own source is never updated
+    /// here. Either the move and every update commit together or nothing does.
+    pub fn move_with_updates(
+        &mut self,
+        request: MoveRequest,
+        updates: SourceUpdates,
+    ) -> Result<DocumentRevision> {
         validate_move_request(&request)?;
-        let fingerprint = move_request_fingerprint(&request);
+        if updates.documents.len() > MAX_BATCH_DOCUMENTS {
+            return Err(DocumentError::Invalid(
+                "a move updates more documents than the batch bound",
+            ));
+        }
+        let fingerprint = move_request_fingerprint(&request, &updates)?;
         if let Some(outcome) = self.workspace.replay_outcome(
             &request.actor,
             &request.scope,
@@ -1635,6 +1705,12 @@ impl<'w> Documents<'w> {
         }
         let title = Self::move_destination_title(&context, &request)?;
         let prepared = prepare_move(self.workspace.root(), &context, &document, &request, title)?;
+        let updated = self.prepare_updates(&context, &request, &updates)?;
+        let mut records = Vec::with_capacity(updated.records.len().saturating_add(1));
+        records.push(prepared.draft);
+        records.extend(updated.records);
+        let mut publications = prepared.publications;
+        publications.extend(updated.publications);
         let scope = request.scope.clone();
         let outcome = self.workspace.commit_bound(
             mneme_store::CommitCommand {
@@ -1642,9 +1718,9 @@ impl<'w> Documents<'w> {
                 actor: request.actor,
                 scope: scope.clone(),
                 idempotency_key: request.idempotency_key,
-                records: vec![prepared.draft],
-                source_blobs: Vec::new(),
-                publications: prepared.publications,
+                records,
+                source_blobs: updated.source_blobs,
+                publications,
                 import_candidates: Vec::new(),
                 retention: None,
             },
@@ -1660,6 +1736,70 @@ impl<'w> Documents<'w> {
                 Some(self.retire_old_working_copy(&prepared.old_path, prepared.source_digest));
         }
         Ok(receipt)
+    }
+
+    /// Prepare the source updates that commit with a move, against the move's
+    /// base context.
+    fn prepare_updates(
+        &self,
+        context: &DocumentContext,
+        request: &MoveRequest,
+        updates: &SourceUpdates,
+    ) -> Result<PreparedUpdates> {
+        let count = updates.documents.len();
+        let mut prepared_updates = PreparedUpdates {
+            records: Vec::with_capacity(count.saturating_mul(2)),
+            source_blobs: Vec::with_capacity(count),
+            publications: Vec::with_capacity(count),
+        };
+        for update in &updates.documents {
+            if update.document_id == request.document_id {
+                return Err(DocumentError::Invalid(
+                    "a move cannot replace the moved document's own source",
+                ));
+            }
+            let document = context
+                .documents
+                .get(&update.document_id)
+                .ok_or(DocumentError::Missing(update.document_id))?;
+            if document.record.scope != request.scope {
+                return Err(DocumentError::Invalid("document scope is not authorized"));
+            }
+            let path = document
+                .path
+                .clone()
+                .ok_or(DocumentError::Conflict("document has no logical path"))?;
+            let member = ImportRequest {
+                actor: request.actor.clone(),
+                scope: request.scope.clone(),
+                base_revision: request.base_revision,
+                idempotency_key: request.idempotency_key.clone(),
+                document_id: Some(update.document_id),
+                path: path.clone(),
+                title: Some(document.title.clone()),
+                policy: updates.policy.clone(),
+                render_config: updates.render_config.clone(),
+            };
+            let prepared = self.prepare_source_with(context, &member, &update.bytes)?;
+            self.require_valid(&prepared)?;
+            let working = mneme_store::payload::read_working_file(self.workspace.root(), &path)?;
+            let expected_previous = match working {
+                Some(_) => Some(prepared.existing_digest.ok_or(DocumentError::Conflict(
+                    "committed document source digest is unavailable",
+                ))??),
+                None => None,
+            };
+            prepared_updates
+                .publications
+                .push(mneme_store::PublicationDraft {
+                    path,
+                    expected_previous,
+                    bytes: prepared.source_blob.bytes.clone(),
+                });
+            prepared_updates.records.extend(prepared.records);
+            prepared_updates.source_blobs.push(prepared.source_blob);
+        }
+        Ok(prepared_updates)
     }
 
     /// Retire the old managed copy of a moved document, reporting the outcome.
