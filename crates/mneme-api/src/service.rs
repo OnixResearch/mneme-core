@@ -59,6 +59,14 @@ pub struct ApiService {
     /// The verified-record cache every workspace handle this service opens
     /// shares, when the caller supplied one.
     record_cache: Option<mneme_store::SharedRecordCache>,
+    prolog: Option<PrologAdapter>,
+    semantic: Option<mneme_recall::SemanticRequest>,
+}
+
+#[derive(Clone)]
+struct PrologAdapter {
+    engine: std::path::PathBuf,
+    metadata: mneme_prolog::CapabilityMetadata,
 }
 
 impl std::fmt::Debug for ApiService {
@@ -67,6 +75,8 @@ impl std::fmt::Debug for ApiService {
             .debug_struct("ApiService")
             .field("session", &self.session)
             .field("has_record_cache", &self.record_cache.is_some())
+            .field("has_prolog", &self.prolog.is_some())
+            .field("has_semantic_backend", &self.semantic.is_some())
             .finish()
     }
 }
@@ -77,6 +87,8 @@ impl ApiService {
         ApiService {
             session,
             record_cache: None,
+            prolog: None,
+            semantic: None,
         }
     }
 
@@ -88,6 +100,49 @@ impl ApiService {
     pub fn with_record_cache(mut self, cache: mneme_store::SharedRecordCache) -> Self {
         self.record_cache = Some(cache);
         self
+    }
+
+    /// Configure one immutable, operator-pinned semantic embedding backend.
+    ///
+    /// The backend remains disabled unless this builder is called. Request
+    /// payloads select only `Mode::Semantic`; they cannot supply or replace the
+    /// executable, model, tokenizer, or embedding profile.
+    pub fn with_semantic_backend(
+        mut self,
+        semantic: mneme_recall::SemanticRequest,
+    ) -> crate::error::CallResult<Self> {
+        semantic.validate().map_err(|_| {
+            crate::error::ApiError::invalid("semantic embedding backend configuration is invalid")
+        })?;
+        self.semantic = Some(semantic);
+        Ok(self)
+    }
+
+    /// Explicitly configure the optional reasoning adapter.
+    ///
+    /// The API service never reads an ambient engine path: its default is
+    /// disabled even when a test or parent process has exported one.
+    pub fn with_prolog(
+        mut self,
+        engine: impl Into<std::path::PathBuf>,
+        metadata: mneme_prolog::CapabilityMetadata,
+    ) -> crate::error::CallResult<Self> {
+        let engine = engine.into();
+        if engine.as_os_str().is_empty() {
+            return Err(crate::error::ApiError::invalid(
+                "reasoning engine path must not be empty",
+            ));
+        }
+        metadata.validate().map_err(|_| {
+            crate::error::ApiError::invalid("reasoning profile metadata is invalid")
+        })?;
+        if metadata.state != mneme_prolog::CapabilityState::Enabled {
+            return Err(crate::error::ApiError::invalid(
+                "reasoning adapter configuration must be enabled explicitly",
+            ));
+        }
+        self.prolog = Some(PrologAdapter { engine, metadata });
+        Ok(self)
     }
 
     /// The bound session.
@@ -120,9 +175,13 @@ impl ApiService {
     #[allow(unknown_lints)] // Octet structural exception: cohesive dispatch table; split tracked separately
     fn dispatch(&self, command: &crate::command::ApiCommand) -> crate::error::CallResult<Dispatch> {
         match command {
-            crate::command::ApiCommand::Capabilities { .. } => {
-                Ok(Dispatch::ok(capabilities_value(), None))
-            }
+            crate::command::ApiCommand::Capabilities { .. } => Ok(Dispatch::ok(
+                capabilities_value(CapabilityAvailability {
+                    reasoning: self.prolog.is_some(),
+                    semantic: self.semantic.is_some(),
+                }),
+                None,
+            )),
             crate::command::ApiCommand::Record { .. } => self.dispatch_record(command),
             crate::command::ApiCommand::Accept { .. } => self.dispatch_accept(command),
             crate::command::ApiCommand::Recall { .. } => self.dispatch_recall(command),
@@ -134,6 +193,7 @@ impl ApiService {
             crate::command::ApiCommand::ProposalInspect { .. } => {
                 self.dispatch_proposal_inspect(command)
             }
+            crate::command::ApiCommand::ReasonQuery { .. } => self.dispatch_reason_query(command),
         }
     }
 
@@ -368,6 +428,101 @@ impl ApiService {
         ))
     }
 
+    /// Execute a reasoning request over one authorized immutable input image.
+    fn dispatch_reason_query(
+        &self,
+        command: &crate::command::ApiCommand,
+    ) -> crate::error::CallResult<Dispatch> {
+        let crate::command::ApiCommand::ReasonQuery { scope, query, .. } = command else {
+            return Err(crate::error::ApiError::invalid(
+                "reasoning dispatch receives a reason.query command",
+            ));
+        };
+        let Some(adapter) = &self.prolog else {
+            return Ok(Dispatch::qualified(
+                reasoning_disabled_value(query.mode),
+                None,
+                "disabled",
+            ));
+        };
+        let mut workspace = self.open()?;
+        let (view, generation) = self.pinned_view(&mut workspace)?;
+        let revision = view.revision();
+        let image = mneme_prolog::snapshot::build_input_image(
+            &view,
+            scope,
+            revision,
+            generation,
+            Vec::new(),
+        )
+        .map_err(|_| {
+            crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Failed,
+                "reasoning input image could not be admitted",
+            )
+        })?;
+        let request = mneme_prolog::Request {
+            actor: self.session.principal.clone(),
+            scope: scope.clone(),
+            revision,
+            eligibility_generation: generation,
+            image_digest: image.context.image_digest.clone(),
+            mode: query.mode,
+            goal: query.goal.clone(),
+            variables: query.variables.clone(),
+            rules: query.rules.clone(),
+            assumptions: query.assumptions.clone(),
+            features: query.features.clone(),
+            limits: query.limits,
+        };
+        let control = mneme_prolog::process::WorkerControl::new();
+        let outcome = mneme_prolog::run_query(
+            &adapter.engine,
+            &adapter.metadata,
+            &image,
+            &request,
+            &control,
+            mneme_prolog::process::WorkerLimits {
+                max_wall_ms: request.limits.max_time_ms,
+                max_output_bytes: request.limits.max_output_bytes,
+            },
+        )
+        .map_err(reasoning_error)?;
+        // A search has no write path, but its pinned proof/result still becomes
+        // unusable if retention crossed the eligibility barrier while the
+        // isolated worker was running.
+        self.authorize_reasoning_generation(&mut workspace, scope, generation)?;
+        let context = Context {
+            revision,
+            scope: scope.clone(),
+            generation,
+        };
+        Ok(Dispatch::qualified(
+            reasoning_outcome_value(&outcome),
+            Some(context),
+            reasoning_status(outcome.status),
+        ))
+    }
+
+    fn authorize_reasoning_generation(
+        &self,
+        workspace: &mut mneme_store::Workspace,
+        scope: &mneme_core::ScopeId,
+        generation: u64,
+    ) -> crate::error::CallResult<()> {
+        self.session.authorize(scope)?;
+        let current_generation = workspace
+            .eligibility_generation()
+            .map_err(crate::error::ApiError::from_store)?;
+        if current_generation != generation {
+            return Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Conflict,
+                "reasoning result crossed an eligibility change",
+            ));
+        }
+        Ok(())
+    }
+
     /// Resolve the revision-independent parts of a recall command.
     fn recall_selection(
         &self,
@@ -446,6 +601,7 @@ impl ApiService {
             temporal: *temporal,
             modes: selection.modes.clone(),
             structured: selection.structured.clone(),
+            semantic: self.semantic.clone(),
             // A caller that named no revision asked for the head read above, so
             // a commit that lands before recall re-reads the head must serve
             // that pinned revision rather than report a conflict the caller
@@ -1411,6 +1567,563 @@ fn execution_status(status: mneme_recall::Execution) -> &'static str {
     }
 }
 
+fn reasoning_error(error: mneme_prolog::CapabilityError) -> crate::error::ApiError {
+    match error {
+        mneme_prolog::CapabilityError::Unavailable { .. } => crate::error::ApiError::new(
+            crate::error::ApiErrorCode::Unavailable,
+            "reasoning capability is unavailable",
+        ),
+        mneme_prolog::CapabilityError::UnsupportedFeature(_) => crate::error::ApiError::new(
+            crate::error::ApiErrorCode::Unavailable,
+            "requested reasoning feature is not supported",
+        ),
+        mneme_prolog::CapabilityError::LimitExceeded(_) => crate::error::ApiError::new(
+            crate::error::ApiErrorCode::Limit,
+            "reasoning request exceeds an advertised limit",
+        ),
+        mneme_prolog::CapabilityError::DisallowedPredicate(_)
+        | mneme_prolog::CapabilityError::InvalidMetadata(_)
+        | mneme_prolog::CapabilityError::InvalidRequest(_) => crate::error::ApiError::invalid(
+            "reasoning request was refused by the configured profile",
+        ),
+    }
+}
+
+fn reasoning_status(status: mneme_prolog::ExecutionStatus) -> &'static str {
+    match status {
+        mneme_prolog::ExecutionStatus::Complete => STATUS_OK,
+        mneme_prolog::ExecutionStatus::Partial
+        | mneme_prolog::ExecutionStatus::Timeout
+        | mneme_prolog::ExecutionStatus::Cancelled
+        | mneme_prolog::ExecutionStatus::Failed
+        | mneme_prolog::ExecutionStatus::Disabled => reasoning_execution_status(status),
+    }
+}
+
+/// Execution-status vocabulary shared with recall data (`complete`, not the
+/// transport's `ok`).
+fn reasoning_execution_status(status: mneme_prolog::ExecutionStatus) -> &'static str {
+    match status {
+        mneme_prolog::ExecutionStatus::Complete => "complete",
+        mneme_prolog::ExecutionStatus::Partial => "partial",
+        mneme_prolog::ExecutionStatus::Timeout => "timeout",
+        mneme_prolog::ExecutionStatus::Cancelled => "cancelled",
+        mneme_prolog::ExecutionStatus::Failed => "failed",
+        mneme_prolog::ExecutionStatus::Disabled => "disabled",
+    }
+}
+
+fn reasoning_disabled_value(mode: mneme_prolog::QueryMode) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("available"),
+            mneme_core::Value::Boolean(false),
+        ),
+        (
+            mneme_core::Symbol::from("mode"),
+            mneme_core::Value::symbol(mode.name()),
+        ),
+        (
+            mneme_core::Symbol::from("status"),
+            mneme_core::Value::symbol("disabled"),
+        ),
+        (
+            mneme_core::Symbol::from("reason"),
+            mneme_core::Value::string("no reasoning adapter is configured"),
+        ),
+    ])
+}
+
+fn reasoning_outcome_value(outcome: &mneme_prolog::Outcome) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("schema-version"),
+            mneme_core::Value::integer(1),
+        ),
+        (
+            mneme_core::Symbol::from("mode"),
+            mneme_core::Value::symbol(outcome.mode.name()),
+        ),
+        (
+            mneme_core::Symbol::from("status"),
+            mneme_core::Value::symbol(reasoning_execution_status(outcome.status)),
+        ),
+        (
+            mneme_core::Symbol::from("operation-completed"),
+            mneme_core::Value::Boolean(outcome.operation_completed),
+        ),
+        (
+            mneme_core::Symbol::from("stop"),
+            mneme_core::Value::symbol(reasoning_stop_name(outcome.stop)),
+        ),
+        (
+            mneme_core::Symbol::from("exhaustive"),
+            mneme_core::Value::Boolean(outcome.exhaustive),
+        ),
+        (
+            mneme_core::Symbol::from("coverage"),
+            reasoning_coverage_value(outcome),
+        ),
+        (
+            mneme_core::Symbol::from("context"),
+            reasoning_context_value(outcome),
+        ),
+        (
+            mneme_core::Symbol::from("identity"),
+            reasoning_identity_value(outcome),
+        ),
+        (
+            mneme_core::Symbol::from("result"),
+            reasoning_result_value(&outcome.result),
+        ),
+        (
+            mneme_core::Symbol::from("proposals"),
+            reasoning_proposals_value(outcome),
+        ),
+        (
+            mneme_core::Symbol::from("consumed"),
+            reasoning_consumed_value(outcome),
+        ),
+        (
+            mneme_core::Symbol::from("output-limit-exceeded"),
+            mneme_core::Value::Boolean(outcome.output_limit_exceeded),
+        ),
+        (
+            mneme_core::Symbol::from("solution-limit-exceeded"),
+            mneme_core::Value::Boolean(outcome.solution_limit_exceeded),
+        ),
+        (
+            mneme_core::Symbol::from("readback-valid"),
+            mneme_core::Value::Boolean(outcome.readback_valid),
+        ),
+        (
+            mneme_core::Symbol::from("reason"),
+            optional_string_value(outcome.reason.as_deref()),
+        ),
+    ])
+}
+
+fn reasoning_coverage_value(outcome: &mneme_prolog::Outcome) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("complete"),
+            mneme_core::Value::Boolean(outcome.coverage.complete),
+        ),
+        (
+            mneme_core::Symbol::from("reason"),
+            optional_string_value(outcome.coverage.reason.as_deref()),
+        ),
+    ])
+}
+
+fn reasoning_proposals_value(outcome: &mneme_prolog::Outcome) -> mneme_core::Value {
+    mneme_core::Value::sequence(
+        outcome
+            .proposals
+            .iter()
+            .map(reasoning_proposal_value)
+            .collect(),
+    )
+}
+
+fn reasoning_context_value(outcome: &mneme_prolog::Outcome) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("workspace-revision"),
+            outcome.context.revision.to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("scope"),
+            outcome.context.scope.to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("eligibility-generation"),
+            mneme_core::Value::string(outcome.context.eligibility_generation.to_string()),
+        ),
+        (
+            mneme_core::Symbol::from("image-digest"),
+            mneme_core::Value::string(outcome.context.image_digest.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("profile"),
+            mneme_core::Value::string(outcome.context.profile.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("rule-versions"),
+            mneme_core::Value::symbol_dictionary(outcome.context.rule_versions.iter().map(
+                |(id, version)| {
+                    (
+                        mneme_core::Symbol::from(id.as_str()),
+                        mneme_core::Value::string(version.clone()),
+                    )
+                },
+            )),
+        ),
+    ])
+}
+
+fn reasoning_identity_value(outcome: &mneme_prolog::Outcome) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("protocol-version"),
+            mneme_core::Value::integer(i64::from(outcome.identity.version)),
+        ),
+        (
+            mneme_core::Symbol::from("request-digest"),
+            mneme_core::Value::string(outcome.identity.request_digest.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("profile-digest"),
+            mneme_core::Value::string(outcome.identity.profile_digest.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("rule-manifest-digest"),
+            mneme_core::Value::string(outcome.identity.rule_manifest_digest.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("input-order-digest"),
+            mneme_core::Value::string(outcome.identity.input_order_digest.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("image-digest"),
+            mneme_core::Value::string(outcome.identity.image_digest.clone()),
+        ),
+    ])
+}
+
+fn reasoning_consumed_value(outcome: &mneme_prolog::Outcome) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("elapsed-ms"),
+            mneme_core::Value::string(outcome.consumed.elapsed_ms.to_string()),
+        ),
+        (
+            mneme_core::Symbol::from("solutions"),
+            mneme_core::Value::string(outcome.consumed.solutions.to_string()),
+        ),
+        (
+            mneme_core::Symbol::from("output-bytes"),
+            mneme_core::Value::string(outcome.consumed.output_bytes.to_string()),
+        ),
+    ])
+}
+
+fn reasoning_result_value(result: &mneme_prolog::QueryResult) -> mneme_core::Value {
+    match result {
+        mneme_prolog::QueryResult::GroundTest { truth } => mneme_core::Value::record_named(
+            "prolog-ground-test-result",
+            vec![mneme_core::Value::symbol(match truth {
+                mneme_prolog::QueryTruth::True => "true",
+                mneme_prolog::QueryTruth::False => "false",
+                mneme_prolog::QueryTruth::Unknown => "unknown",
+            })],
+        ),
+        mneme_prolog::QueryResult::FindOne { solution } => mneme_core::Value::record_named(
+            "prolog-find-one-result",
+            vec![solution.as_ref().map_or_else(
+                || mneme_core::Value::symbol("none"),
+                reasoning_solution_value,
+            )],
+        ),
+        mneme_prolog::QueryResult::Enumerate { solutions } => mneme_core::Value::record_named(
+            "prolog-enumerate-result",
+            vec![mneme_core::Value::sequence(
+                solutions.iter().map(reasoning_solution_value).collect(),
+            )],
+        ),
+        mneme_prolog::QueryResult::Collect { solutions } => mneme_core::Value::record_named(
+            "prolog-collect-result",
+            vec![mneme_core::Value::sequence(
+                solutions.iter().map(reasoning_solution_value).collect(),
+            )],
+        ),
+    }
+}
+
+fn reasoning_solution_value(solution: &mneme_prolog::Solution) -> mneme_core::Value {
+    let bindings = solution
+        .bindings
+        .iter()
+        .map(|(name, term)| {
+            mneme_core::Value::record_named(
+                "prolog-binding",
+                vec![
+                    mneme_core::Value::string(name.clone()),
+                    reasoning_term_value(term),
+                ],
+            )
+        })
+        .collect();
+    let assumptions = solution
+        .assumptions
+        .iter()
+        .cloned()
+        .map(mneme_core::Value::string)
+        .collect();
+    let certification = match &solution.certification {
+        mneme_prolog::Certification::Certified => mneme_core::Value::symbol("certified"),
+        mneme_prolog::Certification::Uncertified { reason } => mneme_core::Value::record_named(
+            "uncertified",
+            vec![mneme_core::Value::string(reason.clone())],
+        ),
+    };
+    mneme_core::Value::record_named(
+        "prolog-solution",
+        vec![
+            mneme_core::Value::sequence(bindings),
+            mneme_core::Value::sequence(
+                solution
+                    .premises
+                    .iter()
+                    .map(reasoning_premise_value)
+                    .collect(),
+            ),
+            mneme_core::Value::sequence(assumptions),
+            certification,
+        ],
+    )
+}
+
+fn reasoning_term_value(term: &mneme_prolog::Term) -> mneme_core::Value {
+    match term {
+        mneme_prolog::Term::Integer(value) => mneme_core::Value::record_named(
+            "prolog-integer",
+            vec![mneme_core::Value::integer(*value)],
+        ),
+        mneme_prolog::Term::String(value) => mneme_core::Value::record_named(
+            "prolog-string",
+            vec![mneme_core::Value::string(value.clone())],
+        ),
+        mneme_prolog::Term::Symbol(value) => mneme_core::Value::record_named(
+            "prolog-symbol",
+            vec![mneme_core::Value::string(value.clone())],
+        ),
+        mneme_prolog::Term::Variable(name) => mneme_core::Value::record_named(
+            "prolog-variable",
+            vec![mneme_core::Value::string(name.clone())],
+        ),
+        mneme_prolog::Term::Reference {
+            record_id,
+            revision_id,
+        } => mneme_core::Value::record_named(
+            "prolog-reference",
+            vec![
+                record_id.to_value(),
+                revision_id.map_or_else(|| mneme_core::Value::symbol("none"), |id| id.to_value()),
+            ],
+        ),
+        mneme_prolog::Term::List(items) => mneme_core::Value::record_named(
+            "prolog-list",
+            vec![mneme_core::Value::sequence(
+                items.iter().map(reasoning_term_value).collect(),
+            )],
+        ),
+        mneme_prolog::Term::Compound { functor, args } => mneme_core::Value::record_named(
+            "prolog-compound",
+            vec![
+                mneme_core::Value::string(functor.clone()),
+                mneme_core::Value::sequence(args.iter().map(reasoning_term_value).collect()),
+            ],
+        ),
+    }
+}
+
+fn reasoning_premise_value(premise: &mneme_prolog::Premise) -> mneme_core::Value {
+    let span = premise.span.map_or_else(
+        || mneme_core::Value::symbol("none"),
+        |span| {
+            mneme_core::Value::record_named(
+                "source-span",
+                vec![
+                    mneme_core::Value::string(span.start().to_string()),
+                    mneme_core::Value::string(span.end().to_string()),
+                ],
+            )
+        },
+    );
+    let derivation = premise
+        .derivation
+        .map_or_else(|| mneme_core::Value::symbol("none"), |id| id.to_value());
+    let roots = premise
+        .ancestry_roots
+        .iter()
+        .map(|(record, revision)| {
+            mneme_core::Value::record_named(
+                "ancestry-root",
+                vec![record.to_value(), revision.to_value()],
+            )
+        })
+        .collect();
+    let availability = match &premise.availability {
+        mneme_prolog::PremiseAvailability::Retained => mneme_core::Value::symbol("retained"),
+        mneme_prolog::PremiseAvailability::Pruned { reason } => mneme_core::Value::record_named(
+            "pruned",
+            vec![mneme_core::Value::string(reason.clone())],
+        ),
+    };
+    mneme_core::Value::record_named(
+        "prolog-premise",
+        vec![
+            premise.record_id.to_value(),
+            premise.revision_id.to_value(),
+            span,
+            derivation,
+            mneme_core::Value::sequence(roots),
+            availability,
+        ],
+    )
+}
+
+fn reasoning_proposal_value(proposal: &mneme_prolog::Proposal) -> mneme_core::Value {
+    match proposal {
+        mneme_prolog::Proposal::Plan(plan) => reasoning_plan_proposal_value(plan),
+        mneme_prolog::Proposal::FactChange(change) => reasoning_fact_change_value(change),
+    }
+}
+
+fn reasoning_plan_proposal_value(plan: &mneme_prolog::PlanProposal) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "prolog-plan-proposal",
+        vec![
+            mneme_core::Value::string(plan.id.clone()),
+            plan.base_revision.to_value(),
+            plan.scope.to_value(),
+            reasoning_plan_actions_value(plan),
+            reasoning_plan_preconditions_value(plan),
+            mneme_core::Value::sequence(
+                plan.assumptions
+                    .iter()
+                    .cloned()
+                    .map(mneme_core::Value::string)
+                    .collect(),
+            ),
+            mneme_core::Value::sequence(
+                plan.evidence.iter().map(reasoning_premise_value).collect(),
+            ),
+            mneme_core::Value::sequence(
+                plan.expected_effects
+                    .iter()
+                    .cloned()
+                    .map(mneme_core::Value::string)
+                    .collect(),
+            ),
+        ],
+    )
+}
+
+fn reasoning_plan_actions_value(plan: &mneme_prolog::PlanProposal) -> mneme_core::Value {
+    mneme_core::Value::sequence(
+        plan.actions
+            .iter()
+            .map(|action| {
+                mneme_core::Value::record_named(
+                    "plan-action",
+                    vec![
+                        mneme_core::Value::string(action.action.clone()),
+                        mneme_core::Value::symbol_dictionary(action.parameters.iter().map(
+                            |(name, value)| {
+                                (
+                                    mneme_core::Symbol::from(name.as_str()),
+                                    reasoning_term_value(value),
+                                )
+                            },
+                        )),
+                    ],
+                )
+            })
+            .collect(),
+    )
+}
+
+fn reasoning_plan_preconditions_value(plan: &mneme_prolog::PlanProposal) -> mneme_core::Value {
+    mneme_core::Value::sequence(
+        plan.preconditions
+            .iter()
+            .map(|condition| {
+                mneme_core::Value::record_named(
+                    "plan-precondition",
+                    vec![
+                        mneme_core::Value::string(condition.description.clone()),
+                        condition.atom.as_ref().map_or_else(
+                            || mneme_core::Value::symbol("none"),
+                            reasoning_atom_value,
+                        ),
+                        mneme_core::Value::sequence(
+                            condition
+                                .evidence
+                                .iter()
+                                .map(reasoning_premise_value)
+                                .collect(),
+                        ),
+                    ],
+                )
+            })
+            .collect(),
+    )
+}
+
+fn reasoning_fact_change_value(change: &mneme_prolog::FactChangeProposal) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "prolog-fact-change-proposal",
+        vec![
+            mneme_core::Value::string(change.id.clone()),
+            change.base_revision.to_value(),
+            change.scope.to_value(),
+            mneme_core::Value::string(change.operation.clone()),
+            change
+                .target
+                .map_or_else(|| mneme_core::Value::symbol("none"), |id| id.to_value()),
+            mneme_core::Value::sequence(
+                change
+                    .evidence
+                    .iter()
+                    .map(reasoning_premise_value)
+                    .collect(),
+            ),
+            mneme_core::Value::sequence(
+                change
+                    .assumptions
+                    .iter()
+                    .cloned()
+                    .map(mneme_core::Value::string)
+                    .collect(),
+            ),
+        ],
+    )
+}
+
+fn reasoning_atom_value(atom: &mneme_prolog::Atom) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "prolog-atom",
+        vec![
+            mneme_core::Value::string(atom.predicate.clone()),
+            mneme_core::Value::sequence(atom.terms.iter().map(reasoning_term_value).collect()),
+        ],
+    )
+}
+
+fn reasoning_stop_name(stop: mneme_prolog::SearchStop) -> &'static str {
+    match stop {
+        mneme_prolog::SearchStop::Exhausted => "exhausted",
+        mneme_prolog::SearchStop::GroundSuccess => "ground-success",
+        mneme_prolog::SearchStop::GroundFailure => "ground-failure",
+        mneme_prolog::SearchStop::FoundOne => "found-one",
+        mneme_prolog::SearchStop::ResultLimit => "result-limit",
+        mneme_prolog::SearchStop::OutputLimit => "output-limit",
+        mneme_prolog::SearchStop::Timeout => "timeout",
+        mneme_prolog::SearchStop::Cancelled => "cancelled",
+        mneme_prolog::SearchStop::EngineFailure => "engine-failure",
+        mneme_prolog::SearchStop::InvalidReadback => "invalid-readback",
+    }
+}
+
+fn optional_string_value(value: Option<&str>) -> mneme_core::Value {
+    value.map_or_else(
+        || mneme_core::Value::symbol("none"),
+        mneme_core::Value::string,
+    )
+}
+
 /// The transport status of a retention cleanup state.
 fn forget_status(state: mneme_store::RetentionJobState) -> &'static str {
     match state {
@@ -1644,7 +2357,7 @@ fn time_limit_value(allowed: u64, status: mneme_recall::Execution) -> mneme_core
 }
 
 fn mode_value(mode: &mneme_recall::ModeReport) -> mneme_core::Value {
-    mneme_core::Value::symbol_dictionary([
+    let mut fields = vec![
         (
             mneme_core::Symbol::from("mode"),
             mneme_core::Value::symbol(mode.mode.name()),
@@ -1686,6 +2399,107 @@ fn mode_value(mode: &mneme_recall::ModeReport) -> mneme_core::Value {
         (
             mneme_core::Symbol::from("candidates"),
             mneme_core::Value::integer(mode.candidates),
+        ),
+    ];
+    if let Some(observation) = &mode.semantic_observation {
+        fields.push((
+            mneme_core::Symbol::from("semantic-observation"),
+            semantic_observation_value(observation),
+        ));
+    }
+    mneme_core::Value::symbol_dictionary(fields)
+}
+
+fn semantic_observation_value(
+    observation: &mneme_recall::SemanticObservation,
+) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("model-id"),
+            mneme_core::Value::string(observation.model_id.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("configuration-digest"),
+            mneme_core::Value::string(observation.configuration_digest.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("cache-hit"),
+            mneme_core::Value::Boolean(observation.cache_hit),
+        ),
+        (
+            mneme_core::Symbol::from("document-build"),
+            observation
+                .document_build
+                .as_ref()
+                .map(invocation_observation_value)
+                .unwrap_or_else(none_value),
+        ),
+        (
+            mneme_core::Symbol::from("query"),
+            observation
+                .query
+                .as_ref()
+                .map(invocation_observation_value)
+                .unwrap_or_else(none_value),
+        ),
+    ])
+}
+
+fn invocation_observation_value(
+    observation: &mneme_recall::InvocationObservation,
+) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("invocation-count"),
+            mneme_core::Value::integer(observation.invocation_count),
+        ),
+        (
+            mneme_core::Symbol::from("input-digests"),
+            mneme_core::Value::sequence(
+                observation
+                    .input_digests
+                    .iter()
+                    .map(|digest| mneme_core::Value::string(digest.clone()))
+                    .collect(),
+            ),
+        ),
+        (
+            mneme_core::Symbol::from("elapsed-micros"),
+            mneme_core::Value::integer(observation.elapsed_micros),
+        ),
+        (
+            mneme_core::Symbol::from("usage"),
+            usage_telemetry_value(&observation.usage),
+        ),
+    ])
+}
+
+fn usage_telemetry_value(usage: &mneme_recall::inference::UsageTelemetry) -> mneme_core::Value {
+    let (available, tokens) = match usage {
+        mneme_recall::inference::UsageTelemetry::Unavailable => (false, None),
+        mneme_recall::inference::UsageTelemetry::Measured(tokens) => (true, Some(tokens)),
+    };
+    let token_value = |value: Option<u64>| {
+        value
+            .map(mneme_core::Value::integer)
+            .unwrap_or_else(none_value)
+    };
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("available"),
+            mneme_core::Value::Boolean(available),
+        ),
+        (
+            mneme_core::Symbol::from("prompt-tokens"),
+            token_value(tokens.and_then(|tokens| tokens.prompt_tokens)),
+        ),
+        (
+            mneme_core::Symbol::from("completion-tokens"),
+            token_value(tokens.and_then(|tokens| tokens.completion_tokens)),
+        ),
+        (
+            mneme_core::Symbol::from("total-tokens"),
+            token_value(tokens.and_then(|tokens| tokens.total_tokens)),
         ),
     ])
 }
@@ -2814,7 +3628,28 @@ fn image_value(image: mneme_doc::images::Loaded) -> mneme_core::Value {
     ])
 }
 
-fn capabilities_value() -> mneme_core::Value {
+#[derive(Clone, Copy)]
+struct CapabilityAvailability {
+    reasoning: bool,
+    semantic: bool,
+}
+
+fn capabilities_value(availability: CapabilityAvailability) -> mneme_core::Value {
+    let CapabilityAvailability {
+        reasoning: reasoning_enabled,
+        semantic: semantic_enabled,
+    } = availability;
+    let mut recall_modes = vec![
+        mneme_recall::Mode::Lexical,
+        mneme_recall::Mode::Structured,
+        mneme_recall::Mode::Vector,
+    ];
+    let unavailable_modes = if semantic_enabled {
+        recall_modes.push(mneme_recall::Mode::Semantic);
+        Vec::new()
+    } else {
+        vec![mneme_recall::Mode::Semantic]
+    };
     mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("api-version"),
@@ -2822,41 +3657,65 @@ fn capabilities_value() -> mneme_core::Value {
         ),
         (
             mneme_core::Symbol::from("operations"),
-            mneme_core::Value::sequence(
-                [
-                    "record",
-                    "accept",
-                    "recall",
-                    "explain",
-                    "revise",
-                    "resume",
-                    "image.read",
-                    "forget",
-                    "proposal.inspect",
-                ]
-                .into_iter()
-                .map(mneme_core::Value::symbol)
-                .collect(),
-            ),
+            capability_operations_value(),
         ),
         (
             mneme_core::Symbol::from("recall-modes"),
             mneme_core::Value::sequence(
+                recall_modes
+                    .into_iter()
+                    .map(|mode| mneme_core::Value::symbol(mode.name()))
+                    .collect(),
+            ),
+        ),
+        (
+            mneme_core::Symbol::from("unavailable-modes"),
+            mneme_core::Value::sequence(
+                unavailable_modes
+                    .into_iter()
+                    .map(|mode| mneme_core::Value::symbol(mode.name()))
+                    .collect(),
+            ),
+        ),
+        (
+            mneme_core::Symbol::from("reasoning-enabled"),
+            mneme_core::Value::Boolean(reasoning_enabled),
+        ),
+        (
+            mneme_core::Symbol::from("reasoning-modes"),
+            mneme_core::Value::sequence(
                 [
-                    mneme_recall::Mode::Lexical,
-                    mneme_recall::Mode::Structured,
-                    mneme_recall::Mode::Vector,
+                    mneme_prolog::QueryMode::GroundTest,
+                    mneme_prolog::QueryMode::FindOne,
+                    mneme_prolog::QueryMode::Enumerate,
+                    mneme_prolog::QueryMode::Collect,
                 ]
                 .into_iter()
                 .map(|mode| mneme_core::Value::symbol(mode.name()))
                 .collect(),
             ),
         ),
-        (
-            mneme_core::Symbol::from("unavailable-modes"),
-            mneme_core::Value::sequence(Vec::new()),
-        ),
     ])
+}
+
+fn capability_operations_value() -> mneme_core::Value {
+    mneme_core::Value::sequence(
+        [
+            "record",
+            "accept",
+            "recall",
+            "explain",
+            "revise",
+            "resume",
+            "image.read",
+            "forget",
+            "proposal.inspect",
+            "reason.query",
+        ]
+        .into_iter()
+        .map(mneme_core::Value::symbol)
+        .collect(),
+    )
 }
 
 fn none_value() -> mneme_core::Value {
@@ -2936,4 +3795,113 @@ fn response_envelope_for_error(
             ]),
         ),
     ])
+}
+
+#[cfg(test)]
+mod semantic_api_tests {
+    use super::*;
+
+    fn member<'a>(value: &'a mneme_core::Value, key: &str) -> &'a mneme_core::Value {
+        value
+            .as_dictionary()
+            .and_then(|entries| entries.get(&mneme_core::Value::symbol(key)))
+            .expect("symbol dictionary member")
+    }
+
+    #[test]
+    fn capability_is_available_only_with_host_configuration() {
+        let disabled = capabilities_value(CapabilityAvailability {
+            reasoning: false,
+            semantic: false,
+        });
+        assert!(
+            !member(&disabled, "recall-modes")
+                .as_sequence()
+                .expect("mode sequence")
+                .contains(&mneme_core::Value::symbol("semantic"))
+        );
+        assert!(
+            member(&disabled, "unavailable-modes")
+                .as_sequence()
+                .expect("unavailable mode sequence")
+                .contains(&mneme_core::Value::symbol("semantic"))
+        );
+
+        let enabled = capabilities_value(CapabilityAvailability {
+            reasoning: false,
+            semantic: true,
+        });
+        assert!(
+            member(&enabled, "recall-modes")
+                .as_sequence()
+                .expect("mode sequence")
+                .contains(&mneme_core::Value::symbol("semantic"))
+        );
+        assert!(
+            member(&enabled, "unavailable-modes")
+                .as_sequence()
+                .expect("unavailable mode sequence")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn mode_serializes_only_content_free_invocation_evidence() {
+        let report = mneme_recall::ModeReport {
+            mode: mneme_recall::Mode::Semantic,
+            status: mneme_recall::ModeStatus::Used,
+            index_version: Some("semantic-index".to_owned()),
+            revision: None,
+            coverage: mneme_recall::IndexCoverage {
+                complete: true,
+                documents_indexed: 1,
+                documents_skipped: 0,
+                reason: None,
+            },
+            candidates: 1,
+            relation_exhaustive: None,
+            reason: None,
+            semantic_observation: Some(mneme_recall::SemanticObservation {
+                model_id: "fixture-model".to_owned(),
+                configuration_digest: "sha256:fixture".to_owned(),
+                cache_hit: false,
+                document_build: None,
+                query: Some(mneme_recall::InvocationObservation {
+                    invocation_count: 1,
+                    input_digests: vec!["sha256:fixture-input".to_owned()],
+                    elapsed_micros: 125,
+                    usage: mneme_recall::inference::UsageTelemetry::Measured(
+                        mneme_recall::inference::TokenUsage {
+                            prompt_tokens: Some(7),
+                            completion_tokens: None,
+                            total_tokens: Some(7),
+                        },
+                    ),
+                }),
+            }),
+        };
+        let value = mode_value(&report);
+        let observation = member(&value, "semantic-observation");
+        assert_eq!(
+            member(observation, "model-id"),
+            &mneme_core::Value::string("fixture-model")
+        );
+        let query = member(observation, "query");
+        assert_eq!(
+            member(query, "invocation-count"),
+            &mneme_core::Value::integer(1)
+        );
+        assert_eq!(
+            member(query, "elapsed-micros"),
+            &mneme_core::Value::integer(125)
+        );
+        assert_eq!(
+            member(query, "input-digests")
+                .as_sequence()
+                .expect("digest sequence")
+                .len(),
+            1
+        );
+        assert!(!format!("{value:?}").contains("source text"));
+    }
 }

@@ -55,6 +55,29 @@ impl LocalSession {
         })
     }
 
+    /// Construct a host-authorized local session for one explicit scope.
+    ///
+    /// This is for a trusted local command adapter that already resolved a
+    /// typed scope; remote callers must use a loaded, operator-authored session
+    /// file instead.
+    pub fn for_scope(
+        principal: impl Into<String>,
+        workspace_root: impl Into<std::path::PathBuf>,
+        scope: mneme_core::ScopeId,
+    ) -> crate::error::CallResult<Self> {
+        let principal = principal.into();
+        if principal.trim().is_empty() {
+            return Err(crate::error::ApiError::invalid(
+                "session principal must not be empty",
+            ));
+        }
+        Ok(LocalSession {
+            principal,
+            workspace_root: workspace_root.into(),
+            scopes: std::collections::BTreeSet::from([scope]),
+        })
+    }
+
     /// Require authorization for one command scope.
     pub fn authorize(&self, scope: &mneme_core::ScopeId) -> crate::error::CallResult<()> {
         if self.scopes.contains(scope) {
@@ -87,6 +110,22 @@ pub struct StructuredQuery {
     pub limits: mneme_datalog::Limits,
     /// Explicitly incomplete source extents.
     pub incomplete_extents: std::collections::BTreeSet<String>,
+}
+
+/// Engine-neutral request fields for one bounded reasoning operation.
+///
+/// The API service supplies the authenticated actor, pinned workspace context,
+/// and immutable input image; callers may provide only the mode and query
+/// program.
+#[derive(Clone, Debug)]
+pub struct ReasonQuery {
+    pub mode: mneme_prolog::QueryMode,
+    pub goal: mneme_prolog::Atom,
+    pub variables: Vec<mneme_prolog::QueryVariable>,
+    pub rules: Vec<mneme_prolog::Rule>,
+    pub assumptions: Vec<mneme_prolog::Assumption>,
+    pub features: std::collections::BTreeSet<mneme_prolog::Feature>,
+    pub limits: mneme_prolog::RequestLimits,
 }
 
 /// One validated API command.
@@ -178,6 +217,11 @@ pub enum ApiCommand {
         scope: mneme_core::ScopeId,
         assertion: mneme_core::RecordId,
     },
+    ReasonQuery {
+        request_id: String,
+        scope: mneme_core::ScopeId,
+        query: Box<ReasonQuery>,
+    },
     Capabilities {
         request_id: String,
     },
@@ -204,6 +248,7 @@ impl ApiCommand {
             | ApiCommand::ImageRead { request_id, .. }
             | ApiCommand::Forget { request_id, .. }
             | ApiCommand::ProposalInspect { request_id, .. }
+            | ApiCommand::ReasonQuery { request_id, .. }
             | ApiCommand::Capabilities { request_id } => request_id,
         }
     }
@@ -220,6 +265,7 @@ impl ApiCommand {
             ApiCommand::ImageRead { .. } => "image.read",
             ApiCommand::Forget { .. } => "forget",
             ApiCommand::ProposalInspect { .. } => "proposal.inspect",
+            ApiCommand::ReasonQuery { .. } => "reason.query",
             ApiCommand::Capabilities { .. } => "capabilities",
         }
     }
@@ -236,6 +282,7 @@ impl ApiCommand {
             | ApiCommand::ImageRead { scope, .. }
             | ApiCommand::Forget { scope, .. }
             | ApiCommand::ProposalInspect { scope, .. } => Some(scope),
+            ApiCommand::ReasonQuery { scope, .. } => Some(scope),
             ApiCommand::Capabilities { .. } => None,
         }
     }
@@ -274,6 +321,7 @@ impl ApiCommand {
             "image.read" => image_read(request_id, payload),
             "forget" => forget(request_id, payload),
             "proposal.inspect" => proposal_inspect(request_id, payload),
+            "reason.query" => reason_query(request_id, payload),
             "capabilities" => {
                 Fields::checked(payload, &[], &payload_path())?;
                 Ok(ApiCommand::Capabilities { request_id })
@@ -547,6 +595,444 @@ fn proposal_inspect(
     })
 }
 
+fn reason_query(
+    request_id: String,
+    payload: &mneme_core::Value,
+) -> crate::error::CallResult<ApiCommand> {
+    let fields = Fields::checked(
+        payload,
+        &[
+            "scope",
+            "mode",
+            "goal",
+            "variables",
+            "rules",
+            "assumptions",
+            "features",
+            "limits",
+        ],
+        &payload_path(),
+    )?;
+    let mode = match fields.symbol("mode")? {
+        "ground-test" => mneme_prolog::QueryMode::GroundTest,
+        "find-one" => mneme_prolog::QueryMode::FindOne,
+        "enumerate" => mneme_prolog::QueryMode::Enumerate,
+        "collect" => mneme_prolog::QueryMode::Collect,
+        other => {
+            return Err(unsupported(
+                &format!("unsupported reasoning query mode {other}"),
+                mneme_core::ErrorCode::UnsupportedValueKind,
+                payload_path().field("mode"),
+            ));
+        }
+    };
+    let scope = fields.scope("scope")?;
+    let goal = parse_reason_atom(fields.field("goal")?, &payload_path().field("goal"))?;
+    let variables = parse_reason_variables(
+        fields.field("variables")?,
+        &payload_path().field("variables"),
+    )?;
+    let rules = parse_reason_rules(fields.field("rules")?, &payload_path().field("rules"))?;
+    let assumptions = parse_reason_assumptions(
+        fields.field("assumptions")?,
+        &payload_path().field("assumptions"),
+    )?;
+    let features =
+        parse_reason_features(fields.field("features")?, &payload_path().field("features"))?;
+    let limits = parse_reason_limits(fields.field("limits")?)?;
+    Ok(ApiCommand::ReasonQuery {
+        request_id,
+        scope,
+        query: Box::new(ReasonQuery {
+            mode,
+            goal,
+            variables,
+            rules,
+            assumptions,
+            features,
+            limits,
+        }),
+    })
+}
+
+fn parse_reason_limits(
+    value: &mneme_core::Value,
+) -> crate::error::CallResult<mneme_prolog::RequestLimits> {
+    let path = payload_path().field("limits");
+    let fields = Fields::checked(
+        value,
+        &["max-time-ms", "max-solutions", "max-output-bytes"],
+        &path,
+    )?;
+    Ok(mneme_prolog::RequestLimits {
+        max_time_ms: fields.u64("max-time-ms")?,
+        max_solutions: fields.usize("max-solutions")?,
+        max_output_bytes: fields.usize("max-output-bytes")?,
+    })
+}
+
+fn parse_reason_variables(
+    value: &mneme_core::Value,
+    path: &mneme_core::Path,
+) -> crate::error::CallResult<Vec<mneme_prolog::QueryVariable>> {
+    let sequence = value.as_sequence().ok_or_else(|| {
+        member_error(
+            path.clone(),
+            mneme_core::ErrorCode::TypeMismatch,
+            "query variables must be a sequence",
+        )
+    })?;
+    sequence
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let item_path = path.index(index);
+            let fields = Fields::checked(value, &["name", "role"], &item_path)?;
+            let role = match fields.symbol("role")? {
+                "output" => mneme_prolog::VariableRole::Output,
+                "local" => mneme_prolog::VariableRole::Local,
+                other => {
+                    return Err(member_error(
+                        item_path.field("role"),
+                        mneme_core::ErrorCode::UnsupportedValueKind,
+                        format!("unsupported query variable role {other}"),
+                    ));
+                }
+            };
+            Ok(mneme_prolog::QueryVariable {
+                name: fields.text("name")?.to_owned(),
+                role,
+            })
+        })
+        .collect()
+}
+
+fn parse_reason_rules(
+    value: &mneme_core::Value,
+    path: &mneme_core::Path,
+) -> crate::error::CallResult<Vec<mneme_prolog::Rule>> {
+    let sequence = value.as_sequence().ok_or_else(|| {
+        member_error(
+            path.clone(),
+            mneme_core::ErrorCode::TypeMismatch,
+            "reasoning rules must be a sequence",
+        )
+    })?;
+    sequence
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_reason_rule(value, &path.index(index)))
+        .collect()
+}
+
+fn parse_reason_rule(
+    value: &mneme_core::Value,
+    path: &mneme_core::Path,
+) -> crate::error::CallResult<mneme_prolog::Rule> {
+    let fields = Fields::checked(value, &["id", "version", "head", "body"], path)?;
+    let head = parse_reason_atom(fields.field("head")?, &path.field("head"))?;
+    let body_value = fields.field("body")?;
+    let body = body_value.as_sequence().ok_or_else(|| {
+        member_error(
+            path.field("body"),
+            mneme_core::ErrorCode::TypeMismatch,
+            "reasoning rule body must be a sequence",
+        )
+    })?;
+    let body = body
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let item_path = path.field("body").index(index);
+            let fields = Fields::checked(value, &["kind", "atom"], &item_path)?;
+            let atom = parse_reason_atom(fields.field("atom")?, &item_path.field("atom"))?;
+            match fields.symbol("kind")? {
+                "positive" => Ok(mneme_prolog::Literal::Positive(atom)),
+                "negative" => Ok(mneme_prolog::Literal::Negative(atom)),
+                other => Err(member_error(
+                    item_path.field("kind"),
+                    mneme_core::ErrorCode::UnsupportedValueKind,
+                    format!("unsupported reasoning rule literal {other}"),
+                )),
+            }
+        })
+        .collect::<crate::error::CallResult<Vec<_>>>()?;
+    Ok(mneme_prolog::Rule {
+        id: fields.text("id")?.to_owned(),
+        version: fields.text("version")?.to_owned(),
+        head,
+        body,
+    })
+}
+
+fn parse_reason_assumptions(
+    value: &mneme_core::Value,
+    path: &mneme_core::Path,
+) -> crate::error::CallResult<Vec<mneme_prolog::Assumption>> {
+    let sequence = value.as_sequence().ok_or_else(|| {
+        member_error(
+            path.clone(),
+            mneme_core::ErrorCode::TypeMismatch,
+            "reasoning assumptions must be a sequence",
+        )
+    })?;
+    sequence
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let item_path = path.index(index);
+            let fields = Fields::checked(value, &["id", "atom", "rationale"], &item_path)?;
+            Ok(mneme_prolog::Assumption {
+                id: fields.text("id")?.to_owned(),
+                atom: parse_reason_atom(fields.field("atom")?, &item_path.field("atom"))?,
+                rationale: fields.text("rationale")?.to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn parse_reason_features(
+    value: &mneme_core::Value,
+    path: &mneme_core::Path,
+) -> crate::error::CallResult<std::collections::BTreeSet<mneme_prolog::Feature>> {
+    let sequence = value.as_sequence().ok_or_else(|| {
+        member_error(
+            path.clone(),
+            mneme_core::ErrorCode::TypeMismatch,
+            "reasoning features must be a sequence",
+        )
+    })?;
+    let mut features = std::collections::BTreeSet::new();
+    for (index, value) in sequence.iter().enumerate() {
+        let feature_path = path.index(index);
+        let name = value
+            .as_symbol()
+            .map(|symbol| symbol.as_str())
+            .ok_or_else(|| {
+                member_error(
+                    feature_path.clone(),
+                    mneme_core::ErrorCode::TypeMismatch,
+                    "reasoning feature names must be symbols",
+                )
+            })?;
+        let feature = match name {
+            "positive-query" => mneme_prolog::Feature::PositiveQuery,
+            "hypothetical-assumptions" => mneme_prolog::Feature::HypotheticalAssumptions,
+            "plans" => mneme_prolog::Feature::Plans,
+            "guarded-negation" => mneme_prolog::Feature::GuardedNegation,
+            "aggregation" => mneme_prolog::Feature::Aggregation,
+            "certified-proofs" => mneme_prolog::Feature::CertifiedProofs,
+            other => {
+                return Err(member_error(
+                    feature_path,
+                    mneme_core::ErrorCode::UnsupportedValueKind,
+                    format!("unknown reasoning feature {other}"),
+                ));
+            }
+        };
+        if !features.insert(feature) {
+            return Err(member_error(
+                feature_path,
+                mneme_core::ErrorCode::DuplicateSetElement,
+                "duplicate reasoning feature",
+            ));
+        }
+    }
+    Ok(features)
+}
+
+fn parse_reason_atom(
+    value: &mneme_core::Value,
+    path: &mneme_core::Path,
+) -> crate::error::CallResult<mneme_prolog::Atom> {
+    let fields = Fields::checked(value, &["predicate", "terms"], path)?;
+    let terms = fields
+        .field("terms")?
+        .as_sequence()
+        .ok_or_else(|| fields.refuse("terms", "reasoning atom terms must be a sequence"))?
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_reason_term(value, &path.field("terms").index(index)))
+        .collect::<crate::error::CallResult<Vec<_>>>()?;
+    Ok(mneme_prolog::Atom {
+        predicate: fields.text("predicate")?.to_owned(),
+        terms,
+    })
+}
+
+fn parse_reason_term(
+    value: &mneme_core::Value,
+    path: &mneme_core::Path,
+) -> crate::error::CallResult<mneme_prolog::Term> {
+    let mut tasks = vec![ReasonTermTask::Visit {
+        value,
+        path: path.clone(),
+    }];
+    let mut terms = Vec::new();
+    while let Some(task) = tasks.pop() {
+        terms.reserve(1);
+        match task {
+            ReasonTermTask::Visit { value, path } => {
+                if let Some(term) = visit_reason_term(value, path, &mut tasks)? {
+                    terms.push(term);
+                }
+            }
+            ReasonTermTask::BuildList { count, path } => {
+                let start = terms
+                    .len()
+                    .checked_sub(count)
+                    .ok_or_else(|| incomplete_reasoning_term(path))?;
+                let values = terms.split_off(start);
+                terms.push(mneme_prolog::Term::List(values));
+            }
+            ReasonTermTask::BuildCompound { fields, count } => {
+                let start = terms
+                    .len()
+                    .checked_sub(count)
+                    .ok_or_else(|| incomplete_reasoning_term(fields.path.clone()))?;
+                let args = terms.split_off(start);
+                let functor = fields.text("functor")?.to_owned();
+                terms.push(mneme_prolog::Term::Compound { functor, args });
+            }
+        }
+    }
+    terms
+        .pop()
+        .ok_or_else(|| incomplete_reasoning_term(path.clone()))
+}
+
+enum ReasonTermTask<'a> {
+    Visit {
+        value: &'a mneme_core::Value,
+        path: mneme_core::Path,
+    },
+    BuildList {
+        count: usize,
+        path: mneme_core::Path,
+    },
+    BuildCompound {
+        fields: Fields<'a>,
+        count: usize,
+    },
+}
+
+fn incomplete_reasoning_term(path: mneme_core::Path) -> crate::error::ApiError {
+    member_error(
+        path,
+        mneme_core::ErrorCode::UnsupportedValueKind,
+        "reasoning term could not be assembled",
+    )
+}
+
+fn visit_reason_term<'a>(
+    value: &'a mneme_core::Value,
+    path: mneme_core::Path,
+    tasks: &mut Vec<ReasonTermTask<'a>>,
+) -> crate::error::CallResult<Option<mneme_prolog::Term>> {
+    let (kind, fields) = checked_reason_term_fields(value, &path)?;
+    match kind {
+        "list" => {
+            let items = fields
+                .field("items")?
+                .as_sequence()
+                .ok_or_else(|| fields.refuse("items", "list items must be a sequence"))?;
+            tasks.push(ReasonTermTask::BuildList {
+                count: items.len(),
+                path: path.clone(),
+            });
+            for (index, item) in items.iter().enumerate().rev() {
+                tasks.push(ReasonTermTask::Visit {
+                    value: item,
+                    path: path.field("items").index(index),
+                });
+            }
+            Ok(None)
+        }
+        "compound" => {
+            let args = fields
+                .field("args")?
+                .as_sequence()
+                .ok_or_else(|| fields.refuse("args", "compound arguments must be a sequence"))?;
+            tasks.push(ReasonTermTask::BuildCompound {
+                fields,
+                count: args.len(),
+            });
+            for (index, arg) in args.iter().enumerate().rev() {
+                tasks.push(ReasonTermTask::Visit {
+                    value: arg,
+                    path: path.field("args").index(index),
+                });
+            }
+            Ok(None)
+        }
+        _ => parse_reason_term_leaf(kind, &fields, &path).map(Some),
+    }
+}
+
+fn parse_reason_term_leaf(
+    kind: &str,
+    fields: &Fields<'_>,
+    path: &mneme_core::Path,
+) -> crate::error::CallResult<mneme_prolog::Term> {
+    match kind {
+        "integer" => Ok(mneme_prolog::Term::Integer(fields.integer("value")?)),
+        "string" => Ok(mneme_prolog::Term::String(fields.text("value")?.to_owned())),
+        "symbol" => Ok(mneme_prolog::Term::Symbol(fields.text("value")?.to_owned())),
+        "variable" => Ok(mneme_prolog::Term::Variable(
+            fields.text("name")?.to_owned(),
+        )),
+        "reference" => Ok(mneme_prolog::Term::Reference {
+            record_id: mneme_core::RecordId::from_value(
+                fields.field("record")?,
+                &path.field("record"),
+            )
+            .map_err(crate::error::ApiError::from_diagnostic)?,
+            revision_id: fields
+                .optional("revision")
+                .map(|revision| {
+                    mneme_core::RevisionId::from_value(revision, &path.field("revision"))
+                        .map_err(crate::error::ApiError::from_diagnostic)
+                })
+                .transpose()?,
+        }),
+        _ => Err(member_error(
+            path.field("kind"),
+            mneme_core::ErrorCode::UnsupportedValueKind,
+            format!("unknown reasoning term kind {kind}"),
+        )),
+    }
+}
+
+fn checked_reason_term_fields<'a>(
+    value: &'a mneme_core::Value,
+    path: &mneme_core::Path,
+) -> crate::error::CallResult<(&'a str, Fields<'a>)> {
+    let envelope = Fields::checked(
+        value,
+        &[
+            "kind", "value", "name", "record", "revision", "items", "functor", "args",
+        ],
+        path,
+    )?;
+    let kind = envelope.symbol("kind")?;
+    let fields = match kind {
+        "integer" => Fields::checked(value, &["kind", "value"], path)?,
+        "string" | "symbol" => Fields::checked(value, &["kind", "value"], path)?,
+        "variable" => Fields::checked(value, &["kind", "name"], path)?,
+        "reference" => Fields::checked(value, &["kind", "record", "revision"], path)?,
+        "list" => Fields::checked(value, &["kind", "items"], path)?,
+        "compound" => Fields::checked(value, &["kind", "functor", "args"], path)?,
+        other => {
+            return Err(member_error(
+                path.field("kind"),
+                mneme_core::ErrorCode::UnsupportedValueKind,
+                format!("unknown reasoning term kind {other}"),
+            ));
+        }
+    };
+    Ok((kind, fields))
+}
+
 fn parse_record(
     index: usize,
     value: &mneme_core::Value,
@@ -620,6 +1106,7 @@ fn parse_modes(
                 Some("lexical") => Ok(mneme_recall::Mode::Lexical),
                 Some("structured") => Ok(mneme_recall::Mode::Structured),
                 Some("vector") => Ok(mneme_recall::Mode::Vector),
+                Some("semantic") => Ok(mneme_recall::Mode::Semantic),
                 Some(other) => Err(mode(&format!("unknown recall mode {other}"))),
                 None => Err(mode("recall modes must be symbols")),
             }
@@ -1170,6 +1657,16 @@ impl<'a> Fields<'a> {
             .as_integer()
             .and_then(|integer| integer.to_i64())
             .ok_or_else(|| self.refuse(name, format!("{name} must be an integer")))
+    }
+
+    fn u64(&self, name: &str) -> crate::error::CallResult<u64> {
+        u64::try_from(self.integer(name)?)
+            .map_err(|_| self.refuse(name, format!("{name} must be a non-negative integer")))
+    }
+
+    fn usize(&self, name: &str) -> crate::error::CallResult<usize> {
+        usize::try_from(self.integer(name)?)
+            .map_err(|_| self.refuse(name, format!("{name} must be a non-negative integer")))
     }
 
     fn boolean_or(&self, name: &str, default: bool) -> crate::error::CallResult<bool> {

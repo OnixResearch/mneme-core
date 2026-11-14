@@ -866,6 +866,77 @@ fn local_vector_mode_recalls_approximate_terms() {
 }
 
 #[test]
+fn semantic_mode_is_opt_in_and_unavailable_fallback_is_attributed() {
+    let mut harness = Harness::new();
+    let mut request = harness.request("SQLite");
+    request.modes = std::collections::BTreeSet::from([mneme_recall::Mode::Semantic]);
+    assert!(request.semantic.is_none());
+
+    let response = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("declared lexical fallback");
+    assert_eq!(response.status, mneme_recall::Execution::Partial);
+    let semantic = response
+        .modes
+        .iter()
+        .find(|mode| mode.mode == mneme_recall::Mode::Semantic)
+        .expect("semantic mode report");
+    assert_eq!(semantic.status, mneme_recall::ModeStatus::Unavailable);
+    assert!(semantic.semantic_observation.is_none());
+    assert!(response.modes.iter().any(|mode| {
+        mode.mode == mneme_recall::Mode::Lexical
+            && mode.status == mneme_recall::ModeStatus::Used
+            && mode
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("fallback"))
+    }));
+    assert!(response.candidates.iter().all(|candidate| {
+        candidate.origins.contains(&mneme_recall::Mode::Lexical)
+            && !candidate.origins.contains(&mneme_recall::Mode::Semantic)
+    }));
+}
+
+#[test]
+fn structured_and_semantic_fallback_do_not_run_lexical_twice() {
+    let mut harness = Harness::new();
+    let mut request = harness.request("SQLite");
+    request.modes = std::collections::BTreeSet::from([
+        mneme_recall::Mode::Structured,
+        mneme_recall::Mode::Semantic,
+    ]);
+
+    let response = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("structured and semantic fallbacks");
+    assert_eq!(
+        response
+            .modes
+            .iter()
+            .filter(|mode| mode.mode == mneme_recall::Mode::Lexical)
+            .count(),
+        1,
+        "the structured fallback already supplied the lexical ranking"
+    );
+}
+
+#[test]
+fn semantic_mode_without_backend_refuses_when_fallback_is_disabled() {
+    let mut harness = Harness::new();
+    let mut request = harness.request("SQLite");
+    request.modes = std::collections::BTreeSet::from([mneme_recall::Mode::Semantic]);
+    request.allow_fallback = false;
+
+    let error = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect_err("unconfigured semantic mode must not silently fall back");
+    assert!(matches!(
+        error,
+        mneme_recall::QueryError::ModeUnavailable { .. }
+    ));
+}
+
+#[test]
 fn budget_truncation_keeps_source_span_and_reports_omissions() {
     let mut harness = Harness::new();
     let mut request = harness.request("cedar service");

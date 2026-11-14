@@ -6,9 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ed25519-dalek = "=2.2.0"
 mneme-kernel.workspace = true
 mneme-core.workspace = true
 mneme-store.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

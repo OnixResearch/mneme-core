@@ -49,8 +49,8 @@ pub use problem::{Diagnostic, ErrorCode, Path, Stage, render_diagnostics};
 pub use projection::{AdapterCapabilities, ValueKind, project_value};
 pub use tenancy::{ScopeClass, ScopeId};
 pub use transport::{
-    decode_document, decode_document_value, decode_value, encode_document, encode_document_string,
-    encode_value,
+    decode_document, decode_document_value, decode_nested_value, decode_value, encode_document,
+    encode_document_string, encode_value,
 };
 pub use typed::{ByteString, Double, Record, SignedInteger, Symbol, Value};
 pub use wire::{

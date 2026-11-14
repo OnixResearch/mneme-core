@@ -147,6 +147,10 @@ const MAX_CACHED_RECORDS: usize = 262_144;
 /// Largest total encoded size of the record envelopes one handle keeps.
 const MAX_CACHED_RECORD_BYTES: usize = 64 * 1024 * 1024;
 
+/// A history result is complete or refused, never silently truncated. Enforce
+/// the memory layer's existing bound before decoding an entry beyond it.
+const MAX_HISTORY_REVISIONS: usize = 1_000_000;
+
 /// The on-disk identity of one verified blob file.
 ///
 /// A content-addressed path can be rewritten or removed behind a running
@@ -1485,6 +1489,22 @@ impl Workspace {
         Ok(CommitGuard { file })
     }
 
+    /// Hold the shared commit lock while checking and using one eligibility
+    /// generation for an external participant write.
+    ///
+    /// Retention barrier commits take the exclusive workspace lock. Acquiring
+    /// this guard before any participant bytes are written ensures that a
+    /// barrier either waits for the write and inventories it, or advances the
+    /// generation first and makes this stale write fail without touching disk.
+    pub fn eligibility_guard(&self, pinned: u64) -> crate::error::Result<CommitGuard> {
+        let guard = self.shared_commit_lock()?;
+        let current = self.eligibility_generation()?;
+        if current != pinned {
+            return Err(crate::error::Failure::BarrierAdvanced { pinned, current });
+        }
+        Ok(guard)
+    }
+
     /// Take the exclusive lock a sweep holds while it deletes unreferenced
     /// files.
     ///
@@ -1569,9 +1589,19 @@ impl Workspace {
 
     /// Advance the current eligibility/erasure generation.
     ///
-    /// The read and the write share one immediate transaction, so an advance
-    /// interleaved with a retention barrier commit can never be lost.
+    /// The exclusive workspace lock is acquired before the SQLite writer lock,
+    /// matching retention commits and keeping participant writes ordered with
+    /// every generation advance.
     pub fn advance_eligibility_barrier(&mut self) -> crate::error::Result<u64> {
+        self.advance_eligibility_barrier_after_lock(|| {})
+    }
+
+    fn advance_eligibility_barrier_after_lock(
+        &mut self,
+        after_lock: impl FnOnce(),
+    ) -> crate::error::Result<u64> {
+        let _guard = self.exclusive_sweep_lock()?;
+        after_lock();
         let transaction = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -2494,6 +2524,8 @@ impl Workspace {
     /// served envelope verified through this handle's record cache with one
     /// identity check per envelope. The restore gate and the barrier explanation
     /// for a purged payload apply unchanged.
+    /// At most one million retained revisions are materialized; exceeding that
+    /// bound returns `HistoryLimitExceeded`, never a successful partial map.
     pub fn record_histories(
         &self,
         snapshot: &Snapshot,
@@ -2504,7 +2536,13 @@ impl Workspace {
         let context = self.current_revision()?;
         let generation = self.eligibility_generation()?;
         let transaction = self.connection.unchecked_transaction()?;
-        let loaded = self.record_histories_in(&transaction, snapshot, context, generation);
+        let loaded = self.record_histories_in(
+            &transaction,
+            snapshot,
+            context,
+            generation,
+            MAX_HISTORY_REVISIONS,
+        );
         match loaded {
             Ok(histories) => {
                 transaction.commit()?;
@@ -2533,11 +2571,15 @@ impl Workspace {
         snapshot: &Snapshot,
         context: mneme_core::WorkspaceRevisionId,
         generation: u64,
+        max_revisions: usize,
     ) -> crate::error::Result<
         std::collections::BTreeMap<mneme_core::RecordId, Vec<mneme_core::RecordEnvelope>>,
     > {
         self.facts().align(generation);
         let forgotten = sweep::forgotten_suppressions_in(connection)?;
+        if snapshot.records.len() > max_revisions {
+            return Err(crate::error::Failure::HistoryLimitExceeded);
+        }
         let mut histories = snapshot
             .records
             .iter()
@@ -2561,6 +2603,7 @@ impl Workspace {
         let mut rows = statement.query([])?;
         // A cache-serving load never needs the ledger's recorded lengths.
         let lengths = BlobIndex::new();
+        let mut loaded_revisions = 0;
         while let Some(row) = rows.next()? {
             let record_id = record_id_from_blob(&row.get::<_, Vec<u8>>(0)?, context)?;
             let Some(history) = histories.get_mut(&record_id) else {
@@ -2570,6 +2613,10 @@ impl Workspace {
             if forgotten.revisions.contains(&(record_id, revision_id)) {
                 continue;
             }
+            if loaded_revisions >= max_revisions {
+                return Err(crate::error::Failure::HistoryLimitExceeded);
+            }
+            loaded_revisions += 1;
             let kind = row.get::<_, String>(2)?;
             let kind = mneme_core::RecordKind::parse(&kind).ok_or_else(|| {
                 crate::error::Failure::Integrity {

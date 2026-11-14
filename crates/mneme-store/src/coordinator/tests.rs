@@ -58,6 +58,89 @@ fn committed_workspace(root: &std::path::Path) -> super::Workspace {
     workspace
 }
 
+fn replace_entity(workspace: &mut super::Workspace, serial: u8) {
+    let snapshot = workspace.snapshot().expect("snapshot");
+    let previous = snapshot
+        .records
+        .iter()
+        .find(|record| record.record_id == mneme_core::fixtures::entity_id())
+        .expect("entity");
+    let mut replacement = draft(previous);
+    replacement.predecessor = Some(previous.revision_id);
+    replacement.revision_id = mneme_core::RevisionId::from_bytes([serial; 16]);
+    replacement.payload.insert(
+        mneme_core::Symbol::from("label"),
+        mneme_core::Value::string("Changed Cedar"),
+    );
+    let mut command = fixture_command(snapshot.revision, &format!("replace-{serial}"));
+    command.records = vec![replacement];
+    command.source_blobs.clear();
+    workspace.commit(command).expect("replace entity");
+}
+
+#[test]
+fn history_bound_refuses_before_decoding_an_over_budget_payload() {
+    let temp = tempfile::tempdir().expect("temp");
+    let mut workspace = committed_workspace(temp.path());
+    replace_entity(&mut workspace, 0xf0);
+    let snapshot = workspace.snapshot().expect("snapshot");
+    let expected = snapshot
+        .records
+        .iter()
+        .map(|record| {
+            (
+                record.record_id,
+                workspace
+                    .record_revisions(record.record_id)
+                    .expect("independent history"),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let total = expected.values().map(Vec::len).sum::<usize>();
+    let exact = workspace
+        .record_histories_in(
+            &workspace.connection,
+            &snapshot,
+            snapshot.revision,
+            snapshot.eligibility_generation,
+            total,
+        )
+        .expect("exact history boundary");
+    assert_eq!(exact, expected);
+    // Ordered history has one more row than live membership. Removing the
+    // last record's blob distinguishes early refusal from decode-then-truncate.
+    let last = snapshot
+        .records
+        .iter()
+        .max_by_key(|record| record.record_id)
+        .expect("last record");
+    std::fs::remove_file(crate::payload::blob_path(
+        &workspace.root,
+        last.full_digest(),
+    ))
+    .expect("remove last blob");
+    let over = workspace
+        .record_histories_in(
+            &workspace.connection,
+            &snapshot,
+            snapshot.revision,
+            snapshot.eligibility_generation,
+            total - 1,
+        )
+        .expect_err("history exceeds budget");
+    assert!(matches!(over, crate::error::Failure::HistoryLimitExceeded));
+    let within = workspace
+        .record_histories_in(
+            &workspace.connection,
+            &snapshot,
+            snapshot.revision,
+            snapshot.eligibility_generation,
+            total,
+        )
+        .expect_err("admitted payload still needs integrity verification");
+    assert!(matches!(within, crate::error::Failure::Integrity { .. }));
+}
+
 // A concurrent forget commits its barrier and then purges payloads. These
 // tests reproduce the only observable effect a read can see of that
 // ordering: the generation a read started with is no longer current while a
@@ -101,6 +184,53 @@ fn a_record_payload_purged_after_a_barrier_is_a_barrier_change() {
         stale,
         crate::error::Failure::BarrierAdvanced { pinned, current }
             if pinned == generation && current == generation.saturating_add(1)
+    ));
+}
+
+#[test]
+fn generation_barrier_takes_file_lock_before_waiting_for_sqlite_writer() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = temp.path().to_path_buf();
+    let writer = committed_workspace(&root);
+    let pinned_generation = writer.eligibility_generation().expect("generation");
+    let mut sqlite_blocker = super::Workspace::open(&root, config()).expect("second handle");
+    let transaction = sqlite_blocker
+        .connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .expect("hold SQLite writer lock");
+    let (locked_sender, locked_receiver) = std::sync::mpsc::sync_channel(1);
+    let barrier_root = root.clone();
+    let barrier = std::thread::spawn(move || {
+        let mut workspace =
+            super::Workspace::open(&barrier_root, config()).expect("barrier handle");
+        workspace
+            .advance_eligibility_barrier_after_lock(|| {
+                locked_sender.send(()).expect("report exclusive file lock");
+            })
+            .expect("advance after writer releases SQLite")
+    });
+
+    locked_receiver
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("barrier must acquire workspace.lock before waiting for SQLite");
+    let probe = std::fs::File::open(root.join(super::LOCK_FILE)).expect("workspace lock file");
+    assert!(
+        probe.try_lock().is_err(),
+        "an exclusive generation barrier must exclude a new guarded participant write while waiting for SQLite"
+    );
+
+    drop(transaction);
+    drop(sqlite_blocker);
+    assert_eq!(
+        barrier.join().expect("barrier thread"),
+        pinned_generation + 1
+    );
+    assert!(matches!(
+        writer
+            .eligibility_guard(pinned_generation)
+            .expect_err("the stale participant write must be refused"),
+        crate::error::Failure::BarrierAdvanced { pinned, current }
+            if pinned == pinned_generation && current == pinned_generation + 1
     ));
 }
 

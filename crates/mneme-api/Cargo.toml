@@ -14,6 +14,7 @@ mneme-memory.workspace = true
 mneme-retention.workspace = true
 mneme-recall.workspace = true
 mneme-datalog.workspace = true
+mneme-prolog.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

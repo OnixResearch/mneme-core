@@ -2,9 +2,11 @@
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// Ranking/fusion policy version.
-pub const FUSION_POLICY_VERSION: &str = "weighted-rrf-k60-lex4-vector1-v2";
+pub const FUSION_POLICY_VERSION: &str =
+    "weighted-rrf-k60-lexical1-structured1-trigram0.25-semantic1-v3";
 const RRF_K: f64 = 60.0;
 const VECTOR_RRF_WEIGHT_WITH_LEXICAL: f64 = 0.25;
+const SEMANTIC_RRF_WEIGHT: f64 = 1.0;
 /// Smallest item text that can carry its attribution inside the context budget.
 const MIN_ITEM_BYTES: usize = 32;
 /// Longest accepted query text.
@@ -206,7 +208,14 @@ impl WorkBudget {
         Ok(())
     }
 
-    /// Whole milliseconds this attempt has run, as the last check observed.
+    /// Remaining wall time for a nested, independently bounded worker.
+    #[allow(unknown_lints, ambient_clock)] // it is bounded by this request's captured start instant
+    pub(crate) fn remaining_time(&mut self) -> std::result::Result<std::time::Duration, Stop> {
+        self.check()?;
+        Ok(self.max_time.saturating_sub(self.started.elapsed()))
+    }
+
+    /// Whole milliseconds this attempt has run, as the last budget check observed.
     fn elapsed_ms(&self) -> u64 {
         self.observed_ms
     }
@@ -461,6 +470,22 @@ impl<'w> Service<'w> {
         if modes.use_vector {
             progress.add_vector(index.as_ref(), request, budget)?;
         }
+        if modes.use_semantic {
+            let needs_lexical_fallback = progress.add_semantic(SemanticModeContext {
+                index: index.as_mut(),
+                request,
+                served_revision,
+                generation,
+                budget: &mut *budget,
+                require_current_generation: || {
+                    self.require_generation(generation)
+                        .map_err(crate::engine::AttemptFailure::from)
+                },
+            })?;
+            if needs_lexical_fallback && request.allow_fallback && !modes.use_lexical {
+                progress.add_lexical(index.as_ref(), request, true, budget)?;
+            }
+        }
         if is_structured_requested {
             self.add_structured_mode(request, served_revision, &mut progress);
         }
@@ -479,14 +504,7 @@ impl<'w> Service<'w> {
         if let Some(index) = index.take() {
             self.indexes.insert(key, index);
         }
-        if !request.allow_partial && progress.execution != crate::model::Execution::Complete {
-            packed.returned.clear();
-            packed.omissions.clear();
-            push_reason(
-                &mut progress.reasons,
-                "partial results were withheld by the request",
-            );
-        }
+        withhold_partial_results(request, &mut progress, &mut packed);
         self.require_generation(generation)?;
         Ok(finish_response(
             CompletionContext {
@@ -537,7 +555,7 @@ impl<'w> Service<'w> {
             include_disputed: request.include_disputed,
             include_hypothetical: request.include_hypothetical,
         };
-        let index = if modes.use_lexical || modes.use_vector {
+        let index = if modes.use_lexical || modes.use_vector || modes.use_semantic {
             Some(self.take_index(&key, &pinned, request, budget)?)
         } else {
             None
@@ -660,6 +678,7 @@ impl<'w> Service<'w> {
                     candidates: 0,
                     relation_exhaustive: None,
                     reason: Some("structured mode was not configured".to_owned()),
+                    semantic_observation: None,
                 });
                 progress.limit(
                     crate::model::Execution::Partial,
@@ -775,6 +794,7 @@ struct Modes {
     fallback_lexical: bool,
     use_lexical: bool,
     use_vector: bool,
+    use_semantic: bool,
 }
 
 fn modes(
@@ -788,7 +808,14 @@ fn modes(
     let is_lexical_used =
         request.modes.contains(&crate::model::Mode::Lexical) || is_fallback_lexical;
     let is_vector_used = request.modes.contains(&crate::model::Mode::Vector);
-    if !is_lexical_used && !is_vector_used && request.structured.is_none() {
+    let is_semantic_used = request.modes.contains(&crate::model::Mode::Semantic);
+    if is_semantic_used && request.semantic.is_none() && !request.allow_fallback {
+        return Err(crate::failure::QueryError::ModeUnavailable {
+            mode: crate::model::Mode::Semantic.name().to_owned(),
+            reason: "no semantic embedding backend is configured".to_owned(),
+        });
+    }
+    if !is_lexical_used && !is_vector_used && !is_semantic_used && request.structured.is_none() {
         return Err(crate::failure::QueryError::ModeUnavailable {
             mode: "all requested modes".to_owned(),
             reason: "no candidate mode can execute".to_owned(),
@@ -798,6 +825,7 @@ fn modes(
         fallback_lexical: is_fallback_lexical,
         use_lexical: is_lexical_used,
         use_vector: is_vector_used,
+        use_semantic: is_semantic_used,
     })
 }
 
@@ -807,6 +835,30 @@ struct Progress {
     candidates: std::collections::BTreeMap<String, crate::model::Candidate>,
     execution: crate::model::Execution,
     reasons: Vec<String>,
+}
+
+struct SemanticModeContext<'a, F> {
+    index: Option<&'a mut crate::model::CachedIndex>,
+    request: &'a crate::model::Request,
+    served_revision: mneme_core::WorkspaceRevisionId,
+    generation: u64,
+    budget: &'a mut WorkBudget,
+    require_current_generation: F,
+}
+
+fn withhold_partial_results(
+    request: &crate::model::Request,
+    progress: &mut Progress,
+    packed: &mut Packed,
+) {
+    if !request.allow_partial && progress.execution != crate::model::Execution::Complete {
+        packed.returned.clear();
+        packed.omissions.clear();
+        push_reason(
+            &mut progress.reasons,
+            "partial results were withheld by the request",
+        );
+    }
 }
 
 impl Default for Progress {
@@ -871,6 +923,7 @@ impl Progress {
             } else {
                 None
             },
+            semantic_observation: None,
         });
         Ok(())
     }
@@ -917,8 +970,125 @@ impl Progress {
                 "local character-trigram vector projection; not a learned semantic model"
                     .to_owned(),
             ),
+            semantic_observation: None,
         });
         Ok(())
+    }
+
+    fn add_semantic<F>(&mut self, context: SemanticModeContext<'_, F>) -> AttemptResult<bool>
+    where
+        F: FnMut() -> AttemptResult<()>,
+    {
+        let SemanticModeContext {
+            index,
+            request,
+            served_revision,
+            generation,
+            budget,
+            require_current_generation,
+        } = context;
+        let Some(semantic) = request.semantic.as_ref() else {
+            self.record_semantic_failure(
+                served_revision,
+                crate::model::ModeStatus::Unavailable,
+                "no semantic embedding backend is configured",
+            );
+            return Ok(true);
+        };
+        let Some(index) = index else {
+            self.record_semantic_failure(
+                served_revision,
+                crate::model::ModeStatus::Failed,
+                "semantic index was not built",
+            );
+            return Ok(true);
+        };
+        let run = crate::semantic::rank(crate::semantic::RankContext {
+            index: &mut *index,
+            request,
+            semantic,
+            generation,
+            budget: &mut *budget,
+            require_current_generation,
+        })?;
+        self.record_semantic_run(index, served_revision, budget, run)
+    }
+
+    fn record_semantic_run(
+        &mut self,
+        index: &crate::model::CachedIndex,
+        served_revision: mneme_core::WorkspaceRevisionId,
+        budget: &mut WorkBudget,
+        run: crate::semantic::ModeRun,
+    ) -> AttemptResult<bool> {
+        let needs_lexical_fallback = matches!(
+            run.status,
+            crate::model::ModeStatus::Unavailable
+                | crate::model::ModeStatus::TimedOut
+                | crate::model::ModeStatus::Failed
+        );
+        let is_ranked = matches!(
+            run.status,
+            crate::model::ModeStatus::Used | crate::model::ModeStatus::Partial
+        );
+        let candidate_count = run.ranking.len();
+        if is_ranked {
+            for (id, score) in &run.ranking {
+                budget.charge(1)?;
+                let Some(document) = index.document(id) else {
+                    continue;
+                };
+                add_candidate(
+                    &mut self.candidates,
+                    candidate_from_document(document),
+                    crate::model::Mode::Semantic,
+                    *score,
+                    id,
+                );
+            }
+            self.ranking
+                .push((crate::model::Mode::Semantic, run.ranking));
+        }
+        if let Some(execution) = run.execution {
+            self.limit(
+                execution,
+                run.reason
+                    .as_deref()
+                    .unwrap_or("semantic recall was partial"),
+            );
+        }
+        self.mode_reports.push(crate::model::ModeReport {
+            mode: crate::model::Mode::Semantic,
+            status: run.status,
+            index_version: run.index_version,
+            revision: Some(served_revision),
+            coverage: run.coverage,
+            candidates: candidate_count,
+            relation_exhaustive: None,
+            reason: run.reason,
+            semantic_observation: run.observation,
+        });
+        Ok(needs_lexical_fallback)
+    }
+
+    fn record_semantic_failure(
+        &mut self,
+        served_revision: mneme_core::WorkspaceRevisionId,
+        status: crate::model::ModeStatus,
+        reason: &str,
+    ) {
+        self.mode_reports.push(crate::model::ModeReport {
+            mode: crate::model::Mode::Semantic,
+            status,
+            index_version: None,
+            revision: Some(served_revision),
+            coverage: crate::model::IndexCoverage::incomplete(0, 0, reason.to_owned()),
+            candidates: 0,
+            relation_exhaustive: None,
+            reason: Some(reason.to_owned()),
+            semantic_observation: None,
+        });
+        self.limit(crate::model::Execution::Partial, reason);
     }
 
     fn structured_build_failed(
@@ -938,6 +1108,7 @@ impl Progress {
             candidates: 0,
             relation_exhaustive: None,
             reason: Some(reason),
+            semantic_observation: None,
         });
         self.limit(
             failure_execution(request.allow_partial),
@@ -962,6 +1133,7 @@ impl Progress {
             candidates: 0,
             relation_exhaustive: None,
             reason: Some(reason),
+            semantic_observation: None,
         });
         self.limit(
             failure_execution(request.allow_partial),
@@ -1025,6 +1197,7 @@ impl Progress {
             candidates: rows.rows.len(),
             relation_exhaustive: Some(rows.exhaustive),
             reason: rows.reason.clone(),
+            semantic_observation: None,
         });
     }
 }
@@ -1199,7 +1372,7 @@ fn answer_facts(
             );
         let is_ranked_mode = matches!(
             report.mode,
-            crate::model::Mode::Lexical | crate::model::Mode::Vector
+            crate::model::Mode::Lexical | crate::model::Mode::Vector | crate::model::Mode::Semantic
         );
         if is_contributing && is_ranked_mode {
             is_ranked = true;
@@ -1342,6 +1515,7 @@ fn stopped_mode(mode: crate::model::Mode, stop: Stop) -> crate::model::ModeRepor
         candidates: 0,
         relation_exhaustive: None,
         reason: Some(stop.reason().to_owned()),
+        semantic_observation: None,
     }
 }
 
@@ -1530,10 +1704,12 @@ fn fuse(
         .iter()
         .any(|(mode, ranking)| *mode == crate::model::Mode::Lexical && !ranking.is_empty());
     for (mode, ranking) in rankings {
-        let weight = if *mode == crate::model::Mode::Vector && has_lexical_ranking {
-            VECTOR_RRF_WEIGHT_WITH_LEXICAL
-        } else {
-            1.0
+        let weight = match mode {
+            crate::model::Mode::Vector if has_lexical_ranking => VECTOR_RRF_WEIGHT_WITH_LEXICAL,
+            crate::model::Mode::Semantic => SEMANTIC_RRF_WEIGHT,
+            crate::model::Mode::Lexical
+            | crate::model::Mode::Structured
+            | crate::model::Mode::Vector => 1.0,
         };
         for (rank, (id, _raw)) in ranking.iter().enumerate() {
             if let Some(candidate) = fused.get_mut(id) {
@@ -2009,6 +2185,20 @@ mod tests {
         assert_eq!(structured.score_components["rrf-structured"], 1.0 / 61.0);
         assert_eq!(vector.score_components["rrf-vector"], 0.25 / 61.0);
         assert_eq!(vector.score_components["vector"], 0.75);
+    }
+
+    #[test]
+    fn semantic_rrf_uses_equal_deterministic_weight() {
+        let mut candidates = std::collections::BTreeMap::new();
+        candidates.insert("semantic".to_owned(), candidate("semantic"));
+        let fused = super::fuse(
+            candidates,
+            &[(
+                crate::model::Mode::Semantic,
+                vec![("semantic".to_owned(), 0.9)],
+            )],
+        );
+        assert_eq!(fused[0].score_components["rrf-semantic"], 1.0 / 61.0);
     }
 
     fn barrier() -> crate::failure::QueryError {

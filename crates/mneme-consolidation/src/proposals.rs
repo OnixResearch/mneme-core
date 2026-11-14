@@ -52,11 +52,45 @@ impl GeneratorInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtractedClaim {
     pub claim_id: String,
+    /// Host-resolved entity identity. Model output contains an opaque entity handle instead.
     pub subject: mneme_core::RecordId,
     pub predicate: String,
     pub value: mneme_core::Value,
+    /// Byte offsets relative to `GeneratorInput::text`, not the whole source.
     pub span: mneme_core::SourceSpan,
     pub quote: String,
+    pub stance: crate::ProposalStance,
+    pub valid_time: mneme_core::ValidTime,
+    pub uncertainty: Option<String>,
+}
+
+/// A host-only mapping from a model-visible opaque handle to a local entity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityHandle {
+    pub handle: String,
+    pub label: String,
+    pub record_id: mneme_core::RecordId,
+}
+
+/// One extraction attempt and its content-free runtime receipt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtractorAttempt {
+    pub status: mneme_recall::inference::InvocationStatus,
+    pub claims: Vec<ExtractedClaim>,
+    /// Exact serialized worker request bytes when preparation succeeded.
+    pub input_bytes: Option<usize>,
+    pub elapsed: std::time::Duration,
+    pub usage: mneme_recall::inference::UsageTelemetry,
+    pub input_digest: String,
+    pub configuration_digest: String,
+    pub reported_model: Option<String>,
+    pub output_bytes: Option<usize>,
+    /// SHA-256 of exact fully captured worker stdout, before schema parsing.
+    pub observed_output_digest: Option<String>,
+    pub detail: Option<String>,
+    /// False for deterministic test/custom adapters; only a subprocess-backed
+    /// attempt can create ModelExtraction provenance.
+    pub supervised_model: bool,
 }
 
 /// Optional extractor boundary.
@@ -68,6 +102,16 @@ pub trait Extractor {
     fn descriptor(&self) -> &crate::ExtractorDescriptor;
 
     fn extract(&self, input: &GeneratorInput) -> Result<Vec<ExtractedClaim>, String>;
+
+    /// Invoke one extraction with a host-visible, pre-resolved entity roster.
+    /// Implementations must report whether output came from the supervised
+    /// model transport; synchronous custom extraction is never model-attributed.
+    fn extract_attempt(
+        &self,
+        input: &GeneratorInput,
+        _entities: &[EntityHandle],
+        control: &mneme_recall::inference::InvocationControl,
+    ) -> ExtractorAttempt;
 }
 
 /// Deterministic extractive summary generator.
@@ -171,10 +215,12 @@ pub fn generate_extracted(
                     subject: claim.subject,
                     predicate: claim.predicate,
                     value: claim.value,
-                    stance: crate::ProposalStance::Affirm,
-                    valid_time: mneme_core::ValidTime::Unknown,
+                    stance: claim.stance,
+                    valid_time: claim.valid_time,
+                    uncertainty: claim.uncertainty,
+                    extraction: None,
                 }),
-                premises: vec![premise(input, claim.span)],
+                premises: vec![premise(input, absolute_span(input, claim.span)?)],
                 rationale:
                     "extractor candidate; mechanical citation check does not prove semantic support"
                         .to_owned(),
@@ -185,6 +231,128 @@ pub fn generate_extracted(
         }
     }
     Ok(proposals)
+}
+
+/// Generate proposals from claims already produced by one supervised attempt.
+///
+/// This narrow path keeps model execution outside pure validation while
+/// preserving the exact invocation receipt on every generated assertion.
+pub fn generate_extracted_attempt(
+    job: &crate::Job,
+    batch: &crate::InputBatch,
+    input: &GeneratorInput,
+    attempt: &ExtractorAttempt,
+) -> Result<Vec<crate::Proposal>, String> {
+    job.validate()?;
+    if job.batch != *batch {
+        return Err("generator batch does not belong to the job".to_owned());
+    }
+    let Some(declared) = &job.extractor else {
+        return Err("the job declares no extractor".to_owned());
+    };
+    validate_inputs(batch, std::slice::from_ref(input))?;
+    if attempt.status != mneme_recall::inference::InvocationStatus::Complete {
+        return Err(attempt
+            .detail
+            .clone()
+            .unwrap_or_else(|| "extractor did not complete".to_owned()));
+    }
+    if !attempt.supervised_model {
+        return Err("workspace model extraction requires a supervised model attempt".to_owned());
+    }
+    let proposal_limit = u64::try_from(job.limits.max_proposals)
+        .map_err(|_| "job proposal limit is too large".to_owned())?;
+    let mut proposals = Vec::with_capacity(attempt.claims.len());
+    let mut ids = std::collections::BTreeSet::new();
+    let context = SupervisedProposalContext {
+        job,
+        batch,
+        input,
+        attempt,
+        proposal_limit,
+    };
+    for claim in &attempt.claims {
+        let proposal = context.proposal(claim, proposals.len())?;
+        push_unique(&mut proposals, &mut ids, proposal)?;
+    }
+    if declared.identity.trim().is_empty() {
+        return Err("the declared extractor identity is empty".to_owned());
+    }
+    Ok(proposals)
+}
+
+struct SupervisedProposalContext<'a> {
+    job: &'a crate::Job,
+    batch: &'a crate::InputBatch,
+    input: &'a GeneratorInput,
+    attempt: &'a ExtractorAttempt,
+    proposal_limit: u64,
+}
+
+impl SupervisedProposalContext<'_> {
+    fn proposal(
+        &self,
+        claim: &ExtractedClaim,
+        used_proposals: usize,
+    ) -> Result<crate::Proposal, String> {
+        validate_supervised_claim(self.input, claim)?;
+        if u64::try_from(used_proposals)
+            .ok()
+            .and_then(|used| mneme_kernel::budget::charge(used, 1, self.proposal_limit))
+            .is_none()
+        {
+            return Err("job proposal limit exceeded".to_owned());
+        }
+        Ok(crate::Proposal {
+            proposal_id: claim_id(self.job, self.input.key, &claim.claim_id),
+            job_id: self.job.job_id.clone(),
+            recorded_at: self.job.recorded_at,
+            base_revision: self.job.base_revision,
+            scope: self.job.scope.clone(),
+            policy_version: self.job.policy_version.clone(),
+            eligibility_generation: self.batch.eligibility_generation,
+            operation: crate::ProposalOperation::Assertion(crate::AssertionProposal {
+                subject: claim.subject,
+                predicate: claim.predicate.clone(),
+                value: claim.value.clone(),
+                stance: claim.stance,
+                valid_time: claim.valid_time,
+                uncertainty: claim.uncertainty.clone(),
+                extraction: Some(crate::ExtractionProvenance {
+                    input_digest: self.attempt.input_digest.clone(),
+                    configuration_digest: self.attempt.configuration_digest.clone(),
+                    reported_model: self.attempt.reported_model.clone(),
+                    elapsed_ns: crate::elapsed_ns_telemetry(self.attempt.elapsed),
+                    usage: self.attempt.usage.clone(),
+                }),
+            }),
+            premises: vec![premise(self.input, absolute_span(self.input, claim.span)?)],
+            rationale: claim.uncertainty.as_ref().map_or_else(
+                || "model extractor candidate; semantic support remains pending review".to_owned(),
+                |uncertainty| format!("model extractor candidate; uncertainty: {uncertainty}"),
+            ),
+            support: pending_support(),
+            disposition: crate::ProposalDisposition::Pending,
+        })
+    }
+}
+
+fn validate_supervised_claim(input: &GeneratorInput, claim: &ExtractedClaim) -> Result<(), String> {
+    if claim.claim_id.trim().is_empty() || claim.predicate.trim().is_empty() {
+        return Err("extractor returned an incomplete claim".to_owned());
+    }
+    validate_span(&input.text, claim.span, "extractor claim")?;
+    if !quote_matches(&input.text, claim.span, &claim.quote) {
+        return Err("extractor quote does not match the cited source bytes".to_owned());
+    }
+    if claim
+        .uncertainty
+        .as_ref()
+        .is_some_and(|detail| detail.trim().is_empty() || detail.len() > 1_024)
+    {
+        return Err("extractor uncertainty is empty or exceeds its byte limit".to_owned());
+    }
+    Ok(())
 }
 
 /// Record a separate attributed semantic-support review.
@@ -337,6 +505,21 @@ fn validate_span(text: &str, span: mneme_core::SourceSpan, label: &str) -> Resul
     Ok(())
 }
 
+/// Translate one text-relative claim span into its absolute source extent.
+fn absolute_span(
+    input: &GeneratorInput,
+    relative: mneme_core::SourceSpan,
+) -> Result<mneme_core::SourceSpan, String> {
+    let base = input.span.map_or(0, |span| span.start());
+    let start = base
+        .checked_add(relative.start())
+        .ok_or_else(|| "extractor span start overflows the source offset".to_owned())?;
+    let end = base
+        .checked_add(relative.end())
+        .ok_or_else(|| "extractor span end overflows the source offset".to_owned())?;
+    mneme_core::SourceSpan::new(start, end).map_err(|error| error.to_owned())
+}
+
 fn quote_matches(text: &str, span: mneme_core::SourceSpan, quote: &str) -> bool {
     let Some(start) = usize::try_from(span.start()).ok() else {
         return false;
@@ -384,6 +567,66 @@ mod tests {
             self.calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(self.claims.clone())
+        }
+
+        #[allow(unknown_lints, ambient_clock)] // fixture attempt elapsed time is test-only telemetry
+        fn extract_attempt(
+            &self,
+            input: &GeneratorInput,
+            _entities: &[EntityHandle],
+            control: &mneme_recall::inference::InvocationControl,
+        ) -> ExtractorAttempt {
+            let started = std::time::Instant::now();
+            let input_digest = mneme_recall::inference::input_digest(input.text.as_bytes());
+            let configuration_digest = mneme_recall::inference::input_digest(
+                format!(
+                    "{}\0{}\0{}",
+                    self.descriptor.identity,
+                    self.descriptor.revision,
+                    self.descriptor.prompt_digest
+                )
+                .as_bytes(),
+            );
+            let was_cancelled = control.is_cancelled();
+            let result = if was_cancelled {
+                Err("cancelled before extractor start".to_owned())
+            } else {
+                self.extract(input)
+            };
+            match result {
+                Ok(claims) => ExtractorAttempt {
+                    status: mneme_recall::inference::InvocationStatus::Complete,
+                    claims,
+                    input_bytes: None,
+                    elapsed: started.elapsed(),
+                    usage: mneme_recall::inference::UsageTelemetry::Unavailable,
+                    input_digest,
+                    configuration_digest,
+                    reported_model: None,
+                    output_bytes: None,
+                    observed_output_digest: None,
+                    detail: None,
+                    supervised_model: false,
+                },
+                Err(detail) => ExtractorAttempt {
+                    status: if was_cancelled {
+                        mneme_recall::inference::InvocationStatus::Cancelled
+                    } else {
+                        mneme_recall::inference::InvocationStatus::Failed
+                    },
+                    claims: Vec::new(),
+                    input_bytes: None,
+                    elapsed: started.elapsed(),
+                    usage: mneme_recall::inference::UsageTelemetry::Unavailable,
+                    input_digest,
+                    configuration_digest,
+                    reported_model: None,
+                    output_bytes: None,
+                    observed_output_digest: None,
+                    detail: Some(detail),
+                    supervised_model: false,
+                },
+            }
         }
     }
 
@@ -435,6 +678,9 @@ mod tests {
             value: mneme_core::Value::string("SQLite"),
             span: mneme_core::SourceSpan::new(23, 28).expect("span"),
             quote: "SQLite".to_owned(),
+            stance: crate::ProposalStance::Affirm,
+            valid_time: mneme_core::ValidTime::Unknown,
+            uncertainty: None,
         }
     }
 
@@ -590,6 +836,28 @@ mod tests {
         let error = generate_extracted(&job, &batch, &[input], &TestExtractor::new(invalid))
             .expect_err("fabricated quote");
         assert!(error.contains("does not match"));
+    }
+
+    #[test]
+    fn extractor_offsets_text_relative_spans_by_input_base_offset() {
+        let (input, job, batch) = input_and_job();
+        let job = extractor_job(job);
+        let input = GeneratorInput {
+            span: mneme_core::SourceSpan::new(100, 129).ok(),
+            ..input
+        };
+        let proposals = generate_extracted(
+            &job,
+            &batch,
+            std::slice::from_ref(&input),
+            &TestExtractor::new(valid_claim()),
+        )
+        .expect("relative extractor span");
+        assert_eq!(
+            proposals[0].premises[0].span,
+            mneme_core::SourceSpan::new(123, 128).ok(),
+            "the stored premise span must include the input's absolute base offset"
+        );
     }
 
     #[test]

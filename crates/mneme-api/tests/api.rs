@@ -1931,3 +1931,374 @@ fn unpinned_recall_reports_the_revision_it_served_across_commits() {
     assert!(!boolean(field(context, "stale")));
     assert!(field(context, "at").as_string().is_some());
 }
+
+fn reasoning_engine() -> std::path::PathBuf {
+    #[allow(unknown_lints, ambient_env)]
+    let configured = std::env::var("MNEME_SCRYER_PROLOG").unwrap_or_default();
+    assert!(
+        !configured.trim().is_empty(),
+        "MNEME_SCRYER_PROLOG is not set; this API test requires pinned Scryer Prolog 0.10.0"
+    );
+    let engine = std::path::PathBuf::from(configured);
+    assert!(engine.is_file(), "configured Scryer engine is not a file");
+    engine
+}
+
+fn reasoning_metadata() -> mneme_prolog::CapabilityMetadata {
+    mneme_prolog::CapabilityMetadata {
+        adapter_version: "1".to_owned(),
+        profile: "positive-minimal/v1".to_owned(),
+        engine: Some(mneme_prolog::EngineIdentity {
+            name: "scryer-prolog".to_owned(),
+            version: "0.10.0".to_owned(),
+            source_revision: "nixpkgs-pinned".to_owned(),
+        }),
+        state: mneme_prolog::CapabilityState::Enabled,
+        features: std::collections::BTreeSet::from([mneme_prolog::Feature::PositiveQuery]),
+        allowed_predicates: std::collections::BTreeSet::from([
+            "assertion".to_owned(),
+            "relation".to_owned(),
+        ]),
+        limits: mneme_prolog::ProfileLimits {
+            max_time_ms: 5_000,
+            max_solutions: 16,
+            max_output_bytes: 65_536,
+            max_term_depth: 8,
+            max_rule_count: 4,
+        },
+        terms: mneme_prolog::TermProfile {
+            max_depth: 8,
+            max_collection: 32,
+            references_allowed: false,
+        },
+    }
+}
+
+fn reasoning_query(
+    mode: mneme_prolog::QueryMode,
+    scope: mneme_core::ScopeId,
+    goal: mneme_prolog::Atom,
+    variables: Vec<mneme_prolog::QueryVariable>,
+) -> mneme_api::ApiCommand {
+    mneme_api::ApiCommand::ReasonQuery {
+        request_id: "reason-query".to_owned(),
+        scope,
+        query: Box::new(mneme_api::ReasonQuery {
+            mode,
+            goal,
+            variables,
+            rules: Vec::new(),
+            assumptions: Vec::new(),
+            features: std::collections::BTreeSet::from([mneme_prolog::Feature::PositiveQuery]),
+            limits: mneme_prolog::RequestLimits {
+                max_time_ms: 2_000,
+                max_solutions: 8,
+                max_output_bytes: 8_192,
+            },
+        }),
+    }
+}
+
+fn reason_atom(predicate: &str, terms: Vec<mneme_prolog::Term>) -> mneme_prolog::Atom {
+    mneme_prolog::Atom {
+        predicate: predicate.to_owned(),
+        terms,
+    }
+}
+
+fn value_dictionary(entries: Vec<(&str, mneme_core::Value)>) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary(
+        entries
+            .into_iter()
+            .map(|(name, value)| (mneme_core::Symbol::from(name), value)),
+    )
+}
+
+fn reason_term(value: &mneme_prolog::Term) -> mneme_core::Value {
+    match value {
+        mneme_prolog::Term::String(value) => Some(value_dictionary(vec![
+            ("kind", mneme_core::Value::symbol("string")),
+            ("value", mneme_core::Value::string(value.clone())),
+        ])),
+        mneme_prolog::Term::Variable(name) => Some(value_dictionary(vec![
+            ("kind", mneme_core::Value::symbol("variable")),
+            ("name", mneme_core::Value::string(name.clone())),
+        ])),
+        mneme_prolog::Term::Integer(_)
+        | mneme_prolog::Term::Symbol(_)
+        | mneme_prolog::Term::Reference { .. }
+        | mneme_prolog::Term::List(_)
+        | mneme_prolog::Term::Compound { .. } => None,
+    }
+    .expect("test request uses only string and variable terms")
+}
+
+fn reason_query_payload(mode: &str) -> mneme_core::Value {
+    value_dictionary(vec![
+        ("scope", mneme_core::Value::string("project:cedar")),
+        ("mode", mneme_core::Value::symbol(mode)),
+        (
+            "goal",
+            value_dictionary(vec![
+                ("predicate", mneme_core::Value::string("assertion")),
+                (
+                    "terms",
+                    mneme_core::Value::sequence(vec![
+                        reason_term(&mneme_prolog::Term::String("storage-engine".to_owned())),
+                        reason_term(&mneme_prolog::Term::Variable("X".to_owned())),
+                        reason_term(&mneme_prolog::Term::Variable("V".to_owned())),
+                    ]),
+                ),
+            ]),
+        ),
+        (
+            "variables",
+            mneme_core::Value::sequence(vec![
+                value_dictionary(vec![
+                    ("name", mneme_core::Value::string("X")),
+                    ("role", mneme_core::Value::symbol("output")),
+                ]),
+                value_dictionary(vec![
+                    ("name", mneme_core::Value::string("V")),
+                    ("role", mneme_core::Value::symbol("output")),
+                ]),
+            ]),
+        ),
+        ("rules", mneme_core::Value::sequence(Vec::new())),
+        ("assumptions", mneme_core::Value::sequence(Vec::new())),
+        (
+            "features",
+            mneme_core::Value::sequence(vec![mneme_core::Value::symbol("positive-query")]),
+        ),
+        (
+            "limits",
+            value_dictionary(vec![
+                ("max-time-ms", mneme_core::Value::integer(2_000)),
+                ("max-solutions", mneme_core::Value::integer(8)),
+                ("max-output-bytes", mneme_core::Value::integer(8_192)),
+            ]),
+        ),
+    ])
+}
+
+fn record_fields<'a>(value: &'a mneme_core::Value, label: &str) -> &'a [mneme_core::Value] {
+    let record = value.as_record().expect("typed record");
+    assert_eq!(symbol_text(record.label()), label);
+    record.fields()
+}
+
+fn reasoning_binding_string<'a>(bindings: &'a [mneme_core::Value], name: &str) -> &'a str {
+    let binding = bindings
+        .iter()
+        .map(|binding| record_fields(binding, "prolog-binding"))
+        .find(|fields| fields[0].as_string() == Some(name))
+        .expect("binding name");
+    let term = record_fields(&binding[1], "prolog-string");
+    term[0].as_string().expect("string value")
+}
+
+#[test]
+fn reason_query_command_parser_is_versioned_and_mode_explicit() {
+    for (name, expected) in [
+        ("ground-test", mneme_prolog::QueryMode::GroundTest),
+        ("find-one", mneme_prolog::QueryMode::FindOne),
+        ("enumerate", mneme_prolog::QueryMode::Enumerate),
+        ("collect", mneme_prolog::QueryMode::Collect),
+    ] {
+        let document = command_document("reason.query", reason_query_payload(name));
+        let command = mneme_api::decode(&document).expect("typed reasoning command");
+        assert!(
+            matches!(&command, mneme_api::ApiCommand::ReasonQuery { .. }),
+            "reason.query decodes as a typed reasoning command"
+        );
+        if let mneme_api::ApiCommand::ReasonQuery { query, .. } = command {
+            assert_eq!(query.mode, expected);
+            assert_eq!(query.variables.len(), 2);
+        }
+    }
+
+    let unsupported = command_document("reason.query", reason_query_payload("unsupported-mode"));
+    assert!(mneme_api::decode(&unsupported).is_err());
+}
+
+#[test]
+fn reason_query_uses_authorized_immutable_api_path_and_serializes_identity() {
+    let harness = Harness::new();
+    let base_service = harness.cedar_service();
+    let seeded = harness.seed(&cedar(), &CEDAR_IDS, CEDAR_TEXT, "SQLite");
+    let accepted = base_service.execute(&accept_command(
+        harness.revision(),
+        "accept-for-reasoning",
+        seeded.assertion,
+    ));
+    assert!(accepted.ok, "{:?}", accepted.value);
+    let accepted_revision = context_revision(&accepted);
+    let service = harness
+        .service(&harness.cedar_session)
+        .with_prolog(reasoning_engine(), reasoning_metadata())
+        .expect("configured Prolog API");
+    let query = reasoning_query(
+        mneme_prolog::QueryMode::Enumerate,
+        cedar(),
+        reason_atom(
+            "assertion",
+            vec![
+                mneme_prolog::Term::String("storage-engine".to_owned()),
+                mneme_prolog::Term::Variable("X".to_owned()),
+                mneme_prolog::Term::Variable("V".to_owned()),
+            ],
+        ),
+        vec![
+            mneme_prolog::QueryVariable {
+                name: "X".to_owned(),
+                role: mneme_prolog::VariableRole::Output,
+            },
+            mneme_prolog::QueryVariable {
+                name: "V".to_owned(),
+                role: mneme_prolog::VariableRole::Output,
+            },
+        ],
+    );
+    let response = service.execute(&query);
+    assert!(response.ok, "{:?}", response.value);
+    assert_eq!(context_revision(&response), accepted_revision);
+
+    assert_eq!(symbol_text(field(data(&response), "mode")), "enumerate");
+    assert_eq!(symbol_text(field(&response.value, "status")), "ok");
+    assert_eq!(symbol_text(field(data(&response), "status")), "complete");
+    assert!(boolean(field(data(&response), "exhaustive")));
+    let identity = field(data(&response), "identity");
+    for name in [
+        "request-digest",
+        "profile-digest",
+        "rule-manifest-digest",
+        "input-order-digest",
+        "image-digest",
+    ] {
+        assert!(text(field(identity, name)).starts_with("sha256:"), "{name}");
+    }
+    assert_eq!(
+        text(field(identity, "image-digest")),
+        text(field(field(data(&response), "context"), "image-digest"))
+    );
+    let result_fields = record_fields(field(data(&response), "result"), "prolog-enumerate-result");
+    let solutions = result_fields[0].as_sequence().expect("solutions");
+    assert_eq!(solutions.len(), 1);
+    let solution_fields = record_fields(&solutions[0], "prolog-solution");
+    let bindings = solution_fields[0].as_sequence().expect("bindings");
+    assert_eq!(bindings.len(), 2);
+    let expected_entity = rid(CEDAR_IDS.entity).to_hex();
+    assert_eq!(
+        reasoning_binding_string(bindings, "X"),
+        expected_entity.as_str()
+    );
+    assert_eq!(reasoning_binding_string(bindings, "V"), "SQLite");
+    let local_response = service.execute(&reasoning_query(
+        mneme_prolog::QueryMode::FindOne,
+        cedar(),
+        reason_atom(
+            "assertion",
+            vec![
+                mneme_prolog::Term::String("storage-engine".to_owned()),
+                mneme_prolog::Term::Variable("S".to_owned()),
+                mneme_prolog::Term::Variable("V".to_owned()),
+            ],
+        ),
+        vec![
+            mneme_prolog::QueryVariable {
+                name: "S".to_owned(),
+                role: mneme_prolog::VariableRole::Output,
+            },
+            mneme_prolog::QueryVariable {
+                name: "V".to_owned(),
+                role: mneme_prolog::VariableRole::Local,
+            },
+        ],
+    ));
+    assert!(local_response.ok, "{:?}", local_response.value);
+    assert_eq!(
+        symbol_text(field(data(&local_response), "mode")),
+        "find-one"
+    );
+    assert!(!boolean(field(data(&local_response), "exhaustive")));
+    let local_result = record_fields(
+        field(data(&local_response), "result"),
+        "prolog-find-one-result",
+    );
+    let local_solution = record_fields(&local_result[0], "prolog-solution");
+    let local_bindings = local_solution[0].as_sequence().expect("local bindings");
+    assert_eq!(local_bindings.len(), 1);
+    assert_eq!(
+        reasoning_binding_string(local_bindings, "S"),
+        expected_entity.as_str()
+    );
+    assert!(
+        local_bindings.iter().all(|binding| {
+            record_fields(binding, "prolog-binding")[0].as_string() != Some("V")
+        })
+    );
+    assert_eq!(
+        harness.revision(),
+        accepted_revision,
+        "reasoning must not write canonical state"
+    );
+}
+
+#[test]
+fn disabled_or_unauthorized_reasoning_does_not_block_baseline_recall() {
+    let harness = Harness::new();
+    let service = harness.cedar_service();
+    let seeded = harness.seed(&cedar(), &CEDAR_IDS, CEDAR_TEXT, "SQLite");
+    let capability = service.execute(&mneme_api::ApiCommand::Capabilities {
+        request_id: "reasoning-modes".to_owned(),
+    });
+    assert!(capability.ok);
+    let capability_data = data(&capability);
+    assert!(!boolean(field(capability_data, "reasoning-enabled")));
+    let modes = field(capability_data, "reasoning-modes")
+        .as_sequence()
+        .expect("advertised query modes")
+        .iter()
+        .map(symbol_text)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        modes,
+        vec!["ground-test", "find-one", "enumerate", "collect"]
+    );
+    let query = reasoning_query(
+        mneme_prolog::QueryMode::GroundTest,
+        cedar(),
+        reason_atom(
+            "assertion",
+            vec![
+                mneme_prolog::Term::String("storage-engine".to_owned()),
+                mneme_prolog::Term::String(rid(CEDAR_IDS.entity).to_hex()),
+                mneme_prolog::Term::String("SQLite".to_owned()),
+            ],
+        ),
+        Vec::new(),
+    );
+    let disabled = service.execute(&query);
+    assert!(!disabled.ok);
+    assert_eq!(symbol_text(field(&disabled.value, "status")), "disabled");
+    assert_eq!(symbol_text(field(data(&disabled), "status")), "disabled");
+    assert_eq!(symbol_text(field(data(&disabled), "mode")), "ground-test");
+
+    let unauthorized = service.execute(&reasoning_query(
+        mneme_prolog::QueryMode::GroundTest,
+        birch(),
+        reason_atom("ready", Vec::new()),
+        Vec::new(),
+    ));
+    assert!(!unauthorized.ok);
+    assert_eq!(error_of(&unauthorized).0, "denied");
+
+    let recall = service.execute(&recall_command(
+        &cedar(),
+        Some(seeded.revision),
+        "SQLite",
+        RecallOptions::CURRENT,
+    ));
+    assert!(recall.ok, "{:?}", recall.value);
+    assert_eq!(context_revision(&recall), seeded.revision);
+}

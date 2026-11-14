@@ -142,6 +142,10 @@ impl ApiError {
     pub fn from_store(error: mneme_store::Failure) -> Self {
         match error {
             mneme_store::Failure::Validation(diagnostics) => Self::diagnostics(diagnostics),
+            mneme_store::Failure::HistoryLimitExceeded => Self::new(
+                ApiErrorCode::Limit,
+                "the requested history exceeds its configured bound",
+            ),
             mneme_store::Failure::StaleBase { .. } => {
                 Self::new(ApiErrorCode::Conflict, "base revision is not current")
             }

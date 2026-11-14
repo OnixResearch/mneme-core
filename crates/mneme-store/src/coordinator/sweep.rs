@@ -344,20 +344,48 @@ impl super::Workspace {
         location_id: &str,
         locator: &str,
     ) -> crate::error::Result<crate::lifecycle::BlobPurgeOutcome> {
-        let (relative, planned) = match locator.rsplit_once('#') {
-            Some((path, hex)) => {
-                let digest = super::recovery::digest_from_locator("source-blob", hex)?;
-                (path, Some(digest))
+        let (relative, planned) = match parse_participant_locator(locator) {
+            Ok(parsed) => parsed,
+            Err(detail) => {
+                return self.retain_participant_file(operation_id, location_id, detail);
             }
-            None => (locator, None),
         };
-        crate::payload::validate_relative_path(relative)?;
+        if crate::payload::validate_relative_path(relative).is_err() {
+            return self.retain_participant_file(
+                operation_id,
+                location_id,
+                "participant-path-unsafe",
+            );
+        }
+        let _sweep = match self.exclusive_sweep_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return self.retain_participant_file(
+                    operation_id,
+                    location_id,
+                    "participant-purge-lock-unavailable",
+                );
+            }
+        };
         crate::injectors::check(
             self.faults.as_ref(),
             crate::injectors::FaultPoint::BeforeRetentionPurge,
         )?;
-        let mut guard = crate::payload::quarantine_workspace_file(&self.root, relative)?;
-        let decision = participant_file_decision(&guard, planned)?;
+        let mut guard = match quarantine_participant_file(&self.root, relative) {
+            Ok(guard) => guard,
+            Err(detail) => return self.retain_participant_file(operation_id, location_id, detail),
+        };
+        let decision = match participant_file_decision(&guard, planned) {
+            Ok(decision) => decision,
+            Err(_) => {
+                drop(guard);
+                return self.retain_participant_file(
+                    operation_id,
+                    location_id,
+                    "participant-file-unreadable",
+                );
+            }
+        };
         let (outcome, state, detail) = self.purge_decided_working(&mut guard, decision)?;
         self.update_retention_location(
             operation_id,
@@ -370,6 +398,21 @@ impl super::Workspace {
             },
         )?;
         Ok(outcome)
+    }
+
+    fn retain_participant_file(
+        &mut self,
+        operation_id: &str,
+        location_id: &str,
+        detail: &'static str,
+    ) -> crate::error::Result<crate::lifecycle::BlobPurgeOutcome> {
+        self.record_location_state(
+            operation_id,
+            location_id,
+            crate::lifecycle::RetentionLocationState::Unavailable,
+            Some(detail),
+        )?;
+        Ok(crate::lifecycle::BlobPurgeOutcome::RetainedShared)
     }
 
     /// Apply one kernel working-entry decision to the displaced entry.
@@ -442,6 +485,9 @@ impl super::Workspace {
             "staging" => self.inspect_temporaries(operation_id, location_id),
             "sqlite-payloads" => self.inspect_ledger(operation_id, location_id),
             "temporary-exports" => self.inspect_unregistered_store(operation_id, location_id),
+            "participant-store" => {
+                self.inspect_participant_store(operation_id, location_id, &locator)
+            }
             "publication-intent" => {
                 let is_suppressed = self
                     .publication_intent_has_state(&locator, super::PublicationState::Suppressed)?;
@@ -642,6 +688,226 @@ impl super::Workspace {
             )
         };
         self.record_location_state(operation_id, location_id, state, detail)
+    }
+
+    /// Verify that every descendant of a registered document store is known,
+    /// readable, bounded, and free of artifacts owned by this operation.
+    fn inspect_participant_store(
+        &mut self,
+        operation_id: &str,
+        location_id: &str,
+        locator: &str,
+    ) -> crate::error::Result<()> {
+        let participant_name = location_id.strip_prefix("participant:");
+        let participant = match participant_name {
+            Some(name) => self.retention_participant(name)?,
+            None => None,
+        };
+        let Some(participant) = participant else {
+            return self.record_location_state(
+                operation_id,
+                location_id,
+                crate::lifecycle::RetentionLocationState::Unavailable,
+                Some("participant-registration-missing"),
+            );
+        };
+        if participant.inventory_locator != locator
+            || !matches!(
+                participant.storage_role.as_str(),
+                "document-keyed-files" | "document-session-files"
+            )
+        {
+            return self.record_location_state(
+                operation_id,
+                location_id,
+                crate::lifecycle::RetentionLocationState::Unavailable,
+                Some("unverified-location-kind"),
+            );
+        }
+        let participants = self.retention_participants()?;
+        let is_session_role_registered = participants.iter().any(|candidate| {
+            candidate.inventory_locator == locator
+                && candidate.storage_role == "document-session-files"
+        });
+        let Some(targeted_documents) =
+            self.targeted_participant_documents(operation_id, locator)?
+        else {
+            return self.mark_participant_inventory_bound(operation_id, location_id);
+        };
+        self.purge_and_audit_participant_store(ParticipantAuditRequest {
+            operation_id,
+            location_id,
+            locator,
+            participant: &participant,
+            is_session_role_registered,
+            targeted_documents: &targeted_documents,
+            participants: &participants,
+        })
+    }
+
+    fn targeted_participant_documents(
+        &self,
+        operation_id: &str,
+        locator: &str,
+    ) -> crate::error::Result<Option<std::collections::BTreeSet<String>>> {
+        let mut statement = self.connection.prepare(
+            "SELECT locator FROM retention_locations
+             WHERE operation_id = ?1 AND location_kind = 'participant-file'",
+        )?;
+        let rows = statement.query_map(rusqlite::params![operation_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut targeted_documents = std::collections::BTreeSet::new();
+        let mut visited = 0_usize;
+        for row in rows {
+            visited = visited.saturating_add(1);
+            if visited > MAX_PARTICIPANT_INVENTORY_ENTRIES {
+                return Ok(None);
+            }
+            if let Some(document) = participant_document_from_path(locator, &row?)
+                && !targeted_documents.contains(&document)
+            {
+                if targeted_documents.len() >= MAX_PARTICIPANT_INVENTORY_ENTRIES {
+                    return Ok(None);
+                }
+                targeted_documents.insert(document);
+            }
+        }
+        Ok(Some(targeted_documents))
+    }
+
+    fn mark_participant_inventory_bound(
+        &mut self,
+        operation_id: &str,
+        location_id: &str,
+    ) -> crate::error::Result<()> {
+        let _sweep = match self.exclusive_sweep_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return self.record_location_state(
+                    operation_id,
+                    location_id,
+                    crate::lifecycle::RetentionLocationState::Unavailable,
+                    Some("participant-purge-lock-unavailable"),
+                );
+            }
+        };
+        self.record_location_state(
+            operation_id,
+            location_id,
+            crate::lifecycle::RetentionLocationState::Unavailable,
+            Some("participant-inventory-bound-exceeded"),
+        )
+    }
+
+    fn purge_and_audit_participant_store(
+        &mut self,
+        audit: ParticipantAuditRequest<'_>,
+    ) -> crate::error::Result<()> {
+        let ParticipantAuditRequest {
+            operation_id,
+            location_id,
+            locator,
+            participant,
+            is_session_role_registered,
+            targeted_documents,
+            participants,
+        } = audit;
+        let _sweep = match self.exclusive_sweep_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return self.record_location_state(
+                    operation_id,
+                    location_id,
+                    crate::lifecycle::RetentionLocationState::Unavailable,
+                    Some("participant-purge-lock-unavailable"),
+                );
+            }
+        };
+        let is_purged = self.purge_known_participant_artifacts(
+            locator,
+            targeted_documents,
+            is_session_role_registered,
+        )?;
+        let audit_result = if is_purged {
+            audit_document_participant(ParticipantAudit {
+                workspace_root: &self.root,
+                locator,
+                storage_role: &participant.storage_role,
+                is_session_role_registered,
+                targeted_documents,
+                participants,
+            })
+        } else {
+            Err("participant-inventory-incomplete")
+        };
+        let (state, detail) = match audit_result {
+            Ok(()) => (crate::lifecycle::RetentionLocationState::Absent, None),
+            Err("participant-files-remain") => (
+                crate::lifecycle::RetentionLocationState::Unavailable,
+                Some("participant-files-remain"),
+            ),
+            Err("participant-inventory-bound-exceeded") => (
+                crate::lifecycle::RetentionLocationState::Unavailable,
+                Some("participant-inventory-bound-exceeded"),
+            ),
+            Err(_) => (
+                crate::lifecycle::RetentionLocationState::Unavailable,
+                Some("participant-inventory-incomplete"),
+            ),
+        };
+        self.record_location_state(operation_id, location_id, state, detail)
+    }
+
+    fn purge_known_participant_artifacts(
+        &self,
+        locator: &str,
+        targeted_documents: &std::collections::BTreeSet<String>,
+        is_session_role_registered: bool,
+    ) -> crate::error::Result<bool> {
+        let paths = collect_known_target_participant_files(
+            &self.root,
+            locator,
+            targeted_documents,
+            is_session_role_registered,
+        );
+        let mut is_complete = true;
+        for relative in paths {
+            crate::injectors::check(
+                self.faults.as_ref(),
+                crate::injectors::FaultPoint::BeforeRetentionPurge,
+            )?;
+            let mut guard = match crate::payload::quarantine_workspace_file(&self.root, &relative) {
+                Ok(guard) => guard,
+                Err(crate::error::Failure::InjectedFault(point)) => {
+                    return Err(crate::error::Failure::InjectedFault(point));
+                }
+                Err(_) => {
+                    is_complete = false;
+                    continue;
+                }
+            };
+            let decision = match participant_file_decision(&guard, None) {
+                Ok(decision) => decision,
+                Err(crate::error::Failure::InjectedFault(point)) => {
+                    return Err(crate::error::Failure::InjectedFault(point));
+                }
+                Err(_) => {
+                    drop(guard);
+                    is_complete = false;
+                    continue;
+                }
+            };
+            match self.purge_decided_working(&mut guard, decision) {
+                Ok((_, state, _)) if state.is_terminal() => {}
+                Ok(_) => is_complete = false,
+                Err(crate::error::Failure::InjectedFault(point)) => {
+                    return Err(crate::error::Failure::InjectedFault(point));
+                }
+                Err(_) => is_complete = false,
+            }
+        }
+        Ok(is_complete)
     }
 
     /// Every registered retention participant.
@@ -1274,6 +1540,30 @@ fn purge_decided_blob(
     }
 }
 
+/// Split the optional digest binding from a participant file locator.
+fn parse_participant_locator(
+    locator: &str,
+) -> std::result::Result<(&str, Option<mneme_core::ContentDigest>), &'static str> {
+    let Some((path, hex)) = locator.rsplit_once('#') else {
+        return Ok((locator, None));
+    };
+    let digest = super::recovery::digest_from_locator("source-blob", hex)
+        .map_err(|_| "participant-locator-invalid")?;
+    Ok((path, Some(digest)))
+}
+
+fn quarantine_participant_file(
+    workspace_root: &std::path::Path,
+    relative: &str,
+) -> std::result::Result<crate::payload::QuarantineGuard, &'static str> {
+    match crate::payload::quarantine_workspace_file(workspace_root, relative) {
+        Ok(guard) => Ok(guard),
+        Err(crate::error::Failure::PathEscapes(_)) => Err("participant-path-unsafe"),
+        Err(crate::error::Failure::Io { .. }) => Err("participant-file-inaccessible"),
+        Err(_) => Err("participant-file-unavailable"),
+    }
+}
+
 /// Decide with the kernel over one participant file that was displaced.
 ///
 /// A participant manages its own store, so without a planned digest the bytes
@@ -1315,7 +1605,448 @@ fn participant_file_decision(
     Ok(mneme_kernel::purge::decide_working(&facts))
 }
 
-/// Whether any ledger cell holds bytes with one of the targeted digests.
+const MAX_PARTICIPANT_INVENTORY_ENTRIES: usize = 100_000;
+const MAX_PARTICIPANT_INVENTORY_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+struct ParticipantAuditRequest<'a> {
+    operation_id: &'a str,
+    location_id: &'a str,
+    locator: &'a str,
+    participant: &'a crate::lifecycle::RetentionParticipant,
+    is_session_role_registered: bool,
+    targeted_documents: &'a std::collections::BTreeSet<String>,
+    participants: &'a [crate::lifecycle::RetentionParticipant],
+}
+
+struct ParticipantAudit<'a> {
+    workspace_root: &'a std::path::Path,
+    locator: &'a str,
+    storage_role: &'a str,
+    is_session_role_registered: bool,
+    targeted_documents: &'a std::collections::BTreeSet<String>,
+    participants: &'a [crate::lifecycle::RetentionParticipant],
+}
+
+fn participant_document_from_path(base: &str, locator: &str) -> Option<String> {
+    let relative = locator
+        .strip_prefix(base.trim_end_matches('/'))?
+        .strip_prefix('/')?;
+    let first = relative.split('/').next()?;
+    let document = first.split('.').next()?;
+    is_lower_hex_identity(document).then(|| document.to_owned())
+}
+
+fn is_lower_hex_identity(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn parse_legacy_draft_name(name: &str) -> Option<&str> {
+    let (document, suffix) = name.split_once(".json")?;
+    if !matches!(suffix, "" | ".tmp" | ".corrupt") || !is_lower_hex_identity(document) {
+        return None;
+    }
+    Some(document)
+}
+
+fn parse_session_draft_name(name: &str) -> bool {
+    if name == ".owner.lock" {
+        return true;
+    }
+    let Some((version, extension)) = name.split_once('.') else {
+        return false;
+    };
+    version.len() == 20
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && matches!(extension, "json" | "tmp" | "corrupt")
+}
+
+fn collect_known_target_participant_files(
+    workspace_root: &std::path::Path,
+    locator: &str,
+    targeted_documents: &std::collections::BTreeSet<String>,
+    is_session_role_registered: bool,
+) -> Vec<String> {
+    let Ok(relative_root) = crate::payload::validate_relative_path(locator) else {
+        return Vec::new();
+    };
+    let Ok(canonical_workspace) = workspace_root.canonicalize() else {
+        return Vec::new();
+    };
+    let Ok(Some(base)) = safe_inventory_directory(&canonical_workspace, &relative_root) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::with_capacity(
+        targeted_documents
+            .len()
+            .min(MAX_PARTICIPANT_INVENTORY_ENTRIES),
+    );
+    {
+        let mut inventory = ParticipantInventory {
+            locator,
+            targeted_documents,
+            is_session_role_registered,
+            visited: 0,
+            paths: &mut paths,
+        };
+        for entry in entries {
+            if !inventory.charge_entry() {
+                break;
+            }
+            let Ok(entry) = entry else {
+                continue;
+            };
+            inventory.collect_root_entry(entry);
+        }
+    }
+    paths
+}
+
+struct ParticipantInventory<'a> {
+    locator: &'a str,
+    targeted_documents: &'a std::collections::BTreeSet<String>,
+    is_session_role_registered: bool,
+    visited: usize,
+    paths: &'a mut Vec<String>,
+}
+
+impl ParticipantInventory<'_> {
+    fn charge_entry(&mut self) -> bool {
+        self.visited = self.visited.saturating_add(1);
+        self.visited <= MAX_PARTICIPANT_INVENTORY_ENTRIES
+    }
+
+    fn collect_root_entry(&mut self, entry: std::fs::DirEntry) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(document) = parse_legacy_draft_name(&name) {
+            if self.targeted_documents.contains(document)
+                && std::fs::symlink_metadata(entry.path())
+                    .is_ok_and(|metadata| !metadata.file_type().is_symlink() && metadata.is_file())
+            {
+                self.push_path(format!("{}/{}", self.locator.trim_end_matches('/'), name));
+            }
+            return;
+        }
+        if !self.is_session_role_registered
+            || !is_lower_hex_identity(&name)
+            || !self.targeted_documents.contains(&name)
+        {
+            return;
+        }
+        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
+            return;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return;
+        }
+        self.collect_document_sessions(&entry.path(), &name);
+    }
+
+    fn collect_document_sessions(&mut self, document_directory: &std::path::Path, document: &str) {
+        let Ok(sessions) = std::fs::read_dir(document_directory) else {
+            return;
+        };
+        for session in sessions {
+            if !self.charge_entry() {
+                break;
+            }
+            let Ok(session) = session else {
+                continue;
+            };
+            let session_id = session.file_name().to_string_lossy().into_owned();
+            if !is_lower_hex_identity(&session_id) {
+                continue;
+            }
+            let Ok(metadata) = std::fs::symlink_metadata(session.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                continue;
+            }
+            self.collect_session_artifacts(&session.path(), document, &session_id);
+        }
+    }
+
+    fn collect_session_artifacts(
+        &mut self,
+        session_directory: &std::path::Path,
+        document: &str,
+        session_id: &str,
+    ) {
+        let Ok(artifacts) = std::fs::read_dir(session_directory) else {
+            return;
+        };
+        for artifact in artifacts {
+            if !self.charge_entry() {
+                break;
+            }
+            let Ok(artifact) = artifact else {
+                continue;
+            };
+            let artifact_name = artifact.file_name().to_string_lossy().into_owned();
+            if !parse_session_draft_name(&artifact_name) {
+                continue;
+            }
+            let Ok(metadata) = std::fs::symlink_metadata(artifact.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                continue;
+            }
+            self.push_path(format!(
+                "{}/{}/{}/{}",
+                self.locator.trim_end_matches('/'),
+                document,
+                session_id,
+                artifact_name
+            ));
+        }
+    }
+
+    fn push_path(&mut self, path: String) {
+        if self.paths.len() == self.paths.capacity() {
+            self.paths
+                .reserve(self.visited.saturating_sub(self.paths.len()));
+        }
+        self.paths.push(path);
+    }
+}
+
+fn audit_document_participant(
+    audit: ParticipantAudit<'_>,
+) -> std::result::Result<(), &'static str> {
+    let ParticipantAudit {
+        workspace_root,
+        locator,
+        storage_role,
+        is_session_role_registered,
+        targeted_documents,
+        participants,
+    } = audit;
+    if !matches!(
+        storage_role,
+        "document-keyed-files" | "document-session-files"
+    ) {
+        return Err("participant-inventory-incomplete");
+    }
+    let relative = crate::payload::validate_relative_path(locator)
+        .map_err(|_| "participant-inventory-incomplete")?;
+    let canonical_root = workspace_root
+        .canonicalize()
+        .map_err(|_| "participant-inventory-incomplete")?;
+    let parent_relative = relative
+        .parent()
+        .ok_or("participant-inventory-incomplete")?;
+    let Some(parent) = safe_inventory_directory(&canonical_root, parent_relative)? else {
+        return Ok(());
+    };
+    let mut visited = 0_usize;
+    audit_registered_participant_siblings(&parent, parent_relative, participants, &mut visited)?;
+    let Some(base) = safe_inventory_directory(&canonical_root, &relative)? else {
+        return Ok(());
+    };
+    let has_targeted_file_remains = audit_participant_document_entries(
+        &base,
+        is_session_role_registered,
+        targeted_documents,
+        &mut visited,
+    )?;
+    if has_targeted_file_remains {
+        return Err("participant-files-remain");
+    }
+    Ok(())
+}
+
+fn audit_participant_document_entries(
+    base: &std::path::Path,
+    is_session_role_registered: bool,
+    targeted_documents: &std::collections::BTreeSet<String>,
+    visited: &mut usize,
+) -> std::result::Result<bool, &'static str> {
+    let mut has_targeted_file_remains = false;
+    for entry in std::fs::read_dir(base).map_err(|_| "participant-inventory-incomplete")? {
+        charge_participant_entry(visited)?;
+        let entry = entry.map_err(|_| "participant-inventory-incomplete")?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "participant-inventory-incomplete")?;
+        if let Some(document) = parse_legacy_draft_name(&name) {
+            let metadata = std::fs::symlink_metadata(entry.path())
+                .map_err(|_| "participant-inventory-incomplete")?;
+            inspect_participant_file(&entry.path(), &metadata)?;
+            has_targeted_file_remains |= targeted_documents.contains(document);
+            continue;
+        }
+        if !is_lower_hex_identity(&name) {
+            return Err("participant-inventory-incomplete");
+        }
+        let metadata = std::fs::symlink_metadata(entry.path())
+            .map_err(|_| "participant-inventory-incomplete")?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("participant-inventory-incomplete");
+        }
+        if is_session_role_registered {
+            has_targeted_file_remains |= audit_session_directory(
+                &entry.path(),
+                targeted_documents.contains(&name),
+                visited,
+            )?;
+        } else {
+            let mut children =
+                std::fs::read_dir(entry.path()).map_err(|_| "participant-inventory-incomplete")?;
+            if children
+                .next()
+                .transpose()
+                .map_err(|_| "participant-inventory-incomplete")?
+                .is_some()
+            {
+                return Err("participant-inventory-incomplete");
+            }
+        }
+    }
+    Ok(has_targeted_file_remains)
+}
+
+fn audit_registered_participant_siblings(
+    parent: &std::path::Path,
+    parent_relative: &std::path::Path,
+    participants: &[crate::lifecycle::RetentionParticipant],
+    visited: &mut usize,
+) -> std::result::Result<(), &'static str> {
+    let registered_siblings = participants
+        .iter()
+        .filter_map(|participant| {
+            let path =
+                crate::payload::validate_relative_path(&participant.inventory_locator).ok()?;
+            (path.parent() == Some(parent_relative))
+                .then(|| path.file_name()?.to_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    for entry in std::fs::read_dir(parent).map_err(|_| "participant-inventory-incomplete")? {
+        charge_participant_entry(visited)?;
+        let entry = entry.map_err(|_| "participant-inventory-incomplete")?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "participant-inventory-incomplete")?;
+        if !registered_siblings.contains(&name) {
+            return Err("participant-inventory-incomplete");
+        }
+        let metadata = std::fs::symlink_metadata(entry.path())
+            .map_err(|_| "participant-inventory-incomplete")?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("participant-inventory-incomplete");
+        }
+    }
+    Ok(())
+}
+
+fn safe_inventory_directory(
+    workspace_root: &std::path::Path,
+    relative: &std::path::Path,
+) -> std::result::Result<Option<std::path::PathBuf>, &'static str> {
+    let mut current = workspace_root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err("participant-inventory-incomplete");
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err("participant-inventory-incomplete");
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err("participant-inventory-incomplete"),
+        }
+    }
+    let canonical = current
+        .canonicalize()
+        .map_err(|_| "participant-inventory-incomplete")?;
+    if !canonical.starts_with(workspace_root) {
+        return Err("participant-inventory-incomplete");
+    }
+    Ok(Some(canonical))
+}
+
+fn audit_session_directory(
+    document_directory: &std::path::Path,
+    targeted_document: bool,
+    visited: &mut usize,
+) -> std::result::Result<bool, &'static str> {
+    let mut has_targeted_file_remains = false;
+    for entry in
+        std::fs::read_dir(document_directory).map_err(|_| "participant-inventory-incomplete")?
+    {
+        charge_participant_entry(visited)?;
+        let entry = entry.map_err(|_| "participant-inventory-incomplete")?;
+        let session = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "participant-inventory-incomplete")?;
+        if !is_lower_hex_identity(&session) {
+            return Err("participant-inventory-incomplete");
+        }
+        let metadata = std::fs::symlink_metadata(entry.path())
+            .map_err(|_| "participant-inventory-incomplete")?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("participant-inventory-incomplete");
+        }
+        for artifact in
+            std::fs::read_dir(entry.path()).map_err(|_| "participant-inventory-incomplete")?
+        {
+            charge_participant_entry(visited)?;
+            let artifact = artifact.map_err(|_| "participant-inventory-incomplete")?;
+            let name = artifact
+                .file_name()
+                .into_string()
+                .map_err(|_| "participant-inventory-incomplete")?;
+            if !parse_session_draft_name(&name) {
+                return Err("participant-inventory-incomplete");
+            }
+            let metadata = std::fs::symlink_metadata(artifact.path())
+                .map_err(|_| "participant-inventory-incomplete")?;
+            inspect_participant_file(&artifact.path(), &metadata)?;
+            if name == ".owner.lock" && metadata.len() != 0 {
+                return Err("participant-inventory-incomplete");
+            }
+            has_targeted_file_remains |= targeted_document;
+        }
+    }
+    Ok(has_targeted_file_remains)
+}
+
+fn inspect_participant_file(
+    path: &std::path::Path,
+    metadata: &std::fs::Metadata,
+) -> std::result::Result<(), &'static str> {
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_PARTICIPANT_INVENTORY_FILE_BYTES
+    {
+        return Err("participant-inventory-incomplete");
+    }
+    std::fs::File::open(path).map_err(|_| "participant-inventory-incomplete")?;
+    Ok(())
+}
+
+fn charge_participant_entry(visited: &mut usize) -> std::result::Result<(), &'static str> {
+    *visited = visited.saturating_add(1);
+    if *visited > MAX_PARTICIPANT_INVENTORY_ENTRIES {
+        return Err("participant-inventory-bound-exceeded");
+    }
+    Ok(())
+}
+
+/// Whether any ledger cell holds bytes with one of the targeted payload digests.
 ///
 /// The ledger is meant to hold identifiers, kinds, scopes and digests only, so
 /// a cell whose exact bytes hash to a targeted payload digest means a payload

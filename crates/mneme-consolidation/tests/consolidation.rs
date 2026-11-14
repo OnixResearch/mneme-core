@@ -273,6 +273,11 @@ fn a_job_commits_only_proposed_assertions_with_pinned_evidence() {
             .expect("consolidation");
 
     assert!(!receipt.replayed);
+    assert_eq!(
+        receipt.generation,
+        mneme_consolidation::adapter::GenerationMode::Deterministic,
+        "the model-free default must identify its deterministic generator"
+    );
     assert!(!receipt.committed.is_empty(), "the job committed nothing");
     for committed in &receipt.committed {
         let record = latest(&workspace, committed.assertion);
@@ -308,8 +313,43 @@ fn a_job_commits_only_proposed_assertions_with_pinned_evidence() {
         mneme_consolidation::adapter::consolidate_workspace(&mut workspace, &request("k1"))
             .expect("replay");
     assert!(replay.replayed);
+    assert_eq!(
+        replay.generation,
+        mneme_consolidation::adapter::GenerationMode::Deterministic
+    );
     assert_eq!(replay.committed, receipt.committed);
     assert_eq!(workspace.current_revision().expect("head"), head);
+}
+
+#[test]
+fn declaring_an_extractor_without_a_runtime_is_unavailable_without_mutation() {
+    let (_temp, mut workspace) = setup();
+    let base = workspace.current_revision().expect("base");
+    let mut request = request("declared-extractor-without-runtime");
+    request.extractor = Some(mneme_consolidation::ExtractorDescriptor {
+        identity: "fixture-model".to_owned(),
+        revision: "sha256:fixture-artifact".to_owned(),
+        prompt_digest: "sha256:fixture-prompt".to_owned(),
+    });
+    let receipt = mneme_consolidation::adapter::consolidate_workspace(&mut workspace, &request)
+        .expect("consolidation");
+    assert!(
+        receipt.committed.is_empty(),
+        "unavailable model mode committed a deterministic fallback"
+    );
+    assert_eq!(workspace.current_revision().expect("unchanged head"), base);
+    assert!(matches!(
+        receipt.generation,
+        mneme_consolidation::adapter::GenerationMode::ModelUnavailable { .. }
+    ));
+    assert!(
+        receipt
+            .skipped
+            .iter()
+            .any(|unit| unit.reason.contains("unavailable")),
+        "model unavailability must be explicit in the receipt: {:?}",
+        receipt.skipped
+    );
 }
 
 #[test]

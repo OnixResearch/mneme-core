@@ -2842,6 +2842,17 @@ fn document_keyed_participant_files_are_purged() {
             inventory_locator: ".mneme-ui/drafts".to_owned(),
         })
         .expect("participant");
+    harness
+        .workspace
+        .register_retention_participant(mneme_store::RetentionParticipant {
+            name: "mneme-desktop-draft-sessions".to_owned(),
+            storage_role: "document-session-files".to_owned(),
+            supports_invalidation: true,
+            supports_purge: true,
+            checks_generation: true,
+            inventory_locator: ".mneme-ui/drafts".to_owned(),
+        })
+        .expect("session participant");
     harness.add_source("source-a", 0x20, 0x21, &scope(), SOURCE_A);
     harness.commit(
         "document",
@@ -2852,7 +2863,24 @@ fn document_keyed_participant_files_are_purged() {
     let draft_directory = harness.temp.path().join(".mneme-ui/drafts");
     std::fs::create_dir_all(&draft_directory).expect("draft directory");
     let draft = draft_directory.join(format!("{}.json", rid(0x60).to_hex()));
+    let temporary = draft_directory.join(format!("{}.json.tmp", rid(0x60).to_hex()));
+    let quarantined = draft_directory.join(format!("{}.json.corrupt", rid(0x60).to_hex()));
+    let other_document = draft_directory.join(format!("{}.json", rid(0x70).to_hex()));
+    let session = rid(0x80).to_hex();
+    let session_directory = draft_directory.join(rid(0x60).to_hex()).join(&session);
+    std::fs::create_dir_all(&session_directory).expect("session directory");
+    let session_final = session_directory.join("00000000000000000001.json");
+    let session_temporary = session_directory.join("00000000000000000002.tmp");
+    let session_quarantine = session_directory.join("00000000000000000003.corrupt");
+    let session_lock = session_directory.join(".owner.lock");
     std::fs::write(&draft, b"{\"source\":\"= Secret Plan Beta\"}").expect("draft");
+    std::fs::write(&temporary, b"post-flush temporary").expect("temporary");
+    std::fs::write(&quarantined, b"quarantined source bytes").expect("quarantine");
+    std::fs::write(&other_document, b"other document draft").expect("other document draft");
+    std::fs::write(&session_final, b"session final text").expect("session final");
+    std::fs::write(&session_temporary, b"session temporary text").expect("session temporary");
+    std::fs::write(&session_quarantine, b"session quarantined text").expect("session quarantine");
+    std::fs::write(&session_lock, b"").expect("session lock");
     let request = harness.request(
         mneme_retention::OperationKind::Forget,
         mneme_retention::Selector::Source(rid(0x20)),
@@ -2866,10 +2894,187 @@ fn document_keyed_participant_files_are_purged() {
             location.location_kind == "participant-file"
                 && location.locator == format!(".mneme-ui/drafts/{}.json", rid(0x60).to_hex())
         }));
+        for path in [
+            ".owner.lock",
+            "00000000000000000001.json",
+            "00000000000000000002.tmp",
+            "00000000000000000003.corrupt",
+        ] {
+            assert!(
+                plan.locations.iter().any(|location| {
+                    location.location_kind == "participant-file"
+                        && location.locator
+                            == format!(".mneme-ui/drafts/{}/{session}/{path}", rid(0x60).to_hex())
+                }),
+                "session artifact {path} must be individually inventoried"
+            );
+        }
         retention.execute(request).expect("forget")
     };
     assert!(result.physical_cleanup_complete, "{result:?}");
     assert_missing(&draft);
+    assert_missing(&temporary);
+    assert_missing(&quarantined);
+    assert_missing(&session_final);
+    assert_missing(&session_temporary);
+    assert_missing(&session_quarantine);
+    assert_missing(&session_lock);
+    assert_eq!(
+        std::fs::read(&other_document).expect("other document retained"),
+        b"other document draft"
+    );
+}
+
+#[test]
+fn unknown_session_descendants_are_not_purged_or_reported_complete() {
+    let mut harness = Harness::new(Box::new(mneme_store::NoFaults));
+    for participant in [
+        mneme_store::RetentionParticipant {
+            name: "mneme-desktop-drafts".to_owned(),
+            storage_role: "document-keyed-files".to_owned(),
+            supports_invalidation: true,
+            supports_purge: true,
+            checks_generation: true,
+            inventory_locator: ".mneme-ui/drafts".to_owned(),
+        },
+        mneme_store::RetentionParticipant {
+            name: "mneme-desktop-draft-sessions".to_owned(),
+            storage_role: "document-session-files".to_owned(),
+            supports_invalidation: true,
+            supports_purge: true,
+            checks_generation: true,
+            inventory_locator: ".mneme-ui/drafts".to_owned(),
+        },
+    ] {
+        harness
+            .workspace
+            .register_retention_participant(participant)
+            .expect("draft participant");
+    }
+    harness.add_source("source-a", 0x20, 0x21, &scope(), SOURCE_A);
+    harness.commit(
+        "document",
+        document_records(rid(0x20), rev(0x21)),
+        Vec::new(),
+        None,
+    );
+    let draft_root = harness.temp.path().join(".mneme-ui/drafts");
+    let session_directory = draft_root.join(rid(0x60).to_hex()).join(rid(0x80).to_hex());
+    std::fs::create_dir_all(&session_directory).expect("session directory");
+    let known = session_directory.join("00000000000000000001.json");
+    let unknown = session_directory.join("unrecognized-copy.bin");
+    std::fs::write(&known, b"target draft").expect("known draft");
+    std::fs::write(session_directory.join(".owner.lock"), b"").expect("owner lock");
+    std::fs::write(&unknown, b"unknown retained bytes").expect("unknown artifact");
+
+    let request = harness.request(
+        mneme_retention::OperationKind::Forget,
+        mneme_retention::Selector::Source(rid(0x20)),
+        "forget-unknown-session-child",
+        scope(),
+    );
+    let result = mneme_retention::Engine::new(&mut harness.workspace)
+        .execute(request)
+        .expect("honest incomplete cleanup result");
+
+    assert!(!result.physical_cleanup_complete, "{result:?}");
+    assert_missing(&known);
+    assert_missing(&session_directory.join(".owner.lock"));
+    assert_eq!(
+        std::fs::read(&unknown).expect("unknown bytes preserved"),
+        b"unknown retained bytes"
+    );
+}
+
+#[test]
+fn unregistered_descendants_beneath_mneme_ui_keep_cleanup_incomplete() {
+    let mut harness = Harness::new(Box::new(mneme_store::NoFaults));
+    harness
+        .workspace
+        .register_retention_participant(mneme_store::RetentionParticipant {
+            name: "mneme-desktop-drafts".to_owned(),
+            storage_role: "document-keyed-files".to_owned(),
+            supports_invalidation: true,
+            supports_purge: true,
+            checks_generation: true,
+            inventory_locator: ".mneme-ui/drafts".to_owned(),
+        })
+        .expect("participant");
+    harness.add_source("source-a", 0x20, 0x21, &scope(), SOURCE_A);
+    let unknown = harness
+        .temp
+        .path()
+        .join(".mneme-ui/unowned-cache/payload.json");
+    std::fs::create_dir_all(unknown.parent().expect("unknown parent")).expect("unknown store");
+    std::fs::write(&unknown, b"unregistered retained text").expect("unknown payload");
+
+    let request = harness.request(
+        mneme_retention::OperationKind::Forget,
+        mneme_retention::Selector::Source(rid(0x20)),
+        "forget-ui-descendant",
+        scope(),
+    );
+    let result = mneme_retention::Engine::new(&mut harness.workspace)
+        .execute(request)
+        .expect("forget receipt");
+
+    assert!(!result.physical_cleanup_complete, "{result:?}");
+    assert_eq!(
+        std::fs::read(&unknown).expect("unknown payload retained"),
+        b"unregistered retained text"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn draft_participant_refuses_symlink_escape_without_following_it() {
+    let mut harness = Harness::new(Box::new(mneme_store::NoFaults));
+    harness
+        .workspace
+        .register_retention_participant(mneme_store::RetentionParticipant {
+            name: "mneme-desktop-drafts".to_owned(),
+            storage_role: "document-keyed-files".to_owned(),
+            supports_invalidation: true,
+            supports_purge: true,
+            checks_generation: true,
+            inventory_locator: ".mneme-ui/drafts".to_owned(),
+        })
+        .expect("participant");
+    harness.add_source("source-a", 0x20, 0x21, &scope(), SOURCE_A);
+    harness.commit(
+        "document",
+        document_records(rid(0x20), rev(0x21)),
+        Vec::new(),
+        None,
+    );
+    let outside = tempfile::tempdir().expect("outside directory");
+    let escaped = outside.path().join(format!("{}.json", rid(0x60).to_hex()));
+    std::fs::write(&escaped, b"must not be followed or removed").expect("outside payload");
+    let ui = harness.temp.path().join(".mneme-ui");
+    std::fs::create_dir_all(&ui).expect("ui directory");
+    std::os::unix::fs::symlink(outside.path(), ui.join("drafts")).expect("drafts symlink");
+
+    let request = harness.request(
+        mneme_retention::OperationKind::Forget,
+        mneme_retention::Selector::Source(rid(0x20)),
+        "forget-ui-symlink",
+        scope(),
+    );
+    let result = mneme_retention::Engine::new(&mut harness.workspace)
+        .execute(request)
+        .expect("incomplete but truthful receipt");
+
+    assert!(!result.physical_cleanup_complete, "{result:?}");
+    assert!(
+        std::fs::symlink_metadata(ui.join("drafts"))
+            .expect("symlink remains")
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read(&escaped).expect("outside bytes preserved"),
+        b"must not be followed or removed"
+    );
 }
 
 #[test]

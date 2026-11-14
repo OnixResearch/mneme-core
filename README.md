@@ -61,10 +61,12 @@ cargo test --locked --workspace --doc --all-features
 
 `just octet` runs the strict required profile in `dylint.toml`, without a baseline. `just octet-all` runs the full-catalog profile from `dylint-all.toml` in an isolated Nix source copy and compares findings with `octet-baseline.json`, keeping the strict profile untouched. Baseline debt does not suppress strict findings.
 
-The extracted all-lint baseline contains 1,228 accepted finding identities,
-exactly the engine-owned subset of the original repository's baseline. New
-or stale identities require review and regeneration with the pinned runner;
-an accepted baseline is recorded debt, not an all-lint-clean claim. The strict
+The all-lint baseline contains 1,474 accepted finding identities in the same
+ten lint families as the extracted engine-owned baseline (1,228 identities):
+issue-driven additions were refactored until no finding outside those families
+remained, and the rest were reviewed before regeneration with the pinned
+runner. New or stale identities require that same review; an accepted
+baseline is recorded debt, not an all-lint-clean claim. The strict
 profile must remain clean without a baseline.
 
 `just proofs` runs the preserved source-to-Lean translation and audits all 128 inventoried kernel theorems against the Rust kernel, checked-in translation, and allowed Lean axioms. It is intentionally a developer/consumer workflow, not a sandboxed Nix check: Lake may fetch proof dependencies. Run it from the pinned development shell on `x86_64-linux`; the shell selects the Charon-matched extraction toolchain. The consumer-side completion gate should execute the verifier from the exact Git revision it compiles.

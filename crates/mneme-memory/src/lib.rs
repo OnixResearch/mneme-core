@@ -14,6 +14,8 @@
 pub mod authorization;
 pub mod beliefs;
 pub mod failure;
+#[path = "authenticated/import.rs"]
+mod inbound;
 pub mod model;
 pub mod service;
 
@@ -23,6 +25,12 @@ pub use beliefs::{
     EvidenceExplanation, Explanation, Policy, SourceExcerpt, SourceStatus, ValidatedEvidence, View,
 };
 pub use failure::{EvidenceError, Result};
+pub use inbound::{
+    AdmissionError, AuthenticatedBundle, AuthenticationError, Bundle, ExternalAssertion,
+    ImportCommitError, ImportCommitOutcome, ImportPlan, ImportPolicy, ImportPolicyConfig,
+    ImportRequest, KeyState, LocalMapping, MAX_ASSERTION_BYTES, MAX_BUNDLE_BYTES, MAX_SOURCE_BYTES,
+    MAX_VALIDITY_WINDOW_SECONDS, PolicyError, authenticate_json, commit_import, plan_import,
+};
 pub use mneme_core::Origin;
 pub use model::{
     AssertionView, ClaimType, DecisionKind, DecisionView, DerivationView, EpisodeType, EpisodeView,

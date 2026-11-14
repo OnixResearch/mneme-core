@@ -11,7 +11,10 @@ mneme-core.workspace = true
 mneme-store.workspace = true
 mneme-memory.workspace = true
 mneme-datalog.workspace = true
+rustix.workspace = true
 rust-stemmers.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

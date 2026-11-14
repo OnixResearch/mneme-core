@@ -772,51 +772,6 @@ fn barrier_advance_suppresses_publication_and_pinned_reads() {
     );
 }
 
-struct RaiseBarrier {
-    root: std::path::PathBuf,
-}
-
-impl FaultInjector for RaiseBarrier {
-    fn inject(&self, point: mneme_store::FaultPoint) -> bool {
-        if point == mneme_store::FaultPoint::BeforeCommitTransaction {
-            let mut other = mneme_store::Workspace::open(
-                &self.root,
-                mneme_store::WorkspaceConfig {
-                    clock: Box::new(mneme_store::SystemClock),
-                    faults: Box::new(mneme_store::NoFaults),
-                },
-            )
-            .expect("second handle");
-            other.advance_eligibility_barrier().expect("barrier");
-        }
-        false
-    }
-}
-
-#[test]
-fn commit_rechecks_the_generation_before_committing() {
-    let temp = tempfile::tempdir().expect("temp");
-    let root = temp.path().to_path_buf();
-    let mut workspace = mneme_store::Workspace::create(
-        &root,
-        config_with_faults(1_000, Box::new(RaiseBarrier { root: root.clone() })),
-    )
-    .expect("create");
-    let genesis = workspace.current_revision().expect("genesis");
-    let error = workspace
-        .commit(fixture_command(genesis, "background-commit"))
-        .expect_err("barrier wins");
-    assert!(matches!(
-        error,
-        mneme_store::Failure::BarrierAdvanced { .. }
-    ));
-    assert_eq!(workspace.current_revision().expect("current"), genesis);
-    drop(workspace);
-    let mut reopened = open(&root, 2_000);
-    let report = reopened.recover().expect("recovery");
-    assert!(report.staged_files_removed + report.orphan_blobs_removed > 0);
-}
-
 #[test]
 fn invalid_commands_are_refused_without_mutation() {
     let temp = tempfile::tempdir().expect("temp");

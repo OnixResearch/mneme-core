@@ -11,8 +11,25 @@
 pub mod adapter;
 pub mod commands;
 pub mod flow;
+#[path = "extractor.rs"]
+mod supervised;
+#[allow(unknown_lints, path_segment_repetition)] // preserve the canonical public model-extractor contract path
+pub mod model_extractor {
+    pub use crate::supervised::{ModelExtractor, PreparedModelRequest};
+}
 pub mod proposals;
 pub mod runner;
+
+/// Saturate elapsed nanoseconds for the fixed-width telemetry receipt.
+#[allow(unknown_lints, unchecked_narrowing)] // guarded conversion; telemetry cannot represent durations above u64 nanoseconds
+pub(crate) fn elapsed_ns_telemetry(elapsed: std::time::Duration) -> u64 {
+    let nanos = elapsed.as_nanos();
+    if nanos > u128::from(u64::MAX) {
+        u64::MAX
+    } else {
+        nanos as u64
+    }
+}
 
 /// The text a redacted proposal carries in place of content it may no longer show.
 const SUPPRESSED_MARKER: &str = "suppressed";
@@ -742,6 +759,20 @@ pub struct AssertionProposal {
     pub value: mneme_core::Value,
     pub stance: ProposalStance,
     pub valid_time: mneme_core::ValidTime,
+    /// Explicit uncertainty preserved from model output, when supplied.
+    pub uncertainty: Option<String>,
+    /// Runtime and input provenance for supervised model extraction.
+    pub extraction: Option<ExtractionProvenance>,
+}
+
+/// Content-free provenance for one model-produced claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtractionProvenance {
+    pub input_digest: String,
+    pub configuration_digest: String,
+    pub reported_model: Option<String>,
+    pub elapsed_ns: u64,
+    pub usage: mneme_recall::inference::UsageTelemetry,
 }
 
 /// Assertion stance inside a consolidation proposal.
@@ -939,6 +970,8 @@ impl Proposal {
                     value: mneme_core::Value::symbol("redacted"),
                     stance: assertion.stance,
                     valid_time: mneme_core::ValidTime::Unknown,
+                    uncertainty: None,
+                    extraction: None,
                 })
             }
             ProposalOperation::Dispute(dispute) => ProposalOperation::Dispute(DisputeProposal {
@@ -1257,6 +1290,8 @@ fn fixture_assertion_proposal(
             value: mneme_core::Value::string("SQLite"),
             stance: ProposalStance::Affirm,
             valid_time: mneme_core::ValidTime::Unknown,
+            uncertainty: None,
+            extraction: None,
         }),
         premises: vec![premise],
         rationale: "extract an explicitly proposed claim".to_owned(),
@@ -1468,6 +1503,7 @@ mod tests {
                 candidates: 0,
                 relation_exhaustive: None,
                 reason: None,
+                semantic_observation: None,
             }],
             candidates: Vec::new(),
             exhaustive: false,

@@ -3,18 +3,11 @@
 //! Each request gets a fresh temporary directory, script and child process. The
 //! engine starts with a cleared environment whose only entry is the pinned
 //! [`WORKER_ENV_PATH`], the temporary directory as its working directory, and
-//! its own process group. Host polling enforces the
-//! wall-clock, output-byte and solution-count limits and cooperative
-//! cancellation; the whole process group is signalled and the child is reaped
-//! before any outcome is reported. No workspace lock is held by the worker, and
-//! reset means discarding the child and the temporary directory. When the group
-//! signal cannot be issued the direct child is still killed and reaped, and the
-//! outcome reason says that only the leader was stopped.
-//!
-//! The in-flight byte and solution checks are early stops, not the only ones: a
-//! fast engine can finish and exit between polls, so the captured output is
-//! measured once more after the worker ends and the outcome is reported as
-//! partial when it holds more bytes or more solutions than the request allows.
+//! its own process group. Host polling drains stdout and stderr through
+//! nonblocking pipes and enforces one combined byte budget while the engine is
+//! producing output. The whole process group is signalled and the child is
+//! reaped before an outcome is reported. No workspace lock is held by the
+//! worker, and reset means discarding the child and temporary directory.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 use std::io::{Read, Write};
@@ -71,7 +64,14 @@ pub enum WorkerStatus {
 pub struct WorkerOutcome {
     pub status: WorkerStatus,
     pub output: String,
+    pub stderr: String,
+    /// Number of stdout and stderr bytes retained under the combined budget.
+    pub captured_bytes: usize,
+    /// Whether stdout was valid UTF-8 before diagnostic conversion.
+    pub output_utf8_valid: bool,
     pub elapsed_ms: u64,
+    pub output_limit_exceeded: bool,
+    pub solution_limit_exceeded: bool,
     pub reason: Option<String>,
 }
 
@@ -114,114 +114,76 @@ pub fn run_worker(
         return Ok(WorkerOutcome {
             status: WorkerStatus::Cancelled,
             output: String::new(),
+            stderr: String::new(),
+            captured_bytes: 0,
+            output_utf8_valid: true,
             elapsed_ms: 0,
+            output_limit_exceeded: false,
+            solution_limit_exceeded: false,
             reason: Some("cancelled before worker start".to_owned()),
         });
     }
     let started = std::time::Instant::now();
-    let mut worker = start_worker(engine, metadata, image, request)?;
+    let mut worker = start_worker(
+        engine,
+        metadata,
+        image,
+        request,
+        runtime.limits.max_output_bytes,
+    )?;
     let deadline = started + std::time::Duration::from_millis(runtime.limits.max_wall_ms);
     let waited = wait_for_worker(
         &mut worker,
         runtime.control,
         deadline,
-        request.limits.max_solutions,
+        worker_solution_limit(request),
         runtime.limits.max_output_bytes,
     )?;
-    let (output, over_output_limit) =
-        read_bounded(&worker.stdout_path, runtime.limits.max_output_bytes)?;
-    let (status, reason) = apply_output_budget(
-        waited.status,
-        waited.reason,
-        &output,
-        over_output_limit,
-        request.limits.max_solutions,
-    );
+    drain_output(&mut worker, runtime.limits.max_output_bytes)?;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).map_err(|_| {
         crate::CapabilityError::LimitExceeded(
             "worker elapsed time exceeds u64 milliseconds".to_owned(),
         )
     })?;
     Ok(WorkerOutcome {
-        status,
-        output,
+        status: waited.status,
+        output: String::from_utf8_lossy(&worker.output).into_owned(),
+        stderr: String::from_utf8_lossy(&worker.stderr_output).into_owned(),
+        captured_bytes: worker.captured_bytes,
+        output_utf8_valid: std::str::from_utf8(&worker.output).is_ok(),
         elapsed_ms,
-        reason,
+        output_limit_exceeded: worker.output_limit_exceeded,
+        solution_limit_exceeded: worker.solution_limit_exceeded,
+        reason: waited.reason,
     })
 }
 
-/// Count complete solution lines in the captured worker output.
-///
-/// Only newline-terminated lines count, and the completion marker is not a
-/// solution, so a fragment cut by the byte budget is never counted.
-fn counted_solution_lines(output: &str) -> usize {
-    let complete_len = output.rfind('\n').map_or(0, |index| index + 1);
-    let mut lines = output[..complete_len]
-        .split_terminator('\n')
-        .collect::<Vec<_>>();
-    if lines.last() == Some(&crate::COMPLETION_MARKER) {
-        lines.pop();
+fn worker_solution_limit(request: &crate::Request) -> usize {
+    match request.mode {
+        crate::QueryMode::GroundTest => 0,
+        crate::QueryMode::FindOne => 1,
+        crate::QueryMode::Enumerate => request.limits.max_solutions,
+        crate::QueryMode::Collect => request.limits.max_solutions,
     }
-    lines.len()
-}
-
-/// Apply the byte and solution budgets to the worker's final status.
-///
-/// A limit the in-flight poll did not catch is still a limit: an engine that
-/// finished and exited between two polls still wrote more output, or more
-/// solutions, than the request allows. The captured output is therefore
-/// measured once more after the worker ends. A failed engine keeps its status,
-/// because its output never becomes an answer.
-fn apply_output_budget(
-    status: WorkerStatus,
-    reason: Option<String>,
-    output: &str,
-    over_output_limit: bool,
-    max_solutions: usize,
-) -> (WorkerStatus, Option<String>) {
-    if status == WorkerStatus::Failed {
-        return (status, reason);
-    }
-    let previous = reason.as_deref();
-    if over_output_limit {
-        return (
-            WorkerStatus::Partial,
-            Some(limit_reason(
-                "worker output exceeded the configured byte budget",
-                previous,
-            )),
-        );
-    }
-    if counted_solution_lines(output) > max_solutions {
-        return (
-            WorkerStatus::Partial,
-            Some(limit_reason(
-                "worker exceeded the configured solution budget",
-                previous,
-            )),
-        );
-    }
-    (status, reason)
 }
 
 /// Note appended to a reason when only the worker's leader could be stopped.
 const GROUP_SIGNAL_NOTE: &str = "the worker process group could not be signalled";
 
-/// Phrase a post-mortem limit reason, keeping a termination note the in-flight
-/// path already recorded.
-fn limit_reason(base: &str, previous: Option<&str>) -> String {
-    match previous {
-        Some(reason) if reason.contains(GROUP_SIGNAL_NOTE) => {
-            format!("{base}; {GROUP_SIGNAL_NOTE}")
-        }
-        _ => base.to_owned(),
-    }
-}
-
 struct RunningWorker {
     child: std::process::Child,
     _workspace: WorkerDir,
-    stdout_path: std::path::PathBuf,
+    stdout: std::process::ChildStdout,
+    stderr: std::process::ChildStderr,
+    output: Vec<u8>,
+    stderr_output: Vec<u8>,
+    scanned_output_bytes: usize,
+    output_line_start: usize,
+    solution_count: usize,
+    collect_rows: Option<std::collections::BTreeSet<Vec<u8>>>,
+    captured_bytes: usize,
+    output_limit_exceeded: bool,
+    solution_limit_exceeded: bool,
 }
 
 struct Waited {
@@ -231,12 +193,10 @@ struct Waited {
 
 /// What host polling observed about the worker's output so far.
 struct Observation {
-    /// The output file is larger than the configured budget.
+    /// Combined stdout and stderr exceeded the configured budget.
     over_limit: bool,
-    /// Complete solution lines written so far.
+    /// Derivation rows, or distinct binding rows for collection.
     solutions: usize,
-    /// The completion marker is the last complete line.
-    finished: bool,
 }
 
 fn start_worker(
@@ -244,18 +204,11 @@ fn start_worker(
     metadata: &crate::CapabilityMetadata,
     image: &crate::snapshot::InputImage,
     request: &crate::Request,
+    max_output_bytes: usize,
 ) -> Result<RunningWorker, crate::CapabilityError> {
     let workspace = WorkerDir::new()?;
     let script = workspace.path().join("request.pl");
     write_program(&script, image, request, metadata)?;
-    let stdout_path = workspace.path().join("stdout");
-    let stderr_path = workspace.path().join("stderr");
-    let stdout = std::fs::File::create(&stdout_path).map_err(|error| {
-        crate::CapabilityError::InvalidRequest(format!("cannot create worker output: {error}"))
-    })?;
-    let stderr = std::fs::File::create(&stderr_path).map_err(|error| {
-        crate::CapabilityError::InvalidRequest(format!("cannot create worker error: {error}"))
-    })?;
     let mut command = std::process::Command::new(engine);
     command
         .arg("-f")
@@ -265,22 +218,54 @@ fn start_worker(
         .env_clear()
         .env("PATH", WORKER_ENV_PATH)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(stdout))
-        .stderr(std::process::Stdio::from(stderr));
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     // A fresh process group keeps the host's terminal signals off the engine
     // and lets termination reach everything the engine started.
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let child = command.spawn().map_err(|error| {
+    let mut child = command.spawn().map_err(|error| {
         crate::CapabilityError::InvalidRequest(format!("cannot start Prolog worker: {error}"))
     })?;
-    Ok(RunningWorker {
+    let stdout = child.stdout.take().ok_or_else(|| {
+        crate::CapabilityError::InvalidRequest("worker stdout pipe is unavailable".to_owned())
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        crate::CapabilityError::InvalidRequest("worker stderr pipe is unavailable".to_owned())
+    })?;
+    let mut worker = RunningWorker {
         _workspace: workspace,
         child,
-        stdout_path,
+        stdout,
+        stderr,
+        output: Vec::with_capacity(max_output_bytes.min(4096)),
+        stderr_output: Vec::new(),
+        scanned_output_bytes: 0,
+        output_line_start: 0,
+        solution_count: 0,
+        collect_rows: (request.mode == crate::QueryMode::Collect)
+            .then(std::collections::BTreeSet::new),
+        captured_bytes: 0,
+        output_limit_exceeded: false,
+        solution_limit_exceeded: false,
+    };
+    if let Err(error) =
+        set_nonblocking(&worker.stdout).and_then(|()| set_nonblocking(&worker.stderr))
+    {
+        terminate(&mut worker);
+        return Err(error);
+    }
+    Ok(worker)
+}
+
+fn set_nonblocking(fd: &impl std::os::fd::AsFd) -> Result<(), crate::CapabilityError> {
+    let flags = rustix::fs::fcntl_getfl(fd).map_err(|error| {
+        crate::CapabilityError::InvalidRequest(format!("worker pipe flags: {error}"))
+    })?;
+    rustix::fs::fcntl_setfl(fd, flags | rustix::fs::OFlags::NONBLOCK).map_err(|error| {
+        crate::CapabilityError::InvalidRequest(format!("worker pipe nonblocking mode: {error}"))
     })
 }
 
-#[allow(unknown_lints, ambient_clock)] // wait-loop deadline is the worker timeout shell
 fn wait_for_worker(
     worker: &mut RunningWorker,
     control: &WorkerControl,
@@ -289,92 +274,226 @@ fn wait_for_worker(
     max_output_bytes: usize,
 ) -> Result<Waited, crate::CapabilityError> {
     loop {
-        if control.is_cancelled() {
-            let reason = termination_reason(worker, "worker was cancelled");
-            return Ok(Waited {
-                status: WorkerStatus::Cancelled,
-                reason: Some(reason),
-            });
+        if let Some(waited) = cancelled_wait(worker, control, max_output_bytes)? {
+            return Ok(waited);
         }
-        match worker.child.try_wait() {
-            Ok(Some(exit)) => {
-                return Ok(Waited {
-                    status: if exit.success() {
-                        WorkerStatus::Complete
-                    } else {
-                        WorkerStatus::Failed
-                    },
-                    reason: None,
-                });
-            }
-            Ok(None) => {}
-            Err(error) => {
-                terminate(worker);
-                return Err(crate::CapabilityError::InvalidRequest(format!(
-                    "worker wait failed: {error}"
-                )));
-            }
+        if let Some(waited) = exited_wait(worker, max_solutions, max_output_bytes)? {
+            return Ok(waited);
         }
-        let observation = match observe_output(&worker.stdout_path, max_output_bytes) {
-            Ok(observation) => observation,
-            Err(error) => {
-                terminate(worker);
-                return Err(error);
-            }
-        };
-        if observation.over_limit {
-            let reason =
-                termination_reason(worker, "worker output exceeded the configured byte budget");
-            return Ok(Waited {
-                status: WorkerStatus::Partial,
-                reason: Some(reason),
-            });
+        if let Some(waited) = deadline_wait(worker, deadline, max_output_bytes)? {
+            return Ok(waited);
         }
-        if !observation.finished && observation.solutions > max_solutions {
-            let reason =
-                termination_reason(worker, "worker exceeded the configured solution budget");
-            return Ok(Waited {
-                status: WorkerStatus::Partial,
-                reason: Some(reason),
-            });
-        }
-        if std::time::Instant::now() >= deadline {
-            let reason = termination_reason(worker, "worker exceeded its wall-clock budget");
-            return Ok(Waited {
-                status: WorkerStatus::Timeout,
-                reason: Some(reason),
-            });
+        if let Some(waited) = observed_limit_wait(worker, max_solutions, max_output_bytes)? {
+            return Ok(waited);
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
 
+fn cancelled_wait(
+    worker: &mut RunningWorker,
+    control: &WorkerControl,
+    max_output_bytes: usize,
+) -> Result<Option<Waited>, crate::CapabilityError> {
+    if !control.is_cancelled() {
+        return Ok(None);
+    }
+    let reason = termination_reason(worker, "worker was cancelled");
+    drain_output(worker, max_output_bytes)?;
+    Ok(Some(Waited {
+        status: WorkerStatus::Cancelled,
+        reason: Some(reason),
+    }))
+}
+
+fn exited_wait(
+    worker: &mut RunningWorker,
+    max_solutions: usize,
+    max_output_bytes: usize,
+) -> Result<Option<Waited>, crate::CapabilityError> {
+    let exit = match worker.child.try_wait() {
+        Ok(Some(exit)) => exit,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            terminate(worker);
+            return Err(crate::CapabilityError::InvalidRequest(format!(
+                "worker wait failed: {error}"
+            )));
+        }
+    };
+    drain_output(worker, max_output_bytes)?;
+    if !exit.success() {
+        return Ok(Some(Waited {
+            status: WorkerStatus::Failed,
+            reason: None,
+        }));
+    }
+    if worker.output_limit_exceeded {
+        return Ok(Some(Waited {
+            status: WorkerStatus::Partial,
+            reason: Some("worker output exceeded the configured byte budget".to_owned()),
+        }));
+    }
+    if worker.solution_count > max_solutions {
+        worker.solution_limit_exceeded = true;
+        return Ok(Some(Waited {
+            status: WorkerStatus::Partial,
+            reason: Some("worker exceeded the configured solution budget".to_owned()),
+        }));
+    }
+    Ok(Some(Waited {
+        status: WorkerStatus::Complete,
+        reason: None,
+    }))
+}
+
+#[allow(unknown_lints, ambient_clock)] // wall-clock deadline is part of worker admission
+fn deadline_wait(
+    worker: &mut RunningWorker,
+    deadline: std::time::Instant,
+    max_output_bytes: usize,
+) -> Result<Option<Waited>, crate::CapabilityError> {
+    if std::time::Instant::now() < deadline {
+        return Ok(None);
+    }
+    let reason = termination_reason(worker, "worker exceeded its wall-clock budget");
+    drain_output(worker, max_output_bytes)?;
+    Ok(Some(Waited {
+        status: WorkerStatus::Timeout,
+        reason: Some(reason),
+    }))
+}
+
+fn observed_limit_wait(
+    worker: &mut RunningWorker,
+    max_solutions: usize,
+    max_output_bytes: usize,
+) -> Result<Option<Waited>, crate::CapabilityError> {
+    let observation = match observe_output(worker, max_output_bytes) {
+        Ok(observation) => observation,
+        Err(error) => {
+            terminate(worker);
+            return Err(error);
+        }
+    };
+    if observation.over_limit {
+        worker.output_limit_exceeded = true;
+        let reason =
+            termination_reason(worker, "worker output exceeded the configured byte budget");
+        drain_output(worker, max_output_bytes)?;
+        return Ok(Some(Waited {
+            status: WorkerStatus::Partial,
+            reason: Some(reason),
+        }));
+    }
+    if observation.solutions > max_solutions {
+        worker.solution_limit_exceeded = true;
+        let reason = termination_reason(worker, "worker exceeded the configured solution budget");
+        drain_output(worker, max_output_bytes)?;
+        return Ok(Some(Waited {
+            status: WorkerStatus::Partial,
+            reason: Some(reason),
+        }));
+    }
+    Ok(None)
+}
+
 /// Inspect the output written so far without waiting for the engine to stop.
 fn observe_output(
-    path: &std::path::Path,
+    worker: &mut RunningWorker,
     limit: usize,
 ) -> Result<Observation, crate::CapabilityError> {
-    let bytes = read_prefix(path, limit)?;
-    let is_over_limit = bytes.len() > limit;
-    let visible = &bytes[..bytes.len().min(limit)];
-    let complete_len = visible
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |index| index + 1);
-    let complete = &visible[..complete_len];
-    let line_count = complete.iter().filter(|byte| **byte == b'\n').count();
-    let mut marker = crate::COMPLETION_MARKER.as_bytes().to_vec();
-    marker.push(b'\n');
-    let is_finished = complete.ends_with(marker.as_slice());
+    drain_output(worker, limit)?;
     Ok(Observation {
-        over_limit: is_over_limit,
-        solutions: if is_finished {
-            line_count.saturating_sub(1)
-        } else {
-            line_count
-        },
-        finished: is_finished,
+        over_limit: worker.output_limit_exceeded,
+        solutions: worker.solution_count,
     })
+}
+
+fn drain_output(worker: &mut RunningWorker, limit: usize) -> Result<(), crate::CapabilityError> {
+    drain_pipe(
+        &mut worker.stdout,
+        &mut worker.output,
+        &mut worker.captured_bytes,
+        &mut worker.output_limit_exceeded,
+        limit,
+    )?;
+    observe_solution_frames(worker);
+    drain_pipe(
+        &mut worker.stderr,
+        &mut worker.stderr_output,
+        &mut worker.captured_bytes,
+        &mut worker.output_limit_exceeded,
+        limit,
+    )
+}
+
+/// Count complete response rows while stdout is drained. Enumerate counts each
+/// derivation; Collect counts each distinct serialized binding tuple. The
+/// latter is byte-exact because the worker emitter uses one canonical encoding
+/// for each finite term and the request fixes binding order.
+fn observe_solution_frames(worker: &mut RunningWorker) {
+    while worker.scanned_output_bytes < worker.output.len() {
+        let index = worker.scanned_output_bytes;
+        if worker.output[index] == b'\n' {
+            let line_start = worker.output_line_start;
+            let line = &worker.output[line_start..index];
+            count_solution_frame(&mut worker.collect_rows, &mut worker.solution_count, line);
+            worker.output_line_start = index + 1;
+        }
+        worker.scanned_output_bytes += 1;
+    }
+}
+
+fn count_solution_frame(
+    collect_rows: &mut Option<std::collections::BTreeSet<Vec<u8>>>,
+    solution_count: &mut usize,
+    line: &[u8],
+) {
+    if !line.starts_with(crate::RESPONSE_ROW_PREFIX.as_bytes()) {
+        return;
+    }
+    if let Some(rows) = collect_rows.as_mut() {
+        if rows.contains(line) {
+            return;
+        }
+        rows.insert(line.to_vec());
+        *solution_count = rows.len();
+    } else {
+        *solution_count = (*solution_count).saturating_add(1);
+    }
+}
+
+fn drain_pipe<R: Read>(
+    pipe: &mut R,
+    captured: &mut Vec<u8>,
+    captured_bytes: &mut usize,
+    over_limit: &mut bool,
+    limit: usize,
+) -> Result<(), crate::CapabilityError> {
+    let mut buffer = [0_u8; 4096];
+    loop {
+        match pipe.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(read) => {
+                let available = limit.saturating_sub(*captured_bytes);
+                let retained = read.min(available);
+                captured.extend_from_slice(&buffer[..retained]);
+                *captured_bytes = captured_bytes.saturating_add(retained);
+                if retained < read {
+                    *over_limit = true;
+                    return Ok(());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(crate::CapabilityError::InvalidRequest(format!(
+                    "worker output pipe: {error}"
+                )));
+            }
+        }
+    }
 }
 
 /// Kill the worker's process group and leader, then reap the leader.
@@ -418,33 +537,6 @@ fn termination_reason(worker: &mut RunningWorker, reason: &str) -> String {
     }
 }
 
-/// Read at most `limit + 1` bytes, so a caller can tell "at the limit" from
-/// "over the limit" without reading the whole file.
-fn read_prefix(path: &std::path::Path, limit: usize) -> Result<Vec<u8>, crate::CapabilityError> {
-    let file = std::fs::File::open(path).map_err(|error| {
-        crate::CapabilityError::InvalidRequest(format!("worker output: {error}"))
-    })?;
-    let mut bytes = Vec::new();
-    file.take((limit as u64).saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
-            crate::CapabilityError::InvalidRequest(format!("worker output: {error}"))
-        })?;
-    Ok(bytes)
-}
-
-/// Read the captured output, truncated to the byte budget, and report whether
-/// the engine wrote more than the budget allows.
-fn read_bounded(
-    path: &std::path::Path,
-    limit: usize,
-) -> Result<(String, bool), crate::CapabilityError> {
-    let mut bytes = read_prefix(path, limit)?;
-    let is_over_limit = bytes.len() > limit;
-    bytes.truncate(limit);
-    Ok((String::from_utf8_lossy(&bytes).into_owned(), is_over_limit))
-}
-
 /// Write the one script that can reach the engine.
 fn write_program(
     path: &std::path::Path,
@@ -452,14 +544,21 @@ fn write_program(
     request: &crate::Request,
     metadata: &crate::CapabilityMetadata,
 ) -> Result<(), crate::CapabilityError> {
+    let identity = request.protocol_identity(metadata, image)?;
     let mut text = String::from(EMITTER_SOURCE);
     for clause in program_clauses(image, request, metadata)? {
         text.push_str(&clause);
         text.push('\n');
     }
-    text.push_str(&emit_solution_clause(&crate::goal_variables(&request.goal)));
+    let output_variables = request
+        .variables
+        .iter()
+        .filter(|variable| variable.role == crate::VariableRole::Output)
+        .map(|variable| variable.name.clone())
+        .collect::<Vec<_>>();
+    text.push_str(&emit_solution_clause(&output_variables, &identity));
     text.push('\n');
-    text.push_str(&goal_directive(request, metadata)?);
+    text.push_str(&goal_directive(request, metadata, &identity)?);
     let mut file = std::fs::File::create(path).map_err(|error| {
         crate::CapabilityError::InvalidRequest(format!("cannot write script: {error}"))
     })?;
@@ -607,21 +706,52 @@ fn empty_relation_clause(name: &str, arity: usize) -> String {
 fn goal_directive(
     request: &crate::Request,
     metadata: &crate::CapabilityMetadata,
+    identity: &crate::ProtocolIdentity,
 ) -> Result<String, crate::CapabilityError> {
-    let goal = crate::encode_atom(
-        &request.goal,
-        metadata.terms,
-        metadata.limits.max_output_bytes,
-    )?;
-    let variables = crate::goal_variables(&request.goal);
+    let goal = crate::encode_query_goal(request, metadata)?;
+    let variables = request
+        .variables
+        .iter()
+        .filter(|variable| variable.role == crate::VariableRole::Output)
+        .map(|variable| variable.name.clone())
+        .collect::<Vec<_>>();
     let emit = if variables.is_empty() {
         "mneme_emit_solution".to_owned()
     } else {
         format!("mneme_emit_solution({})", variables.join(","))
     };
+    let header = emit_frame(&[
+        crate::RESPONSE_HEADER_PREFIX,
+        &identity.request_digest,
+        &identity.profile_digest,
+        &identity.rule_manifest_digest,
+        &identity.input_order_digest,
+        &identity.image_digest,
+        request.mode.name(),
+    ]);
+    let stop = |name| emit_frame(&[crate::RESPONSE_STOP_PREFIX, &identity.request_digest, name]);
+    let body = match request.mode {
+        crate::QueryMode::GroundTest => format!(
+            "({goal} -> {truth}; {falsehood}), halt(0)",
+            truth = stop("ground-success"),
+            falsehood = stop("ground-failure"),
+        ),
+        crate::QueryMode::FindOne => format!(
+            "(({goal}, {emit}) -> {found}; {missing}), halt(0)",
+            found = stop("found-one"),
+            missing = stop("exhausted"),
+        ),
+        crate::QueryMode::Enumerate => format!(
+            "(({goal}), {emit}, fail ; {exhausted}), halt(0)",
+            exhausted = stop("exhausted"),
+        ),
+        crate::QueryMode::Collect => format!(
+            "(({goal}), {emit}, fail ; {exhausted}), halt(0)",
+            exhausted = stop("exhausted"),
+        ),
+    };
     Ok(format!(
-        ":- initialization(mneme_main).\nmneme_main :- catch(( ({goal}), {emit}, fail ; write('{marker}'), nl, halt(0) ), _, halt(2)).",
-        marker = crate::COMPLETION_MARKER
+        ":- initialization(mneme_main).\nmneme_main :- catch(({header}, {body}), _, halt(2))."
     ))
 }
 
@@ -632,17 +762,22 @@ fn goal_directive(
 /// conjunction and would let the engine print `Name=aName=b`. An answer that is
 /// not ground is not a finite binding set, so it is reported on the
 /// [`crate::UNBOUND_MARKER`] line instead of a partially written solution.
-fn emit_solution_clause(variables: &[String]) -> String {
-    if variables.is_empty() {
-        return "mneme_emit_solution :- nl.".to_owned();
-    }
-    let head = format!("mneme_emit_solution({})", variables.join(","));
+fn emit_solution_clause(variables: &[String], identity: &crate::ProtocolIdentity) -> String {
+    let head = if variables.is_empty() {
+        "mneme_emit_solution".to_owned()
+    } else {
+        format!("mneme_emit_solution({})", variables.join(","))
+    };
     let grounds = variables
         .iter()
         .map(|name| format!("ground({name})"))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut body = String::new();
+    let mut body = format!(
+        "write('{}') , put_code(9), write('{}'), put_code(9), ",
+        crate::RESPONSE_ROW_PREFIX,
+        identity.request_digest
+    );
     for (index, name) in variables.iter().enumerate() {
         if index > 0 {
             body.push_str("write(','), ");
@@ -653,10 +788,31 @@ fn emit_solution_clause(variables: &[String]) -> String {
         body.push_str(name);
         body.push_str("), ");
     }
+    if variables.is_empty() {
+        return format!("{head} :- {body}nl.");
+    }
     format!(
-        "{head} :- ( {grounds} -> {body}nl ; write('{unbound}'), nl ).",
-        unbound = crate::UNBOUND_MARKER
+        "{head} :- ( {grounds} -> {body}nl ; write('{unbound}'), put_code(9), write('{digest}'), nl, halt(2) ).",
+        unbound = crate::UNBOUND_MARKER,
+        digest = identity.request_digest
     )
+}
+
+/// Emit a tab-delimited protocol frame without placing raw control characters
+/// inside a Prolog source literal. Fields are fixed prefixes, validated hashes,
+/// mode names, or the reserved output-variable names.
+fn emit_frame(fields: &[&str]) -> String {
+    let mut output = String::new();
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            output.push_str(", put_code(9), ");
+        }
+        output.push_str("write('");
+        output.push_str(field);
+        output.push_str("')");
+    }
+    output.push_str(", nl");
+    output
 }
 
 /// Fixed wrapper predicates: the only code that prints or reads terms.
@@ -769,10 +925,12 @@ mod tests {
             revision: revision(),
             eligibility_generation: 0,
             image_digest: String::new(),
+            mode: crate::QueryMode::GroundTest,
             goal: crate::Atom {
                 predicate: "path".to_owned(),
                 terms: vec![crate::Term::String("a".to_owned())],
             },
+            variables: Vec::new(),
             rules: Vec::new(),
             assumptions: Vec::new(),
             features: std::collections::BTreeSet::from([crate::Feature::PositiveQuery]),
@@ -810,6 +968,33 @@ mod tests {
         let mut request = request();
         request.image_digest = image.context.image_digest.clone();
         (request, image)
+    }
+
+    fn output_request(mode: crate::QueryMode) -> (crate::Request, crate::snapshot::InputImage) {
+        let (mut request, image) = paired();
+        request.mode = mode;
+        request.goal.terms = vec![crate::Term::Variable("X".to_owned())];
+        request.variables = vec![crate::QueryVariable {
+            name: "X".to_owned(),
+            role: crate::VariableRole::Output,
+        }];
+        (request, image)
+    }
+
+    fn response_row(
+        request: &crate::Request,
+        metadata: &crate::CapabilityMetadata,
+        image: &crate::snapshot::InputImage,
+        value: &str,
+    ) -> String {
+        let identity = request
+            .protocol_identity(metadata, image)
+            .expect("request identity");
+        format!(
+            "{}\t{}\tX={value}",
+            crate::RESPONSE_ROW_PREFIX,
+            identity.request_digest
+        )
     }
 
     // Executing a freshly written script can fail with ETXTBSY when another
@@ -1141,17 +1326,51 @@ mod tests {
     }
 
     #[test]
+    fn stderr_flood_is_stopped_during_production() {
+        // Diagnostics are output too: a worker that floods stderr must be
+        // contained by the same live byte budget, not allowed to fill its
+        // temporary filesystem while stdout remains quiet.
+        let (_temp, engine) = script("while true; do printf '0123456789' >&2; sleep 0.01; done");
+        let (request, image) = paired();
+        let limited = worker(
+            &engine,
+            &metadata(),
+            &image,
+            &request,
+            &WorkerControl::new(),
+            WorkerLimits {
+                max_wall_ms: 1000,
+                max_output_bytes: 10,
+            },
+        )
+        .expect("stderr output limit");
+        assert_eq!(limited.status, WorkerStatus::Partial);
+        assert!(
+            limited.elapsed_ms < 500,
+            "stderr output limit was applied too late"
+        );
+    }
+
+    #[test]
     fn solution_flood_is_stopped_at_the_solution_limit() {
         // The engine records more solutions than the request allows and exits
         // on its own, so this exercises the post-mortem count: the limit must
         // hold whether the worker is caught mid-flight or not.
-        let (_temp, engine) =
-            script("i=0\nwhile [ $i -lt 100 ]; do\n  printf 'X=%s\\n' \"$i\"\n  i=$((i+1))\ndone");
-        let (mut request, image) = paired();
+        let metadata = metadata();
+        let (mut request, image) = output_request(crate::QueryMode::Enumerate);
         request.limits.max_solutions = 3;
+        let identity = request
+            .protocol_identity(&metadata, &image)
+            .expect("request identity");
+        let body = format!(
+            "i=0\nwhile [ $i -lt 10 ]; do\n  printf '%s\\t%s\\tX=%s\\n' '{}' '{}' \"$i\"\n  i=$((i+1))\ndone",
+            crate::RESPONSE_ROW_PREFIX,
+            identity.request_digest
+        );
+        let (_temp, engine) = script(&body);
         let limited = worker(
             &engine,
-            &metadata(),
+            &metadata,
             &image,
             &request,
             &WorkerControl::new(),
@@ -1172,12 +1391,20 @@ mod tests {
     fn slow_solution_stream_is_stopped_in_flight() {
         // The engine records more solutions than the request allows and never
         // exits, so only the in-flight check can stop it.
-        let (_temp, engine) = script("printf 'X=1\\nX=2\\nX=3\\nX=4\\n'\nwhile :; do :; done");
-        let (mut request, image) = paired();
+        let metadata = metadata();
+        let (mut request, image) = output_request(crate::QueryMode::Enumerate);
         request.limits.max_solutions = 3;
+        let first = response_row(&request, &metadata, &image, "1");
+        let second = response_row(&request, &metadata, &image, "2");
+        let third = response_row(&request, &metadata, &image, "3");
+        let fourth = response_row(&request, &metadata, &image, "4");
+        let body = format!(
+            "printf '%s\\n' '{first}' '{second}' '{third}' '{fourth}'\nwhile :; do :; done"
+        );
+        let (_temp, engine) = script(&body);
         let limited = worker(
             &engine,
-            &metadata(),
+            &metadata,
             &image,
             &request,
             &WorkerControl::new(),
@@ -1195,6 +1422,46 @@ mod tests {
         assert!(
             limited.elapsed_ms < 2000,
             "solution limit was applied too late"
+        );
+    }
+
+    #[test]
+    fn collect_counts_unique_binding_frames_during_production() {
+        let metadata = metadata();
+        let (mut request, image) = output_request(crate::QueryMode::Collect);
+        request.limits.max_solutions = 1;
+        let repeated = response_row(&request, &metadata, &image, "1");
+        let distinct = response_row(&request, &metadata, &image, "2");
+        let body = format!(
+            "printf '%s\\n' '{repeated}' '{repeated}' '{repeated}' '{repeated}' '{distinct}'\nwhile :; do :; done"
+        );
+        let (_temp, engine) = script(&body);
+        let limited = worker(
+            &engine,
+            &metadata,
+            &image,
+            &request,
+            &WorkerControl::new(),
+            WorkerLimits {
+                max_wall_ms: 5000,
+                max_output_bytes: 4096,
+            },
+        )
+        .expect("distinct collect solution limit");
+        assert_eq!(limited.status, WorkerStatus::Partial);
+        assert!(limited.solution_limit_exceeded);
+        assert_eq!(
+            limited.reason.as_deref(),
+            Some("worker exceeded the configured solution budget")
+        );
+        assert_eq!(
+            limited
+                .output
+                .lines()
+                .filter(|line| line.starts_with(crate::RESPONSE_ROW_PREFIX))
+                .count(),
+            5,
+            "duplicate derivations must not spend the unique-binding cap"
         );
     }
 

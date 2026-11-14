@@ -155,13 +155,22 @@ fn request_for(
     goal: mneme_prolog::Atom,
     rules: Vec<mneme_prolog::Rule>,
 ) -> mneme_prolog::Request {
+    let variables = mneme_prolog::goal_variables(&goal)
+        .into_iter()
+        .map(|name| mneme_prolog::QueryVariable {
+            name,
+            role: mneme_prolog::VariableRole::Output,
+        })
+        .collect();
     mneme_prolog::Request {
         actor: "agent".to_owned(),
         scope: scope(),
         revision: revision(),
         eligibility_generation: GENERATION,
         image_digest: image.context.image_digest.clone(),
+        mode: mneme_prolog::QueryMode::Enumerate,
         goal,
+        variables,
         rules,
         assumptions: Vec::new(),
         features: std::collections::BTreeSet::from([mneme_prolog::Feature::PositiveQuery]),
@@ -171,6 +180,14 @@ fn request_for(
             max_output_bytes: 8_192,
         },
     }
+}
+
+fn with_mode(
+    mut request: mneme_prolog::Request,
+    mode: mneme_prolog::QueryMode,
+) -> mneme_prolog::Request {
+    request.mode = mode;
+    request
 }
 
 fn limits() -> mneme_prolog::process::WorkerLimits {
@@ -212,6 +229,15 @@ fn bound_string(solution: &mneme_prolog::Solution, name: &str) -> String {
         "binding {name} is not the expected string: {binding:?}"
     );
     found.expect("binding was asserted to hold a string")
+}
+
+fn solutions(outcome: &mneme_prolog::Outcome) -> &[mneme_prolog::Solution] {
+    match &outcome.result {
+        mneme_prolog::QueryResult::GroundTest { .. } => &[],
+        mneme_prolog::QueryResult::FindOne { solution } => solution.as_slice(),
+        mneme_prolog::QueryResult::Enumerate { solutions }
+        | mneme_prolog::QueryResult::Collect { solutions } => solutions,
+    }
 }
 
 fn sorted_strings(values: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -265,8 +291,8 @@ fn ground_goal_over_image_facts_succeeds() {
         outcome.exhaustive,
         "ground goal was not reported exhaustive"
     );
-    assert_eq!(outcome.solutions.len(), 1);
-    assert!(outcome.solutions[0].bindings.is_empty());
+    assert_eq!(solutions(&outcome).len(), 1);
+    assert!(solutions(&outcome)[0].bindings.is_empty());
     assert!(outcome.proposals.is_empty());
     assert_eq!(outcome.consumed.solutions, 1);
     outcome
@@ -290,7 +316,7 @@ fn ground_goal_over_image_facts_succeeds() {
     let outcome = run(&metadata(), &image, &absent, limits()).expect("query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
     assert!(outcome.exhaustive);
-    assert!(outcome.solutions.is_empty());
+    assert!(solutions(&outcome).is_empty());
 }
 
 #[test]
@@ -320,13 +346,12 @@ fn goal_with_variables_returns_expected_bindings() {
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
     assert!(outcome.exhaustive);
     let values = sorted_strings(
-        outcome
-            .solutions
+        solutions(&outcome)
             .iter()
             .map(|solution| bound_string(solution, "X")),
     );
     assert_eq!(values, vec!["a".to_owned(), "b".to_owned()]);
-    for solution in &outcome.solutions {
+    for solution in solutions(&outcome) {
         assert_eq!(bound_string(solution, "X").len(), 1);
         assert!(matches!(
             solution.certification,
@@ -364,7 +389,7 @@ fn goal_with_variables_returns_expected_bindings() {
     );
     let outcome = run(&metadata(), &relations, &request, limits()).expect("query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
-    assert_eq!(outcome.solutions.len(), 2);
+    assert_eq!(solutions(&outcome).len(), 2);
     for expected in [
         mneme_prolog::Term::List(vec![
             mneme_prolog::Term::Integer(1),
@@ -376,13 +401,274 @@ fn goal_with_variables_returns_expected_bindings() {
         ]),
     ] {
         assert!(
-            outcome
-                .solutions
+            solutions(&outcome)
                 .iter()
                 .any(|solution| solution.bindings.get("Row") == Some(&expected)),
             "missing selected relation row {expected:?}"
         );
     }
+}
+
+#[test]
+fn ground_test_distinguishes_true_false_and_incomplete_unknown() {
+    let image = input_image(vec![fact("path", 0x20, string("a"))], Vec::new());
+    let ground_goal = |value: &str| {
+        atom(
+            "assertion",
+            vec![
+                mneme_prolog::Term::String("path".to_owned()),
+                mneme_prolog::Term::String(subject(0x20).to_hex()),
+                mneme_prolog::Term::String(value.to_owned()),
+            ],
+        )
+    };
+
+    let true_request = with_mode(
+        request_for(&image, ground_goal("a"), Vec::new()),
+        mneme_prolog::QueryMode::GroundTest,
+    );
+    let true_outcome = run(&metadata(), &image, &true_request, limits()).expect("true test");
+    assert_eq!(true_outcome.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(true_outcome.exhaustive);
+    assert_eq!(true_outcome.stop, mneme_prolog::SearchStop::GroundSuccess);
+    assert_eq!(
+        true_outcome.result,
+        mneme_prolog::QueryResult::GroundTest {
+            truth: mneme_prolog::QueryTruth::True,
+        }
+    );
+
+    let false_request = with_mode(
+        request_for(&image, ground_goal("missing"), Vec::new()),
+        mneme_prolog::QueryMode::GroundTest,
+    );
+    let false_outcome = run(&metadata(), &image, &false_request, limits()).expect("false test");
+    assert_eq!(
+        false_outcome.status,
+        mneme_prolog::ExecutionStatus::Complete
+    );
+    assert!(false_outcome.exhaustive);
+    assert_eq!(false_outcome.stop, mneme_prolog::SearchStop::GroundFailure);
+    assert_eq!(
+        false_outcome.result,
+        mneme_prolog::QueryResult::GroundTest {
+            truth: mneme_prolog::QueryTruth::False,
+        }
+    );
+
+    let mut incomplete = image.clone();
+    incomplete.coverage.complete = false;
+    incomplete.coverage.reason = Some("the selected input was incomplete".to_owned());
+    incomplete.seal();
+    let unknown_request = with_mode(
+        request_for(&incomplete, ground_goal("missing"), Vec::new()),
+        mneme_prolog::QueryMode::GroundTest,
+    );
+    let unknown =
+        run(&metadata(), &incomplete, &unknown_request, limits()).expect("incomplete ground test");
+    assert_eq!(unknown.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(!unknown.exhaustive);
+    assert_eq!(unknown.stop, mneme_prolog::SearchStop::GroundFailure);
+    assert_eq!(
+        unknown.result,
+        mneme_prolog::QueryResult::GroundTest {
+            truth: mneme_prolog::QueryTruth::Unknown,
+        }
+    );
+    unknown
+        .validate_for_request(&unknown_request)
+        .expect("incomplete coverage is not a negative proof");
+}
+
+#[test]
+fn find_one_searches_the_complete_qualifying_goal() {
+    let first_subject = subject(0x21);
+    let second_subject = subject(0x22);
+    let mut eligible = fact("eligible", 0x23, string("yes"));
+    eligible.subject = second_subject;
+    let image = input_image(
+        vec![
+            fact("path", 0x21, string("first")),
+            fact("path", 0x22, string("second")),
+            eligible,
+        ],
+        Vec::new(),
+    );
+    let rules = vec![rule(
+        "qualified-path",
+        atom(
+            "qualified",
+            vec![mneme_prolog::Term::Variable("X".to_owned())],
+        ),
+        vec![
+            mneme_prolog::Literal::Positive(atom(
+                "assertion",
+                vec![
+                    mneme_prolog::Term::String("path".to_owned()),
+                    mneme_prolog::Term::Variable("S".to_owned()),
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                ],
+            )),
+            mneme_prolog::Literal::Positive(atom(
+                "assertion",
+                vec![
+                    mneme_prolog::Term::String("eligible".to_owned()),
+                    mneme_prolog::Term::Variable("S".to_owned()),
+                    mneme_prolog::Term::String("yes".to_owned()),
+                ],
+            )),
+        ],
+    )];
+    let request = with_mode(
+        request_for(
+            &image,
+            atom(
+                "qualified",
+                vec![mneme_prolog::Term::Variable("X".to_owned())],
+            ),
+            rules,
+        ),
+        mneme_prolog::QueryMode::FindOne,
+    );
+    let mut profile = metadata();
+    profile.allowed_predicates.insert("qualified".to_owned());
+    let outcome = run(&profile, &image, &request, limits()).expect("qualifying search");
+    assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(outcome.operation_completed);
+    assert!(!outcome.exhaustive);
+    assert_eq!(outcome.stop, mneme_prolog::SearchStop::FoundOne);
+    let solution = match &outcome.result {
+        mneme_prolog::QueryResult::FindOne { solution } => solution.as_ref(),
+        mneme_prolog::QueryResult::GroundTest { .. }
+        | mneme_prolog::QueryResult::Enumerate { .. }
+        | mneme_prolog::QueryResult::Collect { .. } => None,
+    }
+    .expect("find-one result contains a qualifying solution");
+    assert_eq!(
+        solution.bindings.get("X"),
+        Some(&mneme_prolog::Term::String("second".to_owned()))
+    );
+    assert_ne!(first_subject, second_subject);
+}
+
+#[test]
+fn enumerate_and_collect_report_duplicate_and_capped_bindings_truthfully() {
+    let image = input_image(
+        vec![
+            fact("path", 0x24, string("a")),
+            fact("path", 0x25, string("b")),
+            fact("other", 0x26, string("a")),
+        ],
+        Vec::new(),
+    );
+    let derived = || {
+        atom(
+            "derived",
+            vec![mneme_prolog::Term::Variable("X".to_owned())],
+        )
+    };
+    let assertion_rule = |id: &str, predicate: &str, subject_byte: u8| {
+        rule(
+            id,
+            derived(),
+            vec![mneme_prolog::Literal::Positive(atom(
+                "assertion",
+                vec![
+                    mneme_prolog::Term::String(predicate.to_owned()),
+                    mneme_prolog::Term::String(subject(subject_byte).to_hex()),
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                ],
+            ))],
+        )
+    };
+    let rules = vec![
+        assertion_rule("path-a", "path", 0x24),
+        assertion_rule("path-b", "path", 0x25),
+        assertion_rule("other-a", "other", 0x26),
+    ];
+    let mut profile = metadata();
+    profile.allowed_predicates.insert("derived".to_owned());
+
+    let mut exact_enumeration = request_for(&image, derived(), rules.clone());
+    exact_enumeration.limits.max_solutions = 3;
+    let exact = run(&profile, &image, &exact_enumeration, limits()).expect("exact enumeration");
+    assert_eq!(exact.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(exact.exhaustive);
+    assert_eq!(exact.stop, mneme_prolog::SearchStop::Exhausted);
+    assert_eq!(solutions(&exact).len(), 3);
+    assert_eq!(
+        sorted_strings(
+            solutions(&exact)
+                .iter()
+                .map(|solution| bound_string(solution, "X"))
+        ),
+        vec!["a".to_owned(), "a".to_owned(), "b".to_owned()]
+    );
+    assert!(
+        solutions(&exact)
+            .iter()
+            .all(|solution| solution.independent_support_count() == 0)
+    );
+    let repeated = run(&profile, &image, &exact_enumeration, limits()).expect("repeat");
+    assert_eq!(solutions(&repeated), solutions(&exact));
+
+    let mut capped_enumeration = exact_enumeration.clone();
+    capped_enumeration.limits.max_solutions = 2;
+    let capped = run(&profile, &image, &capped_enumeration, limits()).expect("capped enumeration");
+    assert_eq!(capped.status, mneme_prolog::ExecutionStatus::Partial);
+    assert!(!capped.exhaustive);
+    assert_eq!(capped.stop, mneme_prolog::SearchStop::ResultLimit);
+    assert!(capped.solution_limit_exceeded);
+    assert_eq!(solutions(&capped).len(), 2);
+
+    let mut exact_collection = exact_enumeration.clone();
+    exact_collection.mode = mneme_prolog::QueryMode::Collect;
+    exact_collection.limits.max_solutions = 2;
+    let collected = run(&profile, &image, &exact_collection, limits()).expect("collection");
+    assert_eq!(collected.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(collected.exhaustive);
+    assert_eq!(collected.stop, mneme_prolog::SearchStop::Exhausted);
+    assert_eq!(solutions(&collected).len(), 2);
+    assert_eq!(
+        solutions(&collected)
+            .iter()
+            .map(|solution| bound_string(solution, "X"))
+            .collect::<Vec<_>>(),
+        vec!["a".to_owned(), "b".to_owned()]
+    );
+
+    let mut capped_collection = exact_collection;
+    capped_collection.limits.max_solutions = 1;
+    let capped = run(&profile, &image, &capped_collection, limits()).expect("capped collection");
+    assert_eq!(capped.status, mneme_prolog::ExecutionStatus::Partial);
+    assert!(!capped.exhaustive);
+    assert_eq!(capped.stop, mneme_prolog::SearchStop::ResultLimit);
+    assert!(capped.solution_limit_exceeded);
+    assert_eq!(solutions(&capped).len(), 1);
+}
+
+#[test]
+fn local_query_variables_are_not_returned_as_bindings() {
+    let image = input_image(vec![fact("path", 0x27, string("secret-local"))], Vec::new());
+    let mut request = request_for(
+        &image,
+        atom(
+            "assertion",
+            vec![
+                mneme_prolog::Term::String("path".to_owned()),
+                mneme_prolog::Term::String(subject(0x27).to_hex()),
+                mneme_prolog::Term::Variable("Hidden".to_owned()),
+            ],
+        ),
+        Vec::new(),
+    );
+    request.mode = mneme_prolog::QueryMode::Enumerate;
+    request.variables[0].role = mneme_prolog::VariableRole::Local;
+    let outcome = run(&metadata(), &image, &request, limits()).expect("local variable query");
+    assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(outcome.exhaustive);
+    assert_eq!(solutions(&outcome).len(), 1);
+    assert!(solutions(&outcome)[0].bindings.is_empty());
 }
 
 #[test]
@@ -417,8 +703,7 @@ fn rule_derives_a_fact_from_the_image() {
     assert!(outcome.exhaustive);
     assert_eq!(
         sorted_strings(
-            outcome
-                .solutions
+            solutions(&outcome)
                 .iter()
                 .map(|solution| bound_string(solution, "X"))
         ),
@@ -466,8 +751,7 @@ fn rule_with_variables_derives_bindings() {
     assert!(outcome.exhaustive);
     assert_eq!(
         sorted_strings(
-            outcome
-                .solutions
+            solutions(&outcome)
                 .iter()
                 .map(|solution| bound_string(solution, "X"))
         ),
@@ -501,19 +785,19 @@ fn two_variable_goal_returns_exact_bindings() {
     let outcome = run(&metadata(), &image, &request, limits()).expect("query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
     assert!(outcome.exhaustive);
-    assert_eq!(outcome.solutions.len(), 2);
+    assert_eq!(solutions(&outcome).len(), 2);
     for (subject_byte, value) in [(0x19_u8, -7_i64), (0x1a, 42)] {
         let expected_subject = mneme_prolog::Term::String(subject(subject_byte).to_hex());
         let expected_value = mneme_prolog::Term::Integer(value);
         assert!(
-            outcome.solutions.iter().any(|solution| {
+            solutions(&outcome).iter().any(|solution| {
                 solution.bindings.get("S") == Some(&expected_subject)
                     && solution.bindings.get("V") == Some(&expected_value)
             }),
             "missing bindings S={expected_subject:?} V={expected_value:?}"
         );
     }
-    for solution in &outcome.solutions {
+    for solution in solutions(&outcome) {
         assert_eq!(solution.bindings.len(), 2);
     }
 }
@@ -523,7 +807,7 @@ fn escaped_values_with_separators_round_trip() {
     // A value that itself contains the binding separator, a quote, a backslash
     // and a newline must come back exactly; the engine quotes and escapes it,
     // and the parser reads it inside the quoted term.
-    let payload = "a,b\"c\\d\ne";
+    let payload = "a,b\"c\\d\ne\u{0}λ☃🧠";
     let image = input_image(vec![fact("path", 0x1b, string(payload))], Vec::new());
     let request = request_for(
         &image,
@@ -540,12 +824,12 @@ fn escaped_values_with_separators_round_trip() {
     let outcome = run(&metadata(), &image, &request, limits()).expect("query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
     assert!(outcome.exhaustive);
-    assert_eq!(outcome.solutions.len(), 1);
+    assert_eq!(solutions(&outcome).len(), 1);
     assert_eq!(
-        outcome.solutions[0].bindings.get("S"),
+        solutions(&outcome)[0].bindings.get("S"),
         Some(&mneme_prolog::Term::String(subject(0x1b).to_hex()))
     );
-    assert_eq!(bound_string(&outcome.solutions[0], "V"), payload);
+    assert_eq!(bound_string(&solutions(&outcome)[0], "V"), payload);
 }
 
 #[test]
@@ -611,11 +895,11 @@ fn multi_binding_solution_stream_is_counted_and_limited() {
     .expect("solution-limited query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Partial);
     assert!(!outcome.exhaustive);
-    assert_eq!(outcome.solutions.len(), 2);
-    assert_eq!(outcome.consumed.solutions, 2);
+    assert_eq!(solutions(&outcome).len(), 2);
+    assert!(outcome.consumed.solutions > request.limits.max_solutions);
     assert!(outcome.consumed.output_bytes > 0);
-    assert_eq!(outcome.reason.as_deref(), Some("solution limit reached"));
-    for solution in &outcome.solutions {
+    assert_eq!(outcome.stop, mneme_prolog::SearchStop::ResultLimit);
+    for solution in solutions(&outcome) {
         assert_eq!(solution.bindings.len(), 2);
         assert_eq!(
             solution.bindings.get("S"),
@@ -660,10 +944,7 @@ fn multi_binding_output_is_stopped_at_the_byte_limit() {
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Partial);
     assert!(!outcome.exhaustive);
     assert!(outcome.consumed.output_bytes <= 64);
-    assert_eq!(
-        outcome.reason.as_deref(),
-        Some("worker output exceeded the configured byte budget")
-    );
+    assert_eq!(outcome.stop, mneme_prolog::SearchStop::OutputLimit);
 }
 
 #[test]
@@ -677,7 +958,7 @@ fn missing_relation_answers_with_no_solutions() {
     let outcome = run(&metadata(), &image, &request, limits()).expect("query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
     assert!(outcome.exhaustive);
-    assert!(outcome.solutions.is_empty());
+    assert!(solutions(&outcome).is_empty());
 }
 
 #[test]
@@ -769,8 +1050,8 @@ fn injection_text_is_refused_as_program_text_and_neutralized_as_data() {
     );
     let outcome = run(&metadata, &probe, &string_request, limits()).expect("query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
-    assert_eq!(outcome.solutions.len(), 1);
-    assert_eq!(bound_string(&outcome.solutions[0], "V"), payload);
+    assert_eq!(solutions(&outcome).len(), 1);
+    assert_eq!(bound_string(&solutions(&outcome)[0], "V"), payload);
 
     // The goal itself may carry injection-shaped text as a string argument: it
     // stays a literal, so the goal simply has no solution.
@@ -787,7 +1068,7 @@ fn injection_text_is_refused_as_program_text_and_neutralized_as_data() {
     let outcome = run(&metadata, &probe, &literal_request, limits()).expect("query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
     assert!(outcome.exhaustive);
-    assert!(outcome.solutions.is_empty());
+    assert!(solutions(&outcome).is_empty());
 
     // A string longer than the whole encoded-program budget is refused before
     // the engine starts, so no request can make the script unbounded.
@@ -845,7 +1126,7 @@ fn non_terminating_goal_is_stopped_at_the_time_limit() {
         outcome.consumed.elapsed_ms < 1_500,
         "timeout was not enforced promptly"
     );
-    assert!(outcome.solutions.is_empty());
+    assert!(solutions(&outcome).is_empty());
 
     // Independent work stays available: a fresh bounded query over the same
     // image still completes.
@@ -888,10 +1169,7 @@ fn output_flood_is_stopped_at_the_output_limit() {
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Partial);
     assert!(!outcome.exhaustive);
     assert!(outcome.consumed.output_bytes <= 32);
-    assert_eq!(
-        outcome.reason.as_deref(),
-        Some("worker output exceeded the configured byte budget")
-    );
+    assert_eq!(outcome.stop, mneme_prolog::SearchStop::OutputLimit);
 }
 
 #[test]
@@ -930,7 +1208,7 @@ fn infinite_solution_stream_is_stopped_at_the_solution_limit() {
     .expect("solution-limited query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Partial);
     assert!(!outcome.exhaustive);
-    assert_eq!(outcome.solutions.len(), 2);
+    assert_eq!(solutions(&outcome).len(), 2);
     assert_eq!(outcome.reason.as_deref(), Some("solution limit reached"));
 }
 
@@ -1003,7 +1281,7 @@ fn cancelled_query_reports_cancellation_and_starts_no_work() {
             .expect("cancelled query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Cancelled);
     assert!(!outcome.exhaustive);
-    assert!(outcome.solutions.is_empty());
+    assert!(solutions(&outcome).is_empty());
 }
 
 #[test]
@@ -1031,7 +1309,13 @@ fn real_engine_worker_status_reflects_the_process() {
         outcome.status,
         mneme_prolog::process::WorkerStatus::Complete
     );
-    assert_eq!(outcome.output.trim(), mneme_prolog::COMPLETION_MARKER);
+    assert!(
+        outcome
+            .output
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with(mneme_prolog::RESPONSE_STOP_PREFIX))
+    );
 }
 
 #[test]
@@ -1069,8 +1353,8 @@ fn premises_and_assumption_bookkeeping_stay_consistent() {
     }];
     let outcome = run(&metadata, &image, &request, limits()).expect("query");
     assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
-    assert_eq!(outcome.solutions.len(), 1);
-    let solution = &outcome.solutions[0];
+    assert_eq!(solutions(&outcome).len(), 1);
+    let solution = &solutions(&outcome)[0];
     assert_eq!(
         solution.assumptions,
         std::collections::BTreeSet::from(["assumption-1".to_owned()])

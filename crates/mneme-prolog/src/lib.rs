@@ -44,37 +44,32 @@
 //!
 //! # Solution protocol
 //!
-//! The generated script prints one line per solution, each line a
-//! comma-separated list of `Variable=Term` bindings in the restricted term
-//! syntax, and writes the completion marker as the final line once the goal is
-//! exhausted. Bindings are reported only for the goal's variables. [`run_query`]
-//! stops the worker as soon as it observes
-//! more than `max_solutions` solution lines, parses each line with
-//! [`parse_solution_line`], and reports exhaustion only when the engine
-//! completed, wrote the marker, and produced fewer than `max_solutions + 1`
-//! solution lines. An answer that is not ground has no finite binding set, so
-//! the script reports it on its own [`UNBOUND_MARKER`] line; that outcome is a
-//! qualified failure with an explanatory reason, never a partially parsed
-//! solution. Engine solutions carry no premise certificate, so every solution
-//! is returned uncertified.
+//! The generated script emits a request-bound protocol header, typed binding
+//! frames, and one terminal search observation. [`run_query`] validates every
+//! frame and term against the selected profile before building a mode-shaped
+//! result. Stdout and stderr share a live production byte bound; enumeration
+//! is stopped after the first row above its result cap. Collection deduplicates
+//! binding maps before applying its cap, so repeated derivations are not
+//! independent evidence. Engine solutions carry no premise certificate and
+//! remain uncertified.
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod execution;
 pub mod process;
 pub mod snapshot;
 
-/// Final line the generated script writes when the goal is exhausted.
-///
-/// A caller that inspects raw [`process::WorkerOutcome`] output can use it to
-/// tell a completed enumeration from output that was cut by a limit.
-pub const COMPLETION_MARKER: &str = "!mneme-complete";
-
-/// Line the generated script writes for an answer that is not ground.
-///
-/// A non-ground answer is not a finite binding set, so it is never rendered as
-/// a partial solution line. [`run_query`] reports it as
-/// [`ExecutionStatus::Failed`] with an explanatory reason instead.
+/// Prefix for an output candidate that is not ground.
 pub const UNBOUND_MARKER: &str = "!mneme-unbound";
+
+/// Version of the request-bound, line-oriented worker response protocol.
+pub const RESPONSE_PROTOCOL_VERSION: u32 = 1;
+
+/// First response frame; its fields bind every subsequent frame to the request.
+pub const RESPONSE_HEADER_PREFIX: &str = "!mneme-response-v1";
+/// One ordered binding frame.
+pub const RESPONSE_ROW_PREFIX: &str = "!mneme-row-v1";
+/// Terminal search observation frame.
+pub const RESPONSE_STOP_PREFIX: &str = "!mneme-stop-v1";
 
 /// Relation that carries one accepted canonical fact.
 ///
@@ -371,11 +366,59 @@ impl CapabilityMetadata {
             Some(&self.allowed_predicates),
             Variables::Allowed,
         )?;
+        self.ensure_query_variables(request)?;
+        if request.mode == QueryMode::Collect
+            && request.limits.max_solutions > self.terms.max_collection
+        {
+            return Err(CapabilityError::LimitExceeded(
+                "collection size exceeds the term collection limit".to_owned(),
+            ));
+        }
+        let mut rule_ids = std::collections::BTreeSet::new();
         for rule in &request.rules {
+            if !rule_ids.insert(rule.id.as_str()) {
+                return Err(CapabilityError::InvalidRequest(
+                    "rule identities must be unique within the ordered manifest".to_owned(),
+                ));
+            }
             self.ensure_rule(rule)?;
         }
         for assumption in &request.assumptions {
             self.ensure_assumption(assumption)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_query_variables(&self, request: &Request) -> Result<(), CapabilityError> {
+        let mentioned = goal_variables(&request.goal)
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut declared = std::collections::BTreeSet::new();
+        for variable in &request.variables {
+            if !is_variable_name(&variable.name) {
+                return Err(CapabilityError::InvalidRequest(
+                    "declared variable names must match [A-Z][A-Za-z0-9_]*".to_owned(),
+                ));
+            }
+            if !declared.insert(variable.name.as_str()) {
+                return Err(CapabilityError::InvalidRequest(
+                    "query variable declarations must be unique".to_owned(),
+                ));
+            }
+        }
+        if mentioned.len() != declared.len()
+            || !mentioned
+                .iter()
+                .all(|name| declared.contains(name.as_str()))
+        {
+            return Err(CapabilityError::InvalidRequest(
+                "every query variable must have exactly one declaration, and undeclared output variables are forbidden".to_owned(),
+            ));
+        }
+        if request.mode == QueryMode::GroundTest && !mentioned.is_empty() {
+            return Err(CapabilityError::InvalidRequest(
+                "ground-test mode requires a ground goal".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -385,6 +428,9 @@ impl CapabilityMetadata {
             return Err(CapabilityError::Unavailable {
                 reason: reason.clone(),
             });
+        }
+        if !request.features.contains(&Feature::PositiveQuery) {
+            return Err(CapabilityError::UnsupportedFeature(Feature::PositiveQuery));
         }
         for feature in &request.features {
             if matches!(feature, Feature::GuardedNegation | Feature::Aggregation) {
@@ -893,6 +939,52 @@ pub struct RequestLimits {
     pub max_output_bytes: usize,
 }
 
+/// One versioned query operation. Enumeration is ordered by the selected
+/// profile's input and rule order; collection returns distinct binding maps in
+/// first-seen order. Neither operation treats repeated derivations as
+/// independent evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryMode {
+    /// Test one ground goal; an incomplete input image can only yield Unknown.
+    GroundTest,
+    /// Return the first output binding that passes output admission. Search is
+    /// complete for this operation once a binding is returned, not exhaustive.
+    FindOne,
+    /// Return at most `RequestLimits::max_solutions` ordered derivation rows.
+    Enumerate,
+    /// Return at most `RequestLimits::max_solutions` distinct binding maps.
+    Collect,
+}
+
+impl QueryMode {
+    /// Stable wire name for this query mode.
+    pub const fn name(self) -> &'static str {
+        match self {
+            QueryMode::GroundTest => "ground-test",
+            QueryMode::FindOne => "find-one",
+            QueryMode::Enumerate => "enumerate",
+            QueryMode::Collect => "collect",
+        }
+    }
+}
+
+/// Role of one explicitly declared query-scope variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VariableRole {
+    /// Return this variable in each admitted binding.
+    Output,
+    /// Keep this variable query-local and existentially project it away.
+    Local,
+}
+
+/// One variable declaration in the query scope. Rule variables are separately
+/// scoped to their rule clause and are not declared here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryVariable {
+    pub name: String,
+    pub role: VariableRole,
+}
+
 /// Engine-neutral query request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
@@ -901,7 +993,9 @@ pub struct Request {
     pub revision: mneme_core::WorkspaceRevisionId,
     pub eligibility_generation: u64,
     pub image_digest: String,
+    pub mode: QueryMode,
     pub goal: Atom,
+    pub variables: Vec<QueryVariable>,
     pub rules: Vec<Rule>,
     pub assumptions: Vec<Assumption>,
     pub features: std::collections::BTreeSet<Feature>,
@@ -935,6 +1029,50 @@ pub struct SearchContext {
     pub image_digest: String,
     pub profile: String,
     pub rule_versions: std::collections::BTreeMap<String, String>,
+}
+
+/// Host-derived identities bound into every response-protocol frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProtocolIdentity {
+    pub version: u32,
+    pub request_digest: String,
+    pub profile_digest: String,
+    pub rule_manifest_digest: String,
+    pub input_order_digest: String,
+    pub image_digest: String,
+}
+
+/// Search truth for a ground test. Unknown is not a negative answer: it means
+/// the worker completed only over incomplete input coverage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryTruth {
+    True,
+    False,
+    Unknown,
+}
+
+/// Mode-shaped logical answer, separate from worker/process status.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueryResult {
+    GroundTest { truth: QueryTruth },
+    FindOne { solution: Option<Solution> },
+    Enumerate { solutions: Vec<Solution> },
+    Collect { solutions: Vec<Solution> },
+}
+
+/// Terminal observation from the worker protocol or the host supervisor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchStop {
+    Exhausted,
+    GroundSuccess,
+    GroundFailure,
+    FoundOne,
+    ResultLimit,
+    OutputLimit,
+    Timeout,
+    Cancelled,
+    EngineFailure,
+    InvalidReadback,
 }
 
 /// Source availability for one premise.
@@ -1030,12 +1168,23 @@ pub enum Proposal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub status: ExecutionStatus,
+    pub mode: QueryMode,
+    /// Whether the requested operation returned its defined result shape.
+    /// A completed `FindOne` need not have exhaustively searched alternatives.
+    pub operation_completed: bool,
+    pub stop: SearchStop,
     pub exhaustive: bool,
     pub coverage: InputCoverage,
     pub context: SearchContext,
-    pub solutions: Vec<Solution>,
+    pub identity: ProtocolIdentity,
+    pub result: QueryResult,
     pub proposals: Vec<Proposal>,
     pub consumed: ConsumedLimits,
+    /// Independent limit observations remain visible even when timeout,
+    /// cancellation, or engine failure determines `status`.
+    pub output_limit_exceeded: bool,
+    pub solution_limit_exceeded: bool,
+    pub readback_valid: bool,
     pub reason: Option<String>,
 }
 
@@ -1044,36 +1193,431 @@ impl Outcome {
     pub fn disabled(reason: impl Into<String>, context: SearchContext) -> Self {
         Outcome {
             status: ExecutionStatus::Disabled,
+            mode: QueryMode::GroundTest,
+            operation_completed: false,
+            stop: SearchStop::InvalidReadback,
             exhaustive: false,
             coverage: InputCoverage {
                 complete: false,
                 reason: Some("Prolog is disabled".to_owned()),
             },
             context,
-            solutions: Vec::new(),
+            identity: ProtocolIdentity {
+                version: RESPONSE_PROTOCOL_VERSION,
+                request_digest: String::new(),
+                profile_digest: String::new(),
+                rule_manifest_digest: String::new(),
+                input_order_digest: String::new(),
+                image_digest: String::new(),
+            },
+            result: QueryResult::GroundTest {
+                truth: QueryTruth::Unknown,
+            },
             proposals: Vec::new(),
             consumed: ConsumedLimits {
                 elapsed_ms: 0,
                 solutions: 0,
                 output_bytes: 0,
             },
+            output_limit_exceeded: false,
+            solution_limit_exceeded: false,
+            readback_valid: false,
             reason: Some(reason.into()),
         }
     }
 
     /// Validate that non-complete searches cannot claim exhaustiveness.
     pub fn validate(&self) -> Result<(), CapabilityError> {
-        if self.status != ExecutionStatus::Complete && self.exhaustive {
+        if self.exhaustive
+            && (self.status != ExecutionStatus::Complete
+                || !self.operation_completed
+                || !self.coverage.complete)
+        {
             return Err(CapabilityError::InvalidRequest(
-                "non-complete search cannot be exhaustive".to_owned(),
+                "exhaustiveness requires a completed operation and complete input coverage"
+                    .to_owned(),
             ));
         }
-        if self.consumed.solutions < self.solutions.len() {
+        let (mode_matches, result_count) = match (&self.mode, &self.result) {
+            (QueryMode::GroundTest, QueryResult::GroundTest { truth }) => {
+                let is_truth_consistent_with_stop = match truth {
+                    QueryTruth::True => self.stop == SearchStop::GroundSuccess,
+                    QueryTruth::False => self.stop == SearchStop::GroundFailure,
+                    QueryTruth::Unknown => matches!(
+                        self.stop,
+                        SearchStop::GroundFailure | SearchStop::InvalidReadback
+                    ),
+                };
+                (is_truth_consistent_with_stop, 0)
+            }
+            (QueryMode::FindOne, QueryResult::FindOne { solution }) => {
+                (true, usize::from(solution.is_some()))
+            }
+            (QueryMode::Enumerate, QueryResult::Enumerate { solutions }) => (true, solutions.len()),
+            (QueryMode::Collect, QueryResult::Collect { solutions }) => (true, solutions.len()),
+            _ => (false, 0),
+        };
+        if !mode_matches {
+            return Err(CapabilityError::InvalidRequest(
+                "result shape does not match the requested query mode".to_owned(),
+            ));
+        }
+        if self.status == ExecutionStatus::Complete
+            && (!self.operation_completed || !self.readback_valid)
+        {
+            return Err(CapabilityError::InvalidRequest(
+                "a complete operation requires admitted readback".to_owned(),
+            ));
+        }
+        if self.readback_valid
+            && (self.identity.version != RESPONSE_PROTOCOL_VERSION
+                || self.identity.request_digest.is_empty()
+                || self.identity.profile_digest.is_empty()
+                || self.identity.rule_manifest_digest.is_empty()
+                || self.identity.input_order_digest.is_empty()
+                || self.identity.image_digest.is_empty())
+        {
+            return Err(CapabilityError::InvalidRequest(
+                "admitted readback must carry a complete supported protocol identity".to_owned(),
+            ));
+        }
+        if matches!(
+            &self.result,
+            QueryResult::GroundTest {
+                truth: QueryTruth::False
+            }
+        ) && !self.coverage.complete
+        {
+            return Err(CapabilityError::InvalidRequest(
+                "incomplete input coverage cannot establish a negative ground result".to_owned(),
+            ));
+        }
+        if self.consumed.solutions < result_count {
             return Err(CapabilityError::InvalidRequest(
                 "consumed solution count is smaller than the result set".to_owned(),
             ));
         }
         Ok(())
+    }
+}
+
+impl Request {
+    /// Derive protocol identities from the validated host request, profile,
+    /// rule order and immutable image. No identity component is accepted from
+    /// worker output or a caller-supplied result.
+    pub fn protocol_identity(
+        &self,
+        metadata: &CapabilityMetadata,
+        image: &snapshot::InputImage,
+    ) -> Result<ProtocolIdentity, CapabilityError> {
+        metadata.ensure_request(self)?;
+        image.verify_for_request(self).map_err(|_| {
+            CapabilityError::InvalidRequest(
+                "input image does not match the request identity".to_owned(),
+            )
+        })?;
+        if image.context.profile != metadata.profile {
+            return Err(CapabilityError::InvalidRequest(
+                "input image profile differs from the configured profile".to_owned(),
+            ));
+        }
+        let profile_value = profile_identity_value(metadata);
+        let profile_digest = digest_value(&profile_value);
+        let rules_value =
+            mneme_core::Value::sequence(self.rules.iter().map(rule_identity_value).collect());
+        let rule_manifest_digest = digest_value(&rules_value);
+        let input_order_value = input_order_identity_value(image);
+        let input_order_digest = digest_value(&input_order_value);
+        let request_value = request_identity_value(
+            self,
+            rules_value,
+            &profile_digest,
+            &rule_manifest_digest,
+            &input_order_digest,
+        );
+        Ok(ProtocolIdentity {
+            version: RESPONSE_PROTOCOL_VERSION,
+            request_digest: digest_value(&request_value),
+            profile_digest,
+            rule_manifest_digest,
+            input_order_digest,
+            image_digest: self.image_digest.clone(),
+        })
+    }
+}
+
+fn request_identity_value(
+    request: &Request,
+    rules_value: mneme_core::Value,
+    profile_digest: &str,
+    rule_manifest_digest: &str,
+    input_order_digest: &str,
+) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "prolog-query-request-v1",
+        vec![
+            mneme_core::Value::string(request.actor.clone()),
+            request.scope.to_value(),
+            request.revision.to_value(),
+            mneme_core::Value::string(request.eligibility_generation.to_string()),
+            mneme_core::Value::symbol(request.mode.name()),
+            atom_identity_value(&request.goal),
+            request_variable_identity_value(request),
+            rules_value,
+            request_assumption_identity_value(request),
+            mneme_core::Value::sequence(
+                request
+                    .features
+                    .iter()
+                    .map(|feature| mneme_core::Value::symbol(feature.name()))
+                    .collect(),
+            ),
+            request_limits_identity_value(request),
+            mneme_core::Value::string(profile_digest.to_owned()),
+            mneme_core::Value::string(rule_manifest_digest.to_owned()),
+            mneme_core::Value::string(input_order_digest.to_owned()),
+            mneme_core::Value::string(request.image_digest.clone()),
+        ],
+    )
+}
+
+fn request_variable_identity_value(request: &Request) -> mneme_core::Value {
+    mneme_core::Value::sequence(
+        request
+            .variables
+            .iter()
+            .map(|variable| {
+                mneme_core::Value::record_named(
+                    "query-variable",
+                    vec![
+                        mneme_core::Value::string(variable.name.clone()),
+                        mneme_core::Value::symbol(match variable.role {
+                            VariableRole::Output => "output",
+                            VariableRole::Local => "local",
+                        }),
+                    ],
+                )
+            })
+            .collect(),
+    )
+}
+
+fn request_assumption_identity_value(request: &Request) -> mneme_core::Value {
+    mneme_core::Value::sequence(
+        request
+            .assumptions
+            .iter()
+            .map(|assumption| {
+                mneme_core::Value::record_named(
+                    "assumption",
+                    vec![
+                        mneme_core::Value::string(assumption.id.clone()),
+                        atom_identity_value(&assumption.atom),
+                        mneme_core::Value::string(assumption.rationale.clone()),
+                    ],
+                )
+            })
+            .collect(),
+    )
+}
+
+fn request_limits_identity_value(request: &Request) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "request-limits",
+        vec![
+            mneme_core::Value::string(request.limits.max_time_ms.to_string()),
+            mneme_core::Value::string(request.limits.max_solutions.to_string()),
+            mneme_core::Value::string(request.limits.max_output_bytes.to_string()),
+        ],
+    )
+}
+
+fn digest_value(value: &mneme_core::Value) -> String {
+    format!(
+        "sha256:{}",
+        mneme_core::ContentDigest::of_payload(value).to_hex()
+    )
+}
+
+fn profile_identity_value(metadata: &CapabilityMetadata) -> mneme_core::Value {
+    let engine = metadata.engine.as_ref().map_or_else(
+        || mneme_core::Value::symbol("none"),
+        |engine| {
+            mneme_core::Value::record_named(
+                "engine",
+                vec![
+                    mneme_core::Value::string(engine.name.clone()),
+                    mneme_core::Value::string(engine.version.clone()),
+                    mneme_core::Value::string(engine.source_revision.clone()),
+                ],
+            )
+        },
+    );
+    mneme_core::Value::record_named(
+        "prolog-profile-v1",
+        vec![
+            mneme_core::Value::string(metadata.adapter_version.clone()),
+            mneme_core::Value::string(metadata.profile.clone()),
+            engine,
+            mneme_core::Value::sequence(
+                metadata
+                    .features
+                    .iter()
+                    .map(|feature| mneme_core::Value::symbol(feature.name()))
+                    .collect(),
+            ),
+            mneme_core::Value::sequence(
+                metadata
+                    .allowed_predicates
+                    .iter()
+                    .cloned()
+                    .map(mneme_core::Value::string)
+                    .collect(),
+            ),
+            mneme_core::Value::record_named(
+                "profile-limits",
+                vec![
+                    mneme_core::Value::string(metadata.limits.max_time_ms.to_string()),
+                    mneme_core::Value::string(metadata.limits.max_solutions.to_string()),
+                    mneme_core::Value::string(metadata.limits.max_output_bytes.to_string()),
+                    mneme_core::Value::string(metadata.limits.max_term_depth.to_string()),
+                    mneme_core::Value::string(metadata.limits.max_rule_count.to_string()),
+                ],
+            ),
+            mneme_core::Value::record_named(
+                "term-profile",
+                vec![
+                    mneme_core::Value::string(metadata.terms.max_depth.to_string()),
+                    mneme_core::Value::string(metadata.terms.max_collection.to_string()),
+                    mneme_core::Value::Boolean(metadata.terms.references_allowed),
+                ],
+            ),
+        ],
+    )
+}
+
+fn input_order_identity_value(image: &snapshot::InputImage) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "prolog-input-order-v1",
+        vec![
+            mneme_core::Value::string(image.context.image_digest.clone()),
+            mneme_core::Value::sequence(
+                image
+                    .canonical
+                    .iter()
+                    .map(|fact| {
+                        mneme_core::Value::record_named(
+                            "fact-order",
+                            vec![fact.record_id.to_value(), fact.revision_id.to_value()],
+                        )
+                    })
+                    .collect(),
+            ),
+            mneme_core::Value::sequence(
+                image
+                    .relations
+                    .iter()
+                    .map(|relation| {
+                        mneme_core::Value::record_named(
+                            "relation-order",
+                            vec![
+                                mneme_core::Value::string(relation.predicate.clone()),
+                                mneme_core::Value::sequence(
+                                    relation
+                                        .rows
+                                        .iter()
+                                        .map(|row| mneme_core::Value::sequence(row.values.clone()))
+                                        .collect(),
+                                ),
+                            ],
+                        )
+                    })
+                    .collect(),
+            ),
+        ],
+    )
+}
+
+fn rule_identity_value(rule: &Rule) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "ordered-rule",
+        vec![
+            mneme_core::Value::string(rule.id.clone()),
+            mneme_core::Value::string(rule.version.clone()),
+            atom_identity_value(&rule.head),
+            mneme_core::Value::sequence(
+                rule.body
+                    .iter()
+                    .map(|literal| match literal {
+                        Literal::Positive(atom) => mneme_core::Value::record_named(
+                            "positive",
+                            vec![atom_identity_value(atom)],
+                        ),
+                        Literal::Negative(atom) => mneme_core::Value::record_named(
+                            "negative",
+                            vec![atom_identity_value(atom)],
+                        ),
+                    })
+                    .collect(),
+            ),
+        ],
+    )
+}
+
+fn atom_identity_value(atom: &Atom) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "atom",
+        vec![
+            mneme_core::Value::string(atom.predicate.clone()),
+            mneme_core::Value::sequence(atom.terms.iter().map(term_identity_value).collect()),
+        ],
+    )
+}
+
+fn term_identity_value(term: &Term) -> mneme_core::Value {
+    match term {
+        Term::Integer(value) => mneme_core::Value::record_named(
+            "integer",
+            vec![mneme_core::Value::string(value.to_string())],
+        ),
+        Term::String(value) => mneme_core::Value::record_named(
+            "string",
+            vec![mneme_core::Value::string(value.clone())],
+        ),
+        Term::Symbol(value) => mneme_core::Value::record_named(
+            "symbol",
+            vec![mneme_core::Value::string(value.clone())],
+        ),
+        Term::Variable(value) => mneme_core::Value::record_named(
+            "variable",
+            vec![mneme_core::Value::string(value.clone())],
+        ),
+        Term::Reference {
+            record_id,
+            revision_id,
+        } => mneme_core::Value::record_named(
+            "reference",
+            vec![
+                record_id.to_value(),
+                revision_id.map_or_else(
+                    || mneme_core::Value::symbol("current"),
+                    mneme_core::RevisionId::to_value,
+                ),
+            ],
+        ),
+        Term::List(items) => mneme_core::Value::record_named(
+            "list",
+            vec![mneme_core::Value::sequence(
+                items.iter().map(term_identity_value).collect(),
+            )],
+        ),
+        Term::Compound { functor, args } => mneme_core::Value::record_named(
+            "compound",
+            vec![
+                mneme_core::Value::string(functor.clone()),
+                mneme_core::Value::sequence(args.iter().map(term_identity_value).collect()),
+            ],
+        ),
     }
 }
 
@@ -1097,6 +1641,7 @@ pub fn run_query(
     control: &process::WorkerControl,
     limits: process::WorkerLimits,
 ) -> Result<Outcome, CapabilityError> {
+    let identity = request.protocol_identity(metadata, image)?;
     // The worker validates the request and refuses a mismatched image before it
     // spawns anything, so this path never starts a process for an invalid call.
     let effective = process::WorkerLimits {
@@ -1108,7 +1653,7 @@ pub fn run_query(
         limits: effective,
     };
     let worker = process::run_worker(engine, metadata, image, request, &runtime)?;
-    let outcome = outcome_from_worker(&worker, image, request);
+    let outcome = outcome_from_worker(&worker, image, request, &identity);
     outcome.validate_for_request(request)?;
     Ok(outcome)
 }
@@ -1118,97 +1663,236 @@ fn outcome_from_worker(
     worker: &process::WorkerOutcome,
     image: &snapshot::InputImage,
     request: &Request,
+    identity: &ProtocolIdentity,
 ) -> Outcome {
-    let variables = goal_variables(&request.goal);
     let assumptions = request
         .assumptions
         .iter()
         .map(|assumption| assumption.id.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let classification = classify_output(
-        worker,
-        &variables,
-        &assumptions,
-        request.limits.max_solutions,
-    );
+    let classification = classify_output(worker, request, identity, &assumptions);
     let parsed = match classification {
-        // A rejected output is a qualified failure with no solutions: neither
-        // a malformed line nor a non-ground answer may become a partial result.
-        OutputClassification::Rejected(reason) => return rejected_outcome(reason, worker, image),
+        OutputClassification::Rejected(reason) => {
+            return rejected_outcome(reason, worker, image, request, identity);
+        }
         OutputClassification::Parsed(parsed) => parsed,
     };
     let context = image.context.clone();
     let coverage = image.coverage.clone();
     let elapsed_ms = worker.elapsed_ms;
-    let output_bytes = worker.output.len();
     let status = resolved_status(worker.status, &parsed);
-    let solutions = if status == ExecutionStatus::Failed {
-        Vec::new()
-    } else {
-        parsed.solutions
-    };
-    let solution_count = solutions.len();
+    let result = result_for_request(request, &parsed, &coverage);
+    let is_operation_completed = operation_completed(request, &parsed, &result, status);
+    let is_exhaustive = search_is_exhaustive(request, &parsed, &coverage, status);
+    let stop = resolved_stop(worker, &parsed);
     let reason = outcome_reason(worker, status, parsed.truncated);
-    let is_exhaustive = status == ExecutionStatus::Complete && !parsed.truncated;
     Outcome {
         status,
+        mode: request.mode,
+        operation_completed: is_operation_completed,
+        stop,
         exhaustive: is_exhaustive,
         coverage,
         context,
-        solutions,
+        identity: identity.clone(),
+        result,
         proposals: Vec::new(),
         consumed: ConsumedLimits {
             elapsed_ms,
-            solutions: solution_count,
-            output_bytes,
+            solutions: parsed.rows_seen,
+            output_bytes: worker.captured_bytes,
         },
+        output_limit_exceeded: worker.output_limit_exceeded,
+        solution_limit_exceeded: worker.solution_limit_exceeded || parsed.truncated,
+        readback_valid: parsed.terminal.is_some()
+            || worker.status != process::WorkerStatus::Complete,
         reason,
     }
 }
 
-/// The qualified failure a rejected worker output becomes: no solutions at all.
+/// A malformed or crossed response cannot become a logical answer. Preserve
+/// the observed worker disposition separately from failed readback admission.
 fn rejected_outcome(
     reason: &str,
     worker: &process::WorkerOutcome,
     image: &snapshot::InputImage,
+    request: &Request,
+    identity: &ProtocolIdentity,
 ) -> Outcome {
+    // A worker stopped by timeout, cancellation, a limit or a failed exit
+    // usually never wrote a valid response. Keep that disposition first so the
+    // caller learns why the worker stopped, not only that readback failed.
+    let reason = match worker.reason.as_deref() {
+        Some(disposition) if worker.status != process::WorkerStatus::Complete => {
+            format!("{disposition}; readback rejected: {reason}")
+        }
+        Some(_) | None => reason.to_owned(),
+    };
     Outcome {
-        status: ExecutionStatus::Failed,
+        status: match worker.status {
+            process::WorkerStatus::Complete | process::WorkerStatus::Failed => {
+                ExecutionStatus::Failed
+            }
+            process::WorkerStatus::Partial => ExecutionStatus::Partial,
+            process::WorkerStatus::Timeout => ExecutionStatus::Timeout,
+            process::WorkerStatus::Cancelled => ExecutionStatus::Cancelled,
+        },
+        mode: request.mode,
+        operation_completed: false,
+        stop: resolved_worker_stop(worker),
         exhaustive: false,
         coverage: image.coverage.clone(),
         context: image.context.clone(),
-        solutions: Vec::new(),
+        identity: identity.clone(),
+        result: empty_result(request.mode),
         proposals: Vec::new(),
         consumed: ConsumedLimits {
             elapsed_ms: worker.elapsed_ms,
             solutions: 0,
-            output_bytes: worker.output.len(),
+            output_bytes: worker.captured_bytes,
         },
-        reason: Some(reason.to_owned()),
+        output_limit_exceeded: worker.output_limit_exceeded,
+        solution_limit_exceeded: worker.solution_limit_exceeded,
+        readback_valid: false,
+        reason: Some(reason),
     }
 }
 
-/// Qualify the worker's exit state with what its output actually holds.
+/// Qualify process disposition with a valid terminal protocol observation.
 fn resolved_status(status: process::WorkerStatus, parsed: &ParsedOutput) -> ExecutionStatus {
-    let initial = match status {
+    match status {
         process::WorkerStatus::Failed => ExecutionStatus::Failed,
-        process::WorkerStatus::Complete if parsed.finished => ExecutionStatus::Complete,
-        process::WorkerStatus::Complete => ExecutionStatus::Failed,
         process::WorkerStatus::Partial => ExecutionStatus::Partial,
         process::WorkerStatus::Timeout => ExecutionStatus::Timeout,
         process::WorkerStatus::Cancelled => ExecutionStatus::Cancelled,
-    };
-    if !parsed.finished || initial == ExecutionStatus::Failed {
-        return initial;
+        process::WorkerStatus::Complete if parsed.terminal.is_none() => ExecutionStatus::Failed,
+        process::WorkerStatus::Complete if parsed.truncated => ExecutionStatus::Partial,
+        process::WorkerStatus::Complete => ExecutionStatus::Complete,
     }
-    // The marker is written only after every solution was enumerated, so a
-    // host limit that arrived in the window before `halt/0` did not cut the
-    // answer short. A result set beyond the request's bound is still partial.
-    if parsed.truncated {
-        ExecutionStatus::Partial
-    } else {
-        ExecutionStatus::Complete
+}
+
+fn resolved_worker_stop(worker: &process::WorkerOutcome) -> SearchStop {
+    match worker.status {
+        process::WorkerStatus::Failed => SearchStop::EngineFailure,
+        process::WorkerStatus::Partial if worker.output_limit_exceeded => SearchStop::OutputLimit,
+        process::WorkerStatus::Partial => SearchStop::ResultLimit,
+        process::WorkerStatus::Timeout => SearchStop::Timeout,
+        process::WorkerStatus::Cancelled => SearchStop::Cancelled,
+        process::WorkerStatus::Complete => SearchStop::InvalidReadback,
     }
+}
+
+fn resolved_stop(worker: &process::WorkerOutcome, parsed: &ParsedOutput) -> SearchStop {
+    match worker.status {
+        process::WorkerStatus::Failed => SearchStop::EngineFailure,
+        process::WorkerStatus::Timeout => SearchStop::Timeout,
+        process::WorkerStatus::Cancelled => SearchStop::Cancelled,
+        process::WorkerStatus::Partial if worker.output_limit_exceeded => SearchStop::OutputLimit,
+        process::WorkerStatus::Partial => SearchStop::ResultLimit,
+        process::WorkerStatus::Complete if worker.output_limit_exceeded => SearchStop::OutputLimit,
+        process::WorkerStatus::Complete if worker.solution_limit_exceeded || parsed.truncated => {
+            SearchStop::ResultLimit
+        }
+        process::WorkerStatus::Complete => parsed.terminal.unwrap_or(SearchStop::InvalidReadback),
+    }
+}
+
+fn empty_result(mode: QueryMode) -> QueryResult {
+    match mode {
+        QueryMode::GroundTest => QueryResult::GroundTest {
+            truth: QueryTruth::Unknown,
+        },
+        QueryMode::FindOne => QueryResult::FindOne { solution: None },
+        QueryMode::Enumerate => QueryResult::Enumerate {
+            solutions: Vec::new(),
+        },
+        QueryMode::Collect => QueryResult::Collect {
+            solutions: Vec::new(),
+        },
+    }
+}
+
+fn result_for_request(
+    request: &Request,
+    parsed: &ParsedOutput,
+    coverage: &InputCoverage,
+) -> QueryResult {
+    match request.mode {
+        QueryMode::GroundTest => {
+            let truth = match parsed.terminal {
+                Some(SearchStop::GroundSuccess) => QueryTruth::True,
+                Some(SearchStop::GroundFailure) if coverage.complete => QueryTruth::False,
+                Some(SearchStop::GroundFailure) | None => QueryTruth::Unknown,
+                Some(_) => QueryTruth::Unknown,
+            };
+            QueryResult::GroundTest { truth }
+        }
+        QueryMode::FindOne => QueryResult::FindOne {
+            solution: parsed.solutions.first().cloned(),
+        },
+        QueryMode::Enumerate => QueryResult::Enumerate {
+            solutions: parsed.solutions.clone(),
+        },
+        QueryMode::Collect => QueryResult::Collect {
+            solutions: parsed.solutions.clone(),
+        },
+    }
+}
+
+fn collect_distinct(mut solutions: Vec<Solution>) -> Vec<Solution> {
+    let mut unique_count = 0;
+    for current_index in 0..solutions.len() {
+        let is_duplicate = solutions[..unique_count]
+            .iter()
+            .any(|existing| existing.bindings == solutions[current_index].bindings);
+        if !is_duplicate {
+            solutions.swap(unique_count, current_index);
+            unique_count = unique_count.saturating_add(1);
+        }
+    }
+    solutions.truncate(unique_count);
+    solutions
+}
+
+fn operation_completed(
+    request: &Request,
+    parsed: &ParsedOutput,
+    result: &QueryResult,
+    status: ExecutionStatus,
+) -> bool {
+    if status == ExecutionStatus::Complete && parsed.terminal.is_some() {
+        return true;
+    }
+    match (request.mode, result) {
+        (QueryMode::FindOne, QueryResult::FindOne { solution: Some(_) }) => true,
+        (QueryMode::Enumerate, QueryResult::Enumerate { .. }) => {
+            parsed.rows_seen >= request.limits.max_solutions
+        }
+        (QueryMode::Collect, QueryResult::Collect { solutions }) => {
+            solutions.len() >= request.limits.max_solutions
+        }
+        _ => false,
+    }
+}
+
+fn search_is_exhaustive(
+    request: &Request,
+    parsed: &ParsedOutput,
+    coverage: &InputCoverage,
+    status: ExecutionStatus,
+) -> bool {
+    if status != ExecutionStatus::Complete || !coverage.complete {
+        return false;
+    }
+    matches!(
+        (request.mode, parsed.terminal),
+        (
+            QueryMode::GroundTest,
+            Some(SearchStop::GroundSuccess | SearchStop::GroundFailure)
+        ) | (QueryMode::FindOne, Some(SearchStop::Exhausted))
+            | (QueryMode::Enumerate, Some(SearchStop::Exhausted))
+            | (QueryMode::Collect, Some(SearchStop::Exhausted))
+    )
 }
 
 fn outcome_reason(
@@ -1241,8 +1925,8 @@ enum OutputClassification {
 
 struct ParsedOutput {
     solutions: Vec<Solution>,
-    /// The engine wrote the completion marker as its final line.
-    finished: bool,
+    terminal: Option<SearchStop>,
+    rows_seen: usize,
     /// The engine produced more solutions than the request permits.
     truncated: bool,
 }
@@ -1250,60 +1934,168 @@ struct ParsedOutput {
 /// Parse complete solution lines, dropping only a cut-off final fragment.
 fn classify_output(
     worker: &process::WorkerOutcome,
-    variables: &[String],
+    request: &Request,
+    identity: &ProtocolIdentity,
     assumptions: &std::collections::BTreeSet<String>,
-    max_solutions: usize,
 ) -> OutputClassification {
-    if worker.status == process::WorkerStatus::Failed {
-        return OutputClassification::Parsed(ParsedOutput {
-            solutions: Vec::new(),
-            finished: false,
-            truncated: false,
-        });
+    if !worker.output_utf8_valid {
+        return OutputClassification::Rejected(
+            "worker response is not valid UTF-8 and cannot be admitted losslessly",
+        );
     }
     let text = worker.output.as_str();
-    // Only newline-terminated lines are complete; a cut-off fragment is never
-    // parsed and never counts as a solution or as the completion marker.
+    // Only newline-terminated frames are complete; a cut-off fragment is never
+    // admitted as a binding or terminal observation.
     let complete_len = text.rfind('\n').map_or(0, |index| index + 1);
-    let mut lines = text[..complete_len]
-        .split_terminator('\n')
-        .collect::<Vec<_>>();
-    let mut is_finished = false;
-    if lines.last() == Some(&COMPLETION_MARKER) {
-        is_finished = true;
-        lines.pop();
+    let complete_output = &text[..complete_len];
+    let complete_line_count = complete_output
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count();
+    let mut lines = complete_output.split_terminator('\n');
+    let header = protocol_header(identity, request.mode);
+    if lines.next() != Some(header.as_str()) {
+        return OutputClassification::Rejected(
+            "worker response header is missing or bound to another request",
+        );
     }
-    let names = variables
+    let variables = request
+        .variables
         .iter()
-        .cloned()
+        .filter(|variable| variable.role == VariableRole::Output)
+        .map(|variable| variable.name.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut solutions = Vec::with_capacity(lines.len());
-    for line in lines {
-        // A non-ground answer is reported by the script on its own line; it is
-        // a qualified rejection, not a parser failure.
-        if line == UNBOUND_MARKER {
-            return OutputClassification::Rejected(
-                "a goal variable was left unbound by the engine",
-            );
+    let solutions = Vec::with_capacity(complete_line_count.saturating_sub(1));
+    let (solutions, terminal) = match parse_response_frames(
+        lines,
+        ResponseFrameContext {
+            identity,
+            variables: &variables,
+            assumptions,
+            worker_status: worker.status,
+        },
+        solutions,
+    ) {
+        Ok(parsed) => parsed,
+        Err(reason) => return OutputClassification::Rejected(reason),
+    };
+    finish_output_classification(request, solutions, terminal)
+}
+
+fn finish_output_classification(
+    request: &Request,
+    mut solutions: Vec<Solution>,
+    terminal: Option<SearchStop>,
+) -> OutputClassification {
+    let is_terminal_valid_for_mode = match (request.mode, terminal) {
+        (QueryMode::GroundTest, Some(SearchStop::GroundSuccess | SearchStop::GroundFailure)) => {
+            solutions.is_empty()
         }
-        match parse_solution_line(line, &names, assumptions) {
-            Ok(solution) => solutions.push(solution),
-            Err(_) => {
-                return OutputClassification::Rejected(
-                    "worker output is not a valid solution line",
-                );
-            }
-        }
+        (QueryMode::FindOne, Some(SearchStop::FoundOne)) => solutions.len() == 1,
+        (QueryMode::FindOne, Some(SearchStop::Exhausted)) => solutions.is_empty(),
+        (QueryMode::Enumerate | QueryMode::Collect, Some(SearchStop::Exhausted)) => true,
+        (_, None) => true,
+        _ => false,
+    };
+    if !is_terminal_valid_for_mode {
+        return OutputClassification::Rejected(
+            "worker terminal observation does not match the requested query mode",
+        );
     }
-    let is_truncated = solutions.len() > max_solutions;
+    let rows_seen = solutions.len();
+    let is_truncated = match request.mode {
+        QueryMode::Enumerate => rows_seen > request.limits.max_solutions,
+        QueryMode::Collect => {
+            solutions = collect_distinct(solutions);
+            solutions.len() > request.limits.max_solutions
+        }
+        QueryMode::GroundTest | QueryMode::FindOne => false,
+    };
     if is_truncated {
-        solutions.truncate(max_solutions);
+        solutions.truncate(request.limits.max_solutions);
     }
     OutputClassification::Parsed(ParsedOutput {
         solutions,
-        finished: is_finished,
+        terminal,
+        rows_seen,
         truncated: is_truncated,
     })
+}
+
+struct ResponseFrameContext<'a> {
+    identity: &'a ProtocolIdentity,
+    variables: &'a std::collections::BTreeSet<String>,
+    assumptions: &'a std::collections::BTreeSet<String>,
+    worker_status: process::WorkerStatus,
+}
+
+fn parse_response_frames<'a>(
+    lines: impl Iterator<Item = &'a str>,
+    context: ResponseFrameContext<'_>,
+    mut solutions: Vec<Solution>,
+) -> Result<(Vec<Solution>, Option<SearchStop>), &'static str> {
+    let ResponseFrameContext {
+        identity,
+        variables,
+        assumptions,
+        worker_status,
+    } = context;
+    let mut terminal = None;
+    for line in lines {
+        if terminal.is_some() {
+            return Err("worker response contains frames after its terminal observation");
+        }
+        if let Some(bindings) = line.strip_prefix(&format!(
+            "{}\t{}\t",
+            RESPONSE_ROW_PREFIX, identity.request_digest
+        )) {
+            match parse_solution_line(bindings, variables, assumptions) {
+                Ok(solution) => solutions.push(solution),
+                Err(_) => {
+                    return Err("worker binding frame is malformed or has an unexpected variable");
+                }
+            }
+        } else if line == format!("{}\t{}", UNBOUND_MARKER, identity.request_digest) {
+            return Err("worker reported an unbound output candidate");
+        } else if let Some(stop_name) = line.strip_prefix(&format!(
+            "{}\t{}\t",
+            RESPONSE_STOP_PREFIX, identity.request_digest
+        )) {
+            terminal = parse_terminal(stop_name);
+            if terminal.is_none() {
+                return Err("worker terminal observation is malformed");
+            }
+        } else {
+            return Err("worker output contains an unknown frame");
+        }
+    }
+    if worker_status == process::WorkerStatus::Complete && terminal.is_none() {
+        return Err("worker completed without a terminal search observation");
+    }
+    Ok((solutions, terminal))
+}
+
+fn parse_terminal(value: &str) -> Option<SearchStop> {
+    match value {
+        "exhausted" => Some(SearchStop::Exhausted),
+        "ground-success" => Some(SearchStop::GroundSuccess),
+        "ground-failure" => Some(SearchStop::GroundFailure),
+        "found-one" => Some(SearchStop::FoundOne),
+        _ => None,
+    }
+}
+
+pub(crate) fn protocol_header(identity: &ProtocolIdentity, mode: QueryMode) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        RESPONSE_HEADER_PREFIX,
+        identity.request_digest,
+        identity.profile_digest,
+        identity.rule_manifest_digest,
+        identity.input_order_digest,
+        identity.image_digest,
+        mode.name()
+    )
 }
 
 /// Parse one solution line in the restricted term syntax.
@@ -1597,7 +2389,7 @@ pub fn encode_term(
     max_bytes: usize,
 ) -> Result<String, CapabilityError> {
     term.check(profile)?;
-    let encoded = encode_term_inner(term)?;
+    let encoded = encode_term_inner(term, &[])?;
     if encoded.len() > max_bytes {
         return Err(CapabilityError::LimitExceeded(
             "encoded term exceeds the output budget".to_owned(),
@@ -1617,7 +2409,7 @@ pub fn encode_atom(
     max_bytes: usize,
 ) -> Result<String, CapabilityError> {
     atom.check(profile)?;
-    let encoded = encode_atom_inner(atom)?;
+    let encoded = encode_atom_inner(atom, &[])?;
     if encoded.len() > max_bytes {
         return Err(CapabilityError::LimitExceeded(
             "encoded atom exceeds the output budget".to_owned(),
@@ -1626,8 +2418,24 @@ pub fn encode_atom(
     Ok(encoded)
 }
 
+/// Render query-local variables in a private named-anonymous namespace. Scryer
+/// prints singleton warnings on protocol stdout for ordinary local names.
+pub(crate) fn encode_query_goal(
+    request: &Request,
+    metadata: &CapabilityMetadata,
+) -> Result<String, CapabilityError> {
+    request.goal.check(metadata.terms)?;
+    let encoded = encode_atom_inner(&request.goal, &request.variables)?;
+    if encoded.len() > metadata.limits.max_output_bytes {
+        return Err(CapabilityError::LimitExceeded(
+            "encoded query exceeds the output budget".to_owned(),
+        ));
+    }
+    Ok(encoded)
+}
+
 /// Render one validated atom, without parentheses when it has no arguments.
-fn encode_atom_inner(atom: &Atom) -> Result<String, CapabilityError> {
+fn encode_atom_inner(atom: &Atom, variables: &[QueryVariable]) -> Result<String, CapabilityError> {
     check_name(&atom.predicate)?;
     let mut output = atom.predicate.clone();
     if atom.terms.is_empty() {
@@ -1638,7 +2446,7 @@ fn encode_atom_inner(atom: &Atom) -> Result<String, CapabilityError> {
         if index > 0 {
             output.push(',');
         }
-        output.push_str(&encode_term_inner(term)?);
+        output.push_str(&encode_term_inner(term, variables)?);
     }
     output.push(')');
     Ok(output)
@@ -1665,7 +2473,7 @@ pub fn serialize_solution(
         }
         output.push_str(name);
         output.push('=');
-        output.push_str(&encode_term_inner(term)?);
+        output.push_str(&encode_term_inner(term, &[])?);
         if output.len() > max_bytes {
             return Err(CapabilityError::LimitExceeded(
                 "serialized solution exceeds the output budget".to_owned(),
@@ -1685,7 +2493,7 @@ enum RenderStep<'a> {
 
 /// Render one validated term. Callers validate first; the checks here keep the
 /// encoder total for direct callers.
-fn encode_term_inner(term: &Term) -> Result<String, CapabilityError> {
+fn encode_term_inner(term: &Term, variables: &[QueryVariable]) -> Result<String, CapabilityError> {
     // An explicit work stack keeps rendering off the call stack: a decoded
     // engine line is only depth-checked after it is parsed, so this walk must
     // not assume the caller's term is shallow.
@@ -1715,6 +2523,12 @@ fn encode_term_inner(term: &Term) -> Result<String, CapabilityError> {
                     return Err(CapabilityError::InvalidRequest(
                         "variable name is not permitted".to_owned(),
                     ));
+                }
+                if variables
+                    .iter()
+                    .any(|variable| variable.role == VariableRole::Local && variable.name == *value)
+                {
+                    output.push('_');
                 }
                 output.push_str(value);
             }
@@ -1856,10 +2670,12 @@ impl Outcome {
     /// context, premise chains, pruning disclosure, and assumptions.
     pub fn validate_for_request(&self, request: &Request) -> Result<(), CapabilityError> {
         self.validate()?;
-        if self.context.revision != request.revision
+        if self.mode != request.mode
+            || self.context.revision != request.revision
             || self.context.scope != request.scope
             || self.context.eligibility_generation != request.eligibility_generation
             || self.context.image_digest != request.image_digest
+            || (self.readback_valid && self.identity.image_digest != request.image_digest)
         {
             return Err(CapabilityError::InvalidRequest(
                 "result context differs from its request".to_owned(),
@@ -1870,7 +2686,31 @@ impl Outcome {
             .iter()
             .map(|assumption| assumption.id.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        for solution in &self.solutions {
+        let output_variables = request
+            .variables
+            .iter()
+            .filter(|variable| variable.role == VariableRole::Output)
+            .map(|variable| variable.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let solutions = match &self.result {
+            QueryResult::GroundTest { .. } => Vec::new(),
+            QueryResult::FindOne { solution } => solution.iter().collect(),
+            QueryResult::Enumerate { solutions } | QueryResult::Collect { solutions } => {
+                solutions.iter().collect()
+            }
+        };
+        for solution in solutions {
+            if solution
+                .bindings
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>()
+                != output_variables
+            {
+                return Err(CapabilityError::InvalidRequest(
+                    "solution bindings differ from the declared output variables".to_owned(),
+                ));
+            }
             solution.validate(&declared)?;
         }
         Ok(())
@@ -1896,10 +2736,12 @@ mod tests {
             revision: revision(),
             eligibility_generation: 1,
             image_digest: "sha256:image".to_owned(),
+            mode: QueryMode::GroundTest,
             goal: Atom {
                 predicate: "path".to_owned(),
                 terms: vec![Term::String("a".to_owned())],
             },
+            variables: Vec::new(),
             rules: Vec::new(),
             assumptions: Vec::new(),
             features,
@@ -1971,13 +2813,20 @@ mod tests {
         process::WorkerOutcome {
             status,
             output: output.to_owned(),
+            stderr: String::new(),
+            captured_bytes: output.len(),
+            output_utf8_valid: true,
             elapsed_ms: 1,
+            output_limit_exceeded: false,
+            solution_limit_exceeded: false,
             reason: None,
         }
     }
 
-    fn request_with_goal(names: &[&str]) -> Request {
+    fn request_with_goal(names: &[&str], image: &snapshot::InputImage) -> Request {
         let mut request = request(std::collections::BTreeSet::from([Feature::PositiveQuery]));
+        request.image_digest = image.context.image_digest.clone();
+        request.mode = QueryMode::Enumerate;
         request.goal = Atom {
             predicate: "path".to_owned(),
             terms: names
@@ -1985,7 +2834,72 @@ mod tests {
                 .map(|name| Term::Variable((*name).to_owned()))
                 .collect(),
         };
+        request.variables = names
+            .iter()
+            .map(|name| QueryVariable {
+                name: (*name).to_owned(),
+                role: VariableRole::Output,
+            })
+            .collect();
         request
+    }
+
+    fn test_identity(image: &snapshot::InputImage) -> ProtocolIdentity {
+        ProtocolIdentity {
+            version: RESPONSE_PROTOCOL_VERSION,
+            request_digest: "sha256:test-request".to_owned(),
+            profile_digest: "sha256:test-profile".to_owned(),
+            rule_manifest_digest: "sha256:test-rules".to_owned(),
+            input_order_digest: "sha256:test-order".to_owned(),
+            image_digest: image.context.image_digest.clone(),
+        }
+    }
+
+    fn test_response(identity: &ProtocolIdentity, rows: &[&str], terminal: Option<&str>) -> String {
+        test_response_for_mode(identity, QueryMode::Enumerate, rows, terminal)
+    }
+
+    fn test_response_for_mode(
+        identity: &ProtocolIdentity,
+        mode: QueryMode,
+        rows: &[&str],
+        terminal: Option<&str>,
+    ) -> String {
+        let mut output = protocol_header(identity, mode);
+        output.push('\n');
+        for row in rows {
+            output.push_str(RESPONSE_ROW_PREFIX);
+            output.push('\t');
+            output.push_str(&identity.request_digest);
+            output.push('\t');
+            output.push_str(row);
+            output.push('\n');
+        }
+        if let Some(terminal) = terminal {
+            output.push_str(RESPONSE_STOP_PREFIX);
+            output.push('\t');
+            output.push_str(&identity.request_digest);
+            output.push('\t');
+            output.push_str(terminal);
+            output.push('\n');
+        }
+        output
+    }
+
+    fn outcome_from_test_worker(
+        worker: &process::WorkerOutcome,
+        image: &snapshot::InputImage,
+        request: &Request,
+    ) -> Outcome {
+        outcome_from_worker(worker, image, request, &test_identity(image))
+    }
+
+    fn result_solutions(outcome: &Outcome) -> &[Solution] {
+        match &outcome.result {
+            QueryResult::GroundTest { .. } => &[],
+            QueryResult::FindOne { solution } => solution.as_slice(),
+            QueryResult::Enumerate { solutions } | QueryResult::Collect { solutions } => solutions,
+        }
     }
 
     #[test]
@@ -2226,14 +3140,27 @@ mod tests {
     fn goal_variables_are_permitted_with_valid_names() {
         let metadata = positive();
         let mut request = request(std::collections::BTreeSet::from([Feature::PositiveQuery]));
+        request.mode = QueryMode::FindOne;
         request.goal.terms = vec![Term::Variable("X".to_owned())];
+        request.variables = vec![QueryVariable {
+            name: "X".to_owned(),
+            role: VariableRole::Output,
+        }];
         assert!(metadata.ensure_request(&request).is_ok());
         request.goal.terms = vec![Term::Variable("x".to_owned())];
+        request.variables[0].name = "x".to_owned();
         assert!(matches!(
             metadata.ensure_request(&request),
             Err(CapabilityError::InvalidRequest(_))
         ));
         request.goal.terms = vec![Term::Variable("_X".to_owned())];
+        request.variables[0].name = "_X".to_owned();
+        assert!(matches!(
+            metadata.ensure_request(&request),
+            Err(CapabilityError::InvalidRequest(_))
+        ));
+        request.goal.terms = vec![Term::Variable("X".to_owned())];
+        request.variables.clear();
         assert!(matches!(
             metadata.ensure_request(&request),
             Err(CapabilityError::InvalidRequest(_))
@@ -2528,24 +3455,29 @@ mod tests {
     #[test]
     fn multi_binding_solution_lines_carry_every_binding() {
         let image = search_image();
-        let request = request_with_goal(&["S", "V"]);
+        let request = request_with_goal(&["S", "V"], &image);
+        let identity = test_identity(&image);
         let worker = worker_output(
             process::WorkerStatus::Complete,
-            "S=\"1010\",V=-7\nS=\"2020\",V=plain\n!mneme-complete\n",
+            &test_response(
+                &identity,
+                &["S=\"1010\",V=-7", "S=\"2020\",V=plain"],
+                Some("exhausted"),
+            ),
         );
-        let outcome = outcome_from_worker(&worker, &image, &request);
+        let outcome = outcome_from_test_worker(&worker, &image, &request);
         assert_eq!(outcome.status, ExecutionStatus::Complete);
         assert!(outcome.exhaustive);
-        assert_eq!(outcome.solutions.len(), 2);
+        assert_eq!(result_solutions(&outcome).len(), 2);
         assert_eq!(
-            outcome.solutions[0].bindings,
+            result_solutions(&outcome)[0].bindings,
             std::collections::BTreeMap::from([
                 ("S".to_owned(), Term::String("1010".to_owned())),
                 ("V".to_owned(), Term::Integer(-7)),
             ])
         );
         assert_eq!(
-            outcome.solutions[1].bindings,
+            result_solutions(&outcome)[1].bindings,
             std::collections::BTreeMap::from([
                 ("S".to_owned(), Term::String("2020".to_owned())),
                 ("V".to_owned(), Term::Symbol("plain".to_owned())),
@@ -2558,37 +3490,270 @@ mod tests {
         // The engine printed this shape while the `,` between bindings was a
         // body conjunction instead of output; the strict parser refuses it.
         let image = search_image();
-        let request = request_with_goal(&["S", "V"]);
+        let request = request_with_goal(&["S", "V"], &image);
+        let identity = test_identity(&image);
         let worker = worker_output(
             process::WorkerStatus::Complete,
-            "S=\"1010\"V=-7\n!mneme-complete\n",
+            &test_response(&identity, &["S=\"1010\"V=-7"], Some("exhausted")),
         );
-        let outcome = outcome_from_worker(&worker, &image, &request);
+        let outcome = outcome_from_test_worker(&worker, &image, &request);
         assert_eq!(outcome.status, ExecutionStatus::Failed);
-        assert!(outcome.solutions.is_empty());
+        assert!(result_solutions(&outcome).is_empty());
         assert_eq!(
             outcome.reason.as_deref(),
-            Some("worker output is not a valid solution line")
+            Some("worker binding frame is malformed or has an unexpected variable")
         );
+    }
+
+    #[test]
+    fn crossed_request_identity_is_rejected_before_bindings_are_admitted() {
+        let image = search_image();
+        let request = request_with_goal(&["X"], &image);
+        let expected = test_identity(&image);
+        let mut crossed = expected.clone();
+        crossed.request_digest = "sha256:another-request".to_owned();
+        let output = test_response_for_mode(
+            &crossed,
+            QueryMode::Enumerate,
+            &["X=answer"],
+            Some("exhausted"),
+        );
+        let worker = worker_output(process::WorkerStatus::Complete, &output);
+        let outcome = outcome_from_worker(&worker, &image, &request, &expected);
+        assert_eq!(outcome.status, ExecutionStatus::Failed);
+        assert!(!outcome.readback_valid);
+        assert!(result_solutions(&outcome).is_empty());
+        assert_eq!(
+            outcome.reason.as_deref(),
+            Some("worker response header is missing or bound to another request")
+        );
+    }
+
+    #[test]
+    fn a_timed_out_worker_without_a_response_keeps_its_timeout_reason() {
+        let image = search_image();
+        let request = request_with_goal(&["X"], &image);
+        let identity = test_identity(&image);
+        let mut worker = worker_output(process::WorkerStatus::Timeout, "");
+        worker.reason = Some("worker exceeded its wall-clock budget".to_owned());
+        let outcome = outcome_from_worker(&worker, &image, &request, &identity);
+        assert_eq!(outcome.status, ExecutionStatus::Timeout);
+        assert_eq!(outcome.stop, SearchStop::Timeout);
+        assert!(!outcome.readback_valid);
+        assert!(result_solutions(&outcome).is_empty());
+        assert!(
+            outcome
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("worker exceeded its wall-clock budget"))
+        );
+    }
+
+    #[test]
+    fn response_bindings_must_match_the_declared_output_set_exactly() {
+        let image = search_image();
+        let request = request_with_goal(&["X"], &image);
+        let identity = test_identity(&image);
+        let worker = worker_output(
+            process::WorkerStatus::Complete,
+            &test_response(&identity, &["Y=unexpected"], Some("exhausted")),
+        );
+        let outcome = outcome_from_test_worker(&worker, &image, &request);
+        assert_eq!(outcome.status, ExecutionStatus::Failed);
+        assert!(!outcome.readback_valid);
+        assert!(result_solutions(&outcome).is_empty());
+        assert_eq!(
+            outcome.reason.as_deref(),
+            Some("worker binding frame is malformed or has an unexpected variable")
+        );
+    }
+
+    #[test]
+    fn cancellation_and_timeout_causes_survive_output_limit_observations() {
+        let image = search_image();
+        let request = request_with_goal(&["X"], &image);
+        for (worker_status, expected_status, expected_stop) in [
+            (
+                process::WorkerStatus::Cancelled,
+                ExecutionStatus::Cancelled,
+                SearchStop::Cancelled,
+            ),
+            (
+                process::WorkerStatus::Timeout,
+                ExecutionStatus::Timeout,
+                SearchStop::Timeout,
+            ),
+        ] {
+            let mut worker = worker_output(worker_status, "");
+            worker.output_limit_exceeded = true;
+            worker.captured_bytes = 1024;
+            let outcome = outcome_from_test_worker(&worker, &image, &request);
+            assert_eq!(outcome.status, expected_status);
+            assert_eq!(outcome.stop, expected_stop);
+            assert!(outcome.output_limit_exceeded);
+            assert!(!outcome.exhaustive);
+            assert!(result_solutions(&outcome).is_empty());
+        }
+    }
+
+    #[test]
+    fn lossy_utf8_output_never_becomes_a_binding() {
+        let image = search_image();
+        let request = request_with_goal(&["X"], &image);
+        let identity = test_identity(&image);
+        let output = test_response_for_mode(
+            &identity,
+            QueryMode::Enumerate,
+            &["X=\"replacement-shaped\u{fffd}\""],
+            Some("exhausted"),
+        );
+        let mut worker = worker_output(process::WorkerStatus::Complete, &output);
+        worker.output_utf8_valid = false;
+        worker.captured_bytes = output.len().saturating_add(1);
+        let outcome = outcome_from_test_worker(&worker, &image, &request);
+        assert_eq!(outcome.status, ExecutionStatus::Failed);
+        assert!(!outcome.readback_valid);
+        assert!(result_solutions(&outcome).is_empty());
+        assert_eq!(outcome.consumed.output_bytes, worker.captured_bytes);
+        assert_eq!(
+            outcome.reason.as_deref(),
+            Some("worker response is not valid UTF-8 and cannot be admitted losslessly")
+        );
+    }
+
+    #[test]
+    fn protocol_identities_bind_profile_rule_order_variables_and_image_order() {
+        let mut image = search_image();
+        image.relations = vec![snapshot::SelectedRelation {
+            predicate: "member".to_owned(),
+            rows: vec![
+                snapshot::SelectedRow {
+                    values: vec![mneme_core::Value::string("a")],
+                    supports: Vec::new(),
+                },
+                snapshot::SelectedRow {
+                    values: vec![mneme_core::Value::string("b")],
+                    supports: Vec::new(),
+                },
+            ],
+            coverage: InputCoverage {
+                complete: true,
+                reason: None,
+            },
+        }];
+        image.seal();
+        let mut request = request(std::collections::BTreeSet::from([Feature::PositiveQuery]));
+        request.image_digest = image.context.image_digest.clone();
+        request.mode = QueryMode::Enumerate;
+        request.goal = Atom {
+            predicate: "path".to_owned(),
+            terms: vec![
+                Term::Variable("X".to_owned()),
+                Term::Variable("Y".to_owned()),
+            ],
+        };
+        request.variables = vec![
+            QueryVariable {
+                name: "X".to_owned(),
+                role: VariableRole::Output,
+            },
+            QueryVariable {
+                name: "Y".to_owned(),
+                role: VariableRole::Output,
+            },
+        ];
+        let metadata = positive();
+        let original = request
+            .protocol_identity(&metadata, &image)
+            .expect("identity");
+
+        let mut reordered_variables = request.clone();
+        reordered_variables.variables.reverse();
+        let reordered_identity = reordered_variables
+            .protocol_identity(&metadata, &image)
+            .expect("reordered variable identity");
+        assert_ne!(original.request_digest, reordered_identity.request_digest);
+
+        let mut changed_profile = metadata.clone();
+        changed_profile.terms.max_depth += 1;
+        let changed_profile_identity = request
+            .protocol_identity(&changed_profile, &image)
+            .expect("profile identity");
+        assert_ne!(
+            original.profile_digest,
+            changed_profile_identity.profile_digest
+        );
+
+        let mut changed_rules = request.clone();
+        changed_rules.rules = vec![
+            Rule {
+                id: "first".to_owned(),
+                version: "1".to_owned(),
+                head: Atom {
+                    predicate: "path".to_owned(),
+                    terms: vec![Term::String("a".to_owned())],
+                },
+                body: Vec::new(),
+            },
+            Rule {
+                id: "second".to_owned(),
+                version: "1".to_owned(),
+                head: Atom {
+                    predicate: "path".to_owned(),
+                    terms: vec![Term::String("b".to_owned())],
+                },
+                body: Vec::new(),
+            },
+        ];
+        let ordered = changed_rules
+            .protocol_identity(&metadata, &image)
+            .expect("ordered rules");
+        changed_rules.rules.reverse();
+        let reversed = changed_rules
+            .protocol_identity(&metadata, &image)
+            .expect("reversed rules");
+        assert_ne!(ordered.rule_manifest_digest, reversed.rule_manifest_digest);
+        assert_ne!(ordered.request_digest, reversed.request_digest);
+
+        let mut changed_image = image.clone();
+        changed_image.relations[0].rows.reverse();
+        changed_image.seal();
+        let mut changed_request = request;
+        changed_request.image_digest = changed_image.context.image_digest.clone();
+        let changed_order = changed_request
+            .protocol_identity(&metadata, &changed_image)
+            .expect("changed image order");
+        assert_ne!(
+            original.input_order_digest,
+            changed_order.input_order_digest
+        );
+        assert_ne!(original.image_digest, changed_order.image_digest);
     }
 
     #[test]
     fn non_ground_answers_are_reported_rather_than_parsed() {
         let image = search_image();
-        let request = request_with_goal(&["S", "V"]);
+        let request = request_with_goal(&["S", "V"], &image);
+        let identity = test_identity(&image);
         // A valid answer followed by a non-ground one: the whole result is a
         // qualified failure, never a partial success.
-        let worker = worker_output(
-            process::WorkerStatus::Complete,
-            &format!("S=\"1010\",V=-7\n{UNBOUND_MARKER}\n{COMPLETION_MARKER}\n"),
-        );
-        let outcome = outcome_from_worker(&worker, &image, &request);
+        let mut output = test_response(&identity, &["S=\"1010\",V=-7"], None);
+        output.push_str(UNBOUND_MARKER);
+        output.push('\t');
+        output.push_str(&identity.request_digest);
+        output.push('\n');
+        output.push_str(RESPONSE_STOP_PREFIX);
+        output.push('\t');
+        output.push_str(&identity.request_digest);
+        output.push_str("\texhausted\n");
+        let worker = worker_output(process::WorkerStatus::Complete, &output);
+        let outcome = outcome_from_test_worker(&worker, &image, &request);
         assert_eq!(outcome.status, ExecutionStatus::Failed);
         assert!(!outcome.exhaustive);
-        assert!(outcome.solutions.is_empty());
+        assert!(result_solutions(&outcome).is_empty());
         assert_eq!(
             outcome.reason.as_deref(),
-            Some("a goal variable was left unbound by the engine")
+            Some("worker reported an unbound output candidate")
         );
         assert_eq!(outcome.consumed.solutions, 0);
     }

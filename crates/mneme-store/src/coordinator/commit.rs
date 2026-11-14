@@ -54,10 +54,15 @@ impl super::Workspace {
             }
         }
 
-        // The shared lock covers exactly the window in which this commit's blobs
-        // exist on disk without ledger rows, so no recovery sweep can mistake
-        // them for orphans. Publication runs after the guard is dropped.
-        let (prepared, written) = {
+        // Ordinary commits share the staging lock; retention barriers take it
+        // exclusively so no old-generation participant write can overlap the
+        // generation advance. Publication runs after the guard is dropped.
+        let (prepared, written) = if command.retention.is_some() {
+            let _guard = self.exclusive_sweep_lock()?;
+            let prepared = self.prepare_commit(&command, request_digest, fingerprint)?;
+            let written = self.write_prepared_commit(&command, &prepared)?;
+            (prepared, written)
+        } else {
             let _guard = self.shared_commit_lock()?;
             let prepared = self.prepare_commit(&command, request_digest, fingerprint)?;
             let written = self.write_prepared_commit(&command, &prepared)?;

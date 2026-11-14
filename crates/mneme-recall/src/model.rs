@@ -10,6 +10,7 @@ pub enum Mode {
     Lexical,
     Structured,
     Vector,
+    Semantic,
 }
 
 impl Mode {
@@ -19,6 +20,7 @@ impl Mode {
             Mode::Lexical => "lexical",
             Mode::Structured => "structured",
             Mode::Vector => "vector",
+            Mode::Semantic => "semantic",
         }
     }
 }
@@ -79,6 +81,9 @@ pub struct Request {
     /// Explicit candidate modes. The lexical mode is independently usable.
     pub modes: std::collections::BTreeSet<Mode>,
     pub structured: Option<StructuredRequest>,
+    /// Operator-configured semantic adapter. It is used only when `modes`
+    /// explicitly contains [`Mode::Semantic`].
+    pub semantic: Option<crate::semantic::SemanticRequest>,
     /// Permit an older served revision when explicitly requested.
     pub allow_stale: bool,
     /// Permit other explicitly requested modes to continue when one mode is
@@ -122,6 +127,7 @@ impl Request {
             temporal: TemporalMode::Current,
             modes: std::collections::BTreeSet::from([Mode::Lexical]),
             structured: None,
+            semantic: None,
             allow_stale: false,
             allow_fallback: true,
             allow_partial: true,
@@ -242,6 +248,33 @@ pub struct ModeReport {
     /// recall overall remains non-exhaustive.
     pub relation_exhaustive: Option<bool>,
     pub reason: Option<String>,
+    /// Content-free embedding invocation evidence, present only for semantic
+    /// requests that reached adapter execution.
+    pub semantic_observation: Option<SemanticObservation>,
+}
+
+/// Host-measured, content-free evidence for one or more model invocations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationObservation {
+    pub invocation_count: u64,
+    /// Digests of the exact JSON inputs sent on stdin, never the source text.
+    pub input_digests: Vec<String>,
+    /// Host-measured monotonic elapsed time, in microseconds.
+    pub elapsed_micros: u64,
+    /// Missing endpoint telemetry stays unavailable rather than becoming zero.
+    pub usage: crate::inference::UsageTelemetry,
+}
+
+/// Semantic-mode identity and cold/warm invocation measurements.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticObservation {
+    pub model_id: String,
+    pub configuration_digest: String,
+    pub cache_hit: bool,
+    /// Present only when this request actually built the document vectors.
+    pub document_build: Option<InvocationObservation>,
+    /// Present only when this request actually embedded its query.
+    pub query: Option<InvocationObservation>,
 }
 
 /// The exact context of one recall result.
@@ -470,6 +503,8 @@ pub(crate) struct CachedIndex {
     pub(crate) documents: Vec<IndexedDocument>,
     /// Lexical weighting statistics over exactly `documents`.
     pub(crate) lexical: LexicalStatistics,
+    /// One model/configuration's vectors, held only for this in-memory index.
+    pub(crate) semantic: Option<crate::semantic::Index>,
     /// Document position by candidate identity, so a ranking result never
     /// copies the corpus it was computed from.
     positions: std::collections::BTreeMap<String, usize>,
@@ -494,6 +529,7 @@ impl CachedIndex {
             coverage,
             documents,
             lexical,
+            semantic: None,
             positions,
         }
     }

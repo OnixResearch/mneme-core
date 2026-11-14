@@ -253,6 +253,33 @@ pub fn decode_value(
     decode_value_at(json, path, 0)
 }
 
+/// Decode a value inside an enclosing command without resetting its nesting budget.
+/// `open_compounds` counts the already-open Preserves compound values, not JSON
+/// containers. The same decoder and limits apply; no re-encoding is required.
+pub fn decode_nested_value(
+    json: &serde_json::Value,
+    path: &crate::problem::Path,
+    open_compounds: u32,
+) -> Result<crate::typed::Value, crate::problem::Diagnostic> {
+    let depth = usize::try_from(open_compounds).map_err(|_| {
+        crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::DepthLimitExceeded,
+            path.clone(),
+            "enclosing value nesting exceeds the codec bound",
+        )
+    })?;
+    if depth > crate::binary::MAX_DEPTH {
+        return Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Transport,
+            crate::problem::ErrorCode::DepthLimitExceeded,
+            path.clone(),
+            "enclosing value nesting exceeds the codec bound",
+        ));
+    }
+    decode_value_at(json, path, depth)
+}
+
 /// Decode one tagged value nested `depth` values deep.
 ///
 /// `depth` is the number of compound values already open, so a compound value

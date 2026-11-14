@@ -276,7 +276,7 @@ pub fn view_context(
     workspace: &mneme_store::Workspace,
     snapshot: &mneme_store::Snapshot,
 ) -> crate::failure::Result<ViewContext> {
-    let history = flatten_history(workspace.record_histories(snapshot)?)?;
+    let history = flatten_history(workspace.record_histories(snapshot)?);
     let wanted = wanted_revisions(snapshot, &history)?;
     let revision_sequences = workspace.revision_sequences_for(&wanted)?;
     Ok(ViewContext {
@@ -285,28 +285,18 @@ pub fn view_context(
     })
 }
 
-/// Flatten per-record histories under the retained history bound.
+/// Flatten a complete history already admitted by the store's streaming bound.
 fn flatten_history(
     histories: std::collections::BTreeMap<mneme_core::RecordId, Vec<mneme_core::RecordEnvelope>>,
-) -> crate::failure::Result<
-    std::collections::BTreeMap<
-        (mneme_core::RecordId, mneme_core::RevisionId),
-        mneme_core::RecordEnvelope,
-    >,
+) -> std::collections::BTreeMap<
+    (mneme_core::RecordId, mneme_core::RevisionId),
+    mneme_core::RecordEnvelope,
 > {
-    let max_history_revisions = 1_000_000;
-    let mut history = std::collections::BTreeMap::new();
-    for revisions in histories.into_values() {
-        for revision in revisions {
-            if history.len() >= max_history_revisions {
-                return Err(crate::failure::EvidenceError::policy(
-                    "workspace history exceeds the 1M revision bound",
-                ));
-            }
-            history.insert((revision.record_id, revision.revision_id), revision);
-        }
-    }
-    Ok(history)
+    histories
+        .into_values()
+        .flatten()
+        .map(|record| ((record.record_id, record.revision_id), record))
+        .collect()
 }
 
 /// The workspace revisions a view over `snapshot` looks up.

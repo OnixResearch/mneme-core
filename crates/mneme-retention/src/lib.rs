@@ -25,6 +25,9 @@ const MAX_PLAN_RECORDS: usize = 1_000_000;
 /// The maximum number of retained source revisions one plan may inventory.
 const MAX_SOURCE_REVISIONS: usize = 1_000_000;
 
+/// The maximum number of participant entries one inventory walk inspects.
+const MAX_SESSION_INVENTORY_ENTRIES: usize = 10_000;
+
 /// A retention operation's semantic intent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationKind {
@@ -482,14 +485,15 @@ impl<'w> Engine<'w> {
                 )?;
                 Ok(())
             }
-            // These kinds have no purge adapter in this build; they are
-            // reported as unavailable instead of being claimed as cleaned.
+            // Participant-store locations are verification receipts after all
+            // per-file participant purges have settled. The store scans their
+            // complete bounded inventory and fails closed on unknown entries.
             "participant-store" => {
                 self.workspace.verify_retention_location(
                     operation_id,
                     &location.location_id,
-                    mneme_store::RetentionLocationState::Unavailable,
-                    Some("participant-store-not-purgeable"),
+                    mneme_store::RetentionLocationState::Pending,
+                    None,
                 )?;
                 Ok(())
             }
@@ -1638,39 +1642,13 @@ fn add_inventory_locations(
     ] {
         push_location(plan, format!("inventory:{kind}"), kind, label.to_owned());
     }
-    for participant in workspace.retention_participants()? {
-        if participant.storage_role == "document-keyed-files" {
-            let base = participant.inventory_locator.trim_end_matches('/');
-            let mut is_planned = false;
-            for document in documents {
-                let locator = format!("{base}/{}.json", document.to_hex());
-                if mneme_kernel::text::is_canonical_relative_path(locator.as_bytes()) {
-                    push_location(
-                        plan,
-                        format!(
-                            "participant-file:{}:{}",
-                            participant.name,
-                            document.to_hex()
-                        ),
-                        "participant-file",
-                        locator,
-                    );
-                    is_planned = true;
-                }
-            }
-            // A document-keyed store with no affected document has nothing to
-            // purge; a store whose directory cannot address its draft files is
-            // reported instead of assumed clean.
-            if is_planned || documents.is_empty() {
-                continue;
-            }
-        }
-        push_location(
-            plan,
-            format!("participant:{}", participant.name),
-            "participant-store",
-            participant.inventory_locator.clone(),
-        );
+    let participants = workspace.retention_participants()?;
+    let participant_audits =
+        add_participant_file_locations(workspace, documents, plan, &participants)?;
+    // Inventory checks run after all planned participant-file purges. They
+    // catch unknown descendants and files that appeared after the plan froze.
+    for (location_id, locator) in participant_audits {
+        push_location(plan, location_id, "participant-store", locator);
     }
     for entry in workspace.unregistered_payload_entries()? {
         push_location(
@@ -1681,6 +1659,160 @@ fn add_inventory_locations(
         );
     }
     Ok(())
+}
+
+fn add_participant_file_locations(
+    workspace: &mneme_store::Workspace,
+    documents: &std::collections::BTreeSet<mneme_core::RecordId>,
+    plan: &mut Plan,
+    participants: &[mneme_store::lifecycle::RetentionParticipant],
+) -> Result<Vec<(String, String)>> {
+    let mut participant_audits = Vec::with_capacity(participants.len());
+    for participant in participants {
+        match participant.storage_role.as_str() {
+            "document-keyed-files" | "document-session-files" => {
+                let base = participant.inventory_locator.trim_end_matches('/');
+                for document in documents {
+                    let document_hex = document.to_hex();
+                    for (suffix, kind) in [
+                        ("json", "final"),
+                        ("json.tmp", "temporary"),
+                        ("json.corrupt", "quarantine"),
+                    ] {
+                        let locator = format!("{base}/{document_hex}.{suffix}");
+                        if mneme_kernel::text::is_canonical_relative_path(locator.as_bytes()) {
+                            let location_id = if kind == "final" {
+                                format!("participant-file:{}:{document_hex}", participant.name)
+                            } else {
+                                format!(
+                                    "participant-file:{}:{document_hex}:{kind}",
+                                    participant.name
+                                )
+                            };
+                            push_location(plan, location_id, "participant-file", locator);
+                        }
+                    }
+                    if participant.storage_role == "document-session-files" {
+                        for artifact in collect_session_artifacts(workspace.root(), base, *document)
+                        {
+                            let (locator, relative) = artifact;
+                            if mneme_kernel::text::is_canonical_relative_path(locator.as_bytes()) {
+                                push_location(
+                                    plan,
+                                    format!(
+                                        "participant-file:{}:{document_hex}:session:{relative}",
+                                        participant.name
+                                    ),
+                                    "participant-file",
+                                    locator,
+                                );
+                            }
+                        }
+                    }
+                }
+                participant_audits.push((
+                    format!("participant:{}", participant.name),
+                    participant.inventory_locator.clone(),
+                ));
+            }
+            _ => participant_audits.push((
+                format!("participant:{}", participant.name),
+                participant.inventory_locator.clone(),
+            )),
+        }
+    }
+    Ok(participant_audits)
+}
+
+/// Enumerate known session leaves for planning without following links.
+///
+/// Incomplete, inaccessible, or unknown entries are left for the store's
+/// participant-store audit, which records them as unavailable instead of
+/// silently treating an omitted filename as clean.
+fn collect_session_artifacts(
+    workspace_root: &std::path::Path,
+    base: &str,
+    document: mneme_core::RecordId,
+) -> Vec<(String, String)> {
+    let document_hex = document.to_hex();
+    let root = workspace_root.join(base);
+    let document_directory = root.join(&document_hex);
+    let Ok(metadata) = std::fs::symlink_metadata(&document_directory) else {
+        return Vec::new();
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Vec::new();
+    }
+    let Ok(sessions) = std::fs::read_dir(&document_directory) else {
+        return Vec::new();
+    };
+    let mut artifacts = Vec::new();
+    let mut visited = 0_usize;
+    for session in sessions {
+        visited += 1;
+        if visited > MAX_SESSION_INVENTORY_ENTRIES {
+            break;
+        }
+        let Ok(session) = session else {
+            continue;
+        };
+        let session_id = session.file_name().to_string_lossy().into_owned();
+        if !is_draft_session_id(&session_id) {
+            continue;
+        }
+        let Ok(metadata) = std::fs::symlink_metadata(session.path()) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(session.path()) else {
+            continue;
+        };
+        for file in files {
+            visited += 1;
+            if visited > MAX_SESSION_INVENTORY_ENTRIES {
+                break;
+            }
+            let Ok(file) = file else {
+                continue;
+            };
+            let name = file.file_name().to_string_lossy().into_owned();
+            if !is_draft_session_artifact(&name) {
+                continue;
+            }
+            let Ok(metadata) = std::fs::symlink_metadata(file.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                continue;
+            }
+            let locator = format!("{base}/{document_hex}/{session_id}/{name}");
+            let relative = format!("{session_id}/{name}");
+            artifacts.reserve(1);
+            artifacts.push((locator, relative));
+        }
+    }
+    artifacts
+}
+
+fn is_draft_session_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_draft_session_artifact(value: &str) -> bool {
+    if value == ".owner.lock" {
+        return true;
+    }
+    let Some((version, extension)) = value.split_once('.') else {
+        return false;
+    };
+    version.len() == 20
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+        && matches!(extension, "json" | "tmp" | "corrupt")
 }
 
 fn finish_forget_plan(request: &Request, state: &ForgetState, plan: &mut Plan) {
