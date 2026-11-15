@@ -338,6 +338,38 @@ impl<'w> Engine<'w> {
         self.cleanup(operation)
     }
 
+    /// Apply a trusted device's signed forgotten-source barrier locally.
+    ///
+    /// When the target is present, the ordinary retention planner computes
+    /// this workspace's own cleanup inventory. When it is not present, a
+    /// content-bound tombstone is committed so a later or replayed source
+    /// bundle cannot restore it.
+    pub fn apply_exchange_barrier(
+        &mut self,
+        issuer: &str,
+        barrier: &mneme_memory::exchange::ExchangeBarrier,
+    ) -> Result<()> {
+        if issuer.trim().is_empty() || barrier.operation_kind != "forget" {
+            return Err(PolicyError::Invalid("invalid exchange barrier"));
+        }
+        let scope_has_target = self
+            .workspace
+            .snapshot()?
+            .records
+            .iter()
+            .any(|record| record.record_id == barrier.target && record.scope == barrier.scope);
+        let selector = barrier_selector(barrier, scope_has_target)?;
+        if let Some(selector) = selector {
+            let request = exchange_request(self.workspace, issuer, barrier, selector)?;
+            match self.execute(request) {
+                Ok(_) => return Ok(()),
+                Err(PolicyError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        commit_exchange_tombstone(self.workspace, issuer, barrier)
+    }
+
     /// Resume cleanup for an existing operation.
     pub fn resume(&mut self, operation_id: &str) -> Result<Outcome> {
         let operation = self
@@ -646,6 +678,131 @@ impl<'w> Engine<'w> {
             retained_metadata: operation.retained_metadata,
         })
     }
+}
+
+fn barrier_selector(
+    barrier: &mneme_memory::exchange::ExchangeBarrier,
+    scope_has_target: bool,
+) -> Result<Option<Selector>> {
+    if scope_has_target {
+        let selector = match barrier.target_kind.as_str() {
+            "source-revision" => match barrier.revision {
+                Some(revision) => Selector::SourceRevision(barrier.target, revision),
+                None => Selector::Source(barrier.target),
+            },
+            "assertion" => Selector::Assertion(barrier.target),
+            _ => return Err(PolicyError::Invalid("unsupported exchange barrier target")),
+        };
+        return Ok(Some(selector));
+    }
+    Ok(barrier.content_digest.map(Selector::Content))
+}
+
+fn exchange_request(
+    workspace: &mneme_store::Workspace,
+    issuer: &str,
+    barrier: &mneme_memory::exchange::ExchangeBarrier,
+    selector: Selector,
+) -> Result<Request> {
+    let actor = format!("mneme-exchange-import:{issuer}");
+    let idempotency_key = exchange_barrier_key(issuer, barrier);
+    Ok(Request {
+        actor,
+        scope: barrier.scope.clone(),
+        base_revision: workspace.current_revision()?,
+        idempotency_key,
+        operation: OperationKind::Forget,
+        selector,
+        effective: None,
+        policy: Policy::default(),
+    })
+}
+
+fn commit_exchange_tombstone(
+    workspace: &mut mneme_store::Workspace,
+    issuer: &str,
+    barrier: &mneme_memory::exchange::ExchangeBarrier,
+) -> Result<()> {
+    let actor = format!("mneme-exchange-import:{issuer}");
+    let idempotency_key = exchange_barrier_key(issuer, barrier);
+    if workspace
+        .retention_operation_by_key(&actor, &barrier.scope, &idempotency_key)?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let generation = workspace
+        .eligibility_generation()?
+        .checked_add(1)
+        .ok_or(PolicyError::Invalid("retention generation overflow"))?;
+    let operation_id = format!(
+        "exchange-{}",
+        idempotency_key.trim_start_matches("exchange-forget-")
+    );
+    let selector_kind = if barrier.target_kind == "source-revision"
+        && barrier.content_digest.is_some()
+        && workspace
+            .snapshot()?
+            .records
+            .iter()
+            .all(|record| record.record_id != barrier.target)
+    {
+        "content"
+    } else {
+        barrier.target_kind.as_str()
+    };
+    let retention = mneme_store::RetentionCommit {
+        operation_id: operation_id.clone(),
+        operation_kind: "forget".to_owned(),
+        policy_version: POLICY_VERSION.to_owned(),
+        selectors: vec![mneme_store::RetentionSelector {
+            ordinal: 0,
+            kind: selector_kind.to_owned(),
+            target: (selector_kind != "content").then_some(barrier.target),
+            revision: barrier.revision,
+            digest: barrier.content_digest,
+        }],
+        suppressions: vec![mneme_store::RetentionSuppression {
+            operation_id,
+            target: barrier.target,
+            revision: barrier.revision,
+            target_kind: barrier.target_kind.clone(),
+            mode: mneme_store::SuppressionMode::Forgotten,
+            content_digest: barrier.content_digest,
+            generation,
+        }],
+        locations: Vec::new(),
+        retained_metadata: Vec::new(),
+    };
+    workspace.commit(mneme_store::CommitCommand {
+        base: workspace.current_revision()?,
+        actor,
+        scope: barrier.scope.clone(),
+        idempotency_key,
+        records: Vec::new(),
+        source_blobs: Vec::new(),
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: Some(retention),
+    })?;
+    Ok(())
+}
+
+fn exchange_barrier_key(issuer: &str, barrier: &mneme_memory::exchange::ExchangeBarrier) -> String {
+    let digest = mneme_core::ContentDigest::of_payload(&mneme_core::Value::record_named(
+        "exchange-retention-barrier",
+        vec![
+            mneme_core::Value::string(issuer),
+            mneme_core::Value::string(barrier.operation_id.clone()),
+            barrier.scope.to_value(),
+            barrier.target.to_value(),
+            barrier.content_digest.map_or_else(
+                || mneme_core::Value::symbol("none"),
+                |value| value.to_value(),
+            ),
+        ],
+    ));
+    format!("exchange-forget-{}", digest.to_hex())
 }
 
 fn push_limitation(limitations: &mut Vec<String>, code: &str) {

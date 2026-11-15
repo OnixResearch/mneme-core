@@ -13,6 +13,7 @@
 
 pub mod authorization;
 pub mod beliefs;
+pub mod exchange;
 pub mod failure;
 #[path = "authenticated/import.rs"]
 mod inbound;
