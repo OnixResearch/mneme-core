@@ -59,6 +59,10 @@ fn committed_workspace(root: &std::path::Path) -> super::Workspace {
 }
 
 fn replace_entity(workspace: &mut super::Workspace, serial: u8) {
+    replace_entity_as(workspace, serial, "test-author");
+}
+
+fn replace_entity_as(workspace: &mut super::Workspace, serial: u8, actor: &str) {
     let snapshot = workspace.snapshot().expect("snapshot");
     let previous = snapshot
         .records
@@ -73,6 +77,7 @@ fn replace_entity(workspace: &mut super::Workspace, serial: u8) {
         mneme_core::Value::string("Changed Cedar"),
     );
     let mut command = fixture_command(snapshot.revision, &format!("replace-{serial}"));
+    command.actor = actor.to_owned();
     command.records = vec![replacement];
     command.source_blobs.clear();
     workspace.commit(command).expect("replace entity");
@@ -139,6 +144,110 @@ fn history_bound_refuses_before_decoding_an_over_budget_payload() {
         )
         .expect_err("admitted payload still needs integrity verification");
     assert!(matches!(within, crate::error::Failure::Integrity { .. }));
+}
+
+#[test]
+fn named_revision_read_returns_durable_actor_time_and_sequence() {
+    let temp = tempfile::tempdir().expect("temp");
+    let mut workspace = committed_workspace(temp.path());
+    replace_entity_as(&mut workspace, 0xf0, "second-author");
+    let first = workspace.revision_at_sequence(1).expect("first sequence");
+    let first = first.expect("first committed revision");
+    let second = workspace.current_revision().expect("second revision");
+    let absent = mneme_core::WorkspaceRevisionId::from_bytes([0xfa; 16]);
+    let revisions = std::collections::BTreeSet::from([first, second, absent]);
+
+    let commits = workspace
+        .revision_commits_for(&revisions)
+        .expect("named commit metadata");
+    assert_eq!(commits.len(), 2);
+    assert_eq!(commits[&first].sequence, 1);
+    assert_eq!(commits[&first].actor, "test-author");
+    assert_eq!(commits[&first].committed_at_ns, 1_000);
+    assert_eq!(commits[&second].sequence, 2);
+    assert_eq!(commits[&second].actor, "second-author");
+    assert_eq!(commits[&second].committed_at_ns, 1_000);
+}
+
+#[test]
+fn record_revision_pages_map_each_envelope_to_its_commit_newest_first() {
+    let temp = tempfile::tempdir().expect("temp");
+    let mut workspace = committed_workspace(temp.path());
+    for serial in 1..=10 {
+        replace_entity(&mut workspace, serial);
+    }
+    let first = workspace
+        .record_revision_commits(mneme_core::fixtures::entity_id(), None)
+        .expect("newest history page");
+    assert_eq!(first.entries.len(), super::MAX_RECORD_REVISION_PAGE);
+    assert!(first.has_more);
+    assert_eq!(first.entries[0].commit.sequence, 11);
+    assert_eq!(first.entries[0].commit.actor, "test-author");
+    assert_eq!(first.entries[0].commit.committed_at_ns, 1_000);
+    assert_eq!(
+        first.entries[0].record.revision_id,
+        mneme_core::RevisionId::from_bytes([10; 16])
+    );
+    assert_eq!(
+        first.next_before_sequence,
+        Some(
+            first.entries[super::MAX_RECORD_REVISION_PAGE - 1]
+                .commit
+                .sequence
+        )
+    );
+
+    let older = workspace
+        .record_revision_commits(
+            mneme_core::fixtures::entity_id(),
+            first.next_before_sequence,
+        )
+        .expect("older history page");
+    assert_eq!(older.entries.len(), 1);
+    assert!(!older.has_more);
+    assert_eq!(older.entries[0].commit.sequence, 1);
+    assert_eq!(
+        older.entries[0].record.record_id,
+        mneme_core::fixtures::entity_id()
+    );
+    assert_eq!(older.entries[0].commit.actor, "test-author");
+    assert_eq!(older.next_before_sequence, None);
+}
+
+#[test]
+fn named_revision_read_refuses_more_than_256_revisions() {
+    let temp = tempfile::tempdir().expect("temp");
+    let workspace = committed_workspace(temp.path());
+    let revisions = (0..257_u64)
+        .map(|sequence| {
+            let mut bytes = [0; 16];
+            bytes[..8].copy_from_slice(&sequence.to_be_bytes());
+            mneme_core::WorkspaceRevisionId::from_bytes(bytes)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert!(matches!(
+        workspace.revision_commits_for(&revisions),
+        Err(crate::error::Failure::HistoryLimitExceeded)
+    ));
+}
+
+#[test]
+fn record_revision_read_refuses_a_forgotten_identity() {
+    let temp = tempfile::tempdir().expect("temp");
+    let mut workspace = committed_workspace(temp.path());
+    let generation = workspace.eligibility_generation().expect("generation");
+    workspace
+        .commit(forget_assertion_command(
+            &workspace,
+            generation.saturating_add(1),
+        ))
+        .expect("forget assertion");
+
+    assert!(matches!(
+        workspace.record_revision_commits(mneme_core::fixtures::assertion_id(), None),
+        Err(crate::error::Failure::RetentionSuppressed { .. })
+    ));
 }
 
 // A concurrent forget commits its barrier and then purges payloads. These

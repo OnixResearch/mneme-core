@@ -154,6 +154,9 @@ const MAX_CACHED_RECORD_BYTES: usize = 64 * 1024 * 1024;
 /// the memory layer's existing bound before decoding an entry beyond it.
 const MAX_HISTORY_REVISIONS: usize = 1_000_000;
 
+/// The maximum retained record revisions one history read returns.
+const MAX_RECORD_REVISION_PAGE: usize = 10;
+
 /// The on-disk identity of one verified blob file.
 ///
 /// A content-addressed path can be rewritten or removed behind a running
@@ -1099,6 +1102,31 @@ pub struct CommitOutcome {
     pub manifest_digest: mneme_core::ContentDigest,
     pub eligibility_generation: u64,
     pub publications: Vec<PublicationOutcome>,
+}
+
+/// The durable attribution of one committed workspace revision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevisionCommit {
+    pub revision: mneme_core::WorkspaceRevisionId,
+    pub sequence: u64,
+    pub actor: String,
+    pub committed_at_ns: i64,
+}
+
+/// A retained record revision and the workspace commit that introduced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordRevisionCommit {
+    pub record: mneme_core::RecordEnvelope,
+    pub commit: RevisionCommit,
+}
+
+/// One bounded page of a record's retained revision history, newest first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordRevisionCommitPage {
+    pub entries: Vec<RecordRevisionCommit>,
+    pub has_more: bool,
+    /// Exclusive sequence cursor for the next older page.
+    pub next_before_sequence: Option<u64>,
 }
 
 /// Results of startup recovery.
@@ -2833,6 +2861,166 @@ impl Workspace {
         }
     }
 
+    /// Durable actor, sequence and commit time for up to 256 named revisions.
+    ///
+    /// Only revisions present in this workspace are returned. The restore gate
+    /// applies before any ledger metadata is served.
+    pub fn revision_commits_for(
+        &self,
+        revisions: &std::collections::BTreeSet<mneme_core::WorkspaceRevisionId>,
+    ) -> crate::error::Result<
+        std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, RevisionCommit>,
+    > {
+        self.require_restore_suppression()?;
+        if revisions.len() > MAX_NAMED_REVISIONS {
+            return Err(crate::error::Failure::HistoryLimitExceeded);
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        let loaded = revision_commits_lookup(&transaction, revisions);
+        match loaded {
+            Ok(commits) => {
+                transaction.commit()?;
+                Ok(commits)
+            }
+            Err(error) => {
+                drop(transaction);
+                Err(error)
+            }
+        }
+    }
+
+    /// One page of a record's retained history, with its introducing commits.
+    ///
+    /// Pages contain at most ten entries, newest first. `before_sequence` is an
+    /// exclusive cursor returned by the preceding page. Forgotten revisions are
+    /// skipped and forgotten identities refuse the read; record payloads are
+    /// verified through this workspace handle before they are returned.
+    pub fn record_revision_commits(
+        &self,
+        record_id: mneme_core::RecordId,
+        before_sequence: Option<u64>,
+    ) -> crate::error::Result<RecordRevisionCommitPage> {
+        self.require_restore_suppression()?;
+        let context = self.current_revision()?;
+        let generation = self.eligibility_generation()?;
+        let transaction = self.connection.unchecked_transaction()?;
+        let loaded = self.record_revision_commits_in(
+            &transaction,
+            record_id,
+            before_sequence,
+            context,
+            generation,
+        );
+        match loaded {
+            Ok(page) => {
+                transaction.commit()?;
+                Ok(page)
+            }
+            Err(error) => {
+                drop(transaction);
+                Err(self.explain_barrier(error, generation))
+            }
+        }
+    }
+
+    /// Read one bounded page and map every record revision to its ledger commit.
+    fn record_revision_commits_in(
+        &self,
+        connection: &rusqlite::Connection,
+        record_id: mneme_core::RecordId,
+        before_sequence: Option<u64>,
+        context: mneme_core::WorkspaceRevisionId,
+        generation: u64,
+    ) -> crate::error::Result<RecordRevisionCommitPage> {
+        self.facts().align(generation);
+        let forgotten = sweep::forgotten_suppressions_in(connection)?;
+        if forgotten.identities.contains(&record_id) {
+            return Err(crate::error::Failure::RetentionSuppressed {
+                target: record_id.to_string(),
+            });
+        }
+        let before = before_sequence
+            .map(|sequence| db_i64(sequence, "sequence"))
+            .transpose()?;
+        let mut statement = connection.prepare(
+            "SELECT records.revision_id, records.kind, records.envelope_digest,
+                    records.payload_digest, records.full_digest, records.recorded_order,
+                    revisions.revision_id, revisions.actor, revisions.committed_at_ns
+             FROM records LEFT JOIN revisions ON revisions.sequence = records.recorded_order
+             WHERE records.record_id = ?1
+               AND (?2 IS NULL OR records.recorded_order < ?2)
+             ORDER BY records.recorded_order DESC, records.recorded_at_ns DESC,
+                      records.revision_id DESC",
+        )?;
+        let mut rows =
+            statement.query(rusqlite::params![record_id.as_bytes().as_slice(), before])?;
+        let mut stored = Vec::with_capacity(MAX_RECORD_REVISION_PAGE + 1);
+        let mut has_more = false;
+        while let Some(row) = rows.next()? {
+            let record_revision = revision_id_from_blob(&row.get::<_, Vec<u8>>(0)?, context)?;
+            if forgotten.revisions.contains(&(record_id, record_revision)) {
+                continue;
+            }
+            if stored.len() == MAX_RECORD_REVISION_PAGE {
+                has_more = true;
+                break;
+            }
+            stored.push(read_record_commit_row(row, record_revision, context)?);
+        }
+        drop(rows);
+        drop(statement);
+        self.load_record_commit_page(record_id, stored, has_more, generation, context)
+    }
+
+    /// Verify the visible record envelopes after the bounded ledger scan ends.
+    fn load_record_commit_page(
+        &self,
+        record_id: mneme_core::RecordId,
+        stored: Vec<StoredRecordCommit>,
+        has_more: bool,
+        generation: u64,
+        context: mneme_core::WorkspaceRevisionId,
+    ) -> crate::error::Result<RecordRevisionCommitPage> {
+        let lengths = BlobIndex::new();
+        let mut entries = Vec::with_capacity(stored.len());
+        for row in stored {
+            let kind = mneme_core::RecordKind::parse(&row.kind).ok_or_else(|| {
+                crate::error::Failure::Integrity {
+                    revision: context,
+                    reason: format!("unknown record kind {}", row.kind),
+                }
+            })?;
+            let record = self.load_verified_record_envelope(
+                VerifiedRecordEnvelopeInput {
+                    record_id,
+                    revision_id: row.record_revision,
+                    kind,
+                    envelope_digest: &row.envelope_digest,
+                    payload_digest: &row.payload_digest,
+                    full_digest: &row.full_digest,
+                    revision: context,
+                    generation,
+                    lengths: &lengths,
+                },
+                PayloadCheck::Cached,
+            )?;
+            entries.push(RecordRevisionCommit {
+                record,
+                commit: row.commit,
+            });
+        }
+        let next_before_sequence = if has_more {
+            entries.last().map(|entry| entry.commit.sequence)
+        } else {
+            None
+        };
+        Ok(RecordRevisionCommitPage {
+            entries,
+            has_more,
+            next_before_sequence,
+        })
+    }
+
     /// The committed revision that has exactly this sequence, if any.
     ///
     /// The sequence is the revisions table's primary key, so one indexed
@@ -2866,6 +3054,48 @@ impl Workspace {
 /// binds its final revision again to fill the fixed parameter list, which leaves
 /// the selected rows unchanged.
 const MAX_NAMED_REVISIONS: usize = 256;
+
+struct StoredRecordCommit {
+    record_revision: mneme_core::RevisionId,
+    kind: String,
+    envelope_digest: Vec<u8>,
+    payload_digest: Vec<u8>,
+    full_digest: Vec<u8>,
+    commit: RevisionCommit,
+}
+
+/// Read one record row and its introducing commit facts.
+fn read_record_commit_row(
+    row: &rusqlite::Row<'_>,
+    record_revision: mneme_core::RevisionId,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<StoredRecordCommit> {
+    let workspace_revision = row.get::<_, Option<Vec<u8>>>(6)?;
+    let actor = row.get::<_, Option<String>>(7)?;
+    let committed_at_ns = row.get::<_, Option<i64>>(8)?;
+    let (Some(workspace_revision), Some(actor), Some(committed_at_ns)) =
+        (workspace_revision, actor, committed_at_ns)
+    else {
+        return Err(crate::error::Failure::Integrity {
+            revision: context,
+            reason: "record revision has no introducing workspace commit".to_owned(),
+        });
+    };
+    let commit = RevisionCommit {
+        revision: revision_from_blob(&workspace_revision)?,
+        sequence: db_u64(row.get::<_, i64>(5)?, "sequence")?,
+        actor,
+        committed_at_ns,
+    };
+    Ok(StoredRecordCommit {
+        record_revision,
+        kind: row.get(1)?,
+        envelope_digest: row.get(2)?,
+        payload_digest: row.get(3)?,
+        full_digest: row.get(4)?,
+        commit,
+    })
+}
 
 /// The sequences of the named committed revisions from one ledger state.
 fn revision_sequences_lookup(
@@ -2909,6 +3139,50 @@ fn revision_sequences_lookup(
         }
     }
     Ok(sequences)
+}
+
+/// The durable commit facts for a caller's bounded set of workspace revisions.
+fn revision_commits_lookup(
+    connection: &rusqlite::Connection,
+    revisions: &std::collections::BTreeSet<mneme_core::WorkspaceRevisionId>,
+) -> crate::error::Result<std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, RevisionCommit>>
+{
+    let mut commits = std::collections::BTreeMap::new();
+    if revisions.is_empty() {
+        return Ok(commits);
+    }
+    let placeholders = (1..=revisions.len())
+        .map(|position| format!("?{position}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!(
+        "SELECT revision_id, sequence, actor, committed_at_ns FROM revisions \
+         WHERE revision_id IN ({placeholders})"
+    );
+    let mut statement = connection.prepare(&query)?;
+    let mut rows = statement.query(rusqlite::params_from_iter(
+        revisions
+            .iter()
+            .map(|revision| revision.as_bytes().as_slice()),
+    ))?;
+    while let Some(row) = rows.next()? {
+        if commits.len() >= revisions.len() {
+            return Err(crate::error::Failure::UnsupportedLayout(
+                "revision lookup returned more rows than revisions were named".to_owned(),
+            ));
+        }
+        let revision = revision_from_blob(&row.get::<_, Vec<u8>>(0)?)?;
+        commits.insert(
+            revision,
+            RevisionCommit {
+                revision,
+                sequence: db_u64(row.get::<_, i64>(1)?, "sequence")?,
+                actor: row.get(2)?,
+                committed_at_ns: row.get(3)?,
+            },
+        );
+    }
+    Ok(commits)
 }
 
 /// Whether a source record's current revision records pruned bytes.
