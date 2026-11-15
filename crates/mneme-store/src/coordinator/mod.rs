@@ -1330,6 +1330,42 @@ impl Workspace {
         )
     }
 
+    /// Create, at `root`, the workspace of an existing folder of notes that
+    /// lives elsewhere.
+    ///
+    /// The folder is the working tree as with [`Self::create_for_folder`], but
+    /// the workspace and its lock stay out of it: a folder on a file system
+    /// without advisory locks, such as Android's shared storage, or one a sync
+    /// tool shares, keeps only its notes. `root` may not lie inside the folder.
+    pub fn create_for_external_folder(
+        root: impl AsRef<std::path::Path>,
+        folder: impl AsRef<std::path::Path>,
+        config: WorkspaceConfig,
+    ) -> crate::error::Result<Self> {
+        let folder = folder.as_ref();
+        let folder = std::fs::canonicalize(folder)
+            .map_err(|error| crate::error::Failure::io(folder, error))?;
+        if !folder.is_dir() {
+            return Err(crate::error::Failure::UnsupportedLayout(format!(
+                "{} is not a directory",
+                folder.display()
+            )));
+        }
+        let root = root.as_ref();
+        let is_inside = root
+            .ancestors()
+            .filter_map(|ancestor| std::fs::canonicalize(ancestor).ok())
+            .any(|ancestor| ancestor.starts_with(&folder));
+        if is_inside {
+            return Err(crate::error::Failure::UnsupportedLayout(format!(
+                "the workspace {} lies inside its folder {}",
+                root.display(),
+                folder.display()
+            )));
+        }
+        Self::create_with_tree(root, config, crate::payload::WorkingTree::External(folder))
+    }
+
     /// Create a workspace whose working files live as `tree` says.
     fn create_with_tree(
         requested: &std::path::Path,
@@ -1340,7 +1376,7 @@ impl Workspace {
             let root = std::fs::canonicalize(requested)
                 .map_err(|error| crate::error::Failure::io(requested, error))?;
             clear_incomplete_workspace(&root)?;
-            Self::initialize(&root, &config, tree)?;
+            Self::initialize(&root, &config, &tree)?;
             return Self::open(&root, config);
         }
         let parent = requested
@@ -1364,7 +1400,7 @@ impl Workspace {
             crate::payload::random_hex(8)?
         ));
         crate::payload::create_directory_chain_flushed(&temporary)?;
-        let initialized = Self::initialize(&temporary, &config, tree).and_then(|()| {
+        let initialized = Self::initialize(&temporary, &config, &tree).and_then(|()| {
             std::fs::rename(&temporary, &root)
                 .map_err(|error| crate::error::Failure::io(&root, error))
         });
@@ -1386,7 +1422,7 @@ impl Workspace {
     fn initialize(
         root: &std::path::Path,
         config: &WorkspaceConfig,
-        tree: crate::payload::WorkingTree,
+        tree: &crate::payload::WorkingTree,
     ) -> crate::error::Result<()> {
         for directory in [
             crate::payload::BLOB_DIRECTORY,
@@ -1394,15 +1430,13 @@ impl Workspace {
         ] {
             crate::payload::create_directory_chain_flushed(&root.join(directory))?;
         }
-        match tree {
-            crate::payload::WorkingTree::Internal => {
-                crate::payload::create_directory_chain_flushed(
-                    &root.join(crate::payload::WORKING_DIRECTORY),
-                )?
-            }
-            crate::payload::WorkingTree::Parent => crate::payload::write_flushed(
+        match tree.marker()? {
+            None => crate::payload::create_directory_chain_flushed(
+                &root.join(crate::payload::WORKING_DIRECTORY),
+            )?,
+            Some(marker) => crate::payload::write_flushed(
                 &root.join(crate::payload::WORKING_TREE_FILE),
-                b"..\n",
+                &marker,
             )?,
         }
         drop(open_lock_file(root)?);

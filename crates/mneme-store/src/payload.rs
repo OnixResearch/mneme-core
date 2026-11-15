@@ -23,12 +23,13 @@ pub const BLOB_DIRECTORY: &str = "blobs";
 pub const STAGING_DIRECTORY: &str = "staging";
 /// Directory holding published working files.
 pub const WORKING_DIRECTORY: &str = "working";
-/// Workspace-root file whose presence makes the directory containing the
-/// workspace root its working tree. Its only content is `..`.
+/// Workspace-root file naming a working tree other than `working/`: `..` for
+/// the directory containing the workspace root, or the absolute path of a
+/// folder elsewhere.
 pub const WORKING_TREE_FILE: &str = "working-tree";
 
 /// Where a workspace's working files live.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkingTree {
     /// The `working/` directory inside the workspace root.
     Internal,
@@ -36,6 +37,11 @@ pub enum WorkingTree {
     /// keeps its workspace in a hidden subdirectory. Hidden directories and
     /// files there, the workspace among them, are never working files.
     Parent,
+    /// A folder of notes whose workspace lives elsewhere, by its absolute
+    /// path: a folder on a file system without advisory locks, such as
+    /// Android's shared storage. Hidden directories and files there are never
+    /// working files.
+    External(std::path::PathBuf),
 }
 
 impl WorkingTree {
@@ -44,37 +50,72 @@ impl WorkingTree {
     pub fn of(root: &std::path::Path) -> crate::error::Result<WorkingTree> {
         let marker = root.join(WORKING_TREE_FILE);
         match std::fs::read(&marker) {
-            Ok(bytes) if bytes.trim_ascii() == b".." => Ok(WorkingTree::Parent),
-            Ok(_) => Err(crate::error::Failure::UnsupportedLayout(format!(
-                "{} must contain ..",
-                marker.display()
-            ))),
+            Ok(bytes) => WorkingTree::parse(bytes.trim_ascii()).ok_or_else(|| {
+                crate::error::Failure::UnsupportedLayout(format!(
+                    "{} must contain .. or an absolute folder path",
+                    marker.display()
+                ))
+            }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(WorkingTree::Internal),
             Err(error) => Err(crate::error::Failure::io(&marker, error)),
         }
     }
 
+    /// The layout a [`WORKING_TREE_FILE`] holding `content` records.
+    fn parse(content: &[u8]) -> Option<WorkingTree> {
+        if content == b".." {
+            return Some(WorkingTree::Parent);
+        }
+        std::str::from_utf8(content)
+            .ok()
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .map(WorkingTree::External)
+    }
+
+    /// What the [`WORKING_TREE_FILE`] of this layout holds, or `None` when the
+    /// layout has no such file.
+    pub(crate) fn marker(&self) -> crate::error::Result<Option<Vec<u8>>> {
+        match self {
+            WorkingTree::Internal => Ok(None),
+            WorkingTree::Parent => Ok(Some(b"..\n".to_vec())),
+            WorkingTree::External(folder) => {
+                let text = folder
+                    .to_str()
+                    .filter(|_| folder.is_absolute())
+                    .ok_or_else(|| {
+                        crate::error::Failure::UnsupportedLayout(format!(
+                            "{} is not an absolute UTF-8 folder path",
+                            folder.display()
+                        ))
+                    })?;
+                Ok(Some(format!("{text}\n").into_bytes()))
+            }
+        }
+    }
+
     /// The working directory of the workspace at `root` in this layout.
-    pub fn directory(self, root: &std::path::Path) -> std::path::PathBuf {
+    pub fn directory(&self, root: &std::path::Path) -> std::path::PathBuf {
         match self {
             WorkingTree::Internal => root.join(WORKING_DIRECTORY),
             WorkingTree::Parent => root.join(".."),
+            WorkingTree::External(folder) => folder.clone(),
         }
     }
 
     /// Whether a canonical relative path may name a working file: every path in
-    /// an internal tree, and in a parent tree only a path without a hidden
+    /// an internal tree, and in a folder of notes only a path without a hidden
     /// directory or file name.
-    pub fn admits(self, relative: &std::path::Path) -> bool {
-        self == WorkingTree::Internal
+    pub fn admits(&self, relative: &std::path::Path) -> bool {
+        *self == WorkingTree::Internal
             || !relative
                 .components()
                 .any(|component| is_hidden_name(component.as_os_str()))
     }
 
     /// Whether a walk of this tree skips the directory named `name`.
-    fn skips_directory(self, name: &std::ffi::OsStr) -> bool {
-        self == WorkingTree::Parent && is_hidden_name(name)
+    fn skips_directory(&self, name: &std::ffi::OsStr) -> bool {
+        *self != WorkingTree::Internal && is_hidden_name(name)
     }
 }
 
@@ -906,7 +947,7 @@ pub fn cleanup_working_temporaries(root: &std::path::Path) -> crate::error::Resu
     let working = tree.directory(root);
     let mut removed = 0;
     if working.is_dir() {
-        removed += cleanup_temporaries_in(&working, tree)?;
+        removed += cleanup_temporaries_in(&working, &tree)?;
     }
     Ok(removed)
 }
@@ -928,14 +969,14 @@ pub fn purge_targeted_temporaries(
     let staging = root.join(STAGING_DIRECTORY);
     if staging.is_dir() {
         let (found_removed, found_inspected) =
-            purge_targeted_in(&staging, targets, false, WorkingTree::Internal)?;
+            purge_targeted_in(&staging, targets, false, &WorkingTree::Internal)?;
         removed += found_removed;
         inspected += found_inspected;
     }
     let tree = WorkingTree::of(root)?;
     let working = tree.directory(root);
     if working.is_dir() {
-        let (found_removed, found_inspected) = purge_targeted_in(&working, targets, true, tree)?;
+        let (found_removed, found_inspected) = purge_targeted_in(&working, targets, true, &tree)?;
         removed += found_removed;
         inspected += found_inspected;
     }
@@ -948,7 +989,7 @@ fn purge_targeted_in(
     directory: &std::path::Path,
     targets: &std::collections::BTreeSet<[u8; 32]>,
     temporaries_only: bool,
-    tree: WorkingTree,
+    tree: &WorkingTree,
 ) -> crate::error::Result<(usize, usize)> {
     let max_entries = 100_000_usize;
     let mut removed = 0_usize;
@@ -1007,7 +1048,7 @@ fn purge_targeted_in(
 /// `tree` keeps out of a working tree.
 fn cleanup_temporaries_in(
     directory: &std::path::Path,
-    tree: WorkingTree,
+    tree: &WorkingTree,
 ) -> crate::error::Result<usize> {
     let mut removed = 0;
     let mut pending = vec![directory.to_path_buf()];

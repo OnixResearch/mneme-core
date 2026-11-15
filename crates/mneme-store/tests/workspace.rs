@@ -3686,6 +3686,84 @@ fn participant_files_are_purged_and_unregistered_payload_stores_are_reported() {
 }
 
 #[test]
+fn an_external_folder_workspace_keeps_its_ledger_and_lock_out_of_the_notes() {
+    let temp = tempfile::tempdir().expect("temp");
+    let folder = temp.path().join("synced");
+    std::fs::create_dir_all(folder.join(".stfolder")).expect("folder");
+    std::fs::write(folder.join("plan.md"), b"# Plan\n").expect("note");
+    let root = temp.path().join("app/workspace");
+
+    assert!(
+        matches!(
+            mneme_store::Workspace::create_for_external_folder(
+                folder.join("inside"),
+                &folder,
+                config(1_000)
+            ),
+            Err(mneme_store::Failure::UnsupportedLayout(_))
+        ),
+        "a workspace inside its own folder is refused"
+    );
+    let workspace =
+        mneme_store::Workspace::create_for_external_folder(&root, &folder, config(1_000))
+            .expect("create");
+    let canonical = folder.canonicalize().expect("canonical folder");
+    assert_eq!(
+        mneme_store::payload::WorkingTree::of(workspace.root()).expect("layout"),
+        mneme_store::payload::WorkingTree::External(canonical.clone())
+    );
+    assert_eq!(
+        mneme_store::payload::working_directory(workspace.root()).expect("working"),
+        canonical
+    );
+    assert_eq!(
+        mneme_store::payload::read_working_file(workspace.root(), "plan.md").expect("read"),
+        Some(b"# Plan\n".to_vec()),
+        "a note is read from the folder"
+    );
+    assert!(matches!(
+        mneme_store::payload::read_working_file(workspace.root(), ".stfolder/x"),
+        Err(mneme_store::Failure::PathEscapes(_))
+    ));
+    let entries: Vec<String> = std::fs::read_dir(&folder)
+        .expect("list")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(
+        entries.len(),
+        2,
+        "the folder keeps only its own entries: {entries:?}"
+    );
+    assert!(
+        workspace.root().join("workspace.lock").exists(),
+        "the advisory lock lives with the workspace"
+    );
+    let root = workspace.root().to_path_buf();
+    drop(workspace);
+    open(&root, 2_000);
+}
+
+#[test]
+fn an_unknown_working_tree_marker_is_refused() {
+    let temp = tempfile::tempdir().expect("temp");
+    std::fs::write(
+        temp.path().join(mneme_store::payload::WORKING_TREE_FILE),
+        b"relative/notes\n",
+    )
+    .expect("marker");
+    assert!(matches!(
+        mneme_store::payload::WorkingTree::of(temp.path()),
+        Err(mneme_store::Failure::UnsupportedLayout(_))
+    ));
+}
+
+#[test]
 fn a_folder_workspace_keeps_notes_in_place_and_never_touches_hidden_paths() {
     let temp = tempfile::tempdir().expect("temp");
     let folder = temp.path().join("notes");
