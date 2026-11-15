@@ -347,18 +347,18 @@ impl<'w> Engine<'w> {
     pub fn apply_exchange_barrier(
         &mut self,
         issuer: &str,
-        barrier: &mneme_memory::exchange::ExchangeBarrier,
+        barrier: &mneme_memory::exchange::Barrier,
     ) -> Result<()> {
         if issuer.trim().is_empty() || barrier.operation_kind != "forget" {
             return Err(PolicyError::Invalid("invalid exchange barrier"));
         }
-        let scope_has_target = self
+        let has_scope_target = self
             .workspace
             .snapshot()?
             .records
             .iter()
             .any(|record| record.record_id == barrier.target && record.scope == barrier.scope);
-        let selector = barrier_selector(barrier, scope_has_target)?;
+        let selector = barrier_selector(barrier, has_scope_target)?;
         if let Some(selector) = selector {
             let request = exchange_request(self.workspace, issuer, barrier, selector)?;
             match self.execute(request) {
@@ -681,10 +681,10 @@ impl<'w> Engine<'w> {
 }
 
 fn barrier_selector(
-    barrier: &mneme_memory::exchange::ExchangeBarrier,
-    scope_has_target: bool,
+    barrier: &mneme_memory::exchange::Barrier,
+    has_scope_target: bool,
 ) -> Result<Option<Selector>> {
-    if scope_has_target {
+    if has_scope_target {
         let selector = match barrier.target_kind.as_str() {
             "source-revision" => match barrier.revision {
                 Some(revision) => Selector::SourceRevision(barrier.target, revision),
@@ -701,7 +701,7 @@ fn barrier_selector(
 fn exchange_request(
     workspace: &mneme_store::Workspace,
     issuer: &str,
-    barrier: &mneme_memory::exchange::ExchangeBarrier,
+    barrier: &mneme_memory::exchange::Barrier,
     selector: Selector,
 ) -> Result<Request> {
     let actor = format!("mneme-exchange-import:{issuer}");
@@ -721,7 +721,7 @@ fn exchange_request(
 fn commit_exchange_tombstone(
     workspace: &mut mneme_store::Workspace,
     issuer: &str,
-    barrier: &mneme_memory::exchange::ExchangeBarrier,
+    barrier: &mneme_memory::exchange::Barrier,
 ) -> Result<()> {
     let actor = format!("mneme-exchange-import:{issuer}");
     let idempotency_key = exchange_barrier_key(issuer, barrier);
@@ -788,7 +788,7 @@ fn commit_exchange_tombstone(
     Ok(())
 }
 
-fn exchange_barrier_key(issuer: &str, barrier: &mneme_memory::exchange::ExchangeBarrier) -> String {
+fn exchange_barrier_key(issuer: &str, barrier: &mneme_memory::exchange::Barrier) -> String {
     let digest = mneme_core::ContentDigest::of_payload(&mneme_core::Value::record_named(
         "exchange-retention-barrier",
         vec![

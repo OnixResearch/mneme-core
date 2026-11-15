@@ -143,26 +143,31 @@ fn forget_source(workspace: &mut mneme_store::Workspace) {
         operation: mneme_retention::OperationKind::Forget,
         selector: mneme_retention::Selector::Source(rid(0x02)),
         effective: None,
-        policy: mneme_retention::Policy::default(),
+        policy: mneme_retention::Policy {
+            version: mneme_retention::POLICY_VERSION.to_owned(),
+            retain_assertion_after_prune: true,
+            block_content_replay: true,
+            retain_withdrawn_evidence_metadata: true,
+        },
     };
     mneme_retention::Engine::new(workspace)
         .execute(request)
         .expect("forget source");
 }
 
-fn policy(secret: &[u8; 32]) -> mneme_memory::exchange::ExchangePolicy {
-    mneme_memory::exchange::ExchangePolicy::new([mneme_memory::exchange::ExchangePeer {
+fn policy(secret: &[u8; 32]) -> mneme_memory::exchange::Policy {
+    mneme_memory::exchange::Policy::new([mneme_memory::exchange::Peer {
         issuer: "device-a".to_owned(),
-        public_key: mneme_memory::exchange::exchange_public_key(secret),
+        public_key: mneme_memory::exchange::public_key(secret),
     }])
     .expect("peer trust")
 }
 
 fn authenticate(
     document: &str,
-    policy: &mneme_memory::exchange::ExchangePolicy,
-) -> mneme_memory::exchange::AuthenticatedExchangeBundle {
-    mneme_memory::exchange::authenticate_exchange_json(document.as_bytes(), policy)
+    policy: &mneme_memory::exchange::Policy,
+) -> mneme_memory::exchange::AuthenticatedBundle {
+    mneme_memory::exchange::authenticate_json(document.as_bytes(), policy)
         .expect("authenticated exchange bundle")
 }
 

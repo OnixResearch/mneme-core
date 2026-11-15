@@ -31,7 +31,7 @@ pub const MAX_EXCHANGE_SOURCE_BYTES: usize = 1024 * 1024;
 
 /// A peer key admitted by the local trust policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExchangePeer {
+pub struct Peer {
     /// Device identity expected in signed bundles.
     pub issuer: String,
     /// Trusted Ed25519 public key.
@@ -39,24 +39,24 @@ pub struct ExchangePeer {
 }
 
 /// Host-owned public keys accepted for workspace exchange.
-pub struct ExchangePolicy {
+pub struct Policy {
     peers: std::collections::BTreeMap<String, (String, ed25519_dalek::VerifyingKey)>,
 }
 
-impl ExchangePolicy {
+impl Policy {
     /// Construct a policy from the peer keys stored by the receiving host.
-    pub fn new(peers: impl IntoIterator<Item = ExchangePeer>) -> Result<Self, ExchangeError> {
+    pub fn new(peers: impl IntoIterator<Item = Peer>) -> Result<Self, Error> {
         let mut trusted = std::collections::BTreeMap::new();
         for peer in peers {
             validate_issuer(&peer.issuer)?;
             let key = ed25519_dalek::VerifyingKey::from_bytes(&peer.public_key)
-                .map_err(|_| ExchangeError::InvalidPublicKey)?;
+                .map_err(|_| Error::InvalidPublicKey)?;
             let key_id = public_key_id(&peer.public_key);
             if trusted.insert(peer.issuer, (key_id, key)).is_some() {
-                return Err(ExchangeError::DuplicateIssuer);
+                return Err(Error::DuplicateIssuer);
             }
         }
-        Ok(ExchangePolicy { peers: trusted })
+        Ok(Policy { peers: trusted })
     }
 }
 
@@ -81,7 +81,7 @@ pub struct NoteReference {
 
 /// One signed forgotten-source barrier.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ExchangeBarrier {
+pub struct Barrier {
     /// Originating retention operation identity.
     pub operation_id: String,
     /// The scope to which the originating barrier applies.
@@ -111,17 +111,17 @@ struct SignedBundle {
     records: Vec<mneme_core::RecordEnvelope>,
     sources: Vec<SourceItem>,
     notes: Vec<NoteReference>,
-    barriers: Vec<ExchangeBarrier>,
+    barriers: Vec<Barrier>,
     signature: [u8; 64],
 }
 
 /// A bundle whose signature and signer identity were verified against host policy.
-pub struct AuthenticatedExchangeBundle {
+pub struct AuthenticatedBundle {
     bundle: SignedBundle,
     digest: mneme_core::ContentDigest,
 }
 
-impl AuthenticatedExchangeBundle {
+impl AuthenticatedBundle {
     /// The trusted device identity that signed this bundle.
     pub fn issuer(&self) -> &str {
         &self.bundle.issuer
@@ -133,14 +133,14 @@ impl AuthenticatedExchangeBundle {
     }
 
     /// The signed forgotten-source barriers, to apply before importing records.
-    pub fn barriers(&self) -> &[ExchangeBarrier] {
+    pub fn barriers(&self) -> &[Barrier] {
         &self.bundle.barriers
     }
 }
 
 /// Record import result for one authenticated bundle.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExchangeImportOutcome {
+pub struct ImportOutcome {
     /// Records committed from this bundle (excluding note-local records).
     pub imported: Vec<mneme_core::RecordId>,
     /// Records already present with the same identity and content.
@@ -151,7 +151,7 @@ pub struct ExchangeImportOutcome {
 
 /// Exchange failures. Cryptographic verification and local policy refusals remain distinct.
 #[derive(Debug, thiserror::Error)]
-pub enum ExchangeError {
+pub enum Error {
     /// The signed JSON document exceeds the bundle bound.
     #[error("record exchange bundle exceeds the byte limit")]
     InputTooLarge,
@@ -194,7 +194,7 @@ pub enum ExchangeError {
 }
 
 /// Derive the public key associated with a 32-byte Ed25519 device secret.
-pub fn exchange_public_key(secret: &[u8; 32]) -> [u8; 32] {
+pub fn public_key(secret: &[u8; 32]) -> [u8; 32] {
     ed25519_dalek::SigningKey::from_bytes(secret)
         .verifying_key()
         .to_bytes()
@@ -205,10 +205,10 @@ pub fn export_workspace(
     workspace: &mneme_store::Workspace,
     issuer: &str,
     secret: &[u8; 32],
-) -> Result<String, ExchangeError> {
+) -> Result<String, Error> {
     validate_issuer(issuer)?;
     let snapshot = workspace.snapshot()?;
-    let notes = note_references(workspace, &snapshot);
+    let notes = note_references(workspace, &snapshot)?;
     let note_sources = notes
         .iter()
         .map(|note| note.source)
@@ -227,12 +227,12 @@ pub fn export_workspace(
         .records
         .iter()
         .filter(|record| !is_note_local(record, &note_sources, &note_documents, &note_entities))
-        .filter(|record| !has_exchange_origin(record))
+        .filter(|record| !has_foreign_origin(record))
         .filter(|record| !blocked.contains(&record.record_id))
         .cloned()
         .collect::<Vec<_>>();
     if records.len() > MAX_RECORDS {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     }
     let sources = source_items(workspace, &records)?;
     let barriers = export_barriers(workspace, &suppressions)?;
@@ -256,21 +256,18 @@ pub fn export_workspace(
 }
 
 /// Authenticate one signed bundle using only a trusted, host-owned key policy.
-pub fn authenticate_exchange_json(
-    input: &[u8],
-    policy: &ExchangePolicy,
-) -> Result<AuthenticatedExchangeBundle, ExchangeError> {
+pub fn authenticate_json(input: &[u8], policy: &Policy) -> Result<AuthenticatedBundle, Error> {
     if input.len() > MAX_EXCHANGE_BUNDLE_BYTES {
-        return Err(ExchangeError::InputTooLarge);
+        return Err(Error::InputTooLarge);
     }
-    let text = std::str::from_utf8(input).map_err(|_| ExchangeError::MalformedBundle)?;
-    let value = mneme_core::decode_document(text).map_err(|_| ExchangeError::MalformedBundle)?;
+    let text = std::str::from_utf8(input).map_err(|_| Error::MalformedBundle)?;
+    let value = mneme_core::decode_document(text).map_err(|_| Error::MalformedBundle)?;
     let bundle = SignedBundle::from_value(value)?;
     let Some((expected_key_id, verifying_key)) = policy.peers.get(&bundle.issuer) else {
-        return Err(ExchangeError::UntrustedIssuer);
+        return Err(Error::UntrustedIssuer);
     };
     if expected_key_id != &bundle.key_id {
-        return Err(ExchangeError::InvalidSignature);
+        return Err(Error::InvalidSignature);
     }
     let signed = bundle.signed_value();
     let mut message =
@@ -280,9 +277,9 @@ pub fn authenticate_exchange_json(
     let signature = ed25519_dalek::Signature::from_bytes(&bundle.signature);
     verifying_key
         .verify_strict(&message, &signature)
-        .map_err(|_| ExchangeError::InvalidSignature)?;
+        .map_err(|_| Error::InvalidSignature)?;
     let digest = mneme_core::ContentDigest::of_payload(&signed);
-    Ok(AuthenticatedExchangeBundle { bundle, digest })
+    Ok(AuthenticatedBundle { bundle, digest })
 }
 
 /// Import records from one verified bundle through memory validation and the workspace coordinator.
@@ -292,11 +289,11 @@ pub fn authenticate_exchange_json(
 /// and never change a local assertion's lifecycle.
 pub fn import_records(
     workspace: &mut mneme_store::Workspace,
-    authenticated: AuthenticatedExchangeBundle,
+    authenticated: AuthenticatedBundle,
     actor: &str,
-) -> Result<ExchangeImportOutcome, ExchangeError> {
+) -> Result<ImportOutcome, Error> {
     if actor.trim().is_empty() {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     }
     let issuer = authenticated.bundle.issuer.clone();
     let snapshot = workspace.snapshot()?;
@@ -314,7 +311,7 @@ pub fn import_records(
         &note_map,
         &blocked,
     )?;
-    let mut outcome = ExchangeImportOutcome {
+    let mut outcome = ImportOutcome {
         imported: Vec::new(),
         already_present: Vec::new(),
         decisions: Vec::new(),
@@ -327,10 +324,12 @@ pub fn import_records(
     for (scope, records) in scopes {
         commit_scope(
             workspace,
-            &scope,
-            actor,
-            &issuer,
-            authenticated.digest,
+            ScopeCommit {
+                scope: &scope,
+                actor,
+                issuer: &issuer,
+                bundle_digest: authenticated.digest,
+            },
             records,
             &mut outcome,
         )?;
@@ -358,18 +357,43 @@ struct PreparedRecord {
     is_present: bool,
 }
 
+struct RecordPreparation<'a> {
+    workspace: &'a mneme_store::Workspace,
+    bundle: &'a SignedBundle,
+    note_map: &'a NoteIdentityMap,
+    blocked: &'a std::collections::BTreeSet<mneme_core::RecordId>,
+    local: std::collections::BTreeMap<mneme_core::RecordId, &'a mneme_core::RecordEnvelope>,
+}
+
+struct ScopeCommit<'a> {
+    scope: &'a mneme_core::ScopeId,
+    actor: &'a str,
+    issuer: &'a str,
+    bundle_digest: mneme_core::ContentDigest,
+}
+
 fn commit_scope(
     workspace: &mut mneme_store::Workspace,
-    scope: &mneme_core::ScopeId,
-    actor: &str,
-    issuer: &str,
-    bundle_digest: mneme_core::ContentDigest,
+    options: ScopeCommit<'_>,
     records: Vec<PreparedRecord>,
-    outcome: &mut ExchangeImportOutcome,
-) -> Result<(), ExchangeError> {
-    let mut memory_records = Vec::new();
-    let mut decisions = Vec::new();
-    let mut source_blobs = std::collections::BTreeMap::new();
+    outcome: &mut ImportOutcome,
+) -> Result<(), Error> {
+    let record_count = records.len();
+    outcome
+        .imported
+        .try_reserve(record_count)
+        .map_err(|_| Error::InputTooLarge)?;
+    outcome
+        .already_present
+        .try_reserve(record_count)
+        .map_err(|_| Error::InputTooLarge)?;
+    outcome
+        .decisions
+        .try_reserve(record_count)
+        .map_err(|_| Error::InputTooLarge)?;
+    let mut memory_records = Vec::with_capacity(record_count);
+    let mut decisions = Vec::with_capacity(record_count);
+    let mut source_blobs = Vec::with_capacity(record_count);
     for mut record in records {
         if record.is_present {
             outcome.already_present.push(record.record_id);
@@ -381,40 +405,70 @@ fn commit_scope(
             continue;
         }
         if let Some((digest, bytes, media_type)) = record.source.take() {
-            source_blobs
-                .entry(digest)
-                .or_insert(mneme_store::SourceBlobDraft { bytes, media_type });
+            source_blobs.push((digest, mneme_store::SourceBlobDraft { bytes, media_type }));
         }
         outcome.imported.push(record.record_id);
         memory_records.push(record_to_draft(record));
     }
+    source_blobs.sort_by_key(|(digest, _)| *digest);
+    source_blobs.dedup_by_key(|(digest, _)| *digest);
     if !memory_records.is_empty() {
-        let key = import_key("records", issuer, bundle_digest, scope);
-        let batch = crate::Batch {
-            actor: actor.to_owned(),
-            scope: scope.clone(),
-            idempotency_key: key,
-            records: memory_records,
-            source_blobs: source_blobs.into_values().collect(),
-            publications: Vec::new(),
-        };
-        crate::Engine::new(workspace, crate::Access::Operator).commit(batch)?;
+        let source_blobs = source_blobs.into_iter().map(|(_, blob)| blob).collect();
+        commit_record_batch(workspace, &options, memory_records, source_blobs)?;
     }
     if !decisions.is_empty() {
-        let base = workspace.current_revision()?;
-        let key = import_key("decisions", issuer, bundle_digest, scope);
-        workspace.commit(mneme_store::CommitCommand {
-            base,
-            actor: actor.to_owned(),
-            scope: scope.clone(),
-            idempotency_key: key,
-            records: decisions,
-            source_blobs: Vec::new(),
-            publications: Vec::new(),
-            import_candidates: Vec::new(),
-            retention: None,
-        })?;
+        commit_decision_records(workspace, &options, decisions)?;
     }
+    Ok(())
+}
+
+fn commit_record_batch(
+    workspace: &mut mneme_store::Workspace,
+    options: &ScopeCommit<'_>,
+    records: Vec<mneme_store::RecordDraft>,
+    source_blobs: Vec<mneme_store::SourceBlobDraft>,
+) -> Result<(), Error> {
+    let key = import_key(
+        "records",
+        options.issuer,
+        options.bundle_digest,
+        options.scope,
+    );
+    let batch = crate::Batch {
+        actor: options.actor.to_owned(),
+        scope: options.scope.clone(),
+        idempotency_key: key,
+        records,
+        source_blobs,
+        publications: Vec::new(),
+    };
+    crate::Engine::new(workspace, crate::Access::Operator).commit(batch)?;
+    Ok(())
+}
+
+fn commit_decision_records(
+    workspace: &mut mneme_store::Workspace,
+    options: &ScopeCommit<'_>,
+    records: Vec<mneme_store::RecordDraft>,
+) -> Result<(), Error> {
+    let base = workspace.current_revision()?;
+    let key = import_key(
+        "decisions",
+        options.issuer,
+        options.bundle_digest,
+        options.scope,
+    );
+    workspace.commit(mneme_store::CommitCommand {
+        base,
+        actor: options.actor.to_owned(),
+        scope: options.scope.clone(),
+        idempotency_key: key,
+        records,
+        source_blobs: Vec::new(),
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: None,
+    })?;
     Ok(())
 }
 
@@ -436,92 +490,137 @@ fn prepare_records(
     bundle: &SignedBundle,
     note_map: &NoteIdentityMap,
     blocked: &std::collections::BTreeSet<mneme_core::RecordId>,
-) -> Result<Vec<PreparedRecord>, ExchangeError> {
+) -> Result<Vec<PreparedRecord>, Error> {
     let local = snapshot
         .records
         .iter()
         .map(|record| (record.record_id, record))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let context = RecordPreparation {
+        workspace,
+        bundle,
+        note_map,
+        blocked,
+        local,
+    };
     let mut candidates = Vec::new();
-    for record in &bundle.records {
-        if is_note_local(
-            record,
-            &note_map.remote_note_sources,
-            &note_map.remote_note_documents,
-            &note_map.remote_note_entities,
-        ) || blocked.contains(&record.record_id)
-        {
-            continue;
+    candidates
+        .try_reserve(bundle.records.len())
+        .map_err(|_| Error::InputTooLarge)?;
+    for record in &context.bundle.records {
+        if let Some(candidate) = prepare_record(&context, record)? {
+            candidates.push(candidate);
         }
-        let payload = rewrite_payload(&record.payload, note_map)?;
-        let payload = import_payload(record.kind, payload, &bundle.issuer)?;
-        if dependency_targets(&record.payload).iter().any(|target| {
-            note_map.remote_note_sources.contains(target)
-                && !note_map.remote_to_local.contains_key(target)
-        }) {
-            return Err(ExchangeError::AmbiguousNote);
-        }
-        let is_decision = record.kind == mneme_core::RecordKind::Decision;
-        let source = source_for_record(record, &bundle.sources, &local)?;
-        let existing = local.get(&record.record_id).copied();
-        let mut is_present = false;
-        let mut predecessor = record.predecessor;
-        if let Some(current) = existing {
-            if !has_issuer(current, &bundle.issuer) {
-                return Err(ExchangeError::RecordConflict);
-            }
-            if current.revision_id == record.revision_id {
-                if current.payload != payload || current.predecessor != record.predecessor {
-                    return Err(ExchangeError::RecordConflict);
-                }
-                is_present = true;
-            } else {
-                let history = workspace.record_revisions(record.record_id)?;
-                if let Some(old) = history
-                    .iter()
-                    .find(|old| old.revision_id == record.revision_id)
-                {
-                    if old.payload != payload || old.predecessor != record.predecessor {
-                        return Err(ExchangeError::RecordConflict);
-                    }
-                    is_present = true;
-                } else if record.predecessor == Some(current.revision_id) {
-                    if record.kind == mneme_core::RecordKind::Assertion
-                        && current.assertion_lifecycle() != Some(mneme_core::Lifecycle::Proposed)
-                    {
-                        continue;
-                    }
-                } else {
-                    return Err(ExchangeError::RecordConflict);
-                }
-            }
-        } else {
-            predecessor = None;
-        }
-        if is_present {
-            predecessor = record.predecessor;
-        }
-        candidates.push(PreparedRecord {
-            scope: record.scope.clone(),
-            record_id: record.record_id,
-            revision_id: record.revision_id,
-            predecessor,
-            kind: record.kind,
-            schema_version: record.schema_version,
-            payload,
-            source,
-            is_decision,
-            is_present,
-        });
     }
     Ok(candidates)
+}
+
+fn prepare_record(
+    context: &RecordPreparation<'_>,
+    record: &mneme_core::RecordEnvelope,
+) -> Result<Option<PreparedRecord>, Error> {
+    if is_note_local(
+        record,
+        &context.note_map.remote_note_sources,
+        &context.note_map.remote_note_documents,
+        &context.note_map.remote_note_entities,
+    ) || context.blocked.contains(&record.record_id)
+    {
+        return Ok(None);
+    }
+    let payload = rewrite_payload(&record.payload, context.note_map)?;
+    let payload = import_payload(record.kind, payload, &context.bundle.issuer)?;
+    if dependency_targets(&record.payload).iter().any(|target| {
+        context.note_map.remote_note_sources.contains(target)
+            && !context.note_map.remote_to_local.contains_key(target)
+    }) {
+        return Err(Error::AmbiguousNote);
+    }
+    let is_decision = record.kind == mneme_core::RecordKind::Decision;
+    let source = source_for_record(record, &context.bundle.sources, &context.local)?;
+    let existing = context.local.get(&record.record_id).copied();
+    let presence = match existing {
+        Some(current) => existing_record_state(
+            context.workspace,
+            record,
+            &payload,
+            &context.bundle.issuer,
+            current,
+        )?,
+        None => Some(false),
+    };
+    let Some(is_present) = presence else {
+        return Ok(None);
+    };
+    Ok(Some(PreparedRecord {
+        scope: record.scope.clone(),
+        record_id: record.record_id,
+        revision_id: record.revision_id,
+        predecessor: if existing.is_some() {
+            record.predecessor
+        } else {
+            None
+        },
+        kind: record.kind,
+        schema_version: record.schema_version,
+        payload,
+        source,
+        is_decision,
+        is_present,
+    }))
+}
+
+fn existing_record_state(
+    workspace: &mneme_store::Workspace,
+    record: &mneme_core::RecordEnvelope,
+    payload: &mneme_core::Payload,
+    issuer: &str,
+    current: &mneme_core::RecordEnvelope,
+) -> Result<Option<bool>, Error> {
+    if !has_issuer(current, issuer) {
+        return Err(Error::RecordConflict);
+    }
+    if current.revision_id == record.revision_id {
+        verify_existing_payload(current, record, payload)?;
+        return Ok(Some(true));
+    }
+    let history = workspace.record_revisions(record.record_id)?;
+    if let Some(old) = history
+        .iter()
+        .find(|old| old.revision_id == record.revision_id)
+    {
+        if old.payload != *payload || old.predecessor != record.predecessor {
+            return Err(Error::RecordConflict);
+        }
+        return Ok(Some(true));
+    }
+    if record.predecessor != Some(current.revision_id) {
+        return Err(Error::RecordConflict);
+    }
+    if record.kind == mneme_core::RecordKind::Assertion
+        && current.assertion_lifecycle() != Some(mneme_core::Lifecycle::Proposed)
+    {
+        return Ok(None);
+    }
+    Ok(Some(false))
+}
+
+fn verify_existing_payload(
+    current: &mneme_core::RecordEnvelope,
+    record: &mneme_core::RecordEnvelope,
+    payload: &mneme_core::Payload,
+) -> Result<(), Error> {
+    if current.payload != *payload || current.predecessor != record.predecessor {
+        return Err(Error::RecordConflict);
+    }
+    Ok(())
 }
 
 fn source_for_record(
     record: &mneme_core::RecordEnvelope,
     sources: &[SourceItem],
     local: &std::collections::BTreeMap<mneme_core::RecordId, &mneme_core::RecordEnvelope>,
-) -> Result<Option<(mneme_core::ContentDigest, Vec<u8>, mneme_core::Symbol)>, ExchangeError> {
+) -> Result<Option<(mneme_core::ContentDigest, Vec<u8>, mneme_core::Symbol)>, Error> {
     if record.kind != mneme_core::RecordKind::SourceRevision {
         return Ok(None);
     }
@@ -536,7 +635,7 @@ fn source_for_record(
         }
     }
     let Some(item) = sources.iter().find(|item| item.digest == retained.digest()) else {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     };
     Ok(Some((
         item.digest,
@@ -549,7 +648,7 @@ fn import_payload(
     kind: mneme_core::RecordKind,
     mut payload: mneme_core::Payload,
     issuer: &str,
-) -> Result<mneme_core::Payload, ExchangeError> {
+) -> Result<mneme_core::Payload, Error> {
     payload.insert(IMPORTED_ORIGIN_FIELD, mneme_core::Value::string(issuer));
     if kind == mneme_core::RecordKind::Assertion {
         payload.insert("lifecycle", mneme_core::Value::symbol("proposed"));
@@ -562,58 +661,267 @@ fn import_payload(
 fn rewrite_payload(
     payload: &mneme_core::Payload,
     note_map: &NoteIdentityMap,
-) -> Result<mneme_core::Payload, ExchangeError> {
+) -> Result<mneme_core::Payload, Error> {
     let rewritten = rewrite_value(&payload.to_value(), note_map)?;
     mneme_core::Payload::from_value(&rewritten, &mneme_core::Path::root())
-        .map_err(|_| ExchangeError::MalformedBundle)
+        .map_err(|_| Error::MalformedBundle)
+}
+
+const MAX_REWRITE_TASKS: usize = mneme_core::binary::MAX_DEPTH * 2 + 2;
+
+#[derive(Clone, Copy)]
+enum RewriteBuilder {
+    Record(usize),
+    Sequence(usize),
+    Set(usize),
+    Dictionary(usize),
+}
+
+enum RewriteChildren<'a> {
+    Record {
+        label: Option<&'a mneme_core::Value>,
+        fields: std::slice::Iter<'a, mneme_core::Value>,
+    },
+    Sequence(std::slice::Iter<'a, mneme_core::Value>),
+    Set(std::collections::btree_set::Iter<'a, mneme_core::Value>),
+    Dictionary {
+        entries: std::collections::btree_map::Iter<'a, mneme_core::Value, mneme_core::Value>,
+        pending_value: Option<&'a mneme_core::Value>,
+    },
+}
+
+impl<'a> Iterator for RewriteChildren<'a> {
+    type Item = &'a mneme_core::Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            RewriteChildren::Record { label, fields } => label.take().or_else(|| fields.next()),
+            RewriteChildren::Sequence(items) => items.next(),
+            RewriteChildren::Set(items) => items.next(),
+            RewriteChildren::Dictionary {
+                entries,
+                pending_value,
+            } => {
+                if let Some(value) = pending_value.take() {
+                    return Some(value);
+                }
+                entries.next().map(|(key, value)| {
+                    *pending_value = Some(value);
+                    key
+                })
+            }
+        }
+    }
+}
+
+enum RewriteTask<'a> {
+    Visit(&'a mneme_core::Value, usize),
+    Walk(RewriteChildren<'a>, RewriteBuilder, usize, usize),
+    Finish(RewriteBuilder, usize),
 }
 
 fn rewrite_value(
     value: &mneme_core::Value,
     note_map: &NoteIdentityMap,
-) -> Result<mneme_core::Value, ExchangeError> {
-    if let Some(reference) = reference_value(value) {
-        return rewrite_reference(reference, note_map);
+) -> Result<mneme_core::Value, Error> {
+    let mut tasks = Vec::with_capacity(MAX_REWRITE_TASKS);
+    push_rewrite_task(&mut tasks, RewriteTask::Visit(value, 0))?;
+    let mut rewritten = Vec::new();
+    while let Some(task) = tasks.pop() {
+        match task {
+            RewriteTask::Visit(value, depth) => {
+                visit_rewrite_value(value, depth, note_map, &mut tasks, &mut rewritten)?;
+            }
+            RewriteTask::Walk(children, builder, child_count, depth) => {
+                walk_rewrite_children(children, builder, child_count, depth, &mut tasks)?
+            }
+            RewriteTask::Finish(builder, child_count) => {
+                finish_rewrite_value(builder, child_count, &mut rewritten)?;
+            }
+        }
     }
+    if rewritten.len() != 1 {
+        return Err(Error::MalformedBundle);
+    }
+    rewritten.pop().ok_or(Error::MalformedBundle)
+}
+
+fn visit_rewrite_value<'a>(
+    value: &'a mneme_core::Value,
+    depth: usize,
+    note_map: &NoteIdentityMap,
+    tasks: &mut Vec<RewriteTask<'a>>,
+    rewritten: &mut Vec<mneme_core::Value>,
+) -> Result<(), Error> {
+    if depth > mneme_core::binary::MAX_DEPTH {
+        return Err(Error::MalformedBundle);
+    }
+    if let Some(reference) = reference_value(value) {
+        return push_rewritten_value(rewritten, rewrite_reference(reference, note_map)?);
+    }
+    if let Some((children, builder, child_count)) = rewrite_container(value)? {
+        if depth >= mneme_core::binary::MAX_DEPTH {
+            return Err(Error::MalformedBundle);
+        }
+        push_rewrite_task(tasks, RewriteTask::Finish(builder, child_count))?;
+        push_rewrite_task(
+            tasks,
+            RewriteTask::Walk(children, builder, child_count, depth),
+        )
+    } else {
+        push_rewritten_value(rewritten, value.clone())
+    }
+}
+
+fn rewrite_container(
+    value: &mneme_core::Value,
+) -> Result<Option<(RewriteChildren<'_>, RewriteBuilder, usize)>, Error> {
     match value {
-        mneme_core::Value::Record(record) => Ok(mneme_core::Value::record(
-            rewrite_value(record.label(), note_map)?,
-            record
+        mneme_core::Value::Record(record) => {
+            let child_count = record
                 .fields()
-                .iter()
-                .map(|field| rewrite_value(field, note_map))
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
-        mneme_core::Value::Sequence(items) => Ok(mneme_core::Value::sequence(
-            items
-                .iter()
-                .map(|item| rewrite_value(item, note_map))
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
-        mneme_core::Value::Set(items) => Ok(mneme_core::Value::set(
-            items
-                .iter()
-                .map(|item| rewrite_value(item, note_map))
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
-        mneme_core::Value::Dictionary(items) => Ok(mneme_core::Value::dictionary(
-            items
-                .iter()
-                .map(|(key, item)| {
-                    Ok((
-                        rewrite_value(key, note_map)?,
-                        rewrite_value(item, note_map)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, ExchangeError>>()?,
-        )),
-        mneme_core::Value::Embedded(_) => Err(ExchangeError::MalformedBundle),
+                .len()
+                .checked_add(1)
+                .ok_or(Error::MalformedBundle)?;
+            Ok(Some((
+                RewriteChildren::Record {
+                    label: Some(record.label()),
+                    fields: record.fields().iter(),
+                },
+                RewriteBuilder::Record(record.fields().len()),
+                child_count,
+            )))
+        }
+        mneme_core::Value::Sequence(items) => Ok(Some((
+            RewriteChildren::Sequence(items.iter()),
+            RewriteBuilder::Sequence(items.len()),
+            items.len(),
+        ))),
+        mneme_core::Value::Set(items) => Ok(Some((
+            RewriteChildren::Set(items.iter()),
+            RewriteBuilder::Set(items.len()),
+            items.len(),
+        ))),
+        mneme_core::Value::Dictionary(items) => Ok(Some((
+            RewriteChildren::Dictionary {
+                entries: items.iter(),
+                pending_value: None,
+            },
+            RewriteBuilder::Dictionary(items.len()),
+            items.len().checked_mul(2).ok_or(Error::MalformedBundle)?,
+        ))),
+        mneme_core::Value::Embedded(_) => Err(Error::MalformedBundle),
         mneme_core::Value::Boolean(_)
         | mneme_core::Value::Double(_)
         | mneme_core::Value::SignedInteger(_)
         | mneme_core::Value::String(_)
         | mneme_core::Value::ByteString(_)
-        | mneme_core::Value::Symbol(_) => Ok(value.clone()),
+        | mneme_core::Value::Symbol(_) => Ok(None),
+    }
+}
+
+fn walk_rewrite_children<'a>(
+    mut children: RewriteChildren<'a>,
+    builder: RewriteBuilder,
+    child_count: usize,
+    depth: usize,
+    tasks: &mut Vec<RewriteTask<'a>>,
+) -> Result<(), Error> {
+    if let Some(child) = children.next() {
+        push_rewrite_task(
+            tasks,
+            RewriteTask::Walk(children, builder, child_count, depth),
+        )?;
+        let child_depth = depth.checked_add(1).ok_or(Error::MalformedBundle)?;
+        push_rewrite_task(tasks, RewriteTask::Visit(child, child_depth))?;
+    }
+    Ok(())
+}
+
+fn finish_rewrite_value(
+    builder: RewriteBuilder,
+    child_count: usize,
+    rewritten: &mut Vec<mneme_core::Value>,
+) -> Result<(), Error> {
+    let children = take_rewritten_values(rewritten, child_count)?;
+    let value = build_rewritten_value(builder, children)?;
+    push_rewritten_value(rewritten, value)
+}
+
+fn push_rewrite_task<'a>(
+    tasks: &mut Vec<RewriteTask<'a>>,
+    task: RewriteTask<'a>,
+) -> Result<(), Error> {
+    if tasks.len() >= MAX_REWRITE_TASKS {
+        return Err(Error::MalformedBundle);
+    }
+    tasks.push(task);
+    Ok(())
+}
+
+fn push_rewritten_value(
+    values: &mut Vec<mneme_core::Value>,
+    value: mneme_core::Value,
+) -> Result<(), Error> {
+    if values.len() >= MAX_EXCHANGE_BUNDLE_BYTES {
+        return Err(Error::InputTooLarge);
+    }
+    values.try_reserve(1).map_err(|_| Error::InputTooLarge)?;
+    values.push(value);
+    Ok(())
+}
+
+fn take_rewritten_values(
+    values: &mut Vec<mneme_core::Value>,
+    count: usize,
+) -> Result<Vec<mneme_core::Value>, Error> {
+    let start = values
+        .len()
+        .checked_sub(count)
+        .ok_or(Error::MalformedBundle)?;
+    Ok(values.drain(start..).collect())
+}
+
+fn build_rewritten_value(
+    builder: RewriteBuilder,
+    children: Vec<mneme_core::Value>,
+) -> Result<mneme_core::Value, Error> {
+    match builder {
+        RewriteBuilder::Record(field_count) => {
+            let mut parts = children.into_iter();
+            let label = parts.next().ok_or(Error::MalformedBundle)?;
+            let fields: Vec<mneme_core::Value> = parts.collect();
+            if fields.len() != field_count {
+                return Err(Error::MalformedBundle);
+            }
+            Ok(mneme_core::Value::record(label, fields))
+        }
+        RewriteBuilder::Sequence(count) => {
+            if children.len() != count {
+                return Err(Error::MalformedBundle);
+            }
+            Ok(mneme_core::Value::sequence(children))
+        }
+        RewriteBuilder::Set(count) => {
+            if children.len() != count {
+                return Err(Error::MalformedBundle);
+            }
+            Ok(mneme_core::Value::set(children))
+        }
+        RewriteBuilder::Dictionary(count) => {
+            let child_count = count.checked_mul(2).ok_or(Error::MalformedBundle)?;
+            if children.len() != child_count {
+                return Err(Error::MalformedBundle);
+            }
+            let mut parts = children.into_iter();
+            let mut entries = Vec::with_capacity(count);
+            for _ in 0..count {
+                let key = parts.next().ok_or(Error::MalformedBundle)?;
+                let value = parts.next().ok_or(Error::MalformedBundle)?;
+                entries.push((key, value));
+            }
+            Ok(mneme_core::Value::dictionary(entries))
+        }
     }
 }
 
@@ -624,7 +932,7 @@ fn reference_value(value: &mneme_core::Value) -> Option<mneme_core::Reference> {
 fn rewrite_reference(
     reference: mneme_core::Reference,
     note_map: &NoteIdentityMap,
-) -> Result<mneme_core::Value, ExchangeError> {
+) -> Result<mneme_core::Value, Error> {
     let mapped = match reference {
         mneme_core::Reference::Local { target, kind } => mneme_core::Reference::Local {
             target: note_map
@@ -689,8 +997,8 @@ fn note_identity_map(
     workspace: &mneme_store::Workspace,
     snapshot: &mneme_store::Snapshot,
     remote_notes: &[NoteReference],
-) -> Result<NoteIdentityMap, ExchangeError> {
-    let local_notes = note_references(workspace, snapshot);
+) -> Result<NoteIdentityMap, Error> {
+    let local_notes = note_references(workspace, snapshot)?;
     let local_by_key = unique_note_keys(&local_notes)?;
     let mut map = NoteIdentityMap {
         remote_to_local: std::collections::BTreeMap::new(),
@@ -701,7 +1009,7 @@ fn note_identity_map(
     };
     for remote in remote_notes {
         let key = (remote.path.clone(), remote.content_digest);
-        let local = local_by_key.get(&key).ok_or(ExchangeError::AmbiguousNote)?;
+        let local = local_by_key.get(&key).ok_or(Error::AmbiguousNote)?;
         insert_note_mapping(&mut map, remote.document, local.document)?;
         insert_note_mapping(&mut map, remote.source, local.source)?;
         if let (Some(remote_entity), Some(local_entity)) = (remote.entity, local.entity) {
@@ -724,17 +1032,15 @@ fn note_identity_map(
 
 fn unique_note_keys(
     notes: &[NoteReference],
-) -> Result<
-    std::collections::BTreeMap<(String, mneme_core::ContentDigest), &NoteReference>,
-    ExchangeError,
-> {
+) -> Result<std::collections::BTreeMap<(String, mneme_core::ContentDigest), &NoteReference>, Error>
+{
     let mut indexed = std::collections::BTreeMap::new();
     for note in notes {
         let key = (note.path.clone(), note.content_digest);
         if let Some(previous) = indexed.insert(key, note)
             && (previous.document != note.document || previous.source != note.source)
         {
-            return Err(ExchangeError::AmbiguousNote);
+            return Err(Error::AmbiguousNote);
         }
     }
     Ok(indexed)
@@ -744,13 +1050,13 @@ fn insert_note_mapping(
     map: &mut NoteIdentityMap,
     remote: mneme_core::RecordId,
     local: mneme_core::RecordId,
-) -> Result<(), ExchangeError> {
+) -> Result<(), Error> {
     if map
         .remote_to_local
         .insert(remote, local)
         .is_some_and(|previous| previous != local)
     {
-        return Err(ExchangeError::AmbiguousNote);
+        return Err(Error::AmbiguousNote);
     }
     Ok(())
 }
@@ -758,92 +1064,90 @@ fn insert_note_mapping(
 fn note_references(
     workspace: &mneme_store::Workspace,
     snapshot: &mneme_store::Snapshot,
-) -> Vec<NoteReference> {
+) -> Result<Vec<NoteReference>, Error> {
     let current = snapshot
         .records
         .iter()
         .map(|record| (record.record_id, record))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let mut references = std::collections::BTreeSet::new();
+    let mut references = Vec::new();
     for document in snapshot
         .records
         .iter()
         .filter(|record| record.kind == mneme_core::RecordKind::Document)
     {
-        let Some(path) = document
-            .payload
-            .get("path")
-            .and_then(mneme_core::Value::as_string)
-        else {
-            continue;
-        };
-        if !mneme_kernel::text::is_canonical_relative_path(path.as_bytes()) {
-            continue;
-        }
-        let Some(reference) = document.payload.get("source-revision").and_then(|value| {
-            mneme_core::Reference::from_value(value, &mneme_core::Path::root()).ok()
-        }) else {
-            continue;
-        };
-        let Some(source_id) = reference.target() else {
-            continue;
-        };
-        let source_revision = match reference {
-            mneme_core::Reference::Pinned { revision, .. } => revision,
-            mneme_core::Reference::Local { .. } => match current.get(&source_id) {
-                Some(record) => record.revision_id,
-                None => continue,
-            },
-            mneme_core::Reference::External { .. } | mneme_core::Reference::Unresolved { .. } => {
-                continue;
+        if let Some(reference) = note_reference(workspace, &current, document) {
+            if references.len() >= MAX_NOTE_REFERENCES {
+                return Err(Error::MalformedBundle);
             }
-        };
-        let source_record = match current.get(&source_id) {
-            Some(record) if record.revision_id == source_revision => Some((*record).clone()),
-            _ => workspace
-                .record_revisions(source_id)
-                .ok()
-                .and_then(|history| {
-                    history
-                        .into_iter()
-                        .find(|record| record.revision_id == source_revision)
-                }),
-        };
-        let Some(source_record) = source_record else {
-            continue;
-        };
-        let Ok(source) = crate::model::SourceView::parse(source_record) else {
-            continue;
-        };
-        let digest = source.digest().or(source.prior_digest);
-        let Some(content_digest) = digest else {
-            continue;
-        };
-        let entity = document
-            .payload
-            .get("entity")
-            .and_then(|value| {
-                mneme_core::Reference::from_value(value, &mneme_core::Path::root()).ok()
-            })
-            .and_then(|reference| reference.target());
-        references.insert(NoteReference {
-            document: document.record_id,
-            document_revision: document.revision_id,
-            entity,
-            source: source_id,
-            source_revision,
-            path: path.to_owned(),
-            content_digest,
-        });
+            references
+                .try_reserve(1)
+                .map_err(|_| Error::InputTooLarge)?;
+            references.push(reference);
+        }
     }
-    references.into_iter().collect()
+    references.sort_unstable();
+    references.dedup();
+    Ok(references)
+}
+
+fn note_reference(
+    workspace: &mneme_store::Workspace,
+    current: &std::collections::BTreeMap<mneme_core::RecordId, &mneme_core::RecordEnvelope>,
+    document: &mneme_core::RecordEnvelope,
+) -> Option<NoteReference> {
+    let path = document
+        .payload
+        .get("path")
+        .and_then(mneme_core::Value::as_string)?;
+    if !mneme_kernel::text::is_canonical_relative_path(path.as_bytes()) {
+        return None;
+    }
+    let reference = document.payload.get("source-revision").and_then(|value| {
+        mneme_core::Reference::from_value(value, &mneme_core::Path::root()).ok()
+    })?;
+    let source_id = reference.target()?;
+    let source_revision = match reference {
+        mneme_core::Reference::Pinned { revision, .. } => revision,
+        mneme_core::Reference::Local { .. } => current.get(&source_id)?.revision_id,
+        mneme_core::Reference::External { .. } | mneme_core::Reference::Unresolved { .. } => {
+            return None;
+        }
+    };
+    let source_record = current
+        .get(&source_id)
+        .filter(|record| record.revision_id == source_revision)
+        .map(|record| (*record).clone())
+        .or_else(|| {
+            workspace
+                .record_revisions(source_id)
+                .ok()?
+                .into_iter()
+                .find(|record| record.revision_id == source_revision)
+        })?;
+    let source = crate::model::SourceView::parse(source_record).ok()?;
+    let content_digest = source.digest().or(source.prior_digest)?;
+    let entity = document
+        .payload
+        .get("entity")
+        .and_then(|value| mneme_core::Reference::from_value(value, &mneme_core::Path::root()).ok())
+        .and_then(|reference| reference.target());
+    Some(NoteReference {
+        document: document.record_id,
+        document_revision: document.revision_id,
+        entity,
+        source: source_id,
+        source_revision,
+        path: path.to_owned(),
+        content_digest,
+    })
 }
 
 fn source_items(
     workspace: &mneme_store::Workspace,
     records: &[mneme_core::RecordEnvelope],
-) -> Result<Vec<SourceItem>, ExchangeError> {
-    let mut items = std::collections::BTreeMap::new();
+) -> Result<Vec<SourceItem>, Error> {
+    let mut items = Vec::with_capacity(records.len());
     for record in records
         .iter()
         .filter(|record| record.kind == mneme_core::RecordKind::SourceRevision)
@@ -852,33 +1156,31 @@ fn source_items(
         let mneme_core::SourceContent::Retained(retained) = source.content else {
             continue;
         };
-        let length =
-            usize::try_from(retained.byte_length()).map_err(|_| ExchangeError::InputTooLarge)?;
+        let length = usize::try_from(retained.byte_length()).map_err(|_| Error::InputTooLarge)?;
         if length > MAX_EXCHANGE_SOURCE_BYTES {
-            return Err(ExchangeError::InputTooLarge);
+            return Err(Error::InputTooLarge);
         }
         let bytes = mneme_store::payload::read(workspace.root(), retained.digest())?;
         if bytes.len() != length {
-            return Err(ExchangeError::MalformedBundle);
+            return Err(Error::MalformedBundle);
         }
-        items.insert(
-            retained.digest(),
-            SourceItem {
-                digest: retained.digest(),
-                bytes,
-            },
-        );
+        items.push(SourceItem {
+            digest: retained.digest(),
+            bytes,
+        });
     }
+    items.sort_by_key(|item| item.digest);
+    items.dedup_by_key(|item| item.digest);
     if items.len() > MAX_SOURCE_BLOBS {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     }
-    Ok(items.into_values().collect())
+    Ok(items)
 }
 
 fn export_barriers(
     workspace: &mneme_store::Workspace,
     suppressions: &[mneme_store::RetentionSuppression],
-) -> Result<Vec<ExchangeBarrier>, ExchangeError> {
+) -> Result<Vec<Barrier>, Error> {
     let mut barriers = std::collections::BTreeSet::new();
     for suppression in suppressions.iter().filter(|suppression| {
         suppression.mode == mneme_store::SuppressionMode::Forgotten
@@ -893,7 +1195,7 @@ fn export_barriers(
         if operation.actor.starts_with(IMPORTED_ACTOR_PREFIX) {
             continue;
         }
-        barriers.insert(ExchangeBarrier {
+        barriers.insert(Barrier {
             operation_id: suppression.operation_id.clone(),
             scope: operation.scope,
             operation_kind: operation.operation_kind,
@@ -904,7 +1206,7 @@ fn export_barriers(
         });
     }
     if barriers.len() > MAX_BARRIERS {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     }
     Ok(barriers.into_iter().collect())
 }
@@ -912,7 +1214,7 @@ fn export_barriers(
 fn blocked_records(
     records: &[mneme_core::RecordEnvelope],
     suppressions: &[mneme_store::RetentionSuppression],
-) -> Result<std::collections::BTreeSet<mneme_core::RecordId>, ExchangeError> {
+) -> Result<std::collections::BTreeSet<mneme_core::RecordId>, Error> {
     let mut blocked = suppressions
         .iter()
         .filter(|suppression| suppression.mode == mneme_store::SuppressionMode::Forgotten)
@@ -1012,7 +1314,7 @@ fn is_note_local(
     }
 }
 
-fn has_exchange_origin(record: &mneme_core::RecordEnvelope) -> bool {
+fn has_foreign_origin(record: &mneme_core::RecordEnvelope) -> bool {
     record.payload.get(IMPORTED_ORIGIN_FIELD).is_some()
 }
 
@@ -1042,14 +1344,14 @@ fn import_key(
     format!("exchange-{kind}-{}", fingerprint.to_hex())
 }
 
-fn validate_issuer(issuer: &str) -> Result<(), ExchangeError> {
+fn validate_issuer(issuer: &str) -> Result<(), Error> {
     if issuer.is_empty()
         || issuer.len() > 64
         || !issuer
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
-        return Err(ExchangeError::InvalidIssuer);
+        return Err(Error::InvalidIssuer);
     }
     Ok(())
 }
@@ -1090,7 +1392,7 @@ impl SignedBundle {
         )
     }
 
-    fn to_json_document(&self) -> Result<String, ExchangeError> {
+    fn to_json_document(&self) -> Result<String, Error> {
         let document = mneme_core::Value::record_named(
             BUNDLE_LABEL,
             vec![
@@ -1100,18 +1402,18 @@ impl SignedBundle {
         );
         let json = mneme_core::encode_document_string(&document);
         if json.len() > MAX_EXCHANGE_BUNDLE_BYTES {
-            return Err(ExchangeError::InputTooLarge);
+            return Err(Error::InputTooLarge);
         }
         Ok(json)
     }
 
-    fn from_value(value: mneme_core::Value) -> Result<Self, ExchangeError> {
+    fn from_value(value: mneme_core::Value) -> Result<Self, Error> {
         let outer = record_fields(&value, BUNDLE_LABEL, 2)?;
         let signed = record_fields(&outer[0], SIGNED_LABEL, 8)?;
         if read_symbol(&signed[0])? != ENCODING_PROFILE
             || read_symbol(&signed[1])? != SIGNATURE_PROFILE
         {
-            return Err(ExchangeError::UnsupportedProfile);
+            return Err(Error::UnsupportedProfile);
         }
         let issuer = read_string(&signed[2])?.to_owned();
         validate_issuer(&issuer)?;
@@ -1123,7 +1425,7 @@ impl SignedBundle {
         let signature_bytes = signed_bytes(&outer[1])?;
         let signature: [u8; 64] = signature_bytes
             .try_into()
-            .map_err(|_| ExchangeError::MalformedBundle)?;
+            .map_err(|_| Error::MalformedBundle)?;
         Ok(SignedBundle {
             issuer,
             key_id,
@@ -1162,7 +1464,7 @@ fn note_value(note: &NoteReference) -> mneme_core::Value {
     )
 }
 
-fn barrier_value(barrier: &ExchangeBarrier) -> mneme_core::Value {
+fn barrier_value(barrier: &Barrier) -> mneme_core::Value {
     mneme_core::Value::record_named(
         "exchange-barrier",
         vec![
@@ -1186,39 +1488,37 @@ fn record_fields<'a>(
     value: &'a mneme_core::Value,
     label: &str,
     length: usize,
-) -> Result<&'a [mneme_core::Value], ExchangeError> {
+) -> Result<&'a [mneme_core::Value], Error> {
     let Some(record) = value.as_record() else {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     };
     if record.label() != &mneme_core::Value::symbol(label) || record.fields().len() != length {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     }
     Ok(record.fields())
 }
 
-fn read_symbol(value: &mneme_core::Value) -> Result<&str, ExchangeError> {
+fn read_symbol(value: &mneme_core::Value) -> Result<&str, Error> {
     value
         .as_symbol()
         .map(mneme_core::Symbol::as_str)
-        .ok_or(ExchangeError::MalformedBundle)
+        .ok_or(Error::MalformedBundle)
 }
 
-fn read_string(value: &mneme_core::Value) -> Result<&str, ExchangeError> {
-    value.as_string().ok_or(ExchangeError::MalformedBundle)
+fn read_string(value: &mneme_core::Value) -> Result<&str, Error> {
+    value.as_string().ok_or(Error::MalformedBundle)
 }
 
-fn signed_bytes(value: &mneme_core::Value) -> Result<&[u8], ExchangeError> {
-    value.as_bytes().ok_or(ExchangeError::MalformedBundle)
+fn signed_bytes(value: &mneme_core::Value) -> Result<&[u8], Error> {
+    value.as_bytes().ok_or(Error::MalformedBundle)
 }
 
-fn read_record_set(
-    value: &mneme_core::Value,
-) -> Result<Vec<mneme_core::RecordEnvelope>, ExchangeError> {
+fn read_record_set(value: &mneme_core::Value) -> Result<Vec<mneme_core::RecordEnvelope>, Error> {
     let Some(items) = value.as_set() else {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     };
     if items.is_empty() || items.len() > MAX_RECORDS {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     }
     items
         .iter()
@@ -1227,42 +1527,42 @@ fn read_record_set(
                 item,
                 &mneme_core::SchemaRegistry::production(),
             )
-            .map_err(|_| ExchangeError::InvalidRecord)
+            .map_err(|_| Error::InvalidRecord)
         })
         .collect()
 }
 
-fn read_source_set(value: &mneme_core::Value) -> Result<Vec<SourceItem>, ExchangeError> {
+fn read_source_set(value: &mneme_core::Value) -> Result<Vec<SourceItem>, Error> {
     let Some(items) = value.as_set() else {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     };
     if items.len() > MAX_SOURCE_BLOBS {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     }
     let mut sources = Vec::with_capacity(items.len());
     let mut digests = std::collections::BTreeSet::new();
     for item in items {
         let fields = record_fields(item, "exchange-source", 2)?;
         let digest = mneme_core::ContentDigest::from_value(&fields[0], &mneme_core::Path::root())
-            .map_err(|_| ExchangeError::MalformedBundle)?;
+            .map_err(|_| Error::MalformedBundle)?;
         let bytes = signed_bytes(&fields[1])?.to_vec();
         if bytes.len() > MAX_EXCHANGE_SOURCE_BYTES
             || mneme_core::ContentDigest::of_source_bytes(&bytes) != digest
             || !digests.insert(digest)
         {
-            return Err(ExchangeError::MalformedBundle);
+            return Err(Error::MalformedBundle);
         }
         sources.push(SourceItem { digest, bytes });
     }
     Ok(sources)
 }
 
-fn read_note_set(value: &mneme_core::Value) -> Result<Vec<NoteReference>, ExchangeError> {
+fn read_note_set(value: &mneme_core::Value) -> Result<Vec<NoteReference>, Error> {
     let Some(items) = value.as_set() else {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     };
     if items.len() > MAX_NOTE_REFERENCES {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     }
     let mut notes = Vec::with_capacity(items.len());
     for item in items {
@@ -1278,11 +1578,11 @@ fn read_note_set(value: &mneme_core::Value) -> Result<Vec<NoteReference>, Exchan
         let source_revision = parse_revision(&fields[4])?;
         let path = read_string(&fields[5])?.to_owned();
         if !mneme_kernel::text::is_canonical_relative_path(path.as_bytes()) {
-            return Err(ExchangeError::MalformedBundle);
+            return Err(Error::MalformedBundle);
         }
         let content_digest =
             mneme_core::ContentDigest::from_value(&fields[6], &mneme_core::Path::root())
-                .map_err(|_| ExchangeError::MalformedBundle)?;
+                .map_err(|_| Error::MalformedBundle)?;
         notes.push(NoteReference {
             document,
             document_revision,
@@ -1296,19 +1596,19 @@ fn read_note_set(value: &mneme_core::Value) -> Result<Vec<NoteReference>, Exchan
     Ok(notes)
 }
 
-fn read_barrier_set(value: &mneme_core::Value) -> Result<Vec<ExchangeBarrier>, ExchangeError> {
+fn read_barrier_set(value: &mneme_core::Value) -> Result<Vec<Barrier>, Error> {
     let Some(items) = value.as_set() else {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     };
     if items.len() > MAX_BARRIERS {
-        return Err(ExchangeError::MalformedBundle);
+        return Err(Error::MalformedBundle);
     }
     let mut barriers = Vec::with_capacity(items.len());
     for item in items {
         let fields = record_fields(item, "exchange-barrier", 7)?;
         let operation_id = read_string(&fields[0])?.to_owned();
         let scope = mneme_core::ScopeId::from_value(&fields[1], &mneme_core::Path::root())
-            .map_err(|_| ExchangeError::MalformedBundle)?;
+            .map_err(|_| Error::MalformedBundle)?;
         let operation_kind = read_symbol(&fields[2])?.to_owned();
         let target = parse_id(&fields[3])?;
         let revision = if read_symbol(&fields[4]).is_ok_and(|symbol| symbol == "none") {
@@ -1322,16 +1622,16 @@ fn read_barrier_set(value: &mneme_core::Value) -> Result<Vec<ExchangeBarrier>, E
         } else {
             Some(
                 mneme_core::ContentDigest::from_value(&fields[6], &mneme_core::Path::root())
-                    .map_err(|_| ExchangeError::MalformedBundle)?,
+                    .map_err(|_| Error::MalformedBundle)?,
             )
         };
         if operation_id.is_empty()
             || operation_kind != "forget"
             || !matches!(target_kind.as_str(), "source-revision" | "assertion")
         {
-            return Err(ExchangeError::MalformedBundle);
+            return Err(Error::MalformedBundle);
         }
-        barriers.push(ExchangeBarrier {
+        barriers.push(Barrier {
             operation_id,
             scope,
             operation_kind,
@@ -1344,12 +1644,12 @@ fn read_barrier_set(value: &mneme_core::Value) -> Result<Vec<ExchangeBarrier>, E
     Ok(barriers)
 }
 
-fn parse_id(value: &mneme_core::Value) -> Result<mneme_core::RecordId, ExchangeError> {
+fn parse_id(value: &mneme_core::Value) -> Result<mneme_core::RecordId, Error> {
     mneme_core::RecordId::from_value(value, &mneme_core::Path::root())
-        .map_err(|_| ExchangeError::MalformedBundle)
+        .map_err(|_| Error::MalformedBundle)
 }
 
-fn parse_revision(value: &mneme_core::Value) -> Result<mneme_core::RevisionId, ExchangeError> {
+fn parse_revision(value: &mneme_core::Value) -> Result<mneme_core::RevisionId, Error> {
     mneme_core::RevisionId::from_value(value, &mneme_core::Path::root())
-        .map_err(|_| ExchangeError::MalformedBundle)
+        .map_err(|_| Error::MalformedBundle)
 }
