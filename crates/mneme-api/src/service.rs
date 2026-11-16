@@ -256,7 +256,7 @@ impl ApiService {
                     "record scope does not match command scope",
                 ));
             }
-            refuse_forbidden_record(index, record)?;
+            refuse_forbidden_record(index, record, &self.session.principal)?;
         }
         let mut workspace = self.open()?;
         let snapshot = workspace
@@ -1088,16 +1088,21 @@ fn barrier_advanced(error: &mneme_memory::EvidenceError) -> bool {
     )
 }
 
-/// Refuse record kinds and revisions that only accept or revise may commit.
+/// Refuse record kinds and revisions that only accept or revise may commit,
+/// and comments that would skip the reader's review.
 fn refuse_forbidden_record(
     index: usize,
     record: &mneme_core::RecordEnvelope,
+    principal: &str,
 ) -> crate::error::CallResult<()> {
     if record.kind == mneme_core::RecordKind::Decision {
         return Err(member_refusal(
             record_member(index, "kind"),
             "decision records are committed only through accept or revise",
         ));
+    }
+    if record.kind == mneme_core::RecordKind::Comment {
+        return refuse_unreviewed_comment(index, record, principal);
     }
     if record.kind != mneme_core::RecordKind::Assertion {
         return Ok(());
@@ -1120,6 +1125,37 @@ fn refuse_forbidden_record(
             "recorded assertions must be proposed; accept or revise changes lifecycle",
         )),
     }
+}
+
+/// Refuse a comment an agent records unless it waits for the reader, who
+/// accepts or dismisses it, and names the caller as its author.
+fn refuse_unreviewed_comment(
+    index: usize,
+    record: &mneme_core::RecordEnvelope,
+    principal: &str,
+) -> crate::error::CallResult<()> {
+    let status = record
+        .payload
+        .get("status")
+        .and_then(mneme_core::Value::as_symbol)
+        .map(mneme_core::Symbol::as_str);
+    if status != Some("proposed") {
+        return Err(member_refusal(
+            record_member(index, "status"),
+            "recorded comments must be proposed; the reader accepts or dismisses them",
+        ));
+    }
+    let actor = record
+        .payload
+        .get("actor")
+        .and_then(mneme_core::Value::as_string);
+    if actor != Some(principal) {
+        return Err(member_refusal(
+            record_member(index, "actor"),
+            "a recorded comment names the caller as its actor",
+        ));
+    }
+    Ok(())
 }
 
 /// The parts of a recall command that do not change with the served revision.

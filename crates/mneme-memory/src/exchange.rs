@@ -36,11 +36,21 @@ pub struct Peer {
     pub issuer: String,
     /// Trusted Ed25519 public key.
     pub public_key: [u8; 32],
+    /// The scopes accepted from this peer; a bundle carrying a record or a
+    /// barrier in any other scope is refused.
+    pub scopes: std::collections::BTreeSet<mneme_core::ScopeId>,
 }
 
-/// Host-owned public keys accepted for workspace exchange.
+/// One trusted peer as the policy checks it.
+struct TrustedPeer {
+    key_id: String,
+    key: ed25519_dalek::VerifyingKey,
+    scopes: std::collections::BTreeSet<mneme_core::ScopeId>,
+}
+
+/// Host-owned public keys and accepted scopes for workspace exchange.
 pub struct Policy {
-    peers: std::collections::BTreeMap<String, (String, ed25519_dalek::VerifyingKey)>,
+    peers: std::collections::BTreeMap<String, TrustedPeer>,
 }
 
 impl Policy {
@@ -49,10 +59,17 @@ impl Policy {
         let mut trusted = std::collections::BTreeMap::new();
         for peer in peers {
             validate_issuer(&peer.issuer)?;
+            if peer.scopes.is_empty() {
+                return Err(Error::NoSharedScope);
+            }
             let key = ed25519_dalek::VerifyingKey::from_bytes(&peer.public_key)
                 .map_err(|_| Error::InvalidPublicKey)?;
-            let key_id = public_key_id(&peer.public_key);
-            if trusted.insert(peer.issuer, (key_id, key)).is_some() {
+            let trusted_peer = TrustedPeer {
+                key_id: public_key_id(&peer.public_key),
+                key,
+                scopes: peer.scopes,
+            };
+            if trusted.insert(peer.issuer, trusted_peer).is_some() {
                 return Err(Error::DuplicateIssuer);
             }
         }
@@ -167,6 +184,12 @@ pub enum Error {
     /// One issuer was configured more than once.
     #[error("record exchange policy has duplicate issuers")]
     DuplicateIssuer,
+    /// An export or a trusted peer names no scope to share.
+    #[error("record exchange names no shared scope")]
+    NoSharedScope,
+    /// A bundle carries a scope its issuer is not trusted for.
+    #[error("record exchange bundle carries scope {0}, which is not accepted from its issuer")]
+    ScopeNotAccepted(mneme_core::ScopeId),
     /// The bundle is malformed or violates an exchange bound.
     #[error("record exchange bundle is malformed")]
     MalformedBundle,
@@ -200,13 +223,19 @@ pub fn public_key(secret: &[u8; 32]) -> [u8; 32] {
         .to_bytes()
 }
 
-/// Export the workspace's authored records as one bounded, signed bundle.
+/// Export the workspace's authored records in `scopes` as one bounded,
+/// signed bundle; records, barriers and notes in other scopes stay on the
+/// device.
 pub fn export_workspace(
     workspace: &mneme_store::Workspace,
     issuer: &str,
     secret: &[u8; 32],
+    scopes: &std::collections::BTreeSet<mneme_core::ScopeId>,
 ) -> Result<String, Error> {
     validate_issuer(issuer)?;
+    if scopes.is_empty() {
+        return Err(Error::NoSharedScope);
+    }
     let snapshot = workspace.snapshot()?;
     let notes = note_references(workspace, &snapshot)?;
     let note_sources = notes
@@ -226,6 +255,7 @@ pub fn export_workspace(
     let records = snapshot
         .records
         .iter()
+        .filter(|record| scopes.contains(&record.scope))
         .filter(|record| !is_note_local(record, &note_sources, &note_documents, &note_entities))
         .filter(|record| !has_foreign_origin(record))
         .filter(|record| !blocked.contains(&record.record_id))
@@ -235,7 +265,9 @@ pub fn export_workspace(
         return Err(Error::MalformedBundle);
     }
     let sources = source_items(workspace, &records)?;
-    let barriers = export_barriers(workspace, &suppressions)?;
+    let notes = shared_notes(notes, &snapshot, scopes);
+    let mut barriers = export_barriers(workspace, &suppressions)?;
+    barriers.retain(|barrier| scopes.contains(&barrier.scope));
     let signing_key = ed25519_dalek::SigningKey::from_bytes(secret);
     let mut bundle = SignedBundle {
         issuer: issuer.to_owned(),
@@ -263,10 +295,10 @@ pub fn authenticate_json(input: &[u8], policy: &Policy) -> Result<AuthenticatedB
     let text = std::str::from_utf8(input).map_err(|_| Error::MalformedBundle)?;
     let value = mneme_core::decode_document(text).map_err(|_| Error::MalformedBundle)?;
     let bundle = SignedBundle::from_value(value)?;
-    let Some((expected_key_id, verifying_key)) = policy.peers.get(&bundle.issuer) else {
+    let Some(peer) = policy.peers.get(&bundle.issuer) else {
         return Err(Error::UntrustedIssuer);
     };
-    if expected_key_id != &bundle.key_id {
+    if peer.key_id != bundle.key_id {
         return Err(Error::InvalidSignature);
     }
     let signed = bundle.signed_value();
@@ -275,11 +307,50 @@ pub fn authenticate_json(input: &[u8], policy: &Policy) -> Result<AuthenticatedB
     message.extend_from_slice(SIGNATURE_DOMAIN);
     message.extend_from_slice(&mneme_core::encode(&signed));
     let signature = ed25519_dalek::Signature::from_bytes(&bundle.signature);
-    verifying_key
+    peer.key
         .verify_strict(&message, &signature)
         .map_err(|_| Error::InvalidSignature)?;
+    if let Some(scope) = unaccepted_scope(&bundle, &peer.scopes) {
+        return Err(Error::ScopeNotAccepted(scope));
+    }
     let digest = mneme_core::ContentDigest::of_payload(&signed);
     Ok(AuthenticatedBundle { bundle, digest })
+}
+
+/// The first scope of a record or a barrier in `bundle` that `accepted`
+/// does not include.
+fn unaccepted_scope(
+    bundle: &SignedBundle,
+    accepted: &std::collections::BTreeSet<mneme_core::ScopeId>,
+) -> Option<mneme_core::ScopeId> {
+    bundle
+        .records
+        .iter()
+        .map(|record| &record.scope)
+        .chain(bundle.barriers.iter().map(|barrier| &barrier.scope))
+        .find(|scope| !accepted.contains(*scope))
+        .cloned()
+}
+
+/// The notes whose document lives in a shared scope: an unshared note's path
+/// and identities never leave the device.
+fn shared_notes(
+    notes: Vec<NoteReference>,
+    snapshot: &mneme_store::Snapshot,
+    scopes: &std::collections::BTreeSet<mneme_core::ScopeId>,
+) -> Vec<NoteReference> {
+    let shared_documents = snapshot
+        .records
+        .iter()
+        .filter(|record| {
+            record.kind == mneme_core::RecordKind::Document && scopes.contains(&record.scope)
+        })
+        .map(|record| record.record_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    notes
+        .into_iter()
+        .filter(|note| shared_documents.contains(&note.document))
+        .collect()
 }
 
 /// Import records from one verified bundle through memory validation and the workspace coordinator.
@@ -1521,7 +1592,9 @@ fn read_record_set(value: &mneme_core::Value) -> Result<Vec<mneme_core::RecordEn
     let Some(items) = value.as_set() else {
         return Err(Error::MalformedBundle);
     };
-    if items.is_empty() || items.len() > MAX_RECORDS {
+    // A bundle may carry no records: a shared scope can be empty, or hold
+    // only forget barriers.
+    if items.len() > MAX_RECORDS {
         return Err(Error::MalformedBundle);
     }
     items

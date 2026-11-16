@@ -1160,13 +1160,13 @@ fn validate_comment_domain(
     let mut diagnostics = Vec::new();
     if let Some(value) = payload.get(&crate::typed::Symbol::from("status")) {
         match value.as_symbol().map(crate::typed::Symbol::as_str) {
-            Some("proposed" | "open" | "resolved") => {}
+            Some("proposed" | "open" | "resolved" | "dismissed") => {}
             _ => {
                 diagnostics.push(crate::problem::Diagnostic::new(
                     crate::problem::Stage::Domain,
                     crate::problem::ErrorCode::TypeMismatch,
                     path.field("status"),
-                    "status must be proposed, open, or resolved",
+                    "status must be proposed, open, resolved, or dismissed",
                 ));
             }
         }
@@ -1497,10 +1497,12 @@ mod remark_tests {
 
     #[test]
     fn valid_comment_passes_domain_validation() {
-        let p = payload("open", "hello");
         let path = crate::problem::Path::root();
-        let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        for status in ["proposed", "open", "resolved", "dismissed"] {
+            let p = payload(status, "hello");
+            let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
+            assert!(diagnostics.is_empty(), "{status}: {diagnostics:?}");
+        }
     }
 
     #[test]

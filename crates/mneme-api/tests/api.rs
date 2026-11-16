@@ -907,6 +907,97 @@ fn record_refuses_decisions_and_lifecycle_revisions() {
 }
 
 #[test]
+fn record_admits_only_proposed_comments_by_the_caller() {
+    let harness = Harness::new();
+    let service = harness.cedar_service();
+    let seeded = harness.seed(&cedar(), &CEDAR_IDS, CEDAR_TEXT, "SQLite");
+    let source_revision = rev(CEDAR_IDS.source_revision);
+    let note = mneme_store::RecordDraft {
+        schema_version: 3,
+        kind: mneme_core::RecordKind::Document,
+        record_id: rid(0x56),
+        revision_id: rev(0x57),
+        predecessor: None,
+        scope: cedar(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("title"),
+                mneme_core::Value::string("Storage note"),
+            ),
+            (
+                mneme_core::Symbol::from("source-revision"),
+                mneme_core::Reference::pinned(
+                    seeded.source,
+                    source_revision,
+                    mneme_core::RecordKind::SourceRevision,
+                )
+                .to_value(),
+            ),
+        ]),
+    };
+    let base = harness.operator_commit(&cedar(), "note", vec![note], Vec::new());
+    let comment = |id: u8, actor: &str, status: &str| {
+        envelope(mneme_memory::build_comment(
+            rid(id),
+            rev(id + 1),
+            &cedar(),
+            mneme_memory::CommentOptions {
+                actor,
+                document: rid(0x56),
+                source_revision: seeded.source,
+                source_pin: source_revision,
+                span: None,
+                block: None,
+                text: "Is SQLite still the choice?",
+                reply_to: None,
+                mentions: &[],
+                status,
+                resolves: None,
+            },
+        ))
+    };
+    let open = service.execute(&record_command(
+        &cedar(),
+        base,
+        "open-comment",
+        vec![comment(0x60, "agent-cedar", "open")],
+        Vec::new(),
+    ));
+    assert!(!open.ok);
+    assert!(
+        error_of(&open).1.contains("must be proposed"),
+        "{}",
+        error_of(&open).1
+    );
+    let forged = service.execute(&record_command(
+        &cedar(),
+        base,
+        "forged-comment",
+        vec![comment(0x62, "human:britton", "proposed")],
+        Vec::new(),
+    ));
+    assert!(!forged.ok);
+    assert!(
+        error_of(&forged).1.contains("caller"),
+        "{}",
+        error_of(&forged).1
+    );
+    assert_eq!(harness.revision(), base, "a refused comment wrote nothing");
+    let proposed = service.execute(&record_command(
+        &cedar(),
+        base,
+        "proposed-comment",
+        vec![comment(0x64, "agent-cedar", "proposed")],
+        Vec::new(),
+    ));
+    assert!(proposed.ok, "{}", encoded(&proposed));
+    assert_eq!(
+        harness.envelope(rid(0x64)).kind,
+        mneme_core::RecordKind::Comment
+    );
+}
+
+#[test]
 fn accept_and_revise_check_the_from_state() {
     let harness = Harness::new();
     let service = harness.cedar_service();

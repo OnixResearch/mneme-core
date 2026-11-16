@@ -20,10 +20,27 @@ fn receiver() -> (tempfile::TempDir, mneme_store::Workspace) {
     (temp, workspace)
 }
 
+fn shared() -> std::collections::BTreeSet<mneme_core::ScopeId> {
+    std::collections::BTreeSet::from([common::scope()])
+}
+
+fn other_scope() -> mneme_core::ScopeId {
+    mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "oak").expect("scope")
+}
+
 fn trusted_policy(issuer: &str, secret: &[u8; 32]) -> mneme_memory::exchange::Policy {
+    trusted_for(issuer, secret, shared())
+}
+
+fn trusted_for(
+    issuer: &str,
+    secret: &[u8; 32],
+    scopes: std::collections::BTreeSet<mneme_core::ScopeId>,
+) -> mneme_memory::exchange::Policy {
     mneme_memory::exchange::Policy::new([mneme_memory::exchange::Peer {
         issuer: issuer.to_owned(),
         public_key: mneme_memory::exchange::public_key(secret),
+        scopes,
     }])
     .expect("trusted device policy")
 }
@@ -54,8 +71,9 @@ fn signed_import_is_trusted_reviewable_and_idempotent() {
     let (_origin_temp, mut origin) = common::setup();
     let assertion = proposal(&mut origin);
     let secret = [0x91; 32];
-    let document = mneme_memory::exchange::export_workspace(&origin, "device-a", &secret)
-        .expect("signed export");
+    let document =
+        mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
+            .expect("signed export");
     let policy = trusted_policy("device-a", &secret);
     let authenticated = mneme_memory::exchange::authenticate_json(document.as_bytes(), &policy)
         .expect("trusted signature");
@@ -88,8 +106,9 @@ fn exchange_authentication_rejects_untrusted_and_tampered_signers() {
     let (_origin_temp, mut origin) = common::setup();
     proposal(&mut origin);
     let secret = [0xa2; 32];
-    let document = mneme_memory::exchange::export_workspace(&origin, "device-a", &secret)
-        .expect("signed export");
+    let document =
+        mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
+            .expect("signed export");
     let untrusted =
         mneme_memory::exchange::Policy::new(std::iter::empty()).expect("empty local trust policy");
     assert!(matches!(
@@ -102,6 +121,69 @@ fn exchange_authentication_rejects_untrusted_and_tampered_signers() {
     assert!(matches!(
         mneme_memory::exchange::authenticate_json(altered.as_bytes(), &policy),
         Err(mneme_memory::exchange::Error::InvalidSignature)
+    ));
+}
+
+#[test]
+fn a_bundle_in_a_scope_the_peer_is_not_trusted_for_is_refused_by_name() {
+    let (_origin_temp, mut origin) = common::setup();
+    proposal(&mut origin);
+    let secret = [0xb3; 32];
+    let document =
+        mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
+            .expect("signed export");
+    let policy = trusted_for(
+        "device-a",
+        &secret,
+        std::collections::BTreeSet::from([other_scope()]),
+    );
+    let refusal = mneme_memory::exchange::authenticate_json(document.as_bytes(), &policy)
+        .err()
+        .expect("a scope the peer is not trusted for is refused");
+    assert!(
+        matches!(&refusal, mneme_memory::exchange::Error::ScopeNotAccepted(scope) if *scope == common::scope()),
+        "{refusal:?}"
+    );
+    assert!(refusal.to_string().contains("project:cedar"), "{refusal}");
+}
+
+#[test]
+fn records_in_unshared_scopes_stay_on_the_device() {
+    let (_origin_temp, mut origin) = common::setup();
+    proposal(&mut origin);
+    let secret = [0xb4; 32];
+    let only_oak = std::collections::BTreeSet::from([other_scope()]);
+    let document =
+        mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &only_oak)
+            .expect("signed export of another scope");
+    // A record of the unshared cedar scope in the bundle would be refused by
+    // a peer trusted only for oak.
+    let authenticated = mneme_memory::exchange::authenticate_json(
+        document.as_bytes(),
+        &trusted_for("device-a", &secret, only_oak),
+    )
+    .expect("the bundle holds only the shared scope");
+    let (_receiver_temp, mut receiver) = receiver();
+    let outcome =
+        mneme_memory::exchange::import_records(&mut receiver, authenticated, "local-reviewer")
+            .expect("import");
+    assert!(outcome.imported.is_empty());
+    assert!(matches!(
+        mneme_memory::exchange::export_workspace(
+            &origin,
+            "device-a",
+            &secret,
+            &std::collections::BTreeSet::new()
+        ),
+        Err(mneme_memory::exchange::Error::NoSharedScope)
+    ));
+    assert!(matches!(
+        mneme_memory::exchange::Policy::new([mneme_memory::exchange::Peer {
+            issuer: "device-a".to_owned(),
+            public_key: mneme_memory::exchange::public_key(&secret),
+            scopes: std::collections::BTreeSet::new(),
+        }]),
+        Err(mneme_memory::exchange::Error::NoSharedScope)
     ));
 }
 
@@ -175,8 +257,9 @@ fn signed_import_turns_open_comment_into_proposed() {
             .expect("comment commit");
     }
     let secret = [0x91; 32];
-    let bundle_json = mneme_memory::exchange::export_workspace(&origin, "device-a", &secret)
-        .expect("signed export");
+    let bundle_json =
+        mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
+            .expect("signed export");
     let policy = trusted_policy("device-a", &secret);
     let authenticated = mneme_memory::exchange::authenticate_json(bundle_json.as_bytes(), &policy)
         .expect("trusted signature");

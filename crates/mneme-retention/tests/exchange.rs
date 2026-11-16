@@ -159,6 +159,7 @@ fn policy(secret: &[u8; 32]) -> mneme_memory::exchange::Policy {
     mneme_memory::exchange::Policy::new([mneme_memory::exchange::Peer {
         issuer: "device-a".to_owned(),
         public_key: mneme_memory::exchange::public_key(secret),
+        scopes: std::collections::BTreeSet::from([scope()]),
     }])
     .expect("peer trust")
 }
@@ -191,11 +192,21 @@ fn forgotten_barrier_blocks_a_delayed_bundle_when_target_is_absent() {
     let mut origin = workspace(origin_temp.path());
     seed_origin(&mut origin);
     let secret = [0xb3; 32];
-    let old_document = mneme_memory::exchange::export_workspace(&origin, "device-a", &secret)
-        .expect("pre-forget bundle");
+    let old_document = mneme_memory::exchange::export_workspace(
+        &origin,
+        "device-a",
+        &secret,
+        &std::collections::BTreeSet::from([scope()]),
+    )
+    .expect("pre-forget bundle");
     forget_source(&mut origin);
-    let current_document = mneme_memory::exchange::export_workspace(&origin, "device-a", &secret)
-        .expect("bundle with forget barrier");
+    let current_document = mneme_memory::exchange::export_workspace(
+        &origin,
+        "device-a",
+        &secret,
+        &std::collections::BTreeSet::from([scope()]),
+    )
+    .expect("bundle with forget barrier");
 
     let current_policy = policy(&secret);
     let current = authenticate(&current_document, &current_policy);
