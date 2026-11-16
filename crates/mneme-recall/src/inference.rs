@@ -1101,8 +1101,11 @@ mod tests {
 
     #[test]
     fn non_json_worker_output_is_malformed_and_not_exposed() {
+        // The worker reads its whole request before answering: a worker that
+        // exits first can make writing the request fail, which is a different
+        // outcome from the malformed answer this test is about.
         let outcome = invoke_json(
-            &command("/usr/bin/printf", &["not-json"]),
+            &command("/usr/bin/sh", &["-c", "cat > /dev/null; printf not-json"]),
             b"{}".to_vec(),
             limits(),
             &InvocationControl::new(),
