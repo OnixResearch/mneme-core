@@ -10,7 +10,7 @@
     "profile_hash": "b3:3fd67a2616779e6ed6b3c51e744e34d94a9ea0a3ce50f85d532eced949838822",
     "config_hash": "b3:b065a7ffe479551539355f2da753fdc11a7e39910ebdaa1a65a02093ce66d2b1"
   },
-  "baseline_hash": "b3:6778bb391f56423813cb3a0b8f366252bc0f4e3fc22bc8591be103f3c16e575a",
+  "baseline_hash": "b3:139c4758922ec2c9f2ed1a51a83c26416c8569108ccb9388e8fa20b5daf7189f",
   "findings": [
     {
       "stable_id": "b3:002cd10692d692b9",
@@ -1060,7 +1060,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/model.rs",
-      "line": 837,
+      "line": 851,
       "column": 9,
       "message": "foreign enum `mneme_core::Reference` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_memory"
@@ -3497,19 +3497,6 @@
       "crate_name": "mneme_doc"
     },
     {
-      "stable_id": "b3:290526d990316583",
-      "semantic_id": "b3:290526d990316583",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-memory/src/service.rs",
-      "line": 1603,
-      "column": 31,
-      "message": "function `build_comment` has 0 assertion(s) in 72 lines (need 2+)",
-      "crate_name": "mneme_memory"
-    },
-    {
       "stable_id": "b3:293628d6768e2273",
       "semantic_id": "b3:293628d6768e2273",
       "identity_status": "computed",
@@ -4895,7 +4882,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/service.rs",
-      "line": 1760,
+      "line": 1784,
       "column": 31,
       "message": "function `build_assertion_revision` has 0 assertion(s) in 23 lines (need 2+)",
       "crate_name": "mneme_memory"
@@ -6136,6 +6123,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:4c840ea0c49f341e",
+      "semantic_id": "b3:4c840ea0c49f341e",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-memory/src/service.rs",
+      "line": 1606,
+      "column": 31,
+      "message": "function `build_comment` has 0 assertion(s) in 54 lines (need 2+)",
+      "crate_name": "mneme_memory"
+    },
+    {
       "stable_id": "b3:4ca27bafa7a8d5d8",
       "semantic_id": "b3:4ca27bafa7a8d5d8",
       "identity_status": "computed",
@@ -6715,7 +6715,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-memory/src/model.rs",
-      "line": 639,
+      "line": 641,
       "column": 40,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_memory"
@@ -8658,19 +8658,6 @@
       "crate_name": "mneme_consolidation"
     },
     {
-      "stable_id": "b3:69d9c020496ac4fc",
-      "semantic_id": "b3:69d9c020496ac4fc",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-memory/src/model.rs",
-      "line": 617,
-      "column": 86,
-      "message": "function `parse` has 0 assertion(s) in 44 lines (need 2+)",
-      "crate_name": "mneme_memory"
-    },
-    {
       "stable_id": "b3:69fa893907f626f1",
       "semantic_id": "b3:69fa893907f626f1",
       "identity_status": "computed",
@@ -9523,7 +9510,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/service.rs",
-      "line": 1801,
+      "line": 1825,
       "column": 31,
       "message": "function `build_derivation` has 0 assertion(s) in 41 lines (need 2+)",
       "crate_name": "mneme_memory"
@@ -10762,6 +10749,19 @@
       "column": 5,
       "message": "same-crate enum `Selector` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_retention"
+    },
+    {
+      "stable_id": "b3:82ed95c41cfe67c4",
+      "semantic_id": "b3:82ed95c41cfe67c4",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-memory/src/service.rs",
+      "line": 1668,
+      "column": 51,
+      "message": "function `optional_comment_entries` has 0 assertion(s) in 31 lines (need 2+)",
+      "crate_name": "mneme_memory"
     },
     {
       "stable_id": "b3:830c929f73e7b27f",
@@ -13267,7 +13267,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/service.rs",
-      "line": 1860,
+      "line": 1884,
       "column": 31,
       "message": "function `build_checkpoint` has 0 assertion(s) in 41 lines (need 2+)",
       "crate_name": "mneme_memory"
@@ -14216,7 +14216,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/service.rs",
-      "line": 1696,
+      "line": 1720,
       "column": 31,
       "message": "function `build_decision` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_memory"
@@ -14476,7 +14476,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/model.rs",
-      "line": 816,
+      "line": 830,
       "column": 59,
       "message": "function `reference_target` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme_memory"
@@ -19017,6 +19017,19 @@
       "column": 25,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:edfe7bb398e222e8",
+      "semantic_id": "b3:edfe7bb398e222e8",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-memory/src/model.rs",
+      "line": 619,
+      "column": 86,
+      "message": "function `parse` has 0 assertion(s) in 56 lines (need 2+)",
+      "crate_name": "mneme_memory"
     },
     {
       "stable_id": "b3:ee2b19533a04f09b",

@@ -158,6 +158,7 @@ fn signed_import_turns_open_comment_into_proposed() {
             actor: "alice",
             document: common::rid(0x60),
             source_revision: common::SOURCE_ID,
+            source_pin: common::SOURCE_REV,
             span: None,
             block: None,
             text: "hello",

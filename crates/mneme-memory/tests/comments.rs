@@ -47,6 +47,7 @@ fn build_comment_round_trips_through_comment_view() {
             actor: "bob",
             document: common::rid(0x60),
             source_revision: common::SOURCE_ID,
+            source_pin: common::SOURCE_REV,
             span: None,
             block: None,
             text: "first",
@@ -70,6 +71,7 @@ fn build_comment_round_trips_through_comment_view() {
             actor: "alice",
             document: common::rid(0x60),
             source_revision: common::SOURCE_ID,
+            source_pin: common::SOURCE_REV,
             span: Some(span),
             block: Some("blk-1"),
             text: "hello comment",
@@ -90,6 +92,11 @@ fn build_comment_round_trips_through_comment_view() {
     assert_eq!(parsed.actor, "alice");
     assert_eq!(parsed.document, common::rid(0x60));
     assert_eq!(parsed.source_revision, common::SOURCE_ID);
+    assert_eq!(
+        parsed.source_pin,
+        Some(common::SOURCE_REV),
+        "the comment names the source revision it is about"
+    );
     assert_eq!(parsed.span, Some(span));
     assert_eq!(parsed.block.as_deref(), Some("blk-1"));
     assert_eq!(parsed.text, "hello comment");

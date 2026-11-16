@@ -3485,6 +3485,7 @@ fn forget_removes_comment_with_its_note() {
             actor: "alice",
             document: rid(0x60),
             source_revision: rid(0x20),
+            source_pin: rev(0x21),
             span: None,
             block: None,
             text: "a comment",

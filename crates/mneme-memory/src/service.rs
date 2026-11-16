@@ -1585,6 +1585,9 @@ pub struct CommentOptions<'a> {
     pub actor: &'a str,
     pub document: mneme_core::RecordId,
     pub source_revision: mneme_core::RecordId,
+    /// The revision of the source the comment is about, so a later edit of
+    /// the note shows the comment as about an older text.
+    pub source_pin: mneme_core::RevisionId,
     pub span: Option<mneme_core::SourceSpan>,
     pub block: Option<&'a str>,
     pub text: &'a str,
@@ -1605,6 +1608,7 @@ pub fn build_comment(
         actor,
         document,
         source_revision,
+        source_pin,
         span,
         block,
         text,
@@ -1624,7 +1628,12 @@ pub fn build_comment(
         ),
         (
             mneme_core::Symbol::from("source-revision"),
-            reference(source_revision, mneme_core::RecordKind::SourceRevision).to_value(),
+            mneme_core::Reference::pinned(
+                source_revision,
+                source_pin,
+                mneme_core::RecordKind::SourceRevision,
+            )
+            .to_value(),
         ),
         (
             mneme_core::Symbol::from("text"),
@@ -1635,6 +1644,29 @@ pub fn build_comment(
             mneme_core::Value::symbol(status),
         ),
     ];
+    entries.extend(optional_comment_entries(
+        span, block, reply_to, mentions, resolves,
+    ));
+    mneme_store::RecordDraft {
+        schema_version: 4,
+        kind: mneme_core::RecordKind::Comment,
+        record_id,
+        revision_id,
+        predecessor: None,
+        scope: scope.clone(),
+        payload: mneme_core::Payload::new(entries),
+    }
+}
+
+/// The payload entries of a comment's optional fields that are present.
+fn optional_comment_entries(
+    span: Option<mneme_core::SourceSpan>,
+    block: Option<&str>,
+    reply_to: Option<mneme_core::RecordId>,
+    mentions: &[&str],
+    resolves: Option<mneme_core::RecordId>,
+) -> Vec<(mneme_core::Symbol, mneme_core::Value)> {
+    let mut entries = Vec::with_capacity(5);
     if let Some(span) = span {
         entries.push((mneme_core::Symbol::from("span"), span.to_value()));
     }
@@ -1662,15 +1694,7 @@ pub fn build_comment(
             reference(resolves, mneme_core::RecordKind::Comment).to_value(),
         ));
     }
-    mneme_store::RecordDraft {
-        schema_version: 4,
-        kind: mneme_core::RecordKind::Comment,
-        record_id,
-        revision_id,
-        predecessor: None,
-        scope: scope.clone(),
-        payload: mneme_core::Payload::new(entries),
-    }
+    entries
 }
 
 /// Content for an attributed decision.

@@ -603,6 +603,8 @@ pub struct CommentView {
     pub actor: String,
     pub document: mneme_core::RecordId,
     pub source_revision: mneme_core::RecordId,
+    /// The source revision the comment names, when its reference is pinned.
+    pub source_pin: Option<mneme_core::RevisionId>,
     pub span: Option<mneme_core::SourceSpan>,
     pub block: Option<String>,
     pub text: String,
@@ -648,6 +650,18 @@ impl CommentView {
             actor: required_text(&record, "actor")?,
             document: required_reference_target(&record, "document")?,
             source_revision: required_reference_target(&record, "source-revision")?,
+            source_pin: record
+                .payload
+                .get("source-revision")
+                .and_then(|value| {
+                    mneme_core::Reference::from_value(value, &mneme_core::Path::root()).ok()
+                })
+                .and_then(|reference| match reference {
+                    mneme_core::Reference::Pinned { revision, .. } => Some(revision),
+                    mneme_core::Reference::Local { .. }
+                    | mneme_core::Reference::External { .. }
+                    | mneme_core::Reference::Unresolved { .. } => None,
+                }),
             span,
             block: optional_text(&record, "block"),
             text: required_text(&record, "text")?,
