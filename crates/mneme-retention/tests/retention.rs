@@ -3466,3 +3466,63 @@ fn cleanup_attempt_bound_is_reported_and_resumable() {
         ));
     }
 }
+
+#[test]
+fn forget_removes_comment_with_its_note() {
+    let mut harness = Harness::new(Box::new(mneme_store::NoFaults));
+    harness.add_source("source", 0x20, 0x21, &scope(), b"hello");
+    harness.commit(
+        "document-copies",
+        document_records(rid(0x20), rev(0x21)),
+        Vec::new(),
+        None,
+    );
+    let comment = mneme_memory::build_comment(
+        rid(0x70),
+        rev(0x71),
+        &scope(),
+        mneme_memory::CommentOptions {
+            actor: "alice",
+            document: rid(0x60),
+            source_revision: rid(0x20),
+            span: None,
+            block: None,
+            text: "a comment",
+            reply_to: None,
+            mentions: &[],
+            status: "open",
+            resolves: None,
+        },
+    );
+    harness.commit("comment", vec![comment], Vec::new(), None);
+    let comment_record = harness
+        .workspace
+        .snapshot()
+        .expect("snapshot")
+        .records
+        .iter()
+        .find(|record| record.record_id == rid(0x70))
+        .cloned()
+        .expect("comment");
+    let request = harness.request(
+        mneme_retention::OperationKind::Forget,
+        mneme_retention::Selector::Source(rid(0x20)),
+        "forget-comment",
+        scope(),
+    );
+    {
+        let mut retention = mneme_retention::Engine::new(&mut harness.workspace);
+        let plan = retention.plan(request.clone()).expect("plan");
+        let suppressed: std::collections::BTreeSet<_> = plan
+            .suppressed
+            .iter()
+            .map(|suppression| suppression.target)
+            .collect();
+        assert!(
+            suppressed.contains(&comment_record.record_id),
+            "comment must be forgotten with its note"
+        );
+        retention.execute(request).expect("forget");
+    }
+    assert_missing(&record_blob_path(&harness, &comment_record));
+}

@@ -104,3 +104,127 @@ fn exchange_authentication_rejects_untrusted_and_tampered_signers() {
         Err(mneme_memory::exchange::Error::InvalidSignature)
     ));
 }
+
+#[test]
+fn signed_import_turns_open_comment_into_proposed() {
+    let (_origin_temp, mut origin) = common::setup();
+    let source_reference = mneme_core::Reference::pinned(
+        common::SOURCE_ID,
+        common::SOURCE_REV,
+        mneme_core::RecordKind::SourceRevision,
+    );
+    let origin_document = mneme_store::RecordDraft {
+        schema_version: 3,
+        kind: mneme_core::RecordKind::Document,
+        record_id: common::rid(0x60),
+        revision_id: common::rev(0x61),
+        predecessor: None,
+        scope: common::scope(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("title"),
+                mneme_core::Value::string("note"),
+            ),
+            (
+                mneme_core::Symbol::from("source-revision"),
+                source_reference.to_value(),
+            ),
+            (
+                mneme_core::Symbol::from("path"),
+                mneme_core::Value::string("project.adoc"),
+            ),
+            (
+                mneme_core::Symbol::from("entity"),
+                mneme_core::Reference::local(
+                    mneme_core::fixtures::entity_id(),
+                    mneme_core::RecordKind::Entity,
+                )
+                .to_value(),
+            ),
+        ]),
+    };
+    {
+        let mut memory = common::engine(&mut origin);
+        memory
+            .commit(common::batch("document", vec![origin_document], Vec::new()))
+            .expect("origin document");
+    }
+    let comment_id = common::rid(0x70);
+    let comment = mneme_memory::build_comment(
+        comment_id,
+        common::rev(0x71),
+        &common::scope(),
+        mneme_memory::CommentOptions {
+            actor: "alice",
+            document: common::rid(0x60),
+            source_revision: common::SOURCE_ID,
+            span: None,
+            block: None,
+            text: "hello",
+            reply_to: None,
+            mentions: &[],
+            status: "open",
+            resolves: None,
+        },
+    );
+    {
+        let mut memory = common::engine(&mut origin);
+        memory
+            .commit(common::batch("comment", vec![comment], Vec::new()))
+            .expect("comment commit");
+    }
+    let secret = [0x91; 32];
+    let bundle_json = mneme_memory::exchange::export_workspace(&origin, "device-a", &secret)
+        .expect("signed export");
+    let policy = trusted_policy("device-a", &secret);
+    let authenticated = mneme_memory::exchange::authenticate_json(bundle_json.as_bytes(), &policy)
+        .expect("trusted signature");
+    let (_receiver_temp, mut receiver) = common::setup();
+    let receiver_document = mneme_store::RecordDraft {
+        schema_version: 3,
+        kind: mneme_core::RecordKind::Document,
+        record_id: common::rid(0x69),
+        revision_id: common::rev(0x6a),
+        predecessor: None,
+        scope: common::scope(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("title"),
+                mneme_core::Value::string("note"),
+            ),
+            (
+                mneme_core::Symbol::from("source-revision"),
+                source_reference.to_value(),
+            ),
+            (
+                mneme_core::Symbol::from("path"),
+                mneme_core::Value::string("project.adoc"),
+            ),
+            (
+                mneme_core::Symbol::from("entity"),
+                mneme_core::Reference::local(
+                    mneme_core::fixtures::entity_id(),
+                    mneme_core::RecordKind::Entity,
+                )
+                .to_value(),
+            ),
+        ]),
+    };
+    {
+        let mut memory = common::engine(&mut receiver);
+        memory
+            .commit(common::batch(
+                "document",
+                vec![receiver_document],
+                Vec::new(),
+            ))
+            .expect("receiver document");
+    }
+    let first =
+        mneme_memory::exchange::import_records(&mut receiver, authenticated, "local-reviewer")
+            .expect("import through memory validation");
+    assert!(first.imported.contains(&comment_id));
+    let imported = mneme_memory::CommentView::parse(common::latest(&receiver, comment_id))
+        .expect("imported comment");
+    assert_eq!(imported.status, "proposed");
+}

@@ -1591,6 +1591,7 @@ pub struct CommentOptions<'a> {
     pub reply_to: Option<mneme_core::RecordId>,
     pub mentions: &'a [&'a str],
     pub status: &'a str,
+    pub resolves: Option<mneme_core::RecordId>,
 }
 
 /// Build a comment record.
@@ -1610,6 +1611,7 @@ pub fn build_comment(
         reply_to,
         mentions,
         status,
+        resolves,
     } = options;
     let mut entries = vec![
         (
@@ -1652,6 +1654,12 @@ pub fn build_comment(
         entries.push((
             mneme_core::Symbol::from("mentions"),
             mneme_core::Value::set(mentions.iter().map(|name| mneme_core::Value::string(*name))),
+        ));
+    }
+    if let Some(resolves) = resolves {
+        entries.push((
+            mneme_core::Symbol::from("resolves"),
+            reference(resolves, mneme_core::RecordKind::Comment).to_value(),
         ));
     }
     mneme_store::RecordDraft {

@@ -1454,3 +1454,78 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod comment_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn payload(status: &str, text: &str) -> BTreeMap<crate::typed::Symbol, crate::typed::Value> {
+        let mut map = BTreeMap::new();
+        map.insert(
+            crate::typed::Symbol::from("actor"),
+            crate::typed::Value::string("alice"),
+        );
+        map.insert(
+            crate::typed::Symbol::from("document"),
+            crate::pointer::Reference::local(
+                crate::ids::RecordId::from_bytes([1; 16]),
+                RecordKind::Document,
+            )
+            .to_value(),
+        );
+        map.insert(
+            crate::typed::Symbol::from("source-revision"),
+            crate::pointer::Reference::local(
+                crate::ids::RecordId::from_bytes([2; 16]),
+                RecordKind::SourceRevision,
+            )
+            .to_value(),
+        );
+        map.insert(
+            crate::typed::Symbol::from("text"),
+            crate::typed::Value::string(text),
+        );
+        map.insert(
+            crate::typed::Symbol::from("status"),
+            crate::typed::Value::symbol(status),
+        );
+        map
+    }
+
+    #[test]
+    fn valid_comment_passes_domain_validation() {
+        let p = payload("open", "hello");
+        let path = crate::problem::Path::root();
+        let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn unknown_status_is_refused() {
+        let p = payload("bogus", "hello");
+        let path = crate::problem::Path::root();
+        let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path.to_string(), "$.payload.status");
+    }
+
+    #[test]
+    fn empty_text_is_refused() {
+        let p = payload("open", "");
+        let path = crate::problem::Path::root();
+        let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path.to_string(), "$.payload.text");
+    }
+
+    #[test]
+    fn oversized_text_is_refused() {
+        let big = "a".repeat(16385);
+        let p = payload("open", &big);
+        let path = crate::problem::Path::root();
+        let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path.to_string(), "$.payload.text");
+    }
+}
