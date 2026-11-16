@@ -337,6 +337,7 @@ fn wanted_revisions(
             | mneme_core::RecordKind::RetentionDirective
             | mneme_core::RecordKind::DocumentBinding
             | mneme_core::RecordKind::DocumentAnchor => {}
+            mneme_core::RecordKind::Comment => {}
         }
     }
     Ok(wanted)
@@ -1570,6 +1571,92 @@ pub fn build_proposed_assertion(
     mneme_store::RecordDraft {
         schema_version: 2,
         kind: mneme_core::RecordKind::Assertion,
+        record_id,
+        revision_id,
+        predecessor: None,
+        scope: scope.clone(),
+        payload: mneme_core::Payload::new(entries),
+    }
+}
+
+/// Content for a comment record. A comment is about a note; it never edits it.
+#[derive(Clone)]
+pub struct CommentOptions<'a> {
+    pub actor: &'a str,
+    pub document: mneme_core::RecordId,
+    pub source_revision: mneme_core::RecordId,
+    pub span: Option<mneme_core::SourceSpan>,
+    pub block: Option<&'a str>,
+    pub text: &'a str,
+    pub reply_to: Option<mneme_core::RecordId>,
+    pub mentions: &'a [&'a str],
+    pub status: &'a str,
+}
+
+/// Build a comment record.
+pub fn build_comment(
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    options: CommentOptions<'_>,
+) -> mneme_store::RecordDraft {
+    let CommentOptions {
+        actor,
+        document,
+        source_revision,
+        span,
+        block,
+        text,
+        reply_to,
+        mentions,
+        status,
+    } = options;
+    let mut entries = vec![
+        (
+            mneme_core::Symbol::from("actor"),
+            mneme_core::Value::string(actor),
+        ),
+        (
+            mneme_core::Symbol::from("document"),
+            reference(document, mneme_core::RecordKind::Document).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("source-revision"),
+            reference(source_revision, mneme_core::RecordKind::SourceRevision).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("text"),
+            mneme_core::Value::string(text),
+        ),
+        (
+            mneme_core::Symbol::from("status"),
+            mneme_core::Value::symbol(status),
+        ),
+    ];
+    if let Some(span) = span {
+        entries.push((mneme_core::Symbol::from("span"), span.to_value()));
+    }
+    if let Some(block) = block {
+        entries.push((
+            mneme_core::Symbol::from("block"),
+            mneme_core::Value::string(block),
+        ));
+    }
+    if let Some(reply_to) = reply_to {
+        entries.push((
+            mneme_core::Symbol::from("reply-to"),
+            reference(reply_to, mneme_core::RecordKind::Comment).to_value(),
+        ));
+    }
+    if !mentions.is_empty() {
+        entries.push((
+            mneme_core::Symbol::from("mentions"),
+            mneme_core::Value::set(mentions.iter().map(|name| mneme_core::Value::string(*name))),
+        ));
+    }
+    mneme_store::RecordDraft {
+        schema_version: 4,
+        kind: mneme_core::RecordKind::Comment,
         record_id,
         revision_id,
         predecessor: None,

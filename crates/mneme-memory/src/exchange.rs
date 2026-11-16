@@ -655,6 +655,9 @@ fn import_payload(
         payload.insert("origin", mneme_core::Value::symbol("import"));
         payload.remove("decision");
     }
+    if kind == mneme_core::RecordKind::Comment {
+        payload.insert("status", mneme_core::Value::symbol("proposed"));
+    }
     Ok(payload)
 }
 
@@ -1297,6 +1300,7 @@ fn is_note_local(
     entities: &std::collections::BTreeSet<mneme_core::RecordId>,
 ) -> bool {
     match record.kind {
+        mneme_core::RecordKind::Comment => false,
         mneme_core::RecordKind::Document
         | mneme_core::RecordKind::DocumentBinding
         | mneme_core::RecordKind::DocumentAnchor => true,

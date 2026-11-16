@@ -597,6 +597,69 @@ impl DecisionView {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommentView {
+    pub record: mneme_core::RecordEnvelope,
+    pub actor: String,
+    pub document: mneme_core::RecordId,
+    pub source_revision: mneme_core::RecordId,
+    pub span: Option<mneme_core::SourceSpan>,
+    pub block: Option<String>,
+    pub text: String,
+    pub reply_to: Option<mneme_core::RecordId>,
+    pub mentions: std::collections::BTreeSet<String>,
+    pub status: String,
+    pub resolves: Option<mneme_core::RecordId>,
+}
+
+impl CommentView {
+    /// Parse a comment envelope.
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
+        expect_kind(&record, mneme_core::RecordKind::Comment)?;
+        let status = required_symbol_text(&record, "status")?;
+        let span = match record.payload.get("span") {
+            Some(value) => Some(
+                mneme_core::SourceSpan::from_value(value, &mneme_core::Path::root().field("span"))
+                    .map_err(|diagnostic| {
+                        crate::failure::EvidenceError::invalid(
+                            record.record_id,
+                            "comment",
+                            diagnostic.to_string(),
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+        let mentions = match record.payload.get("mentions") {
+            Some(value) => {
+                let mut set = std::collections::BTreeSet::new();
+                if let Some(items) = value.as_set() {
+                    for item in items {
+                        if let Some(text) = item.as_string() {
+                            set.insert(text.to_owned());
+                        }
+                    }
+                }
+                set
+            }
+            None => std::collections::BTreeSet::new(),
+        };
+        Ok(CommentView {
+            actor: required_text(&record, "actor")?,
+            document: required_reference_target(&record, "document")?,
+            source_revision: required_reference_target(&record, "source-revision")?,
+            span,
+            block: optional_text(&record, "block"),
+            text: required_text(&record, "text")?,
+            reply_to: optional_reference_target(&record, "reply-to")?,
+            mentions,
+            status,
+            resolves: optional_reference_target(&record, "resolves")?,
+            record,
+        })
+    }
+}
+
 fn expect_kind(
     record: &mneme_core::RecordEnvelope,
     kind: mneme_core::RecordKind,

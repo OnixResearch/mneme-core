@@ -1742,6 +1742,7 @@ fn copy_kind(kind: mneme_core::RecordKind) -> bool {
     matches!(
         kind,
         mneme_core::RecordKind::Checkpoint
+            | mneme_core::RecordKind::Comment
             | mneme_core::RecordKind::Proposal
             | mneme_core::RecordKind::Decision
             | mneme_core::RecordKind::Document

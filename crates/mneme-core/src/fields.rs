@@ -24,11 +24,12 @@ pub enum RecordKind {
     RetentionDirective,
     DocumentBinding,
     DocumentAnchor,
+    Comment,
 }
 
 impl RecordKind {
     /// Every declared kind.
-    pub const ALL: [RecordKind; 14] = [
+    pub const ALL: [RecordKind; 15] = [
         RecordKind::Entity,
         RecordKind::Relation,
         RecordKind::Document,
@@ -43,6 +44,7 @@ impl RecordKind {
         RecordKind::RetentionDirective,
         RecordKind::DocumentBinding,
         RecordKind::DocumentAnchor,
+        RecordKind::Comment,
     ];
 
     /// The schema symbol for this kind.
@@ -62,6 +64,7 @@ impl RecordKind {
             RecordKind::RetentionDirective => "retention-directive",
             RecordKind::DocumentBinding => "document-binding",
             RecordKind::DocumentAnchor => "document-anchor",
+            RecordKind::Comment => "comment",
         }
     }
 
@@ -482,6 +485,34 @@ impl RecordSchema {
         schema
     }
 
+    /// The production version 4 schema introduced by `comment-records`.
+    ///
+    /// It keeps every version 1/2/3 kind and adds the comment record kind.
+    pub fn comments_v4() -> Self {
+        let mut schema = RecordSchema::documents_v3();
+        schema.version = 4;
+        schema.kinds.push(KindSchema::new(
+            RecordKind::Comment,
+            vec![
+                required("actor", FieldType::Text),
+                required("document", reference(Some(RecordKind::Document))),
+                required(
+                    "source-revision",
+                    reference(Some(RecordKind::SourceRevision)),
+                ),
+                optional("span", FieldType::Span),
+                optional("block", FieldType::Text),
+                required("text", FieldType::Text),
+                optional("reply-to", reference(Some(RecordKind::Comment))),
+                optional("mentions", FieldType::Any),
+                required("status", FieldType::Symbol),
+                optional("resolves", reference(Some(RecordKind::Comment))),
+            ],
+            ExtensionPolicy::Retain,
+        ));
+        schema
+    }
+
     /// A synthetic version 2 schema used only by migration fixtures.
     ///
     /// It adds one required `extraction` field to assertions. It is not a
@@ -677,6 +708,7 @@ impl SchemaRegistry {
         let mut registry = SchemaRegistry::v1();
         registry.register(RecordSchema::evidence_v2());
         registry.register(RecordSchema::documents_v3());
+        registry.register(RecordSchema::comments_v4());
         registry
     }
 
@@ -1035,6 +1067,7 @@ pub fn validate_domain(
     match kind {
         RecordKind::Assertion => validate_assertion_domain(payload, path),
         RecordKind::Evidence => validate_evidence_domain(payload, path),
+        RecordKind::Comment => validate_comment_domain(payload, path),
         _ => Vec::new(),
     }
 }
@@ -1120,6 +1153,41 @@ fn validate_evidence_domain(
     diagnostics
 }
 
+fn validate_comment_domain(
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    if let Some(value) = payload.get(&crate::typed::Symbol::from("status")) {
+        match value.as_symbol().map(crate::typed::Symbol::as_str) {
+            Some("proposed" | "open" | "resolved") => {}
+            _ => {
+                diagnostics.push(crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Domain,
+                    crate::problem::ErrorCode::TypeMismatch,
+                    path.field("status"),
+                    "status must be proposed, open, or resolved",
+                ));
+            }
+        }
+    }
+    if let Some(value) = payload.get(&crate::typed::Symbol::from("text")) {
+        let invalid = match value.as_string() {
+            Some(text) => text.is_empty() || text.len() > 16384,
+            None => true,
+        };
+        if invalid {
+            diagnostics.push(crate::problem::Diagnostic::new(
+                crate::problem::Stage::Domain,
+                crate::problem::ErrorCode::TypeMismatch,
+                path.field("text"),
+                "text must be non-empty and at most 16384 bytes",
+            ));
+        }
+    }
+    diagnostics
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1132,6 +1200,7 @@ mod tests {
             RecordKind::Decision,
             RecordKind::DocumentBinding,
             RecordKind::DocumentAnchor,
+            RecordKind::Comment,
         ];
         for kind in RecordKind::ALL
             .into_iter()
@@ -1175,7 +1244,7 @@ mod tests {
     #[test]
     fn production_registry_adds_decision_and_document_kinds() {
         let registry = SchemaRegistry::production();
-        assert_eq!(registry.supported_versions(), vec![1, 2, 3]);
+        assert_eq!(registry.supported_versions(), vec![1, 2, 3, 4]);
         assert!(
             registry
                 .schema(1)
@@ -1380,7 +1449,7 @@ mod tests {
         );
         // Nothing is later than the newest registered version.
         assert_eq!(
-            registry.later_field(RecordKind::Document, "includes", 3),
+            registry.later_field(RecordKind::Document, "includes", 4),
             None
         );
     }
