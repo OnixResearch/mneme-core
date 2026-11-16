@@ -1172,11 +1172,11 @@ fn validate_comment_domain(
         }
     }
     if let Some(value) = payload.get(&crate::typed::Symbol::from("text")) {
-        let invalid = match value.as_string() {
+        let is_invalid = match value.as_string() {
             Some(text) => text.is_empty() || text.len() > 16384,
             None => true,
         };
-        if invalid {
+        if is_invalid {
             diagnostics.push(crate::problem::Diagnostic::new(
                 crate::problem::Stage::Domain,
                 crate::problem::ErrorCode::TypeMismatch,
@@ -1456,12 +1456,14 @@ mod tests {
 }
 
 #[cfg(test)]
-mod comment_tests {
+mod remark_tests {
     use super::*;
-    use std::collections::BTreeMap;
 
-    fn payload(status: &str, text: &str) -> BTreeMap<crate::typed::Symbol, crate::typed::Value> {
-        let mut map = BTreeMap::new();
+    fn payload(
+        status: &str,
+        text: &str,
+    ) -> std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value> {
+        let mut map = std::collections::BTreeMap::new();
         map.insert(
             crate::typed::Symbol::from("actor"),
             crate::typed::Value::string("alice"),
