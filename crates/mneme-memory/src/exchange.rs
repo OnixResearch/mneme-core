@@ -1376,6 +1376,14 @@ fn is_note_local(
         | mneme_core::RecordKind::DocumentBinding
         | mneme_core::RecordKind::DocumentAnchor => true,
         mneme_core::RecordKind::SourceRevision => sources.contains(&record.record_id),
+        mneme_core::RecordKind::RecognitionRun => {
+            crate::model::RecognitionRunView::parse(record.clone())
+                .is_ok_and(|run| sources.contains(&run.output.source()))
+        }
+        mneme_core::RecordKind::RecognitionSegment => {
+            crate::model::RecognitionSegmentView::parse(record.clone())
+                .is_ok_and(|segment| sources.contains(&segment.text_source.source()))
+        }
         mneme_core::RecordKind::Entity => entities.contains(&record.record_id),
         mneme_core::RecordKind::Relation
         | mneme_core::RecordKind::Episode

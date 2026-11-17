@@ -1250,13 +1250,14 @@ fn historical_inspection_preserves_superseded_unknown_time() {
     assert_eq!(status.valid_time, mneme_core::ValidTime::Unknown);
 }
 
-fn add_recognized_media(harness: &mut Harness) -> (mneme_core::SourcePin, mneme_core::MediaLocation) {
+fn add_recognized_media(
+    harness: &mut Harness,
+) -> (mneme_core::SourcePin, mneme_core::MediaLocation) {
     let audio = b"bounded audio fixture";
     let text = b"The transcript says cedar project.";
     let input = mneme_core::SourcePin::new(rid(0xe0), rev(0xe1));
     let output = mneme_core::SourcePin::new(rid(0xe2), rev(0xe3));
     let input_digest = mneme_core::ContentDigest::of_source_bytes(audio);
-    let output_digest = mneme_core::ContentDigest::of_source_bytes(text);
     let time_base = mneme_core::TimeBase::new(1, 100).expect("time base");
     let location = mneme_core::MediaLocation::Audio {
         start_tick: 30,
@@ -1285,11 +1286,33 @@ fn add_recognized_media(harness: &mut Harness) -> (mneme_core::SourcePin, mneme_
         output.source(),
         output.revision(),
         &scope(),
-        text,
+        mneme_memory::SourceOptions {
+            bytes: text,
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
         input,
-        None,
     )
     .expect("recognized text");
+    let (run, segment) = recognition_records(input, input_digest, output, text, &location);
+    harness.commit(
+        scope(),
+        "recognized-media",
+        vec![input_record, output_record, run, segment],
+        vec![input_blob, output_blob],
+    );
+    (input, location)
+}
+
+fn recognition_records(
+    input: mneme_core::SourcePin,
+    input_digest: mneme_core::ContentDigest,
+    output: mneme_core::SourcePin,
+    text: &[u8],
+    location: &mneme_core::MediaLocation,
+) -> (mneme_store::RecordDraft, mneme_store::RecordDraft) {
+    let output_digest = mneme_core::ContentDigest::of_source_bytes(text);
     let run_id = rid(0xe4);
     let segment_id = rid(0xe5);
     let run = mneme_memory::build_recognition_run(
@@ -1324,17 +1347,11 @@ fn add_recognized_media(harness: &mut Harness) -> (mneme_core::SourcePin, mneme_
             span: mneme_core::SourceSpan::new(0, text.len() as u64 - 1).expect("text span"),
             media_source: input,
             media_digest: input_digest,
-            location: &location,
+            location,
         },
     )
     .expect("segment");
-    harness.commit(
-        scope(),
-        "recognized-media",
-        vec![input_record, output_record, run, segment],
-        vec![input_blob, output_blob],
-    );
-    (input, location)
+    (run, segment)
 }
 
 #[test]
@@ -1351,7 +1368,10 @@ fn searchable_recognition_quotes_return_typed_locations_under_scope() {
         .find(|candidate| candidate.content_kind == mneme_recall::ContentKind::SourceExcerpt)
         .expect("recognized text is searchable");
     assert_eq!(candidate.source, Some(rid(0xe2)));
-    assert_eq!(candidate.ancestry_roots, std::collections::BTreeSet::from([(input.source(), input.revision())]));
+    assert_eq!(
+        candidate.ancestry_roots,
+        std::collections::BTreeSet::from([(input.source(), input.revision())])
+    );
     assert_eq!(candidate.media_locations.len(), 1);
     assert_eq!(candidate.media_locations[0].media_source, input);
     assert_eq!(candidate.media_locations[0].location, location);
@@ -1366,7 +1386,12 @@ fn searchable_recognition_quotes_return_typed_locations_under_scope() {
     let other = mneme_recall::Service::new(&mut harness.workspace)
         .recall(other_request)
         .expect("other-scope recall");
-    assert!(other.candidates.iter().all(|candidate| candidate.source != Some(rid(0xe2))));
+    assert!(
+        other
+            .candidates
+            .iter()
+            .all(|candidate| candidate.source != Some(rid(0xe2)))
+    );
 }
 
 #[test]

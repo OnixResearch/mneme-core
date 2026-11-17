@@ -1124,43 +1124,22 @@ fn validate_source_revision(
 ) -> crate::failure::Result<()> {
     let source = crate::model::SourceView::parse(envelope.clone())?;
     let pin = mneme_core::SourcePin::new(envelope.record_id, envelope.revision_id);
-    let parent = source.derived_from;
+    validate_source_acquisition(&source, pin, envelope, context)?;
+    validate_source_parent(&source, pin, envelope, context)
+}
+
+fn validate_source_acquisition(
+    source: &crate::model::SourceView,
+    pin: mneme_core::SourcePin,
+    envelope: &mneme_core::RecordEnvelope,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<()> {
     match source.acquisition {
         mneme_core::Acquisition::MachineRecognized => {
-            if parent.is_none() || envelope.predecessor.is_some() {
-                return Err(crate::failure::EvidenceError::policy(
-                    "machine recognition must create a new text record pinned to its exact input",
-                ));
-            }
-            validate_utf8_text_source(&source, context)?;
-            let has_run = context.combined.values().any(|record| {
-                record.kind == mneme_core::RecordKind::RecognitionRun
-                    && context.batch_records.contains(&record.record_id)
-                    && crate::model::RecognitionRunView::parse(record.clone())
-                        .is_ok_and(|run| run.output == pin && Some(run.input) == parent)
-            });
-            if !has_run {
-                return Err(crate::failure::EvidenceError::policy(
-                    "machine-recognized text must be bound to a recognition run in the same batch",
-                ));
-            }
+            validate_machine_recognized_source(source, pin, envelope, context)?;
         }
         mneme_core::Acquisition::Corrected => {
-            let Some(parent) = parent else {
-                return Err(crate::failure::EvidenceError::policy(
-                    "a correction must pin its exact predecessor source revision",
-                ));
-            };
-            if parent.source() != envelope.record_id || envelope.predecessor != Some(parent.revision()) {
-                return Err(crate::failure::EvidenceError::policy(
-                    "a correction must be a new revision of the same source record",
-                ));
-            }
-            let correction = source.correction.as_ref().ok_or_else(|| {
-                crate::failure::EvidenceError::policy("correction provenance is required")
-            })?;
-            validate_utf8_text_source(&source, context)?;
-            validate_correction_alignment(pin, correction, context)?;
+            validate_corrected_source(source, pin, envelope, context)?
         }
         _ => {
             if source.correction.is_some() {
@@ -1170,41 +1149,108 @@ fn validate_source_revision(
             }
         }
     }
-    if let Some(parent) = parent {
-        if parent == pin {
-            return Err(crate::failure::EvidenceError::policy(
-                "a source transformation cannot depend on itself",
-            ));
-        }
-        let parent_record = context.reference(envelope, parent.source())?;
-        if parent_record.kind != mneme_core::RecordKind::SourceRevision
-            || parent_record.scope != envelope.scope
-        {
-            return Err(crate::failure::EvidenceError::policy(
-                "source transformation parent must be an exact source revision in the same scope",
-            ));
-        }
-        let parent_view = context.view.source_at(parent.source(), parent.revision()).map_err(|_| {
-            crate::failure::EvidenceError::policy("source transformation parent revision is unavailable")
-        })?;
-        if parent_view.record.scope != envelope.scope {
-            return Err(crate::failure::EvidenceError::policy(
-                "source transformation parent must be in the same scope",
-            ));
-        }
-        context.view.source_roots(parent)?;
-        if source.media_transform.is_some() && source.media_extent.is_none() {
-            return Err(crate::failure::EvidenceError::policy(
-                "a transformed media source must declare its coordinate extent",
-            ));
-        }
+    if source.acquisition == mneme_core::Acquisition::MachineRecognized
+        && source
+            .derived_from
+            .is_some_and(|parent| parent.source() == envelope.record_id)
+    {
+        return Err(crate::failure::EvidenceError::policy(
+            "reprocessing must create a separate recognition output and never overwrite text",
+        ));
     }
-    if source.acquisition == mneme_core::Acquisition::MachineRecognized {
-        if parent.is_some_and(|parent| parent.source() == envelope.record_id) {
-            return Err(crate::failure::EvidenceError::policy(
-                "reprocessing must create a separate recognition output and never overwrite text",
-            ));
-        }
+    Ok(())
+}
+
+fn validate_machine_recognized_source(
+    source: &crate::model::SourceView,
+    pin: mneme_core::SourcePin,
+    envelope: &mneme_core::RecordEnvelope,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<()> {
+    if source.derived_from.is_none() || envelope.predecessor.is_some() {
+        return Err(crate::failure::EvidenceError::policy(
+            "machine recognition must create a new text record pinned to its exact input",
+        ));
+    }
+    validate_utf8_text_source(source, context)?;
+    let has_run = context.combined.values().any(|record| {
+        record.kind == mneme_core::RecordKind::RecognitionRun
+            && context.batch_records.contains(&record.record_id)
+            && crate::model::RecognitionRunView::parse(record.clone())
+                .is_ok_and(|run| run.output == pin && Some(run.input) == source.derived_from)
+    });
+    if has_run {
+        Ok(())
+    } else {
+        Err(crate::failure::EvidenceError::policy(
+            "machine-recognized text must be bound to a recognition run in the same batch",
+        ))
+    }
+}
+
+fn validate_corrected_source(
+    source: &crate::model::SourceView,
+    pin: mneme_core::SourcePin,
+    envelope: &mneme_core::RecordEnvelope,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<()> {
+    let Some(parent) = source.derived_from else {
+        return Err(crate::failure::EvidenceError::policy(
+            "a correction must pin its exact predecessor source revision",
+        ));
+    };
+    if parent.source() != envelope.record_id || envelope.predecessor != Some(parent.revision()) {
+        return Err(crate::failure::EvidenceError::policy(
+            "a correction must be a new revision of the same source record",
+        ));
+    }
+    let correction = source.correction.as_ref().ok_or_else(|| {
+        crate::failure::EvidenceError::policy("correction provenance is required")
+    })?;
+    validate_utf8_text_source(source, context)?;
+    validate_correction_alignment(pin, correction, context)
+}
+
+fn validate_source_parent(
+    source: &crate::model::SourceView,
+    pin: mneme_core::SourcePin,
+    envelope: &mneme_core::RecordEnvelope,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<()> {
+    let Some(parent) = source.derived_from else {
+        return Ok(());
+    };
+    if parent == pin {
+        return Err(crate::failure::EvidenceError::policy(
+            "a source transformation cannot depend on itself",
+        ));
+    }
+    let parent_record = context.reference(envelope, parent.source())?;
+    if parent_record.kind != mneme_core::RecordKind::SourceRevision
+        || parent_record.scope != envelope.scope
+    {
+        return Err(crate::failure::EvidenceError::policy(
+            "source transformation parent must be an exact source revision in the same scope",
+        ));
+    }
+    let parent_view = context
+        .view
+        .source_at(parent.source(), parent.revision())
+        .map_err(|_| {
+            crate::failure::EvidenceError::policy(
+                "source transformation parent revision is unavailable",
+            )
+        })?;
+    if parent_view.record.scope != envelope.scope {
+        return Err(crate::failure::EvidenceError::policy(
+            "source transformation parent must be in the same scope",
+        ));
+    }
+    context.view.source_roots(parent)?;
+    if source.media_transform.is_some() && source.media_extent.is_none() {
+        return Err(crate::failure::EvidenceError::policy(
+            "a transformed media source must declare its coordinate extent",
+        ));
     }
     Ok(())
 }
@@ -1213,7 +1259,11 @@ fn validate_utf8_text_source(
     source: &crate::model::SourceView,
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<Vec<u8>> {
-    if !source.media_type.as_ref().is_some_and(|media_type| media_type.as_str().starts_with("text/")) {
+    if !source
+        .media_type
+        .as_ref()
+        .is_some_and(|media_type| media_type.as_str().starts_with("text/"))
+    {
         return Err(crate::failure::EvidenceError::policy(
             "recognized and corrected source revisions must have a text media type",
         ));
@@ -1232,19 +1282,20 @@ fn validate_correction_alignment(
     correction: &mneme_core::CorrectionProvenance,
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<()> {
-    let aligned = context.combined.values().any(|record| {
+    let has_aligned_segment = context.combined.values().any(|record| {
         record.kind == mneme_core::RecordKind::RecognitionSegment
             && context.batch_records.contains(&record.record_id)
-            && crate::model::RecognitionSegmentView::parse(record.clone()).is_ok_and(|segment| {
-                segment.text_source == pin && segment.run.is_none()
-            })
+            && crate::model::RecognitionSegmentView::parse(record.clone())
+                .is_ok_and(|segment| segment.text_source == pin && segment.run.is_none())
     });
-    if aligned != correction.alignment_updated() {
-        return Err(crate::failure::EvidenceError::policy(if correction.alignment_updated() {
-            "a corrected source declaring updated alignment must commit new aligned segments"
-        } else {
-            "a corrected source declaring invalidated alignment must not commit replacement segments"
-        }));
+    if has_aligned_segment != correction.alignment_updated() {
+        return Err(crate::failure::EvidenceError::policy(
+            if correction.alignment_updated() {
+                "a corrected source declaring updated alignment must commit new aligned segments"
+            } else {
+                "a corrected source declaring invalidated alignment must not commit replacement segments"
+            },
+        ));
     }
     Ok(())
 }
@@ -1265,12 +1316,22 @@ fn validate_recognition_run(
             "recognition input and output sources must be in the run scope",
         ));
     }
-    let input = context.view.source_at(run.input.source(), run.input.revision()).map_err(|_| {
-        crate::failure::EvidenceError::policy("recognition input source revision is unavailable")
-    })?;
-    let output = context.view.source_at(run.output.source(), run.output.revision()).map_err(|_| {
-        crate::failure::EvidenceError::policy("recognition output source revision is unavailable")
-    })?;
+    let input = context
+        .view
+        .source_at(run.input.source(), run.input.revision())
+        .map_err(|_| {
+            crate::failure::EvidenceError::policy(
+                "recognition input source revision is unavailable",
+            )
+        })?;
+    let output = context
+        .view
+        .source_at(run.output.source(), run.output.revision())
+        .map_err(|_| {
+            crate::failure::EvidenceError::policy(
+                "recognition output source revision is unavailable",
+            )
+        })?;
     if source_digest(&input) != Some(run.input_digest)
         || source_digest(&output) != Some(run.output_digest)
         || output.acquisition != mneme_core::Acquisition::MachineRecognized
@@ -1314,6 +1375,37 @@ fn validate_recognition_segment(
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<()> {
     let segment = crate::model::RecognitionSegmentView::parse(envelope.clone())?;
+    validate_segment_source_records(envelope, &segment, context)?;
+    let text = context
+        .view
+        .source_at(segment.text_source.source(), segment.text_source.revision())
+        .map_err(|_| {
+            crate::failure::EvidenceError::policy(
+                "recognition segment text source revision is unavailable",
+            )
+        })?;
+    let media = context
+        .view
+        .source_at(
+            segment.media_source.source(),
+            segment.media_source.revision(),
+        )
+        .map_err(|_| {
+            crate::failure::EvidenceError::policy(
+                "recognition segment media source revision is unavailable",
+            )
+        })?;
+    validate_segment_media_location(&segment, &media)?;
+    let text_bytes = validate_utf8_text_source(&text, context)?;
+    validate_utf8_span(segment.text_span, &text_bytes)?;
+    validate_segment_lineage(envelope, &segment, &text, context)
+}
+
+fn validate_segment_source_records(
+    envelope: &mneme_core::RecordEnvelope,
+    segment: &crate::model::RecognitionSegmentView,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<()> {
     let text_record = context.reference(envelope, segment.text_source.source())?;
     let media_record = context.reference(envelope, segment.media_source.source())?;
     if text_record.kind != mneme_core::RecordKind::SourceRevision
@@ -1325,30 +1417,42 @@ fn validate_recognition_segment(
             "recognition segment sources must be source revisions in the segment scope",
         ));
     }
-    let text = context.view.source_at(segment.text_source.source(), segment.text_source.revision()).map_err(|_| {
-        crate::failure::EvidenceError::policy("recognition segment text source revision is unavailable")
-    })?;
-    let media = context.view.source_at(segment.media_source.source(), segment.media_source.revision()).map_err(|_| {
-        crate::failure::EvidenceError::policy("recognition segment media source revision is unavailable")
-    })?;
-    if source_digest(&media) != Some(segment.media_digest) {
+    Ok(())
+}
+
+fn validate_segment_media_location(
+    segment: &crate::model::RecognitionSegmentView,
+    media: &crate::model::SourceView,
+) -> crate::failure::Result<()> {
+    if source_digest(media) != Some(segment.media_digest) {
         return Err(crate::failure::EvidenceError::policy(
             "recognition segment media digest does not match its pinned source",
         ));
     }
     let extent = media.media_extent.ok_or_else(|| {
-        crate::failure::EvidenceError::policy("recognition segment source lacks a typed media extent")
+        crate::failure::EvidenceError::policy(
+            "recognition segment source lacks a typed media extent",
+        )
     })?;
-    segment.location.validate_extent(extent).map_err(|message| {
-        crate::failure::EvidenceError::policy(message.to_owned())
-    })?;
-    let text_bytes = validate_utf8_text_source(&text, context)?;
-    validate_utf8_span(segment.text_span, &text_bytes)?;
+    segment
+        .location
+        .validate_extent(extent)
+        .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))
+}
+
+fn validate_segment_lineage(
+    envelope: &mneme_core::RecordEnvelope,
+    segment: &crate::model::RecognitionSegmentView,
+    text: &crate::model::SourceView,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<()> {
     match segment.run {
         Some(run_id) => {
             let run_record = context.reference(envelope, run_id)?;
             if run_record.kind != mneme_core::RecordKind::RecognitionRun {
-                return Err(crate::failure::EvidenceError::policy("segment run reference has the wrong kind"));
+                return Err(crate::failure::EvidenceError::policy(
+                    "segment run reference has the wrong kind",
+                ));
             }
             let run = context.view.recognition_run(run_id).map_err(|_| {
                 crate::failure::EvidenceError::policy("recognition segment run is unavailable")
@@ -1366,13 +1470,18 @@ fn validate_recognition_segment(
         }
         None => {
             if text.acquisition != mneme_core::Acquisition::Corrected
-                || !text.correction.as_ref().is_some_and(mneme_core::CorrectionProvenance::alignment_updated)
+                || !text
+                    .correction
+                    .as_ref()
+                    .is_some_and(mneme_core::CorrectionProvenance::alignment_updated)
             {
                 return Err(crate::failure::EvidenceError::policy(
                     "a segment without a recognition run must align an explicitly corrected text revision",
                 ));
             }
-            if context.view.source_roots(segment.text_source)? != context.view.source_roots(segment.media_source)? {
+            if context.view.source_roots(segment.text_source)?
+                != context.view.source_roots(segment.media_source)?
+            {
                 return Err(crate::failure::EvidenceError::policy(
                     "corrected alignment must preserve the media evidence root",
                 ));
@@ -1386,16 +1495,16 @@ fn source_digest(source: &crate::model::SourceView) -> Option<mneme_core::Conten
     source.digest().or(source.prior_digest)
 }
 
-fn validate_utf8_span(
-    span: mneme_core::SourceSpan,
-    bytes: &[u8],
-) -> crate::failure::Result<()> {
+fn validate_utf8_span(span: mneme_core::SourceSpan, bytes: &[u8]) -> crate::failure::Result<()> {
     let start = usize::try_from(span.start()).ok();
-    let stop = span.end().checked_add(1).and_then(|value| usize::try_from(value).ok());
-    let valid = start.zip(stop).is_some_and(|(start, stop)| {
+    let stop = span
+        .end()
+        .checked_add(1)
+        .and_then(|value| usize::try_from(value).ok());
+    let is_valid = start.zip(stop).is_some_and(|(start, stop)| {
         std::str::from_utf8(bytes).is_ok_and(|text| text.get(start..stop).is_some())
     });
-    if valid {
+    if is_valid {
         Ok(())
     } else {
         Err(crate::failure::EvidenceError::policy(
@@ -1497,6 +1606,13 @@ pub struct SourceProvenance<'a> {
     pub media_extent: Option<mneme_core::MediaExtent>,
     pub media_transform: Option<mneme_core::MediaTransform>,
     pub correction: Option<&'a mneme_core::CorrectionProvenance>,
+}
+
+#[derive(Clone, Copy)]
+struct SourceRevisionIdentity {
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    predecessor: Option<mneme_core::RevisionId>,
 }
 
 /// Typed recognition execution inputs and immutable output references.
@@ -1616,48 +1732,86 @@ pub fn build_source_with_provenance(
     provenance: SourceProvenance<'_>,
 ) -> crate::failure::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
     build_source_with_provenance_and_predecessor(
-        record_id,
-        revision_id,
+        SourceRevisionIdentity {
+            record_id,
+            revision_id,
+            predecessor: None,
+        },
         scope,
         options,
         provenance,
-        None,
     )
 }
 
 fn build_source_with_provenance_and_predecessor(
-    record_id: mneme_core::RecordId,
-    revision_id: mneme_core::RevisionId,
+    identity: SourceRevisionIdentity,
     scope: &mneme_core::ScopeId,
     options: SourceOptions<'_>,
     provenance: SourceProvenance<'_>,
-    predecessor: Option<mneme_core::RevisionId>,
 ) -> crate::failure::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
+    let payload = source_payload(options, provenance)?;
+    Ok((
+        mneme_store::RecordDraft {
+            schema_version: 5,
+            kind: mneme_core::RecordKind::SourceRevision,
+            record_id: identity.record_id,
+            revision_id: identity.revision_id,
+            predecessor: identity.predecessor,
+            scope: scope.clone(),
+            payload,
+        },
+        mneme_store::SourceBlobDraft {
+            bytes: options.bytes.to_vec(),
+            media_type: mneme_core::Symbol::from(options.media_type),
+        },
+    ))
+}
+
+fn source_payload(
+    options: SourceOptions<'_>,
+    provenance: SourceProvenance<'_>,
+) -> crate::failure::Result<mneme_core::Payload> {
     if let Some(extent) = provenance.media_extent {
-        extent.validate().map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+        extent
+            .validate()
+            .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
     }
     if let Some(transform) = provenance.media_transform {
-        transform.validate().map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+        transform
+            .validate()
+            .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
     }
     if let Some(correction) = provenance.correction {
-        correction.validate().map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+        correction
+            .validate()
+            .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
     }
-    let SourceOptions { bytes, media_type, entity, path_hint } = options;
     let retained = mneme_core::RetainedSource::new(
-        mneme_core::ContentDigest::of_source_bytes(bytes),
-        bytes.len() as u64,
-        media_type,
+        mneme_core::ContentDigest::of_source_bytes(options.bytes),
+        options.bytes.len() as u64,
+        options.media_type,
     )
     .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
-    let mut entries = vec![
-        (mneme_core::Symbol::from("content"), mneme_core::SourceContent::Retained(retained).to_value()),
-        (mneme_core::Symbol::from("acquisition"), provenance.acquisition.to_value()),
-    ];
-    if let Some(entity) = entity {
-        entries.push((mneme_core::Symbol::from("entity"), reference(entity, mneme_core::RecordKind::Entity).to_value()));
+    let mut entries = Vec::with_capacity(8);
+    entries.push((
+        mneme_core::Symbol::from("content"),
+        mneme_core::SourceContent::Retained(retained).to_value(),
+    ));
+    entries.push((
+        mneme_core::Symbol::from("acquisition"),
+        provenance.acquisition.to_value(),
+    ));
+    if let Some(entity) = options.entity {
+        entries.push((
+            mneme_core::Symbol::from("entity"),
+            reference(entity, mneme_core::RecordKind::Entity).to_value(),
+        ));
     }
-    if let Some(path) = path_hint {
-        entries.push((mneme_core::Symbol::from("path-hint"), mneme_core::Value::string(path)));
+    if let Some(path) = options.path_hint {
+        entries.push((
+            mneme_core::Symbol::from("path-hint"),
+            mneme_core::Value::string(path),
+        ));
     }
     if let Some(parent) = provenance.derived_from {
         entries.push((mneme_core::Symbol::from("derived-from"), parent.to_value()));
@@ -1666,23 +1820,18 @@ fn build_source_with_provenance_and_predecessor(
         entries.push((mneme_core::Symbol::from("media-extent"), extent.to_value()));
     }
     if let Some(transform) = provenance.media_transform {
-        entries.push((mneme_core::Symbol::from("media-transform"), transform.to_value()));
+        entries.push((
+            mneme_core::Symbol::from("media-transform"),
+            transform.to_value(),
+        ));
     }
     if let Some(correction) = provenance.correction {
-        entries.push((mneme_core::Symbol::from("correction"), correction.to_value()));
+        entries.push((
+            mneme_core::Symbol::from("correction"),
+            correction.to_value(),
+        ));
     }
-    Ok((
-        mneme_store::RecordDraft {
-            schema_version: 5,
-            kind: mneme_core::RecordKind::SourceRevision,
-            record_id,
-            revision_id,
-            predecessor,
-            scope: scope.clone(),
-            payload: mneme_core::Payload::new(entries),
-        },
-        mneme_store::SourceBlobDraft { bytes: bytes.to_vec(), media_type: mneme_core::Symbol::from(media_type) },
-    ))
+    Ok(mneme_core::Payload::new(entries))
 }
 
 /// Build an explicitly captured media source with a declared typed extent.
@@ -1713,18 +1862,30 @@ pub fn build_recognized_source(
     record_id: mneme_core::RecordId,
     revision_id: mneme_core::RevisionId,
     scope: &mneme_core::ScopeId,
-    bytes: &[u8],
+    options: SourceOptions<'_>,
     input: mneme_core::SourcePin,
-    entity: Option<mneme_core::RecordId>,
 ) -> crate::failure::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
-    if std::str::from_utf8(bytes).is_err() {
-        return Err(crate::failure::EvidenceError::policy("recognized text must be valid UTF-8"));
+    if std::str::from_utf8(options.bytes).is_err() {
+        return Err(crate::failure::EvidenceError::policy(
+            "recognized text must be valid UTF-8",
+        ));
     }
+    let SourceOptions {
+        bytes,
+        entity,
+        path_hint,
+        ..
+    } = options;
     build_source_with_provenance(
         record_id,
         revision_id,
         scope,
-        SourceOptions { bytes, media_type: "text/plain; charset=utf-8", entity, path_hint: None },
+        SourceOptions {
+            bytes,
+            media_type: "text/plain; charset=utf-8",
+            entity,
+            path_hint,
+        },
         SourceProvenance {
             acquisition: mneme_core::Acquisition::MachineRecognized,
             derived_from: Some(input),
@@ -1744,11 +1905,16 @@ pub fn build_corrected_source(
     correction: &mneme_core::CorrectionProvenance,
 ) -> crate::failure::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
     if std::str::from_utf8(options.bytes).is_err() {
-        return Err(crate::failure::EvidenceError::policy("corrected text must be valid UTF-8"));
+        return Err(crate::failure::EvidenceError::policy(
+            "corrected text must be valid UTF-8",
+        ));
     }
     build_source_with_provenance_and_predecessor(
-        predecessor.source(),
-        revision_id,
+        SourceRevisionIdentity {
+            record_id: predecessor.source(),
+            revision_id,
+            predecessor: Some(predecessor.revision()),
+        },
         scope,
         options,
         SourceProvenance {
@@ -1758,7 +1924,6 @@ pub fn build_corrected_source(
             media_transform: None,
             correction: Some(correction),
         },
-        Some(predecessor.revision()),
     )
 }
 
@@ -1770,29 +1935,7 @@ pub fn build_recognition_run(
     scope: &mneme_core::ScopeId,
     options: RecognitionRunOptions<'_>,
 ) -> crate::failure::Result<mneme_store::RecordDraft> {
-    if options.segments.len() > 4096
-        || options.segments.iter().copied().collect::<std::collections::BTreeSet<_>>().len() != options.segments.len()
-    {
-        return Err(crate::failure::EvidenceError::policy("recognition run segment ids must be unique and bounded"));
-    }
-    for score in options.scores { score.validate().map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?; }
-    for alternative in options.alternatives { alternative.validate().map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?; }
-    let fields = vec![
-        (mneme_core::Symbol::from("input"), options.input.to_value()),
-        (mneme_core::Symbol::from("input-digest"), options.input_digest.to_value()),
-        (mneme_core::Symbol::from("output"), options.output.to_value()),
-        (mneme_core::Symbol::from("output-digest"), options.output_digest.to_value()),
-        (mneme_core::Symbol::from("model"), mneme_core::Value::string(options.model)),
-        (mneme_core::Symbol::from("runtime"), mneme_core::Value::string(options.runtime)),
-        (mneme_core::Symbol::from("adapter"), mneme_core::Value::string(options.adapter)),
-        (mneme_core::Symbol::from("preprocessing"), mneme_core::Value::string(options.preprocessing)),
-        (mneme_core::Symbol::from("configuration"), mneme_core::Value::string(options.configuration)),
-        (mneme_core::Symbol::from("segments"), mneme_core::Value::set(options.segments.iter().map(|segment| reference(*segment, mneme_core::RecordKind::RecognitionSegment).to_value()))),
-        (mneme_core::Symbol::from("coverage"), options.coverage.to_value()),
-        (mneme_core::Symbol::from("status"), mneme_core::Value::symbol(options.status.symbol())),
-        (mneme_core::Symbol::from("scores"), mneme_core::Value::sequence(options.scores.iter().map(mneme_core::RecognitionScore::to_value).collect())),
-        (mneme_core::Symbol::from("alternatives"), mneme_core::Value::sequence(options.alternatives.iter().map(mneme_core::RecognitionAlternative::to_value).collect())),
-    ];
+    validate_recognition_run_options(&options)?;
     Ok(mneme_store::RecordDraft {
         schema_version: 5,
         kind: mneme_core::RecordKind::RecognitionRun,
@@ -1800,8 +1943,120 @@ pub fn build_recognition_run(
         revision_id,
         predecessor: None,
         scope: scope.clone(),
-        payload: mneme_core::Payload::new(fields),
+        payload: recognition_run_payload(&options),
     })
+}
+
+fn validate_recognition_run_options(
+    options: &RecognitionRunOptions<'_>,
+) -> crate::failure::Result<()> {
+    let unique_segments = options
+        .segments
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    if options.segments.len() > 4096 || unique_segments != options.segments.len() {
+        return Err(crate::failure::EvidenceError::policy(
+            "recognition run segment ids must be unique and bounded",
+        ));
+    }
+    for score in options.scores {
+        score
+            .validate()
+            .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+    }
+    for alternative in options.alternatives {
+        alternative
+            .validate()
+            .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+    }
+    Ok(())
+}
+
+fn recognition_run_payload(options: &RecognitionRunOptions<'_>) -> mneme_core::Payload {
+    let mut fields = Vec::with_capacity(14);
+    append_recognition_pins(&mut fields, options);
+    append_recognition_identity(&mut fields, options);
+    append_recognition_results(&mut fields, options);
+    mneme_core::Payload::new(fields)
+}
+
+fn append_recognition_pins(
+    fields: &mut Vec<(mneme_core::Symbol, mneme_core::Value)>,
+    options: &RecognitionRunOptions<'_>,
+) {
+    fields.push((mneme_core::Symbol::from("input"), options.input.to_value()));
+    fields.push((
+        mneme_core::Symbol::from("input-digest"),
+        options.input_digest.to_value(),
+    ));
+    fields.push((
+        mneme_core::Symbol::from("output"),
+        options.output.to_value(),
+    ));
+    fields.push((
+        mneme_core::Symbol::from("output-digest"),
+        options.output_digest.to_value(),
+    ));
+}
+
+fn append_recognition_identity(
+    fields: &mut Vec<(mneme_core::Symbol, mneme_core::Value)>,
+    options: &RecognitionRunOptions<'_>,
+) {
+    for (name, identity) in [
+        ("model", options.model),
+        ("runtime", options.runtime),
+        ("adapter", options.adapter),
+        ("preprocessing", options.preprocessing),
+        ("configuration", options.configuration),
+    ] {
+        fields.push((
+            mneme_core::Symbol::from(name),
+            mneme_core::Value::string(identity),
+        ));
+    }
+}
+
+fn append_recognition_results(
+    fields: &mut Vec<(mneme_core::Symbol, mneme_core::Value)>,
+    options: &RecognitionRunOptions<'_>,
+) {
+    fields.push((
+        mneme_core::Symbol::from("segments"),
+        mneme_core::Value::set(options.segments.iter().map(|segment| {
+            reference(*segment, mneme_core::RecordKind::RecognitionSegment).to_value()
+        })),
+    ));
+    fields.push((
+        mneme_core::Symbol::from("coverage"),
+        options.coverage.to_value(),
+    ));
+    fields.push((
+        mneme_core::Symbol::from("status"),
+        mneme_core::Value::symbol(options.status.symbol()),
+    ));
+    fields.push((
+        mneme_core::Symbol::from("scores"),
+        mneme_core::Value::sequence(
+            options
+                .scores
+                .iter()
+                .map(mneme_core::RecognitionScore::to_value)
+                .collect(),
+        ),
+    ));
+    fields.push((
+        mneme_core::Symbol::from("alternatives"),
+        mneme_core::Value::sequence(
+            options
+                .alternatives
+                .iter()
+                .map(mneme_core::RecognitionAlternative::to_value)
+                .collect(),
+        ),
+    ));
 }
 
 /// Build a segment mapping. A corrected alignment omits `run` and pins its
@@ -1812,16 +2067,34 @@ pub fn build_recognition_segment(
     scope: &mneme_core::ScopeId,
     options: RecognitionSegmentOptions<'_>,
 ) -> crate::failure::Result<mneme_store::RecordDraft> {
-    options.location.validate().map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+    options
+        .location
+        .validate()
+        .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
     let mut fields = vec![
-        (mneme_core::Symbol::from("text-source"), options.text_source.to_value()),
+        (
+            mneme_core::Symbol::from("text-source"),
+            options.text_source.to_value(),
+        ),
         (mneme_core::Symbol::from("span"), options.span.to_value()),
-        (mneme_core::Symbol::from("media-source"), options.media_source.to_value()),
-        (mneme_core::Symbol::from("media-digest"), options.media_digest.to_value()),
-        (mneme_core::Symbol::from("location"), options.location.to_value()),
+        (
+            mneme_core::Symbol::from("media-source"),
+            options.media_source.to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("media-digest"),
+            options.media_digest.to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("location"),
+            options.location.to_value(),
+        ),
     ];
     if let Some(run) = options.run {
-        fields.push((mneme_core::Symbol::from("run"), reference(run, mneme_core::RecordKind::RecognitionRun).to_value()));
+        fields.push((
+            mneme_core::Symbol::from("run"),
+            reference(run, mneme_core::RecordKind::RecognitionRun).to_value(),
+        ));
     }
     Ok(mneme_store::RecordDraft {
         schema_version: 5,
@@ -1966,16 +2239,10 @@ pub fn build_unavailable_source_preserving(
         ));
     }
     if let Some(parent) = source.derived_from {
-        fields.push((
-            mneme_core::Symbol::from("derived-from"),
-            parent.to_value(),
-        ));
+        fields.push((mneme_core::Symbol::from("derived-from"), parent.to_value()));
     }
     if let Some(extent) = source.media_extent {
-        fields.push((
-            mneme_core::Symbol::from("media-extent"),
-            extent.to_value(),
-        ));
+        fields.push((mneme_core::Symbol::from("media-extent"), extent.to_value()));
     }
     if let Some(transform) = source.media_transform {
         fields.push((

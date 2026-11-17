@@ -50,67 +50,11 @@ impl SourceView {
     /// Parse a source-revision envelope.
     pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
         expect_kind(&record, mneme_core::RecordKind::SourceRevision)?;
-        let content = mneme_core::SourceContent::from_value(
-            required(&record, "content")?,
-            &mneme_core::Path::root().field("content"),
-        )
-        .map_err(|diagnostic| {
-            crate::failure::EvidenceError::invalid(
-                record.record_id,
-                "source-revision",
-                diagnostic.to_string(),
-            )
-        })?;
-        let availability = match record
-            .payload
-            .get("availability")
-            .and_then(mneme_core::Value::as_symbol)
-        {
-            Some(symbol) => match symbol.as_str() {
-                "retained" => SourceAvailability::Retained,
-                "pruned" => SourceAvailability::Pruned,
-                "erased" => SourceAvailability::Erased,
-                "inaccessible" => SourceAvailability::Inaccessible,
-                other => SourceAvailability::Unavailable {
-                    reason: other.to_owned(),
-                },
-            },
-            None => match &content {
-                mneme_core::SourceContent::Retained(_) => SourceAvailability::Retained,
-                mneme_core::SourceContent::Unavailable { reason } => classify_unavailable(reason),
-            },
-        };
-        let media_type = match &content {
-            mneme_core::SourceContent::Retained(retained) => Some(retained.media_type().clone()),
-            mneme_core::SourceContent::Unavailable { .. } => None,
-        };
-        let prior_digest = match record.payload.get("content-digest") {
-            Some(value) => Some(
-                mneme_core::ContentDigest::from_value(
-                    value,
-                    &mneme_core::Path::root().field("content-digest"),
-                )
-                .map_err(|diagnostic| {
-                    crate::failure::EvidenceError::invalid(
-                        record.record_id,
-                        "source-revision",
-                        diagnostic.to_string(),
-                    )
-                })?,
-            ),
-            None => None,
-        };
-        let acquisition = mneme_core::Acquisition::from_value(
-            required(&record, "acquisition")?,
-            &mneme_core::Path::root().field("acquisition"),
-        )
-        .map_err(|diagnostic| {
-            crate::failure::EvidenceError::invalid(
-                record.record_id,
-                "source-revision",
-                diagnostic.to_string(),
-            )
-        })?;
+        let content = source_content(&record)?;
+        let availability = source_availability(&record, &content);
+        let media_type = retained_media_type(&content);
+        let prior_digest = source_prior_digest(&record)?;
+        let acquisition = source_acquisition(&record)?;
         let derived_from = optional_source_pin(&record, "derived-from")?;
         let media_extent = optional_media_extent(&record)?;
         let media_transform = optional_media_transform(&record)?;
@@ -148,19 +92,102 @@ impl SourceView {
     }
 }
 
+fn source_content(
+    record: &mneme_core::RecordEnvelope,
+) -> crate::failure::Result<mneme_core::SourceContent> {
+    mneme_core::SourceContent::from_value(
+        required(record, "content")?,
+        &mneme_core::Path::root().field("content"),
+    )
+    .map_err(|diagnostic| source_parse_error(record, diagnostic))
+}
+
+fn source_acquisition(
+    record: &mneme_core::RecordEnvelope,
+) -> crate::failure::Result<mneme_core::Acquisition> {
+    mneme_core::Acquisition::from_value(
+        required(record, "acquisition")?,
+        &mneme_core::Path::root().field("acquisition"),
+    )
+    .map_err(|diagnostic| source_parse_error(record, diagnostic))
+}
+
+fn source_prior_digest(
+    record: &mneme_core::RecordEnvelope,
+) -> crate::failure::Result<Option<mneme_core::ContentDigest>> {
+    record
+        .payload
+        .get("content-digest")
+        .map(|value| {
+            mneme_core::ContentDigest::from_value(
+                value,
+                &mneme_core::Path::root().field("content-digest"),
+            )
+            .map_err(|diagnostic| source_parse_error(record, diagnostic))
+        })
+        .transpose()
+}
+
+fn source_availability(
+    record: &mneme_core::RecordEnvelope,
+    content: &mneme_core::SourceContent,
+) -> SourceAvailability {
+    match record
+        .payload
+        .get("availability")
+        .and_then(mneme_core::Value::as_symbol)
+    {
+        Some(symbol) => match symbol.as_str() {
+            "retained" => SourceAvailability::Retained,
+            "pruned" => SourceAvailability::Pruned,
+            "erased" => SourceAvailability::Erased,
+            "inaccessible" => SourceAvailability::Inaccessible,
+            other => SourceAvailability::Unavailable {
+                reason: other.to_owned(),
+            },
+        },
+        None => match content {
+            mneme_core::SourceContent::Retained(_) => SourceAvailability::Retained,
+            mneme_core::SourceContent::Unavailable { reason } => classify_unavailable(reason),
+        },
+    }
+}
+
+fn retained_media_type(content: &mneme_core::SourceContent) -> Option<mneme_core::Symbol> {
+    match content {
+        mneme_core::SourceContent::Retained(retained) => Some(retained.media_type().clone()),
+        mneme_core::SourceContent::Unavailable { .. } => None,
+    }
+}
+
+fn source_parse_error(
+    record: &mneme_core::RecordEnvelope,
+    diagnostic: mneme_core::Diagnostic,
+) -> crate::failure::EvidenceError {
+    crate::failure::EvidenceError::invalid(
+        record.record_id,
+        "source-revision",
+        diagnostic.to_string(),
+    )
+}
+
 /// One source revision pin parsed from a stored reference field.
 fn optional_source_pin(
     record: &mneme_core::RecordEnvelope,
-    field: &str,
+    field: &'static str,
 ) -> crate::failure::Result<Option<mneme_core::SourcePin>> {
     match record.payload.get(field) {
-        Some(value) => mneme_core::SourcePin::from_value(value, &mneme_core::Path::root().field(field))
-            .map(Some)
-            .map_err(|diagnostic| crate::failure::EvidenceError::invalid(
-                record.record_id,
-                "source-revision",
-                diagnostic.to_string(),
-            )),
+        Some(value) => {
+            mneme_core::SourcePin::from_value(value, &mneme_core::Path::root().field(field))
+                .map(Some)
+                .map_err(|diagnostic| {
+                    crate::failure::EvidenceError::invalid(
+                        record.record_id,
+                        "source-revision",
+                        diagnostic.to_string(),
+                    )
+                })
+        }
         None => Ok(None),
     }
 }
@@ -174,28 +201,38 @@ fn optional_media_extent(
 fn optional_media_transform(
     record: &mneme_core::RecordEnvelope,
 ) -> crate::failure::Result<Option<mneme_core::MediaTransform>> {
-    parse_optional_media_value(record, "media-transform", mneme_core::MediaTransform::from_value)
+    parse_optional_media_value(
+        record,
+        "media-transform",
+        mneme_core::MediaTransform::from_value,
+    )
 }
 
 fn optional_correction(
     record: &mneme_core::RecordEnvelope,
 ) -> crate::failure::Result<Option<mneme_core::CorrectionProvenance>> {
-    parse_optional_media_value(record, "correction", mneme_core::CorrectionProvenance::from_value)
+    parse_optional_media_value(
+        record,
+        "correction",
+        mneme_core::CorrectionProvenance::from_value,
+    )
 }
 
 fn parse_optional_media_value<T>(
     record: &mneme_core::RecordEnvelope,
-    field: &str,
+    field: &'static str,
     parse: impl FnOnce(&mneme_core::Value, &mneme_core::Path) -> Result<T, mneme_core::Diagnostic>,
 ) -> crate::failure::Result<Option<T>> {
     match record.payload.get(field) {
         Some(value) => parse(value, &mneme_core::Path::root().field(field))
             .map(Some)
-            .map_err(|diagnostic| crate::failure::EvidenceError::invalid(
-                record.record_id,
-                "source-revision",
-                diagnostic.to_string(),
-            )),
+            .map_err(|diagnostic| {
+                crate::failure::EvidenceError::invalid(
+                    record.record_id,
+                    "source-revision",
+                    diagnostic.to_string(),
+                )
+            }),
         None => Ok(None),
     }
 }
@@ -777,13 +814,23 @@ impl RecognitionRunView {
         expect_kind(&record, mneme_core::RecordKind::RecognitionRun)?;
         let status = required_symbol_text(&record, "status")?;
         let status = mneme_core::RecognitionStatus::parse(&status).ok_or_else(|| {
-            crate::failure::EvidenceError::invalid(record.record_id, "recognition-run", "unknown recognition status")
+            crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "recognition-run",
+                "unknown recognition status",
+            )
         })?;
         let coverage = mneme_core::RecognitionCoverage::from_value(
             required(&record, "coverage")?,
             &mneme_core::Path::root().field("coverage"),
         )
-        .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "recognition-run", diagnostic.to_string()))?;
+        .map_err(|diagnostic| {
+            crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "recognition-run",
+                diagnostic.to_string(),
+            )
+        })?;
         let input = required_source_pin(&record, "input")?;
         let output = required_source_pin(&record, "output")?;
         Ok(RecognitionRunView {
@@ -799,8 +846,16 @@ impl RecognitionRunView {
             segments: required_reference_set(&record, "segments")?,
             coverage,
             status,
-            scores: optional_typed_sequence(&record, "scores", mneme_core::RecognitionScore::from_value)?,
-            alternatives: optional_typed_sequence(&record, "alternatives", mneme_core::RecognitionAlternative::from_value)?,
+            scores: optional_typed_sequence(
+                &record,
+                "scores",
+                mneme_core::RecognitionScore::from_value,
+            )?,
+            alternatives: optional_typed_sequence(
+                &record,
+                "alternatives",
+                mneme_core::RecognitionAlternative::from_value,
+            )?,
             record,
         })
     }
@@ -826,12 +881,24 @@ impl RecognitionSegmentView {
             required(&record, "span")?,
             &mneme_core::Path::root().field("span"),
         )
-        .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "recognition-segment", diagnostic.to_string()))?;
+        .map_err(|diagnostic| {
+            crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "recognition-segment",
+                diagnostic.to_string(),
+            )
+        })?;
         let location = mneme_core::MediaLocation::from_value(
             required(&record, "location")?,
             &mneme_core::Path::root().field("location"),
         )
-        .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "recognition-segment", diagnostic.to_string()))?;
+        .map_err(|diagnostic| {
+            crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "recognition-segment",
+                diagnostic.to_string(),
+            )
+        })?;
         Ok(RecognitionSegmentView {
             run: optional_reference_target(&record, "run")?,
             text_source: required_source_pin(&record, "text-source")?,
@@ -846,37 +913,62 @@ impl RecognitionSegmentView {
 
 fn required_source_pin(
     record: &mneme_core::RecordEnvelope,
-    field: &str,
+    field: &'static str,
 ) -> crate::failure::Result<mneme_core::SourcePin> {
     mneme_core::SourcePin::from_value(
         required(record, field)?,
         &mneme_core::Path::root().field(field),
     )
-    .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "source-pin", diagnostic.to_string()))
+    .map_err(|diagnostic| {
+        crate::failure::EvidenceError::invalid(
+            record.record_id,
+            "source-pin",
+            diagnostic.to_string(),
+        )
+    })
 }
 
 fn required_digest(
     record: &mneme_core::RecordEnvelope,
-    field: &str,
+    field: &'static str,
 ) -> crate::failure::Result<mneme_core::ContentDigest> {
     mneme_core::ContentDigest::from_value(
         required(record, field)?,
         &mneme_core::Path::root().field(field),
     )
-    .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "recognition", diagnostic.to_string()))
+    .map_err(|diagnostic| {
+        crate::failure::EvidenceError::invalid(
+            record.record_id,
+            "recognition",
+            diagnostic.to_string(),
+        )
+    })
 }
 
 fn optional_typed_sequence<T>(
     record: &mneme_core::RecordEnvelope,
-    field: &str,
+    field: &'static str,
     parse: impl Fn(&mneme_core::Value, &mneme_core::Path) -> Result<T, mneme_core::Diagnostic>,
 ) -> crate::failure::Result<Vec<T>> {
-    let Some(value) = record.payload.get(field) else { return Ok(Vec::new()); };
-    let items = value.as_sequence().ok_or_else(|| crate::failure::EvidenceError::invalid(record.record_id, field, "expected a typed sequence"))?;
-    items.iter().enumerate().map(|(index, item)| {
-        parse(item, &mneme_core::Path::root().field(field).index(index))
-            .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, field, diagnostic.to_string()))
-    }).collect()
+    let Some(value) = record.payload.get(field) else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_sequence().ok_or_else(|| {
+        crate::failure::EvidenceError::invalid(record.record_id, field, "expected a typed sequence")
+    })?;
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            parse(item, &mneme_core::Path::root().field(field).index(index)).map_err(|diagnostic| {
+                crate::failure::EvidenceError::invalid(
+                    record.record_id,
+                    field,
+                    diagnostic.to_string(),
+                )
+            })
+        })
+        .collect()
 }
 
 fn expect_kind(

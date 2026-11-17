@@ -1,4 +1,6 @@
 //! Regression tests for recognition provenance and correction lineage.
+#![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
 
@@ -25,32 +27,8 @@ fn commit_recognition(workspace: &mut mneme_store::Workspace) -> Fixture {
         time_base,
         channel: 0,
     };
-    let (input_record, input_blob) = mneme_memory::build_captured_source(
-        input.source(),
-        input.revision(),
-        &common::scope(),
-        mneme_memory::SourceOptions {
-            bytes: audio,
-            media_type: "audio/wav",
-            entity: None,
-            path_hint: None,
-        },
-        mneme_core::MediaExtent::Audio {
-            duration_ticks: 100,
-            time_base,
-            channels: 1,
-        },
-    )
-    .expect("captured source");
-    let (output_record, output_blob) = mneme_memory::build_recognized_source(
-        output.source(),
-        output.revision(),
-        &common::scope(),
-        text,
-        input,
-        None,
-    )
-    .expect("recognized text");
+    let (input_record, input_blob, output_record, output_blob) =
+        recognition_source_records(input, output, audio, text, time_base);
     let run_id = common::rid(0xa3);
     let segment_id = common::rid(0xa4);
     let run = mneme_memory::build_recognition_run(
@@ -106,13 +84,62 @@ fn commit_recognition(workspace: &mut mneme_store::Workspace) -> Fixture {
     }
 }
 
+fn recognition_source_records(
+    input: mneme_core::SourcePin,
+    output: mneme_core::SourcePin,
+    audio: &[u8],
+    text: &[u8],
+    time_base: mneme_core::TimeBase,
+) -> (
+    mneme_store::RecordDraft,
+    mneme_store::SourceBlobDraft,
+    mneme_store::RecordDraft,
+    mneme_store::SourceBlobDraft,
+) {
+    let (input_record, input_blob) = mneme_memory::build_captured_source(
+        input.source(),
+        input.revision(),
+        &common::scope(),
+        mneme_memory::SourceOptions {
+            bytes: audio,
+            media_type: "audio/wav",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_core::MediaExtent::Audio {
+            duration_ticks: 100,
+            time_base,
+            channels: 1,
+        },
+    )
+    .expect("captured source");
+    let (output_record, output_blob) = mneme_memory::build_recognized_source(
+        output.source(),
+        output.revision(),
+        &common::scope(),
+        mneme_memory::SourceOptions {
+            bytes: text,
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        input,
+    )
+    .expect("recognized text");
+    (input_record, input_blob, output_record, output_blob)
+}
+
 #[test]
 fn recognition_and_correction_keep_exact_pins_and_shared_evidence_roots() {
     let (_temp, mut workspace) = common::setup();
     let fixture = commit_recognition(&mut workspace);
     let corrected = mneme_core::SourcePin::new(fixture.output.source(), common::rev(0xb5));
-    let correction = mneme_core::CorrectionProvenance::new("human-reviewer", "inserted a leading word", true)
-        .expect("correction provenance");
+    let correction = mneme_core::CorrectionProvenance::new(
+        "human-reviewer",
+        "inserted a leading word",
+        mneme_core::AlignmentDisposition::Updated,
+    )
+    .expect("correction provenance");
     let (corrected_record, corrected_blob) = mneme_memory::build_corrected_source(
         fixture.output,
         corrected.revision(),
@@ -151,27 +178,53 @@ fn recognition_and_correction_keep_exact_pins_and_shared_evidence_roots() {
     let view = mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
         .view()
         .expect("view");
-    let original_text = view.source_at(fixture.output.source(), fixture.output.revision()).expect("machine text");
-    let corrected_text = view.source_at(corrected.source(), corrected.revision()).expect("corrected text");
-    assert_eq!(original_text.acquisition, mneme_core::Acquisition::MachineRecognized);
-    assert_eq!(corrected_text.acquisition, mneme_core::Acquisition::Corrected);
+    let original_text = view
+        .source_at(fixture.output.source(), fixture.output.revision())
+        .expect("machine text");
+    let corrected_text = view
+        .source_at(corrected.source(), corrected.revision())
+        .expect("corrected text");
+    assert_eq!(
+        original_text.acquisition,
+        mneme_core::Acquisition::MachineRecognized
+    );
+    assert_eq!(
+        corrected_text.acquisition,
+        mneme_core::Acquisition::Corrected
+    );
     assert_eq!(corrected_text.derived_from, Some(fixture.output));
     assert_eq!(corrected_text.correction, Some(correction));
     assert_eq!(
-        view.source_status_for(&original_text).expect("original bytes"),
+        view.source_status_for(&original_text)
+            .expect("original bytes"),
         mneme_memory::SourceStatus::Retained(b"hello world".to_vec())
     );
     assert_eq!(
-        view.source_status_for(&corrected_text).expect("corrected bytes"),
+        view.source_status_for(&corrected_text)
+            .expect("corrected bytes"),
         mneme_memory::SourceStatus::Retained(b"well hello world".to_vec())
     );
-    assert_eq!(view.recognition_run(fixture.run).expect("run").segments, std::collections::BTreeSet::from([fixture.segment]));
-    let corrected_segments = view.recognition_segments_for_source(corrected.source(), corrected.revision());
+    assert_eq!(
+        view.recognition_run(fixture.run).expect("run").segments,
+        std::collections::BTreeSet::from([fixture.segment])
+    );
+    let corrected_segments =
+        view.recognition_segments_for_source(corrected.source(), corrected.revision());
     assert_eq!(corrected_segments.len(), 1);
-    assert_eq!(corrected_segments[0].text_span, mneme_core::SourceSpan::new(5, 9).expect("new span"));
+    assert_eq!(
+        corrected_segments[0].text_span,
+        mneme_core::SourceSpan::new(5, 9).expect("new span")
+    );
     assert_eq!(corrected_segments[0].run, None);
-    assert_eq!(view.source_roots(fixture.input).expect("input root"), view.source_roots(fixture.output).expect("machine text root"));
-    assert_eq!(view.source_roots(fixture.input).expect("input root"), view.source_roots(corrected).expect("corrected root"));
+    assert_eq!(
+        view.source_roots(fixture.input).expect("input root"),
+        view.source_roots(fixture.output)
+            .expect("machine text root")
+    );
+    assert_eq!(
+        view.source_roots(fixture.input).expect("input root"),
+        view.source_roots(corrected).expect("corrected root")
+    );
     assert!(view.assertions().expect("assertion records").is_empty());
 }
 
@@ -201,9 +254,15 @@ fn recognition_refuses_changed_input_digest_and_out_of_range_media_locations() {
         },
     )
     .expect("typed run draft");
-    assert!(mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
-        .commit(common::batch("wrong-input-digest", vec![invalid_run], Vec::new()))
-        .is_err());
+    assert!(
+        mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+            .commit(common::batch(
+                "wrong-input-digest",
+                vec![invalid_run],
+                Vec::new()
+            ))
+            .is_err()
+    );
 
     let outside = mneme_core::MediaLocation::Audio {
         start_tick: 90,
@@ -247,7 +306,13 @@ fn recognition_refuses_changed_input_digest_and_out_of_range_media_locations() {
         },
     )
     .expect("typed run draft");
-    assert!(mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
-        .commit(common::batch("outside-media-location", vec![run, invalid_segment], Vec::new()))
-        .is_err());
+    assert!(
+        mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+            .commit(common::batch(
+                "outside-media-location",
+                vec![run, invalid_segment],
+                Vec::new()
+            ))
+            .is_err()
+    );
 }

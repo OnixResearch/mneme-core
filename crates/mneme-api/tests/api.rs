@@ -1772,11 +1772,11 @@ fn scope_is_authorized_before_content_or_receipt_lookup() {
 fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
     let harness = Harness::new();
     let audio = b"fixed audio bytes";
-    let text = b"hello world";
+    let recognized_text = b"hello world";
     let input_pin = mneme_core::SourcePin::new(rid(0xa1), rev(0xb1));
     let output_pin = mneme_core::SourcePin::new(rid(0xa2), rev(0xb2));
     let input_digest = mneme_core::ContentDigest::of_source_bytes(audio);
-    let output_digest = mneme_core::ContentDigest::of_source_bytes(text);
+    let output_digest = mneme_core::ContentDigest::of_source_bytes(recognized_text);
     let time_base = mneme_core::TimeBase::new(1, 100).expect("audio time base");
     let location = mneme_core::MediaLocation::Audio {
         start_tick: 20,
@@ -1805,9 +1805,13 @@ fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
         output_pin.source(),
         output_pin.revision(),
         &cedar(),
-        text,
+        mneme_memory::SourceOptions {
+            bytes: recognized_text,
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
         input_pin,
-        None,
     )
     .expect("recognized text");
     let run_id = rid(0xa3);
@@ -1858,18 +1862,23 @@ fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
     let decoded = mneme_api::decode(&command_document(
         "recognition.read",
         mneme_core::Value::symbol_dictionary([
-            (mneme_core::Symbol::from("scope"), mneme_core::Value::string("project:cedar")),
+            (
+                mneme_core::Symbol::from("scope"),
+                mneme_core::Value::string("project:cedar"),
+            ),
             (mneme_core::Symbol::from("run"), run_id.to_value()),
         ]),
     ))
     .expect("recognition read command");
     assert!(matches!(decoded, mneme_api::ApiCommand::RecognitionRead { run, .. } if run == run_id));
 
-    let response = harness.cedar_service().execute(&mneme_api::ApiCommand::RecognitionRead {
-        request_id: "recognition".to_owned(),
-        scope: cedar(),
-        run: run_id,
-    });
+    let response = harness
+        .cedar_service()
+        .execute(&mneme_api::ApiCommand::RecognitionRead {
+            request_id: "recognition".to_owned(),
+            scope: cedar(),
+            run: run_id,
+        });
     assert!(response.ok, "{:?}", response.value);
     assert_eq!(text(field(data(&response), "text")), "hello world");
     assert_eq!(
@@ -1880,11 +1889,20 @@ fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
         field(field(data(&response), "output-source"), "acquisition"),
         &mneme_core::Acquisition::MachineRecognized.to_value()
     );
-    assert_eq!(field(data(&response), "input-digest"), &input_digest.to_value());
-    assert_eq!(field(data(&response), "output-digest"), &output_digest.to_value());
+    assert_eq!(
+        field(data(&response), "input-digest"),
+        &input_digest.to_value()
+    );
+    assert_eq!(
+        field(data(&response), "output-digest"),
+        &output_digest.to_value()
+    );
     let segments = sequence(data(&response), "segments");
     assert_eq!(segments.len(), 1);
-    assert_eq!(field(&segments[0], "span"), &mneme_core::SourceSpan::new(0, 4).expect("span").to_value());
+    assert_eq!(
+        field(&segments[0], "span"),
+        &mneme_core::SourceSpan::new(0, 4).expect("span").to_value()
+    );
     assert_eq!(field(&segments[0], "location"), &location.to_value());
 }
 
@@ -1892,11 +1910,13 @@ fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
 fn recognition_read_is_denied_before_an_unauthorized_scope_lookup() {
     let harness = Harness::new();
     let run_id = rid(0xc1);
-    let response = harness.cedar_service().execute(&mneme_api::ApiCommand::RecognitionRead {
-        request_id: "recognition".to_owned(),
-        scope: birch(),
-        run: run_id,
-    });
+    let response = harness
+        .cedar_service()
+        .execute(&mneme_api::ApiCommand::RecognitionRead {
+            request_id: "recognition".to_owned(),
+            scope: birch(),
+            run: run_id,
+        });
     assert!(!response.ok);
     assert_eq!(error_of(&response).0, "denied");
     assert_no_context(&response);

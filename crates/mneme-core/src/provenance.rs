@@ -1,4 +1,4 @@
-//! Typed acquisition, media locations, and recognition provenance values.
+//! Typed acquisition, media locations, recognition, and exact correction provenance.
 //!
 //! `SourceSpan` remains an inclusive byte interval. These types describe
 //! locations in non-text media and carry the units needed to interpret them.
@@ -151,9 +151,18 @@ impl MediaExtent {
                 duration_ticks,
                 time_base,
                 channels,
-            } if duration_ticks > 0 && time_base.numerator > 0 && time_base.denominator > 0 && channels > 0 => Ok(()),
+            } if duration_ticks > 0
+                && time_base.numerator > 0
+                && time_base.denominator > 0
+                && channels > 0 =>
+            {
+                Ok(())
+            }
             MediaExtent::Pages { page_count } | MediaExtent::InkPages { page_count }
-                if page_count > 0 => Ok(()),
+                if page_count > 0 =>
+            {
+                Ok(())
+            }
             _ => Err("media extent must have positive, unit-bearing bounds"),
         }
     }
@@ -198,27 +207,42 @@ impl MediaExtent {
         path: &crate::problem::Path,
     ) -> Result<Self, crate::problem::Diagnostic> {
         let record = expect_record(value, "media-extent", path)?;
-        let Some(kind) = record.fields().first().and_then(crate::typed::Value::as_symbol) else {
+        let Some(kind) = record
+            .fields()
+            .first()
+            .and_then(crate::typed::Value::as_symbol)
+        else {
             return Err(type_error(path, "media extent"));
         };
         match kind.as_str() {
             "audio" if record.fields().len() == 5 => {
-                let duration_ticks = unsigned(&record.fields()[1]).ok_or_else(|| type_error(path, "positive audio duration"))?;
-                let numerator = unsigned(&record.fields()[2]).ok_or_else(|| type_error(path, "positive time-base numerator"))?;
-                let denominator = unsigned(&record.fields()[3]).ok_or_else(|| type_error(path, "positive time-base denominator"))?;
-                let channels = positive_u32(&record.fields()[4]).ok_or_else(|| type_error(path, "positive channel count"))?;
-                let time_base = TimeBase::new(numerator, denominator).map_err(|message| invalid_interval(path, message))?;
+                let duration_ticks = unsigned(&record.fields()[1])
+                    .ok_or_else(|| type_error(path, "positive audio duration"))?;
+                let numerator = unsigned(&record.fields()[2])
+                    .ok_or_else(|| type_error(path, "positive time-base numerator"))?;
+                let denominator = unsigned(&record.fields()[3])
+                    .ok_or_else(|| type_error(path, "positive time-base denominator"))?;
+                let channels = positive_u32(&record.fields()[4])
+                    .ok_or_else(|| type_error(path, "positive channel count"))?;
+                let time_base = TimeBase::new(numerator, denominator)
+                    .map_err(|message| invalid_interval(path, message))?;
                 if duration_ticks == 0 {
                     return Err(invalid_interval(path, "audio duration must be positive"));
                 }
-                Ok(MediaExtent::Audio { duration_ticks, time_base, channels })
+                Ok(MediaExtent::Audio {
+                    duration_ticks,
+                    time_base,
+                    channels,
+                })
             }
             "pages" if record.fields().len() == 2 => {
-                let page_count = positive_u32(&record.fields()[1]).ok_or_else(|| type_error(path, "positive page count"))?;
+                let page_count = positive_u32(&record.fields()[1])
+                    .ok_or_else(|| type_error(path, "positive page count"))?;
                 Ok(MediaExtent::Pages { page_count })
             }
             "ink-pages" if record.fields().len() == 2 => {
-                let page_count = positive_u32(&record.fields()[1]).ok_or_else(|| type_error(path, "positive ink page count"))?;
+                let page_count = positive_u32(&record.fields()[1])
+                    .ok_or_else(|| type_error(path, "positive ink page count"))?;
                 Ok(MediaExtent::InkPages { page_count })
             }
             _ => Err(type_error(path, "valid media extent")),
@@ -278,19 +302,27 @@ impl CoordinateFrame {
         path: &crate::problem::Path,
     ) -> Result<Self, crate::problem::Diagnostic> {
         let record = expect_record(value, "coordinate-frame", path)?;
-        let Some(kind) = record.fields().first().and_then(crate::typed::Value::as_symbol) else {
+        let Some(kind) = record
+            .fields()
+            .first()
+            .and_then(crate::typed::Value::as_symbol)
+        else {
             return Err(type_error(path, "coordinate frame"));
         };
         match kind.as_str() {
             "normalized" if record.fields().len() == 1 => Ok(CoordinateFrame::Normalized),
             "pixels" if record.fields().len() == 3 => {
-                let width = positive_u32(&record.fields()[1]).ok_or_else(|| type_error(path, "positive pixel width"))?;
-                let height = positive_u32(&record.fields()[2]).ok_or_else(|| type_error(path, "positive pixel height"))?;
+                let width = positive_u32(&record.fields()[1])
+                    .ok_or_else(|| type_error(path, "positive pixel width"))?;
+                let height = positive_u32(&record.fields()[2])
+                    .ok_or_else(|| type_error(path, "positive pixel height"))?;
                 Ok(CoordinateFrame::Pixels { width, height })
             }
             "page-points" if record.fields().len() == 3 => {
-                let width = finite_double(&record.fields()[1]).ok_or_else(|| type_error(path, "finite page width"))?;
-                let height = finite_double(&record.fields()[2]).ok_or_else(|| type_error(path, "finite page height"))?;
+                let width = finite_double(&record.fields()[1])
+                    .ok_or_else(|| type_error(path, "finite page width"))?;
+                let height = finite_double(&record.fields()[2])
+                    .ok_or_else(|| type_error(path, "finite page height"))?;
                 if width <= 0.0 || height <= 0.0 {
                     return Err(invalid_interval(path, "page dimensions must be positive"));
                 }
@@ -332,28 +364,55 @@ impl MediaLocation {
     /// Validate units, finite coordinates and bounds internal to the location.
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
-            MediaLocation::Audio { start_tick, end_tick, time_base, .. } => {
-                if start_tick >= end_tick || time_base.numerator == 0 || time_base.denominator == 0 {
+            MediaLocation::Audio {
+                start_tick,
+                end_tick,
+                time_base,
+                ..
+            } => {
+                if start_tick >= end_tick || time_base.numerator == 0 || time_base.denominator == 0
+                {
                     return Err("audio interval or time base is invalid");
                 }
             }
-            MediaLocation::PageRegion { frame, x, y, width, height, .. } => {
+            MediaLocation::PageRegion {
+                frame,
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => {
                 let (max_x, max_y) = frame.bounds();
                 let end_x = x + width;
                 let end_y = y + height;
-                if ![x, y, width, height, &end_x, &end_y].into_iter().all(|value| value.is_finite())
-                    || *x < 0.0 || *y < 0.0 || *width <= 0.0 || *height <= 0.0
-                    || end_x > max_x || end_y > max_y
+                if ![x, y, width, height, &end_x, &end_y]
+                    .into_iter()
+                    .all(|value| value.is_finite())
+                    || *x < 0.0
+                    || *y < 0.0
+                    || *width <= 0.0
+                    || *height <= 0.0
+                    || end_x > max_x
+                    || end_y > max_y
                 {
-                    return Err("page region must be finite, non-empty, and inside its coordinate frame");
+                    return Err(
+                        "page region must be finite, non-empty, and inside its coordinate frame",
+                    );
                 }
             }
             MediaLocation::InkStrokes { layer, strokes, .. } => {
-                if layer.trim().is_empty() || layer.len() > 256 || strokes.is_empty() || strokes.len() > 4096 {
+                if layer.trim().is_empty()
+                    || layer.len() > 256
+                    || strokes.is_empty()
+                    || strokes.len() > 4096
+                {
                     return Err("ink location needs a layer and between 1 and 4096 stroke ids");
                 }
                 let mut unique = std::collections::BTreeSet::new();
-                if strokes.iter().any(|stroke| stroke.trim().is_empty() || stroke.len() > 256 || !unique.insert(stroke)) {
+                if strokes.iter().any(|stroke| {
+                    stroke.trim().is_empty() || stroke.len() > 256 || !unique.insert(stroke)
+                }) {
                     return Err("ink stroke ids must be non-empty, bounded, and unique");
                 }
             }
@@ -365,11 +424,37 @@ impl MediaLocation {
     pub fn validate_extent(&self, extent: MediaExtent) -> Result<(), &'static str> {
         self.validate()?;
         match (self, extent) {
-            (MediaLocation::Audio { end_tick, time_base, channel, .. }, MediaExtent::Audio { duration_ticks, time_base: source_time_base, channels })
-                if end_tick <= &duration_ticks && time_base == &source_time_base && *channel < channels => Ok(()),
-            (MediaLocation::PageRegion { page, .. }, MediaExtent::Pages { page_count }) if *page < page_count => Ok(()),
-            (MediaLocation::InkStrokes { page, .. }, MediaExtent::InkPages { page_count }) if *page < page_count => Ok(()),
-            (MediaLocation::Audio { .. }, MediaExtent::Audio { .. }) => Err("audio location exceeds duration, uses a different time base, or selects an absent channel"),
+            (
+                MediaLocation::Audio {
+                    end_tick,
+                    time_base,
+                    channel,
+                    ..
+                },
+                MediaExtent::Audio {
+                    duration_ticks,
+                    time_base: source_time_base,
+                    channels,
+                },
+            ) if end_tick <= &duration_ticks
+                && time_base == &source_time_base
+                && *channel < channels =>
+            {
+                Ok(())
+            }
+            (MediaLocation::PageRegion { page, .. }, MediaExtent::Pages { page_count })
+                if *page < page_count =>
+            {
+                Ok(())
+            }
+            (MediaLocation::InkStrokes { page, .. }, MediaExtent::InkPages { page_count })
+                if *page < page_count =>
+            {
+                Ok(())
+            }
+            (MediaLocation::Audio { .. }, MediaExtent::Audio { .. }) => Err(
+                "audio location exceeds duration, uses a different time base, or selects an absent channel",
+            ),
             _ => Err("media location kind does not match the pinned source extent"),
         }
     }
@@ -377,7 +462,12 @@ impl MediaLocation {
     /// Encode the typed media-native location.
     pub fn to_value(&self) -> crate::typed::Value {
         match self {
-            MediaLocation::Audio { start_tick, end_tick, time_base, channel } => crate::typed::Value::record_named(
+            MediaLocation::Audio {
+                start_tick,
+                end_tick,
+                time_base,
+                channel,
+            } => crate::typed::Value::record_named(
                 "media-location",
                 vec![
                     crate::typed::Value::symbol("audio"),
@@ -388,7 +478,14 @@ impl MediaLocation {
                     crate::typed::Value::integer(*channel),
                 ],
             ),
-            MediaLocation::PageRegion { page, frame, x, y, width, height } => crate::typed::Value::record_named(
+            MediaLocation::PageRegion {
+                page,
+                frame,
+                x,
+                y,
+                width,
+                height,
+            } => crate::typed::Value::record_named(
                 "media-location",
                 vec![
                     crate::typed::Value::symbol("page-region"),
@@ -400,13 +497,23 @@ impl MediaLocation {
                     crate::typed::Value::double(*height),
                 ],
             ),
-            MediaLocation::InkStrokes { page, layer, strokes } => crate::typed::Value::record_named(
+            MediaLocation::InkStrokes {
+                page,
+                layer,
+                strokes,
+            } => crate::typed::Value::record_named(
                 "media-location",
                 vec![
                     crate::typed::Value::symbol("ink-strokes"),
                     crate::typed::Value::integer(*page),
                     crate::typed::Value::string(layer.clone()),
-                    crate::typed::Value::sequence(strokes.iter().cloned().map(crate::typed::Value::string).collect()),
+                    crate::typed::Value::sequence(
+                        strokes
+                            .iter()
+                            .cloned()
+                            .map(crate::typed::Value::string)
+                            .collect(),
+                    ),
                 ],
             ),
         }
@@ -418,39 +525,96 @@ impl MediaLocation {
         path: &crate::problem::Path,
     ) -> Result<Self, crate::problem::Diagnostic> {
         let record = expect_record(value, "media-location", path)?;
-        let Some(kind) = record.fields().first().and_then(crate::typed::Value::as_symbol) else {
+        let fields = record.fields();
+        let Some(kind) = fields.first().and_then(crate::typed::Value::as_symbol) else {
             return Err(type_error(path, "media location"));
         };
         let location = match kind.as_str() {
-            "audio" if record.fields().len() == 6 => {
-                let start_tick = unsigned(&record.fields()[1]).ok_or_else(|| type_error(path, "non-negative audio start"))?;
-                let end_tick = unsigned(&record.fields()[2]).ok_or_else(|| type_error(path, "non-negative audio end"))?;
-                let numerator = unsigned(&record.fields()[3]).ok_or_else(|| type_error(path, "positive time-base numerator"))?;
-                let denominator = unsigned(&record.fields()[4]).ok_or_else(|| type_error(path, "positive time-base denominator"))?;
-                let channel = u32_value(&record.fields()[5]).ok_or_else(|| type_error(path, "non-negative channel index"))?;
-                let time_base = TimeBase::new(numerator, denominator).map_err(|message| invalid_interval(path, message))?;
-                MediaLocation::Audio { start_tick, end_tick, time_base, channel }
-            }
-            "page-region" if record.fields().len() == 7 => MediaLocation::PageRegion {
-                page: u32_value(&record.fields()[1]).ok_or_else(|| type_error(path, "non-negative page index"))?,
-                frame: CoordinateFrame::from_value(&record.fields()[2], &path.index(2))?,
-                x: finite_double(&record.fields()[3]).ok_or_else(|| type_error(path, "finite x coordinate"))?,
-                y: finite_double(&record.fields()[4]).ok_or_else(|| type_error(path, "finite y coordinate"))?,
-                width: finite_double(&record.fields()[5]).ok_or_else(|| type_error(path, "finite region width"))?,
-                height: finite_double(&record.fields()[6]).ok_or_else(|| type_error(path, "finite region height"))?,
-            },
-            "ink-strokes" if record.fields().len() == 4 => {
-                let page = u32_value(&record.fields()[1]).ok_or_else(|| type_error(path, "non-negative page index"))?;
-                let layer = record.fields()[2].as_string().ok_or_else(|| type_error(path, "ink layer text"))?.to_owned();
-                let items = record.fields()[3].as_sequence().ok_or_else(|| type_error(path, "ink stroke sequence"))?;
-                let strokes = items.iter().map(|item| item.as_string().map(str::to_owned).ok_or_else(|| type_error(path, "ink stroke id text"))).collect::<Result<Vec<_>, _>>()?;
-                MediaLocation::InkStrokes { page, layer, strokes }
-            }
+            "audio" => parse_audio_location(fields, path)?,
+            "page-region" => parse_page_region(fields, path)?,
+            "ink-strokes" => parse_ink_strokes(fields, path)?,
             _ => return Err(type_error(path, "valid media location")),
         };
-        location.validate().map_err(|message| invalid_interval(path, message))?;
+        location
+            .validate()
+            .map_err(|message| invalid_interval(path, message))?;
         Ok(location)
     }
+}
+
+fn parse_audio_location(
+    fields: &[crate::typed::Value],
+    path: &crate::problem::Path,
+) -> Result<MediaLocation, crate::problem::Diagnostic> {
+    if fields.len() != 6 {
+        return Err(type_error(path, "valid audio location"));
+    }
+    let start_tick =
+        unsigned(&fields[1]).ok_or_else(|| type_error(path, "non-negative audio start"))?;
+    let end_tick =
+        unsigned(&fields[2]).ok_or_else(|| type_error(path, "non-negative audio end"))?;
+    let numerator =
+        unsigned(&fields[3]).ok_or_else(|| type_error(path, "positive time-base numerator"))?;
+    let denominator =
+        unsigned(&fields[4]).ok_or_else(|| type_error(path, "positive time-base denominator"))?;
+    let channel =
+        u32_value(&fields[5]).ok_or_else(|| type_error(path, "non-negative channel index"))?;
+    let time_base =
+        TimeBase::new(numerator, denominator).map_err(|message| invalid_interval(path, message))?;
+    Ok(MediaLocation::Audio {
+        start_tick,
+        end_tick,
+        time_base,
+        channel,
+    })
+}
+
+fn parse_page_region(
+    fields: &[crate::typed::Value],
+    path: &crate::problem::Path,
+) -> Result<MediaLocation, crate::problem::Diagnostic> {
+    if fields.len() != 7 {
+        return Err(type_error(path, "valid page region"));
+    }
+    Ok(MediaLocation::PageRegion {
+        page: u32_value(&fields[1]).ok_or_else(|| type_error(path, "non-negative page index"))?,
+        frame: CoordinateFrame::from_value(&fields[2], &path.index(2))?,
+        x: finite_double(&fields[3]).ok_or_else(|| type_error(path, "finite x coordinate"))?,
+        y: finite_double(&fields[4]).ok_or_else(|| type_error(path, "finite y coordinate"))?,
+        width: finite_double(&fields[5]).ok_or_else(|| type_error(path, "finite region width"))?,
+        height: finite_double(&fields[6])
+            .ok_or_else(|| type_error(path, "finite region height"))?,
+    })
+}
+
+fn parse_ink_strokes(
+    fields: &[crate::typed::Value],
+    path: &crate::problem::Path,
+) -> Result<MediaLocation, crate::problem::Diagnostic> {
+    if fields.len() != 4 {
+        return Err(type_error(path, "valid ink location"));
+    }
+    let page = u32_value(&fields[1]).ok_or_else(|| type_error(path, "non-negative page index"))?;
+    let layer = fields[2]
+        .as_string()
+        .ok_or_else(|| type_error(path, "ink layer text"))?
+        .to_owned();
+    let items = fields[3]
+        .as_sequence()
+        .ok_or_else(|| type_error(path, "ink stroke sequence"))?;
+    let strokes = items
+        .iter()
+        .map(|item| {
+            item.as_string()
+                .map(str::to_owned)
+                .ok_or_else(|| type_error(path, "ink stroke id text"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(MediaLocation::InkStrokes {
+        page,
+        layer,
+        strokes,
+    })
 }
 
 /// Affine map from a processed page plane into its exact parent source plane.
@@ -472,7 +636,11 @@ impl MediaTransform {
         to: CoordinateFrame,
         coefficients: [f64; 6],
     ) -> Result<Self, &'static str> {
-        let transform = MediaTransform { from, to, coefficients };
+        let transform = MediaTransform {
+            from,
+            to,
+            coefficients,
+        };
         transform.validate()?;
         Ok(transform)
     }
@@ -504,14 +672,30 @@ impl MediaTransform {
         }
         let (from_width, from_height) = self.from.bounds();
         let (to_width, to_height) = self.to.bounds();
-        if ![from_width, from_height, to_width, to_height].into_iter().all(f64::is_finite)
-            || from_width <= 0.0 || from_height <= 0.0 || to_width <= 0.0 || to_height <= 0.0
+        if ![from_width, from_height, to_width, to_height]
+            .into_iter()
+            .all(f64::is_finite)
+            || from_width <= 0.0
+            || from_height <= 0.0
+            || to_width <= 0.0
+            || to_height <= 0.0
         {
             return Err("media transform frames must have positive finite dimensions");
         }
-        for (x, y) in [(0.0, 0.0), (from_width, 0.0), (0.0, from_height), (from_width, from_height)] {
+        for (x, y) in [
+            (0.0, 0.0),
+            (from_width, 0.0),
+            (0.0, from_height),
+            (from_width, from_height),
+        ] {
             let (mapped_x, mapped_y) = self.map(x, y);
-            if !mapped_x.is_finite() || !mapped_y.is_finite() || mapped_x < 0.0 || mapped_y < 0.0 || mapped_x > to_width || mapped_y > to_height {
+            if !mapped_x.is_finite()
+                || !mapped_y.is_finite()
+                || mapped_x < 0.0
+                || mapped_y < 0.0
+                || mapped_x > to_width
+                || mapped_y > to_height
+            {
                 return Err("media transform maps outside the parent coordinate frame");
             }
         }
@@ -530,7 +714,12 @@ impl MediaTransform {
             vec![
                 self.from.to_value(),
                 self.to.to_value(),
-                crate::typed::Value::sequence(self.coefficients.into_iter().map(crate::typed::Value::double).collect()),
+                crate::typed::Value::sequence(
+                    self.coefficients
+                        .into_iter()
+                        .map(crate::typed::Value::double)
+                        .collect(),
+                ),
             ],
         )
     }
@@ -542,17 +731,24 @@ impl MediaTransform {
     ) -> Result<Self, crate::problem::Diagnostic> {
         let record = expect_record(value, "media-transform", path)?;
         if record.fields().len() != 3 {
-            return Err(type_error(path, "media transform with two frames and six coefficients"));
+            return Err(type_error(
+                path,
+                "media transform with two frames and six coefficients",
+            ));
         }
         let from = CoordinateFrame::from_value(&record.fields()[0], &path.index(0))?;
         let to = CoordinateFrame::from_value(&record.fields()[1], &path.index(1))?;
-        let values = record.fields()[2].as_sequence().ok_or_else(|| type_error(path, "six affine coefficients"))?;
+        let values = record.fields()[2]
+            .as_sequence()
+            .ok_or_else(|| type_error(path, "six affine coefficients"))?;
         if values.len() != 6 {
             return Err(type_error(path, "six affine coefficients"));
         }
         let mut coefficients = [0.0; 6];
         for (index, value) in values.iter().enumerate() {
-            coefficients[index] = finite_double(value).ok_or_else(|| type_error(&path.index(2).index(index), "finite affine coefficient"))?;
+            coefficients[index] = finite_double(value).ok_or_else(|| {
+                type_error(&path.index(2).index(index), "finite affine coefficient")
+            })?;
         }
         Self::new(from, to, coefficients).map_err(|message| invalid_interval(path, message))
     }
@@ -575,31 +771,52 @@ impl RecognitionCoverage {
     }
 
     /// Completed units.
-    pub const fn completed(self) -> u64 { self.completed }
+    pub const fn completed(self) -> u64 {
+        self.completed
+    }
 
     /// Total admitted units.
-    pub const fn total(self) -> u64 { self.total }
+    pub const fn total(self) -> u64 {
+        self.total
+    }
 
     /// Encode unit coverage.
     pub fn to_value(self) -> crate::typed::Value {
-        crate::typed::Value::record_named("recognition-coverage", vec![
-            crate::typed::Value::integer(self.completed), crate::typed::Value::integer(self.total),
-        ])
+        crate::typed::Value::record_named(
+            "recognition-coverage",
+            vec![
+                crate::typed::Value::integer(self.completed),
+                crate::typed::Value::integer(self.total),
+            ],
+        )
     }
 
     /// Decode and validate unit coverage.
-    pub fn from_value(value: &crate::typed::Value, path: &crate::problem::Path) -> Result<Self, crate::problem::Diagnostic> {
+    pub fn from_value(
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let record = expect_record(value, "recognition-coverage", path)?;
-        if record.fields().len() != 2 { return Err(type_error(path, "recognition coverage pair")); }
-        let completed = unsigned(&record.fields()[0]).ok_or_else(|| type_error(path, "non-negative completed unit count"))?;
-        let total = unsigned(&record.fields()[1]).ok_or_else(|| type_error(path, "positive total unit count"))?;
+        if record.fields().len() != 2 {
+            return Err(type_error(path, "recognition coverage pair"));
+        }
+        let completed = unsigned(&record.fields()[0])
+            .ok_or_else(|| type_error(path, "non-negative completed unit count"))?;
+        let total = unsigned(&record.fields()[1])
+            .ok_or_else(|| type_error(path, "positive total unit count"))?;
         Self::new(completed, total).map_err(|message| invalid_interval(path, message))
     }
 }
 
 /// Terminal or partial state of a recognition run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecognitionStatus { Complete, Partial, Failed, Unsupported, Cancelled }
+pub enum RecognitionStatus {
+    Complete,
+    Partial,
+    Failed,
+    Unsupported,
+    Cancelled,
+}
 
 impl RecognitionStatus {
     /// Stable schema symbol.
@@ -630,36 +847,61 @@ impl RecognitionStatus {
         match self {
             RecognitionStatus::Complete if coverage.completed == coverage.total => Ok(()),
             RecognitionStatus::Partial if coverage.completed < coverage.total => Ok(()),
-            RecognitionStatus::Complete | RecognitionStatus::Partial => Err("recognition status disagrees with unit coverage"),
-            RecognitionStatus::Failed | RecognitionStatus::Unsupported | RecognitionStatus::Cancelled => Ok(()),
+            RecognitionStatus::Complete | RecognitionStatus::Partial => {
+                Err("recognition status disagrees with unit coverage")
+            }
+            RecognitionStatus::Failed
+            | RecognitionStatus::Unsupported
+            | RecognitionStatus::Cancelled => Ok(()),
         }
     }
 }
 
 /// Provider-specific finite score attached to a recognition result.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RecognitionScore { provider: String, metric: String, value: f64 }
+pub struct RecognitionScore {
+    provider: String,
+    metric: String,
+    value: f64,
+}
 
 impl RecognitionScore {
     /// Construct a score without assuming that provider metrics share a range.
-    pub fn new(provider: impl Into<String>, metric: impl Into<String>, value: f64) -> Result<Self, &'static str> {
-        let score = RecognitionScore { provider: provider.into(), metric: metric.into(), value };
+    pub fn new(
+        provider: impl Into<String>,
+        metric: impl Into<String>,
+        value: f64,
+    ) -> Result<Self, &'static str> {
+        let score = RecognitionScore {
+            provider: provider.into(),
+            metric: metric.into(),
+            value,
+        };
         score.validate()?;
         Ok(score)
     }
 
     /// Provider identity.
-    pub fn provider(&self) -> &str { &self.provider }
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
 
     /// Provider metric identity.
-    pub fn metric(&self) -> &str { &self.metric }
+    pub fn metric(&self) -> &str {
+        &self.metric
+    }
 
     /// Finite provider score.
-    pub const fn value(&self) -> f64 { self.value }
+    pub const fn value(&self) -> f64 {
+        self.value
+    }
 
     /// Check score identity and finite value.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.provider.trim().is_empty() || self.metric.trim().is_empty() || self.value.is_finite() == false {
+        if self.provider.trim().is_empty()
+            || self.metric.trim().is_empty()
+            || !self.value.is_finite()
+        {
             return Err("recognition score requires provider, metric, and finite value");
         }
         Ok(())
@@ -667,45 +909,81 @@ impl RecognitionScore {
 
     /// Encode a score tuple.
     pub fn to_value(&self) -> crate::typed::Value {
-        crate::typed::Value::record_named("recognition-score", vec![
-            crate::typed::Value::string(self.provider.clone()), crate::typed::Value::string(self.metric.clone()), crate::typed::Value::double(self.value),
-        ])
+        crate::typed::Value::record_named(
+            "recognition-score",
+            vec![
+                crate::typed::Value::string(self.provider.clone()),
+                crate::typed::Value::string(self.metric.clone()),
+                crate::typed::Value::double(self.value),
+            ],
+        )
     }
 
     /// Decode and validate one provider score.
-    pub fn from_value(value: &crate::typed::Value, path: &crate::problem::Path) -> Result<Self, crate::problem::Diagnostic> {
+    pub fn from_value(
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let record = expect_record(value, "recognition-score", path)?;
-        if record.fields().len() != 3 { return Err(type_error(path, "recognition score")); }
-        let provider = record.fields()[0].as_string().ok_or_else(|| type_error(path, "score provider"))?.to_owned();
-        let metric = record.fields()[1].as_string().ok_or_else(|| type_error(path, "score metric"))?.to_owned();
-        let value = finite_double(&record.fields()[2]).ok_or_else(|| type_error(path, "finite recognition score"))?;
-        let score = RecognitionScore { provider, metric, value };
-        score.validate().map_err(|message| invalid_interval(path, message))?;
+        if record.fields().len() != 3 {
+            return Err(type_error(path, "recognition score"));
+        }
+        let provider = record.fields()[0]
+            .as_string()
+            .ok_or_else(|| type_error(path, "score provider"))?
+            .to_owned();
+        let metric = record.fields()[1]
+            .as_string()
+            .ok_or_else(|| type_error(path, "score metric"))?
+            .to_owned();
+        let value = finite_double(&record.fields()[2])
+            .ok_or_else(|| type_error(path, "finite recognition score"))?;
+        let score = RecognitionScore {
+            provider,
+            metric,
+            value,
+        };
+        score
+            .validate()
+            .map_err(|message| invalid_interval(path, message))?;
         Ok(score)
     }
 }
 
 /// Bounded provider alternative for one recognized segment.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RecognitionAlternative { text: String, score: Option<f64> }
+pub struct RecognitionAlternative {
+    text: String,
+    score: Option<f64>,
+}
 
 impl RecognitionAlternative {
     /// Construct a non-empty alternative with an optional finite score.
     pub fn new(text: impl Into<String>, score: Option<f64>) -> Result<Self, &'static str> {
-        let alternative = RecognitionAlternative { text: text.into(), score };
+        let alternative = RecognitionAlternative {
+            text: text.into(),
+            score,
+        };
         alternative.validate()?;
         Ok(alternative)
     }
 
     /// Alternative text.
-    pub fn text(&self) -> &str { &self.text }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 
     /// Optional provider score.
-    pub const fn score(&self) -> Option<f64> { self.score }
+    pub const fn score(&self) -> Option<f64> {
+        self.score
+    }
 
     /// Check text and optional score bounds.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.text.is_empty() || self.text.len() > 16384 || self.score.is_some_and(|score| !score.is_finite()) {
+        if self.text.is_empty()
+            || self.text.len() > 16384
+            || self.score.is_some_and(|score| !score.is_finite())
+        {
             return Err("recognition alternative text or score is invalid");
         }
         Ok(())
@@ -713,51 +991,105 @@ impl RecognitionAlternative {
 
     /// Encode the text and optional score.
     pub fn to_value(&self) -> crate::typed::Value {
-        crate::typed::Value::record_named("recognition-alternative", vec![
-            crate::typed::Value::string(self.text.clone()),
-            self.score.map_or_else(|| crate::typed::Value::symbol("none"), crate::typed::Value::double),
-        ])
+        crate::typed::Value::record_named(
+            "recognition-alternative",
+            vec![
+                crate::typed::Value::string(self.text.clone()),
+                self.score.map_or_else(
+                    || crate::typed::Value::symbol("none"),
+                    crate::typed::Value::double,
+                ),
+            ],
+        )
     }
 
     /// Decode and validate one provider alternative.
-    pub fn from_value(value: &crate::typed::Value, path: &crate::problem::Path) -> Result<Self, crate::problem::Diagnostic> {
+    pub fn from_value(
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let record = expect_record(value, "recognition-alternative", path)?;
-        if record.fields().len() != 2 { return Err(type_error(path, "recognition alternative")); }
-        let text = record.fields()[0].as_string().ok_or_else(|| type_error(path, "alternative text"))?.to_owned();
-        let score = match &record.fields()[1] {
-            value if value.as_symbol().is_some_and(|symbol| symbol.as_str() == "none") => None,
-            value => Some(finite_double(value).ok_or_else(|| type_error(&path.index(1), "finite alternative score or none"))?),
-        };
+        if record.fields().len() != 2 {
+            return Err(type_error(path, "recognition alternative"));
+        }
+        let text = record.fields()[0]
+            .as_string()
+            .ok_or_else(|| type_error(path, "alternative text"))?
+            .to_owned();
+        let score =
+            match &record.fields()[1] {
+                value
+                    if value
+                        .as_symbol()
+                        .is_some_and(|symbol| symbol.as_str() == "none") =>
+                {
+                    None
+                }
+                value => Some(finite_double(value).ok_or_else(|| {
+                    type_error(&path.index(1), "finite alternative score or none")
+                })?),
+            };
         let alternative = RecognitionAlternative { text, score };
-        alternative.validate().map_err(|message| invalid_interval(path, message))?;
+        alternative
+            .validate()
+            .map_err(|message| invalid_interval(path, message))?;
         Ok(alternative)
     }
 }
 
+/// Whether a corrected text revision carries fresh alignment or invalidates it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlignmentDisposition {
+    Updated,
+    Invalidated,
+}
+
 /// Human correction metadata on a corrected source revision.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CorrectionProvenance { actor: String, edit: String, alignment_updated: bool }
+pub struct CorrectionProvenance {
+    actor: String,
+    edit: String,
+    alignment: AlignmentDisposition,
+}
 
 impl CorrectionProvenance {
     /// Construct correction provenance, explicitly stating alignment handling.
-    pub fn new(actor: impl Into<String>, edit: impl Into<String>, alignment_updated: bool) -> Result<Self, &'static str> {
-        let provenance = CorrectionProvenance { actor: actor.into(), edit: edit.into(), alignment_updated };
+    pub fn new(
+        actor: impl Into<String>,
+        edit: impl Into<String>,
+        alignment: AlignmentDisposition,
+    ) -> Result<Self, &'static str> {
+        let provenance = CorrectionProvenance {
+            actor: actor.into(),
+            edit: edit.into(),
+            alignment,
+        };
         provenance.validate()?;
         Ok(provenance)
     }
 
     /// Human editor identity.
-    pub fn actor(&self) -> &str { &self.actor }
+    pub fn actor(&self) -> &str {
+        &self.actor
+    }
 
     /// Edit provenance supplied by the editor.
-    pub fn edit(&self) -> &str { &self.edit }
+    pub fn edit(&self) -> &str {
+        &self.edit
+    }
 
     /// Whether fresh alignment records were supplied for this text revision.
-    pub const fn alignment_updated(&self) -> bool { self.alignment_updated }
+    pub const fn alignment_updated(&self) -> bool {
+        matches!(self.alignment, AlignmentDisposition::Updated)
+    }
 
     /// Validate the required provenance fields.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.actor.trim().is_empty() || self.actor.len() > 1024 || self.edit.trim().is_empty() || self.edit.len() > 16384 {
+        if self.actor.trim().is_empty()
+            || self.actor.len() > 1024
+            || self.edit.trim().is_empty()
+            || self.edit.len() > 16384
+        {
             return Err("correction actor and edit provenance must be non-empty and bounded");
         }
         Ok(())
@@ -765,25 +1097,57 @@ impl CorrectionProvenance {
 
     /// Encode correction identity and alignment disposition.
     pub fn to_value(&self) -> crate::typed::Value {
-        crate::typed::Value::record_named("correction-provenance", vec![
-            crate::typed::Value::string(self.actor.clone()), crate::typed::Value::string(self.edit.clone()),
-            crate::typed::Value::symbol(if self.alignment_updated { "updated" } else { "invalidated" }),
-        ])
+        crate::typed::Value::record_named(
+            "correction-provenance",
+            vec![
+                crate::typed::Value::string(self.actor.clone()),
+                crate::typed::Value::string(self.edit.clone()),
+                crate::typed::Value::symbol(match self.alignment {
+                    AlignmentDisposition::Updated => "updated",
+                    AlignmentDisposition::Invalidated => "invalidated",
+                }),
+            ],
+        )
     }
 
     /// Decode and validate correction provenance.
-    pub fn from_value(value: &crate::typed::Value, path: &crate::problem::Path) -> Result<Self, crate::problem::Diagnostic> {
+    pub fn from_value(
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
         let record = expect_record(value, "correction-provenance", path)?;
-        if record.fields().len() != 3 { return Err(type_error(path, "correction provenance")); }
-        let actor = record.fields()[0].as_string().ok_or_else(|| type_error(path, "correction actor"))?.to_owned();
-        let edit = record.fields()[1].as_string().ok_or_else(|| type_error(path, "correction edit provenance"))?.to_owned();
-        let alignment_updated = match record.fields()[2].as_symbol().map(crate::typed::Symbol::as_str) {
-            Some("updated") => true,
-            Some("invalidated") => false,
-            _ => return Err(type_error(&path.index(2), "updated or invalidated alignment")),
+        if record.fields().len() != 3 {
+            return Err(type_error(path, "correction provenance"));
+        }
+        let actor = record.fields()[0]
+            .as_string()
+            .ok_or_else(|| type_error(path, "correction actor"))?
+            .to_owned();
+        let edit = record.fields()[1]
+            .as_string()
+            .ok_or_else(|| type_error(path, "correction edit provenance"))?
+            .to_owned();
+        let alignment = match record.fields()[2]
+            .as_symbol()
+            .map(crate::typed::Symbol::as_str)
+        {
+            Some("updated") => AlignmentDisposition::Updated,
+            Some("invalidated") => AlignmentDisposition::Invalidated,
+            _ => {
+                return Err(type_error(
+                    &path.index(2),
+                    "updated or invalidated alignment",
+                ));
+            }
         };
-        let provenance = CorrectionProvenance { actor, edit, alignment_updated };
-        provenance.validate().map_err(|message| invalid_interval(path, message))?;
+        let provenance = CorrectionProvenance {
+            actor,
+            edit,
+            alignment,
+        };
+        provenance
+            .validate()
+            .map_err(|message| invalid_interval(path, message))?;
         Ok(provenance)
     }
 }
@@ -820,12 +1184,16 @@ fn invalid_interval(path: &crate::problem::Path, message: &str) -> crate::proble
 
 fn unsigned(value: &crate::typed::Value) -> Option<u64> {
     use num_traits::ToPrimitive;
-    value.as_integer().and_then(|integer| integer.as_bigint().to_u64())
+    value
+        .as_integer()
+        .and_then(|integer| integer.as_bigint().to_u64())
 }
 
 fn u32_value(value: &crate::typed::Value) -> Option<u32> {
     use num_traits::ToPrimitive;
-    value.as_integer().and_then(|integer| integer.as_bigint().to_u32())
+    value
+        .as_integer()
+        .and_then(|integer| integer.as_bigint().to_u32())
 }
 
 fn positive_u32(value: &crate::typed::Value) -> Option<u32> {
@@ -833,12 +1201,20 @@ fn positive_u32(value: &crate::typed::Value) -> Option<u32> {
 }
 
 fn finite_double(value: &crate::typed::Value) -> Option<f64> {
-    value.as_double().map(crate::typed::Double::value).filter(|value| value.is_finite())
+    value
+        .as_double()
+        .map(crate::typed::Double::value)
+        .filter(|value| value.is_finite())
 }
 
 /// Validate a bounded sequence of provider scores.
-pub fn validate_scores(value: &crate::typed::Value, path: &crate::problem::Path) -> Result<(), crate::problem::Diagnostic> {
-    let items = value.as_sequence().ok_or_else(|| type_error(path, "recognition score sequence"))?;
+pub fn validate_scores(
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+) -> Result<(), crate::problem::Diagnostic> {
+    let items = value
+        .as_sequence()
+        .ok_or_else(|| type_error(path, "recognition score sequence"))?;
     if items.len() > 128 {
         return Err(crate::problem::Diagnostic::new(
             crate::problem::Stage::Domain,
@@ -854,8 +1230,13 @@ pub fn validate_scores(value: &crate::typed::Value, path: &crate::problem::Path)
 }
 
 /// Validate a bounded sequence of provider alternatives.
-pub fn validate_alternatives(value: &crate::typed::Value, path: &crate::problem::Path) -> Result<(), crate::problem::Diagnostic> {
-    let items = value.as_sequence().ok_or_else(|| type_error(path, "recognition alternative sequence"))?;
+pub fn validate_alternatives(
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+) -> Result<(), crate::problem::Diagnostic> {
+    let items = value
+        .as_sequence()
+        .ok_or_else(|| type_error(path, "recognition alternative sequence"))?;
     if items.len() > 128 {
         return Err(crate::problem::Diagnostic::new(
             crate::problem::Stage::Domain,
@@ -877,22 +1258,55 @@ mod tests {
     #[test]
     fn media_locations_roundtrip_with_units_and_extent_bounds() {
         let time_base = TimeBase::new(1, 48_000).expect("time base");
-        let audio = MediaLocation::Audio { start_tick: 100, end_tick: 200, time_base, channel: 1 };
-        let decoded = MediaLocation::from_value(&audio.to_value(), &crate::problem::Path::root()).expect("audio location");
+        let audio = MediaLocation::Audio {
+            start_tick: 100,
+            end_tick: 200,
+            time_base,
+            channel: 1,
+        };
+        let decoded = MediaLocation::from_value(&audio.to_value(), &crate::problem::Path::root())
+            .expect("audio location");
         assert_eq!(decoded, audio);
-        assert!(audio.validate_extent(MediaExtent::Audio { duration_ticks: 400, time_base, channels: 2 }).is_ok());
-        assert!(audio.validate_extent(MediaExtent::Audio { duration_ticks: 199, time_base, channels: 2 }).is_err());
+        assert!(
+            audio
+                .validate_extent(MediaExtent::Audio {
+                    duration_ticks: 400,
+                    time_base,
+                    channels: 2
+                })
+                .is_ok()
+        );
+        assert!(
+            audio
+                .validate_extent(MediaExtent::Audio {
+                    duration_ticks: 199,
+                    time_base,
+                    channels: 2
+                })
+                .is_err()
+        );
 
         let region = MediaLocation::PageRegion {
             page: 0,
-            frame: CoordinateFrame::Pixels { width: 400, height: 300 },
+            frame: CoordinateFrame::Pixels {
+                width: 400,
+                height: 300,
+            },
             x: 10.0,
             y: 20.0,
             width: 100.0,
             height: 80.0,
         };
-        assert_eq!(MediaLocation::from_value(&region.to_value(), &crate::problem::Path::root()).expect("page region"), region);
-        assert!(region.validate_extent(MediaExtent::Pages { page_count: 1 }).is_ok());
+        assert_eq!(
+            MediaLocation::from_value(&region.to_value(), &crate::problem::Path::root())
+                .expect("page region"),
+            region
+        );
+        assert!(
+            region
+                .validate_extent(MediaExtent::Pages { page_count: 1 })
+                .is_ok()
+        );
     }
 
     #[test]
@@ -916,10 +1330,19 @@ mod tests {
 
     #[test]
     fn transformed_source_mapping_roundtrips_crop_and_resample() {
-        let from = CoordinateFrame::Pixels { width: 100, height: 50 };
-        let to = CoordinateFrame::Pixels { width: 400, height: 300 };
-        let transform = MediaTransform::new(from, to, [2.0, 0.0, 20.0, 0.0, 2.0, 10.0]).expect("crop and resample map");
-        let decoded = MediaTransform::from_value(&transform.to_value(), &crate::problem::Path::root()).expect("transform");
+        let from = CoordinateFrame::Pixels {
+            width: 100,
+            height: 50,
+        };
+        let to = CoordinateFrame::Pixels {
+            width: 400,
+            height: 300,
+        };
+        let transform = MediaTransform::new(from, to, [2.0, 0.0, 20.0, 0.0, 2.0, 10.0])
+            .expect("crop and resample map");
+        let decoded =
+            MediaTransform::from_value(&transform.to_value(), &crate::problem::Path::root())
+                .expect("transform");
         assert_eq!(decoded, transform);
         assert!(MediaTransform::new(from, to, [1.0, 0.0, 350.0, 0.0, 1.0, 0.0]).is_err());
     }
@@ -931,8 +1354,15 @@ mod tests {
             layer: "foreground".to_owned(),
             strokes: vec!["stroke-a".to_owned(), "stroke-b".to_owned()],
         };
-        assert_eq!(MediaLocation::from_value(&ink.to_value(), &crate::problem::Path::root()).expect("ink location"), ink);
-        assert!(ink.validate_extent(MediaExtent::InkPages { page_count: 3 }).is_ok());
+        assert_eq!(
+            MediaLocation::from_value(&ink.to_value(), &crate::problem::Path::root())
+                .expect("ink location"),
+            ink
+        );
+        assert!(
+            ink.validate_extent(MediaExtent::InkPages { page_count: 3 })
+                .is_ok()
+        );
         let duplicate = MediaLocation::InkStrokes {
             page: 2,
             layer: "foreground".to_owned(),
@@ -943,13 +1373,40 @@ mod tests {
 
     #[test]
     fn acquisition_correction_and_coverage_are_typed() {
-        for acquisition in [Acquisition::Authored, Acquisition::Imported, Acquisition::Captured, Acquisition::MachineRecognized, Acquisition::Corrected] {
-            assert_eq!(Acquisition::from_value(&acquisition.to_value(), &crate::problem::Path::root()).expect("acquisition"), acquisition);
+        for acquisition in [
+            Acquisition::Authored,
+            Acquisition::Imported,
+            Acquisition::Captured,
+            Acquisition::MachineRecognized,
+            Acquisition::Corrected,
+        ] {
+            assert_eq!(
+                Acquisition::from_value(&acquisition.to_value(), &crate::problem::Path::root())
+                    .expect("acquisition"),
+                acquisition
+            );
         }
-        let corrected = CorrectionProvenance::new("editor", "replace mistaken word", false).expect("correction");
-        assert_eq!(CorrectionProvenance::from_value(&corrected.to_value(), &crate::problem::Path::root()).expect("decode correction"), corrected);
+        let corrected = CorrectionProvenance::new(
+            "editor",
+            "replace mistaken word",
+            AlignmentDisposition::Invalidated,
+        )
+        .expect("correction");
+        assert_eq!(
+            CorrectionProvenance::from_value(&corrected.to_value(), &crate::problem::Path::root())
+                .expect("decode correction"),
+            corrected
+        );
         let coverage = RecognitionCoverage::new(3, 4).expect("coverage");
-        assert!(RecognitionStatus::Partial.validate_coverage(coverage).is_ok());
-        assert!(RecognitionStatus::Complete.validate_coverage(coverage).is_err());
+        assert!(
+            RecognitionStatus::Partial
+                .validate_coverage(coverage)
+                .is_ok()
+        );
+        assert!(
+            RecognitionStatus::Complete
+                .validate_coverage(coverage)
+                .is_err()
+        );
     }
 }

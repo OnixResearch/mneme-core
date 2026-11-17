@@ -23,7 +23,8 @@ struct BuildScope<'a> {
     request: &'a crate::model::Request,
     sources: &'a SourceStates,
     entities: &'a std::collections::BTreeMap<mneme_core::RecordId, String>,
-    media_locations: &'a std::collections::BTreeMap<mneme_core::SourcePin, Vec<crate::model::MediaCitation>>,
+    media_locations:
+        &'a std::collections::BTreeMap<mneme_core::SourcePin, Vec<crate::model::MediaCitation>>,
 }
 
 /// Build a fresh index for the request's temporal selection.
@@ -36,7 +37,8 @@ pub(crate) fn build_index(
 ) -> BuildResult<crate::model::CachedIndex> {
     budget.check()?;
     let entities = entity_labels(view, request, budget)?;
-    let (media_locations, skipped_locations) = recognition_media_locations(view, request, sources, budget)?;
+    let (media_locations, skipped_locations) =
+        recognition_media_locations(view, request, sources, budget)?;
     let scope = BuildScope {
         view,
         request,
@@ -74,7 +76,10 @@ fn recognition_media_locations(
     request: &crate::model::Request,
     sources: &SourceStates,
     budget: &mut crate::engine::WorkBudget,
-) -> BuildResult<(std::collections::BTreeMap<mneme_core::SourcePin, Vec<crate::model::MediaCitation>>, usize)> {
+) -> BuildResult<(
+    std::collections::BTreeMap<mneme_core::SourcePin, Vec<crate::model::MediaCitation>>,
+    usize,
+)> {
     let mut locations = std::collections::BTreeMap::new();
     let mut skipped = 0_usize;
     for record in &view.snapshot().records {
@@ -96,7 +101,10 @@ fn recognition_media_locations(
         if !record_visible(request, &media_record.scope) {
             continue;
         }
-        let Ok(media) = view.source_at(segment.media_source.source(), segment.media_source.revision()) else {
+        let Ok(media) = view.source_at(
+            segment.media_source.source(),
+            segment.media_source.revision(),
+        ) else {
             skipped = skipped.saturating_add(1);
             continue;
         };
@@ -107,7 +115,9 @@ fn recognition_media_locations(
             skipped = skipped.saturating_add(1);
             continue;
         }
-        let items = locations.entry(segment.text_source).or_insert_with(Vec::new);
+        let items = locations
+            .entry(segment.text_source)
+            .or_insert_with(Vec::new);
         if items.len() >= MAX_MEDIA_LOCATIONS_PER_SOURCE {
             skipped = skipped.saturating_add(1);
             continue;
@@ -230,7 +240,10 @@ impl IndexBuild {
         // an episode and its own source never count as independent evidence.
         let resolved = episode.source.and_then(|source| {
             let key = readable_source(scope, source)?;
-            let roots = scope.view.source_roots(mneme_core::SourcePin::new(key.0, key.1)).ok()?;
+            let roots = scope
+                .view
+                .source_roots(mneme_core::SourcePin::new(key.0, key.1))
+                .ok()?;
             let root = roots.iter().next().copied()?;
             Some((key, root))
         });
@@ -269,7 +282,10 @@ impl IndexBuild {
     ) -> BuildResult<()> {
         let facts = source_facts(scope.view, record, scope.sources, budget)?;
         let key = (record.record_id, record.revision_id);
-        let roots = match scope.view.source_roots(mneme_core::SourcePin::new(key.0, key.1)) {
+        let roots = match scope
+            .view
+            .source_roots(mneme_core::SourcePin::new(key.0, key.1))
+        {
             Ok(roots) => roots,
             Err(_) => {
                 self.skipped = self.skipped.saturating_add(1);
@@ -279,22 +295,7 @@ impl IndexBuild {
             }
         };
         if let Some(path) = &facts.view.path_hint {
-            self.documents.push(document(IndexedDocumentInput {
-                id: format!("source-path:{}:{}", record.record_id, record.revision_id),
-                kind: crate::model::ContentKind::TypedField,
-                text: path.clone(),
-                field_path: "source.path-hint".to_owned(),
-                source: Some(record.record_id),
-                source_revision: Some(record.revision_id),
-                span: None,
-                assertion: None,
-                episode: None,
-                entity: facts.view.entity,
-                claim_status: None,
-                evidence: Vec::new(),
-                ancestry_roots: roots.clone(),
-                media_locations: Vec::new(),
-            }));
+            self.push_source_path_document(record, path, facts.view.entity, &roots);
         }
         if is_image_source(&facts.view) {
             self.skipped += 1;
@@ -344,6 +345,31 @@ impl IndexBuild {
             }
         }
         Ok(())
+    }
+
+    fn push_source_path_document(
+        &mut self,
+        record: &mneme_core::RecordEnvelope,
+        path: &str,
+        entity: Option<mneme_core::RecordId>,
+        roots: &std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    ) {
+        self.documents.push(document(IndexedDocumentInput {
+            id: format!("source-path:{}:{}", record.record_id, record.revision_id),
+            kind: crate::model::ContentKind::TypedField,
+            text: path.to_owned(),
+            field_path: "source.path-hint".to_owned(),
+            source: Some(record.record_id),
+            source_revision: Some(record.revision_id),
+            span: None,
+            assertion: None,
+            episode: None,
+            entity,
+            claim_status: None,
+            evidence: Vec::new(),
+            ancestry_roots: roots.clone(),
+            media_locations: Vec::new(),
+        }));
     }
 
     fn add_assertion(

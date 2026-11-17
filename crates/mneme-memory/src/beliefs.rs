@@ -61,7 +61,7 @@ pub enum RetainedRequirement {
 }
 
 /// Evidence whose span and source revision were validated.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ValidatedEvidence {
     pub evidence: crate::model::EvidenceView,
     pub source: crate::model::SourceView,
@@ -355,9 +355,7 @@ impl View {
                     && self.suppression_for(record).is_none()
             })
             .filter_map(|record| crate::model::RecognitionSegmentView::parse(record.clone()).ok())
-            .filter(|segment| {
-                segment.text_source == mneme_core::SourcePin::new(source, revision)
-            })
+            .filter(|segment| segment.text_source == mneme_core::SourcePin::new(source, revision))
             .collect()
     }
 
@@ -383,9 +381,12 @@ impl View {
             }
             visited.insert(current);
             let source = self.source_at(current.source(), current.revision())?;
-            if self.suppression_for(&source.record).is_some_and(|suppression| {
-                suppression.mode == mneme_store::SuppressionMode::Forgotten
-            }) {
+            if self
+                .suppression_for(&source.record)
+                .is_some_and(|suppression| {
+                    suppression.mode == mneme_store::SuppressionMode::Forgotten
+                })
+            {
                 return Err(crate::failure::EvidenceError::policy(
                     "source transformation ancestry was forgotten",
                 ));
@@ -715,7 +716,9 @@ impl View {
             source.record.record_id,
             source.record.revision_id,
         ))
-        .map_err(|_| crate::failure::EvidenceError::policy("evidence source ancestry is unavailable"))?;
+        .map_err(|_| {
+            crate::failure::EvidenceError::policy("evidence source ancestry is unavailable")
+        })?;
         if let mneme_core::Reference::Pinned { revision, .. } = evidence.source_reference
             && revision != source.record.revision_id
         {
@@ -1841,11 +1844,8 @@ impl<'v> Ancestry<'v> {
             mneme_core::RecordKind::Evidence => {
                 let view = crate::model::EvidenceView::parse(envelope.clone())?;
                 let source = self.view.evidence_source(&view)?;
-                let (root, identity) = source_root_of(
-                    self.view,
-                    view.source,
-                    source.record.revision_id,
-                )?;
+                let (root, identity) =
+                    source_root_of(self.view, view.source, source.record.revision_id)?;
                 Ok(NodePlan::Evidence {
                     source: root,
                     view: Box::new(view),
@@ -1908,6 +1908,7 @@ impl<'v> Ancestry<'v> {
                 (key, identity)
             }),
         }
+    }
 
     fn finish_node(&self, record: mneme_core::RecordId) -> NodeFacts {
         let Some(plan) = self.plans.get(&record) else {
@@ -2089,10 +2090,7 @@ fn source_root_of(
     if let Some(envelope) = view.records.get(&record) {
         match envelope.kind {
             mneme_core::RecordKind::SourceRevision => {
-                return root_source_pin(
-                    view,
-                    mneme_core::SourcePin::new(record, revision),
-                );
+                return root_source_pin(view, mneme_core::SourcePin::new(record, revision));
             }
             mneme_core::RecordKind::RecognitionRun => {
                 let run = view.recognition_run(record)?;

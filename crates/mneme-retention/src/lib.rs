@@ -1433,8 +1433,12 @@ fn plan_forget(
         plan: &mut *plan,
     };
     collect_source_targets(context, &forgotten_sources, &history, &mut collection)?;
-    state.forgotten_records.extend(deps.recognition_runs.iter().copied());
-    state.forgotten_records.extend(deps.recognition_segments.iter().copied());
+    state
+        .forgotten_records
+        .extend(deps.recognition_runs.iter().copied());
+    state
+        .forgotten_records
+        .extend(deps.recognition_segments.iter().copied());
     mark_withdrawn_dependents(context, &deps, &withdrawn, &request.scope, &mut state)?;
     state
         .forgotten_records
@@ -2120,93 +2124,157 @@ fn dependencies_for_sources(
             if dependency_is_known(record, &deps, scope) {
                 continue;
             }
-            match record.kind {
-                mneme_core::RecordKind::SourceRevision => {
-                    let source = context.view.source(record.record_id)?;
-                    if source
-                        .derived_from
-                        .is_some_and(|parent| closure.contains(&parent.source()))
-                    {
-                        deps.derived_sources.insert(record.record_id);
-                        is_changed = true;
-                    }
-                }
-                mneme_core::RecordKind::RecognitionRun => {
-                    let run = context.view.recognition_run(record.record_id)?;
-                    if closure.contains(&run.input.source()) || closure.contains(&run.output.source()) {
-                        deps.recognition_runs.insert(record.record_id);
-                        is_changed = true;
-                    }
-                }
-                mneme_core::RecordKind::RecognitionSegment => {
-                    let segment = context.view.recognition_segment(record.record_id)?;
-                    if closure.contains(&segment.text_source.source())
-                        || closure.contains(&segment.media_source.source())
-                        || segment.run.is_some_and(|run| closure.contains(&run))
-                    {
-                        deps.recognition_segments.insert(record.record_id);
-                        is_changed = true;
-                    }
-                }
-                mneme_core::RecordKind::Episode => {
-                    let episode = context.view.episode(record.record_id)?;
-                    let is_linked = episode
-                        .source
-                        .is_some_and(|source| closure.contains(&source))
-                        || episode
-                            .related
-                            .iter()
-                            .any(|related| closure.contains(related));
-                    if is_linked {
-                        deps.episodes.insert(record.record_id);
-                        is_changed = true;
-                    }
-                }
-                mneme_core::RecordKind::Evidence => {
-                    let evidence = context.view.evidence(record.record_id)?;
-                    // Ancestry may pass through assertions and derivations, so
-                    // the whole dependency closure participates, not only the
-                    // source and episode identifiers.
-                    let is_linked = closure.contains(&evidence.source)
-                        || evidence
-                            .ancestry
-                            .iter()
-                            .any(|ancestor| closure.contains(ancestor));
-                    if is_linked {
-                        deps.evidence.insert(record.record_id);
-                        is_changed = true;
-                    }
-                }
-                mneme_core::RecordKind::Assertion => {
-                    let assertion = context.view.assertion(record.record_id)?;
-                    if assertion
-                        .evidence
-                        .iter()
-                        .any(|evidence| deps.evidence.contains(evidence))
-                    {
-                        deps.assertions.insert(record.record_id);
-                        is_changed = true;
-                    }
-                }
-                mneme_core::RecordKind::Derivation => {
-                    let derivation = context.view.derivation(record.record_id)?;
-                    if derivation
-                        .premises
-                        .iter()
-                        .any(|premise| closure.contains(premise))
-                    {
-                        deps.derivations.insert(record.record_id);
-                        deps.assertions.insert(derivation.conclusion);
-                        is_changed = true;
-                    }
-                }
-                _ => {}
-            }
+            is_changed |= add_dependency(context, record, &closure, &mut deps)?;
         }
         if !is_changed {
             return Ok(deps);
         }
     }
+}
+
+fn add_dependency(
+    context: &PlanContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    closure: &std::collections::BTreeSet<mneme_core::RecordId>,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    match record.kind {
+        mneme_core::RecordKind::SourceRevision => {
+            add_derived_source(context, record, closure, deps)
+        }
+        mneme_core::RecordKind::RecognitionRun => {
+            add_recognition_run(context, record, closure, deps)
+        }
+        mneme_core::RecordKind::RecognitionSegment => {
+            add_recognition_segment(context, record, closure, deps)
+        }
+        mneme_core::RecordKind::Episode => add_episode_dependency(context, record, closure, deps),
+        mneme_core::RecordKind::Evidence => add_evidence_dependency(context, record, closure, deps),
+        mneme_core::RecordKind::Assertion => add_assertion_dependency(context, record, deps),
+        mneme_core::RecordKind::Derivation => {
+            add_derivation_dependency(context, record, closure, deps)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn add_derived_source(
+    context: &PlanContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    closure: &std::collections::BTreeSet<mneme_core::RecordId>,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    let source = context.view.source(record.record_id)?;
+    let is_dependent = source
+        .derived_from
+        .is_some_and(|parent| closure.contains(&parent.source()));
+    if is_dependent {
+        deps.derived_sources.insert(record.record_id);
+    }
+    Ok(is_dependent)
+}
+
+fn add_recognition_run(
+    context: &PlanContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    closure: &std::collections::BTreeSet<mneme_core::RecordId>,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    let run = context.view.recognition_run(record.record_id)?;
+    let is_dependent =
+        closure.contains(&run.input.source()) || closure.contains(&run.output.source());
+    if is_dependent {
+        deps.recognition_runs.insert(record.record_id);
+    }
+    Ok(is_dependent)
+}
+
+fn add_recognition_segment(
+    context: &PlanContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    closure: &std::collections::BTreeSet<mneme_core::RecordId>,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    let segment = context.view.recognition_segment(record.record_id)?;
+    let is_dependent = closure.contains(&segment.text_source.source())
+        || closure.contains(&segment.media_source.source())
+        || segment.run.is_some_and(|run| closure.contains(&run));
+    if is_dependent {
+        deps.recognition_segments.insert(record.record_id);
+    }
+    Ok(is_dependent)
+}
+
+fn add_episode_dependency(
+    context: &PlanContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    closure: &std::collections::BTreeSet<mneme_core::RecordId>,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    let episode = context.view.episode(record.record_id)?;
+    let is_dependent = episode
+        .source
+        .is_some_and(|source| closure.contains(&source))
+        || episode
+            .related
+            .iter()
+            .any(|related| closure.contains(related));
+    if is_dependent {
+        deps.episodes.insert(record.record_id);
+    }
+    Ok(is_dependent)
+}
+
+fn add_evidence_dependency(
+    context: &PlanContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    closure: &std::collections::BTreeSet<mneme_core::RecordId>,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    let evidence = context.view.evidence(record.record_id)?;
+    let is_dependent = closure.contains(&evidence.source)
+        || evidence
+            .ancestry
+            .iter()
+            .any(|ancestor| closure.contains(ancestor));
+    if is_dependent {
+        deps.evidence.insert(record.record_id);
+    }
+    Ok(is_dependent)
+}
+
+fn add_assertion_dependency(
+    context: &PlanContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    let assertion = context.view.assertion(record.record_id)?;
+    let is_dependent = assertion
+        .evidence
+        .iter()
+        .any(|evidence| deps.evidence.contains(evidence));
+    if is_dependent {
+        deps.assertions.insert(record.record_id);
+    }
+    Ok(is_dependent)
+}
+
+fn add_derivation_dependency(
+    context: &PlanContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    closure: &std::collections::BTreeSet<mneme_core::RecordId>,
+    deps: &mut Dependencies,
+) -> Result<bool> {
+    let derivation = context.view.derivation(record.record_id)?;
+    let is_dependent = derivation
+        .premises
+        .iter()
+        .any(|premise| closure.contains(premise));
+    if is_dependent {
+        deps.derivations.insert(record.record_id);
+        deps.assertions.insert(derivation.conclusion);
+    }
+    Ok(is_dependent)
 }
 
 /// The records already attributed to the selection.

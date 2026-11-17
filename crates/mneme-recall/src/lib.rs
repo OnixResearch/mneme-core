@@ -21,9 +21,8 @@ pub use failure::{QueryError, Result};
 pub use lookup::{LEXICAL_INDEX_VERSION, VECTOR_INDEX_VERSION, lexical_terms};
 pub use model::{
     BudgetUse, Candidate, ClaimStatus, ContentKind, Context, DataBoundary, Evidence, Execution,
-    MediaCitation,
-    IndexCoverage, InvocationObservation, Mode, ModeReport, ModeStatus, Omission, Request,
-    Response, SemanticObservation, StructuredRequest, TemporalMode,
+    IndexCoverage, InvocationObservation, MediaCitation, Mode, ModeReport, ModeStatus, Omission,
+    Request, Response, SemanticObservation, StructuredRequest, TemporalMode,
 };
 pub use semantic::{
     DocumentAggregation, EmbeddingNormalization, EmbeddingPooling, EmbeddingSettings,

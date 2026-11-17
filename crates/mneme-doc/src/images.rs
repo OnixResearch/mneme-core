@@ -278,19 +278,8 @@ pub fn import(
     }
     let digest = mneme_core::ContentDigest::of_source_bytes(bytes);
     let fingerprint = import_fingerprint(&request, digest);
-    if let Some(outcome) =
-        workspace.replay_outcome(&request.actor, &request.scope, &request.key, &fingerprint)?
-    {
-        let pin = replayed_pin(workspace, &request.scope, digest, &outcome)?;
-        let loaded = load(workspace, &request.scope, pin, Some(outcome.revision))?;
-        return Ok(Imported {
-            pin,
-            digest: loaded.digest,
-            media_type: loaded.media_type,
-            width: loaded.width,
-            height: loaded.height,
-            workspace_revision: outcome.revision,
-        });
+    if let Some(imported) = replay_import(workspace, &request, digest, fingerprint)? {
+        return Ok(imported);
     }
 
     let decoded = decode(bytes)?;
@@ -352,6 +341,29 @@ pub fn import(
         height: decoded.height,
         workspace_revision: outcome.revision,
     })
+}
+
+fn replay_import(
+    workspace: &mut mneme_store::Workspace,
+    request: &ImportRequest,
+    digest: mneme_core::ContentDigest,
+    fingerprint: mneme_core::ContentDigest,
+) -> crate::Result<Option<Imported>> {
+    let Some(outcome) =
+        workspace.replay_outcome(&request.actor, &request.scope, &request.key, &fingerprint)?
+    else {
+        return Ok(None);
+    };
+    let pin = replayed_pin(workspace, &request.scope, digest, &outcome)?;
+    let loaded = load(workspace, &request.scope, pin, Some(outcome.revision))?;
+    Ok(Some(Imported {
+        pin,
+        digest: loaded.digest,
+        media_type: loaded.media_type,
+        width: loaded.width,
+        height: loaded.height,
+        workspace_revision: outcome.revision,
+    }))
 }
 
 fn import_fingerprint(

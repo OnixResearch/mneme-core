@@ -545,7 +545,11 @@ impl RecordSchema {
         schema.version = 5;
         for kind in &mut schema.kinds {
             if kind.kind == RecordKind::SourceRevision {
-                if let Some(acquisition) = kind.fields.iter_mut().find(|field| field.name == "acquisition") {
+                if let Some(acquisition) = kind
+                    .fields
+                    .iter_mut()
+                    .find(|field| field.name == "acquisition")
+                {
                     acquisition.ty = FieldType::Acquisition;
                 }
                 kind.fields.extend([
@@ -568,7 +572,10 @@ impl RecordSchema {
                 required("adapter", FieldType::Text),
                 required("preprocessing", FieldType::Text),
                 required("configuration", FieldType::Text),
-                required("segments", reference_set(Some(RecordKind::RecognitionSegment))),
+                required(
+                    "segments",
+                    reference_set(Some(RecordKind::RecognitionSegment)),
+                ),
                 required("coverage", FieldType::RecognitionCoverage),
                 required("status", FieldType::Symbol),
                 optional("scores", FieldType::RecognitionScores),
@@ -838,7 +845,6 @@ impl SchemaRegistry {
 }
 
 /// Validate one declared payload field.
-#[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate_field(
     ty: FieldType,
     value: &crate::typed::Value,
@@ -856,19 +862,16 @@ pub fn validate_field(
             kind,
             allow_external,
             allow_unresolved,
-        } => match crate::pointer::Reference::from_value(value, path) {
-            Err(diagnostic) => vec![diagnostic],
-            Ok(reference) => validate_reference(
-                &reference,
-                kind,
-                ReferenceValidation {
-                    allow_external,
-                    allow_unresolved,
-                },
-                path,
-                index,
-            ),
-        },
+        } => validate_reference_field(
+            value,
+            path,
+            index,
+            kind,
+            ReferenceValidation {
+                allow_external,
+                allow_unresolved,
+            },
+        ),
         FieldType::ReferenceSet {
             kind,
             allow_external,
@@ -898,20 +901,30 @@ pub fn validate_field(
         }
         FieldType::Extraction => validate_extraction_field(value, path),
         FieldType::IncludeMap => validate_include_map_field(value, path, index),
-        FieldType::Acquisition => validate_parsed_field(crate::media::Acquisition::from_value(value, path)),
-        FieldType::MediaExtent => validate_parsed_field(crate::media::MediaExtent::from_value(value, path)),
-        FieldType::MediaTransform => validate_parsed_field(crate::media::MediaTransform::from_value(value, path)),
-        FieldType::MediaLocation => validate_parsed_field(crate::media::MediaLocation::from_value(value, path)),
-        FieldType::RecognitionCoverage => validate_parsed_field(crate::media::RecognitionCoverage::from_value(value, path)),
-        FieldType::RecognitionScores => match crate::media::validate_scores(value, path) {
-            Ok(()) => Vec::new(),
-            Err(diagnostic) => vec![diagnostic],
-        },
-        FieldType::RecognitionAlternatives => match crate::media::validate_alternatives(value, path) {
-            Ok(()) => Vec::new(),
-            Err(diagnostic) => vec![diagnostic],
-        },
-        FieldType::CorrectionProvenance => validate_parsed_field(crate::media::CorrectionProvenance::from_value(value, path)),
+        FieldType::Acquisition => {
+            validate_parsed_field(crate::provenance::Acquisition::from_value(value, path))
+        }
+        FieldType::MediaExtent => {
+            validate_parsed_field(crate::provenance::MediaExtent::from_value(value, path))
+        }
+        FieldType::MediaTransform => {
+            validate_parsed_field(crate::provenance::MediaTransform::from_value(value, path))
+        }
+        FieldType::MediaLocation => {
+            validate_parsed_field(crate::provenance::MediaLocation::from_value(value, path))
+        }
+        FieldType::RecognitionCoverage => validate_parsed_field(
+            crate::provenance::RecognitionCoverage::from_value(value, path),
+        ),
+        FieldType::RecognitionScores => {
+            validate_sequence_field(value, path, crate::provenance::validate_scores)
+        }
+        FieldType::RecognitionAlternatives => {
+            validate_sequence_field(value, path, crate::provenance::validate_alternatives)
+        }
+        FieldType::CorrectionProvenance => validate_parsed_field(
+            crate::provenance::CorrectionProvenance::from_value(value, path),
+        ),
     }
 }
 
@@ -1044,6 +1057,19 @@ fn validate_reference_set_field(
     diagnostics
 }
 
+fn validate_reference_field(
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+    index: Option<&crate::pointer::SnapshotIndex>,
+    kind: Option<RecordKind>,
+    validation: ReferenceValidation,
+) -> Vec<crate::problem::Diagnostic> {
+    match crate::pointer::Reference::from_value(value, path) {
+        Err(diagnostic) => vec![diagnostic],
+        Ok(reference) => validate_reference(&reference, kind, validation, path, index),
+    }
+}
+
 fn validate_valid_time_field(
     value: &crate::typed::Value,
     path: &crate::problem::Path,
@@ -1064,6 +1090,17 @@ fn validate_parsed_field<T>(
         Ok(_) => Vec::new(),
         Err(diagnostic) => vec![diagnostic],
     }
+}
+
+fn validate_sequence_field(
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+    validate: fn(
+        &crate::typed::Value,
+        &crate::problem::Path,
+    ) -> Result<(), crate::problem::Diagnostic>,
+) -> Vec<crate::problem::Diagnostic> {
+    validate_parsed_field(validate(value, path))
 }
 
 #[derive(Clone, Copy)]
@@ -1288,10 +1325,10 @@ fn validate_source_domain(
     payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
     path: &crate::problem::Path,
 ) -> Vec<crate::problem::Diagnostic> {
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = Vec::with_capacity(6);
     let acquisition = payload
         .get(&crate::typed::Symbol::from("acquisition"))
-        .map(|value| crate::media::Acquisition::from_value(value, &path.field("acquisition")));
+        .map(|value| crate::provenance::Acquisition::from_value(value, &path.field("acquisition")));
     let acquisition = match acquisition {
         Some(Ok(acquisition)) => Some(acquisition),
         Some(Err(diagnostic)) => {
@@ -1303,18 +1340,23 @@ fn validate_source_domain(
     let correction = payload.get(&crate::typed::Symbol::from("correction"));
     let has_correction = correction.is_some();
     if let Some(correction) = correction
-        && let Err(diagnostic) = crate::media::CorrectionProvenance::from_value(correction, &path.field("correction"))
+        && let Err(diagnostic) = crate::provenance::CorrectionProvenance::from_value(
+            correction,
+            &path.field("correction"),
+        )
     {
         diagnostics.push(diagnostic);
     }
-    if acquisition.is_some_and(|value| (value == crate::media::Acquisition::Corrected) != has_correction) {
+    if acquisition
+        .is_some_and(|value| (value == crate::provenance::Acquisition::Corrected) != has_correction)
+    {
         diagnostics.push(domain_error(
             &path.field("correction"),
             "corrected acquisition requires correction provenance; other acquisitions must not carry it",
         ));
     }
     if let Some(reference) = payload.get(&crate::typed::Symbol::from("derived-from"))
-        && crate::media::SourcePin::from_value(reference, &path.field("derived-from")).is_err()
+        && crate::provenance::SourcePin::from_value(reference, &path.field("derived-from")).is_err()
     {
         diagnostics.push(domain_error(
             &path.field("derived-from"),
@@ -1336,10 +1378,18 @@ fn validate_recognition_run_domain(
     payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
     path: &crate::problem::Path,
 ) -> Vec<crate::problem::Diagnostic> {
-    let mut diagnostics = Vec::new();
-    for name in ["model", "runtime", "adapter", "preprocessing", "configuration"] {
+    let mut diagnostics = Vec::with_capacity(9);
+    for name in [
+        "model",
+        "runtime",
+        "adapter",
+        "preprocessing",
+        "configuration",
+    ] {
         if let Some(value) = payload.get(&crate::typed::Symbol::from(name))
-            && value.as_string().is_none_or(|text| text.trim().is_empty() || text.len() > 4096)
+            && value
+                .as_string()
+                .is_none_or(|text| text.trim().is_empty() || text.len() > 4096)
         {
             diagnostics.push(domain_error(
                 &path.field(name),
@@ -1353,8 +1403,9 @@ fn validate_recognition_run_domain(
     ) {
         let parsed_status = status
             .as_symbol()
-            .and_then(|symbol| crate::media::RecognitionStatus::parse(symbol.as_str()));
-        let parsed_coverage = crate::media::RecognitionCoverage::from_value(coverage, &path.field("coverage"));
+            .and_then(|symbol| crate::provenance::RecognitionStatus::parse(symbol.as_str()));
+        let parsed_coverage =
+            crate::provenance::RecognitionCoverage::from_value(coverage, &path.field("coverage"));
         match (parsed_status, parsed_coverage) {
             (Some(status), Ok(coverage)) => {
                 if let Err(message) = status.validate_coverage(coverage) {
@@ -1370,7 +1421,7 @@ fn validate_recognition_run_domain(
     }
     for name in ["input", "output"] {
         if let Some(value) = payload.get(&crate::typed::Symbol::from(name))
-            && crate::media::SourcePin::from_value(value, &path.field(name)).is_err()
+            && crate::provenance::SourcePin::from_value(value, &path.field(name)).is_err()
         {
             diagnostics.push(domain_error(
                 &path.field(name),
@@ -1385,10 +1436,10 @@ fn validate_recognition_segment_domain(
     payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
     path: &crate::problem::Path,
 ) -> Vec<crate::problem::Diagnostic> {
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = Vec::with_capacity(3);
     for name in ["text-source", "media-source"] {
         if let Some(value) = payload.get(&crate::typed::Symbol::from(name))
-            && crate::media::SourcePin::from_value(value, &path.field(name)).is_err()
+            && crate::provenance::SourcePin::from_value(value, &path.field(name)).is_err()
         {
             diagnostics.push(domain_error(
                 &path.field(name),
@@ -1397,7 +1448,8 @@ fn validate_recognition_segment_domain(
         }
     }
     if let Some(value) = payload.get(&crate::typed::Symbol::from("location"))
-        && let Err(diagnostic) = crate::media::MediaLocation::from_value(value, &path.field("location"))
+        && let Err(diagnostic) =
+            crate::provenance::MediaLocation::from_value(value, &path.field("location"))
     {
         diagnostics.push(diagnostic);
     }
@@ -1511,20 +1563,47 @@ mod tests {
             .schema(5)
             .and_then(|schema| schema.kind(RecordKind::SourceRevision))
             .expect("source v5");
-        assert_eq!(source.field("acquisition").expect("acquisition").ty, FieldType::Acquisition);
-        assert_eq!(source.field("derived-from").expect("parent").ty, FieldType::Reference {
-            kind: Some(RecordKind::SourceRevision),
-            allow_external: false,
-            allow_unresolved: false,
-        });
-        assert!(registry.schema(4).and_then(|schema| schema.kind(RecordKind::RecognitionRun)).is_none());
-        assert!(registry.schema(5).and_then(|schema| schema.kind(RecordKind::RecognitionRun)).is_some());
+        assert_eq!(
+            source.field("acquisition").expect("acquisition").ty,
+            FieldType::Acquisition
+        );
+        assert_eq!(
+            source.field("derived-from").expect("parent").ty,
+            FieldType::Reference {
+                kind: Some(RecordKind::SourceRevision),
+                allow_external: false,
+                allow_unresolved: false,
+            }
+        );
+        assert!(
+            registry
+                .schema(4)
+                .and_then(|schema| schema.kind(RecordKind::RecognitionRun))
+                .is_none()
+        );
+        assert!(
+            registry
+                .schema(5)
+                .and_then(|schema| schema.kind(RecordKind::RecognitionRun))
+                .is_some()
+        );
         let legacy_source = registry
             .schema(4)
             .and_then(|schema| schema.kind(RecordKind::SourceRevision))
             .expect("source v4");
-        assert_eq!(legacy_source.field("acquisition").expect("legacy acquisition").ty, FieldType::Symbol);
-        assert!(registry.schema(4).and_then(|schema| schema.kind(RecordKind::Comment)).is_some());
+        assert_eq!(
+            legacy_source
+                .field("acquisition")
+                .expect("legacy acquisition")
+                .ty,
+            FieldType::Symbol
+        );
+        assert!(
+            registry
+                .schema(4)
+                .and_then(|schema| schema.kind(RecordKind::Comment))
+                .is_some()
+        );
         assert!(
             registry
                 .schema(3)
@@ -1539,11 +1618,9 @@ mod tests {
         let source = crate::fixtures::source_revision();
         crate::wire::validate_record_value(&source.to_value(), &registry, None)
             .expect("legacy source validates under the production registry");
-        let decoded = crate::wire::RecordEnvelope::from_value_with_registry(
-            &source.to_value(),
-            &registry,
-        )
-        .expect("legacy source decodes");
+        let decoded =
+            crate::wire::RecordEnvelope::from_value_with_registry(&source.to_value(), &registry)
+                .expect("legacy source decodes");
         assert_eq!(decoded, source);
         assert_eq!(decoded.schema_version, 1);
         assert_eq!(decoded.payload, source.payload);
@@ -1708,9 +1785,9 @@ mod tests {
             registry.later_field(RecordKind::Assertion, "x-ext", 1),
             None
         );
-        // Nothing is later than the newest registered version.
+        // Nothing is later than the newest registered media schema.
         assert_eq!(
-            registry.later_field(RecordKind::Document, "includes", 4),
+            registry.later_field(RecordKind::Document, "includes", 5),
             None
         );
     }
