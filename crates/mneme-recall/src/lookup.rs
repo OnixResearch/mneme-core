@@ -82,6 +82,7 @@ fn recognition_media_locations(
 )> {
     let mut locations = std::collections::BTreeMap::new();
     let mut skipped = 0_usize;
+    let mut resolvable = std::collections::BTreeMap::new();
     for record in &view.snapshot().records {
         if record.kind != mneme_core::RecordKind::RecognitionSegment {
             continue;
@@ -109,8 +110,8 @@ fn recognition_media_locations(
             continue;
         };
         if media.digest().or(media.prior_digest) != Some(segment.media_digest)
-            || view.source_roots(segment.text_source).is_err()
-            || view.source_roots(segment.media_source).is_err()
+            || !has_ancestry(view, segment.text_source, &mut resolvable, budget)?
+            || !has_ancestry(view, segment.media_source, &mut resolvable, budget)?
         {
             skipped = skipped.saturating_add(1);
             continue;
@@ -133,6 +134,23 @@ fn recognition_media_locations(
         });
     }
     Ok((locations, skipped))
+}
+
+/// Whether `pin`'s ancestry resolves, walking each pin once and charging the
+/// walk to the build budget.
+fn has_ancestry(
+    view: &mneme_memory::View,
+    pin: mneme_core::SourcePin,
+    resolvable: &mut std::collections::BTreeMap<mneme_core::SourcePin, bool>,
+    budget: &mut crate::engine::WorkBudget,
+) -> BuildResult<bool> {
+    if let Some(known) = resolvable.get(&pin) {
+        return Ok(*known);
+    }
+    budget.charge(1)?;
+    let is_resolvable = view.source_roots(pin).is_ok();
+    resolvable.insert(pin, is_resolvable);
+    Ok(is_resolvable)
 }
 
 /// Whether the caller's authorization and flags make records in `scope`

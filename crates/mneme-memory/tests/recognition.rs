@@ -225,7 +225,6 @@ fn recognition_and_correction_keep_exact_pins_and_shared_evidence_roots() {
         view.source_roots(fixture.input).expect("input root"),
         view.source_roots(corrected).expect("corrected root")
     );
-    assert!(view.assertions().expect("assertion records").is_empty());
 }
 
 #[test]

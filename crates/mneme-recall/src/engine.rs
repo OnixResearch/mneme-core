@@ -1956,10 +1956,15 @@ fn pack_candidate(candidate: crate::model::Candidate, context: &mut CandidatePac
         omit_candidate(candidate, "empty-item", context.packed);
         return;
     }
+    let citations = candidate
+        .media_locations
+        .iter()
+        .map(citation_bytes)
+        .fold(0_usize, usize::saturating_add);
     context.packed.remaining = context
         .packed
         .remaining
-        .saturating_sub(candidate.text.len());
+        .saturating_sub(candidate.text.len().saturating_add(citations));
     context.packed.returned.push(candidate);
 }
 
@@ -2001,19 +2006,31 @@ fn fill_quote(
     filled.text = excerpt.text;
     filled.span = Some(excerpt.span);
     filled.text_truncated = excerpt.truncated;
-    filled.media_locations = document
-        .media_locations
-        .iter()
-        .filter(|location| {
-            location.text_span.start() <= excerpt.span.end()
-                && excerpt.span.start() <= location.text_span.end()
-        })
-        .cloned()
-        .collect();
+    // Citations share the candidate's context bytes with its excerpt.
+    let mut citation_room = cap.saturating_sub(filled.text.len());
+    for location in document.media_locations.iter().filter(|location| {
+        location.text_span.start() <= excerpt.span.end()
+            && excerpt.span.start() <= location.text_span.end()
+    }) {
+        let size = citation_bytes(location);
+        if size > citation_room {
+            context.packed.is_truncated = true;
+            break;
+        }
+        citation_room -= size;
+        filled.media_locations.push(location.clone());
+    }
     if excerpt.truncated {
         context.packed.is_truncated = true;
     }
     Some(filled)
+}
+
+/// Context bytes one media citation costs: its encoded location plus a fixed
+/// allowance for its identities, span and digest.
+fn citation_bytes(citation: &crate::model::MediaCitation) -> usize {
+    const IDENTITY_BYTES: usize = 160;
+    IDENTITY_BYTES.saturating_add(mneme_core::encode(&citation.location.to_value()).len())
 }
 
 fn truncate_candidate(

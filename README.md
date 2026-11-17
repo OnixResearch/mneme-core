@@ -29,7 +29,10 @@ The kernel proof owner is this repository: `crates/mneme-kernel` and `proofs/ker
 The production schema registry reads record schema versions 1 through 5. The
 v4 schema added `comment`; v5 (`media-recognition`) keeps the earlier
 definitions and adds typed media provenance. Existing v1-v4 envelopes keep
-their original schema versions and remain readable. The registry does not
+their original schema versions and remain readable: the closed acquisition
+classes below apply only from v5, so an older source with another acquisition
+symbol reads as `imported` and keeps its stored symbol, which pruning and API
+output re-emit unchanged. The registry does not
 silently rewrite stored records: use the explicit `Migration` API when a
 payload transformation is required. A migration produces a new immutable
 revision whose predecessor is the input revision; it never invents capture,
@@ -39,10 +42,17 @@ In v5, `SourceRevision` declares an `Acquisition` (`authored`, `imported`,
 `captured`, `machine-recognized`, or `corrected`) and may pin a parent source,
 a typed media extent, a transform, and correction provenance. Audio extents
 include a rational seconds-per-tick time base and channel count; page and ink
-extents declare addressable page counts. A `RecognitionRun` pins input and
+extents declare addressable page counts. A page or ink source may declare its
+page frame (`media-frame`), and image import records the decoded pixel size; a
+page region must use that frame, or normalized coordinates when the source
+declares none. An ink source declares its stroke ids by page and layer
+(`ink-strokes`), and a segment's strokes must be among them. A processed
+derivative's transform must map its own declared frame onto its parent's. A
+`RecognitionRun` pins input and
 output source revisions and digests, model/runtime/adapter/preprocessing and
 configuration identities, coverage and status, plus optional scores and
-alternatives. Each `RecognitionSegment` pins its text source and inclusive
+alternatives; its machine text is committed in the same batch, and it names
+at most 4,096 segments. Each `RecognitionSegment` pins its text source and inclusive
 `SourceSpan` byte offsets, media source revision and digest, and typed audio,
 page-region, or ink-stroke location. Text spans remain byte offsets into the
 exact UTF-8 source revision; media coordinates never change that contract.
@@ -53,12 +63,19 @@ edit provenance; alignments must pin that corrected revision or be explicitly
 invalidated. Reprocessing creates new recognized text and recognition-run
 records rather than replacing corrected text. These records make recognized
 text searchable as evidence, but recognition does not accept or promote an
-assertion.
+assertion. Forgetting an original forgets every derivative, including a
+transcript corrected since: a correction's own revision chain is followed back
+to the source it was derived from. Exchange bundles carry only current
+revisions, so a corrected source, a run or segment pinning a non-current
+revision, and everything depending on them are left out of export rather than
+failing the receiver's import.
 
 The shared API exposes `recognition.read` with a scoped `{scope, run}` payload.
 It returns the run's exact source pins and digests, model/runtime configuration,
 bounded recognized text, source acquisition/transform metadata, coverage/status,
-and its bounded segment mappings. The service checks caller authorization,
+and its bounded segment mappings, each with `original-location`: where a region
+on a processed image lies on the original. A response holds at most 8 MiB of
+encoded text and segments. The service checks caller authorization,
 source ancestry and digest identity, and the current retention eligibility
 barrier before returning the result.
 

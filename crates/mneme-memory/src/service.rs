@@ -391,6 +391,7 @@ fn validate_batch(inputs: BatchValidationInputs<'_>) -> crate::failure::Result<(
         combined,
         supplied_sources,
         view,
+        validated_texts: std::cell::RefCell::new(std::collections::BTreeMap::new()),
     };
     for draft in &batch.records {
         let envelope = draft.clone().into_envelope(mneme_core::RecordedTime::new(
@@ -560,6 +561,11 @@ struct BatchValidation<'a> {
     combined: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
     supplied_sources: std::collections::BTreeMap<mneme_core::ContentDigest, Vec<u8>>,
     view: crate::beliefs::View,
+    /// Text already read and checked as UTF-8 in this batch, by digest, so
+    /// many segments over one text read it once.
+    validated_texts: std::cell::RefCell<
+        std::collections::BTreeMap<mneme_core::ContentDigest, std::rc::Rc<Vec<u8>>>,
+    >,
 }
 
 /// Refusal text for a reference that is missing or outside the caller's
@@ -570,6 +576,15 @@ const UNAVAILABLE_REFERENCE: &str = "a referenced record is missing or unavailab
 /// Refusal text for a reference the caller may resolve but the isolation rules
 /// forbid. It names scope classes, never a record identifier.
 const INADMISSIBLE_REFERENCE: &str = "a record may not reference a record of that scope";
+
+impl BatchValidation<'_> {
+    /// The envelopes of this batch's own records.
+    fn batch_envelopes(&self) -> impl Iterator<Item = &mneme_core::RecordEnvelope> {
+        self.batch_records
+            .iter()
+            .filter_map(|record_id| self.combined.get(record_id))
+    }
+}
 
 impl BatchValidation<'_> {
     /// Whether the caller is authorized for a scope. The batch's own scope is
@@ -1173,9 +1188,8 @@ fn validate_machine_recognized_source(
         ));
     }
     validate_utf8_text_source(source, context)?;
-    let has_run = context.combined.values().any(|record| {
+    let has_run = context.batch_envelopes().any(|record| {
         record.kind == mneme_core::RecordKind::RecognitionRun
-            && context.batch_records.contains(&record.record_id)
             && crate::model::RecognitionRunView::parse(record.clone())
                 .is_ok_and(|run| run.output == pin && Some(run.input) == source.derived_from)
     });
@@ -1267,7 +1281,7 @@ fn validate_source_parent(
 fn validate_utf8_text_source(
     source: &crate::model::SourceView,
     context: &BatchValidation<'_>,
-) -> crate::failure::Result<Vec<u8>> {
+) -> crate::failure::Result<std::rc::Rc<Vec<u8>>> {
     if !source
         .media_type
         .as_ref()
@@ -1277,11 +1291,23 @@ fn validate_utf8_text_source(
             "recognized and corrected source revisions must have a text media type",
         ));
     }
+    if let Some(digest) = source.digest()
+        && let Some(bytes) = context.validated_texts.borrow().get(&digest)
+    {
+        return Ok(std::rc::Rc::clone(bytes));
+    }
     let bytes = source_bytes(source, &context.supplied_sources, context.root)?;
     if std::str::from_utf8(&bytes).is_err() {
         return Err(crate::failure::EvidenceError::policy(
             "recognized and corrected text must be valid UTF-8",
         ));
+    }
+    let bytes = std::rc::Rc::new(bytes);
+    if let Some(digest) = source.digest() {
+        context
+            .validated_texts
+            .borrow_mut()
+            .insert(digest, std::rc::Rc::clone(&bytes));
     }
     Ok(bytes)
 }
@@ -1291,9 +1317,8 @@ fn validate_correction_alignment(
     correction: &mneme_core::CorrectionProvenance,
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<()> {
-    let has_aligned_segment = context.combined.values().any(|record| {
+    let has_aligned_segment = context.batch_envelopes().any(|record| {
         record.kind == mneme_core::RecordKind::RecognitionSegment
-            && context.batch_records.contains(&record.record_id)
             && crate::model::RecognitionSegmentView::parse(record.clone())
                 .is_ok_and(|segment| segment.text_source == pin && segment.run.is_none())
     });
