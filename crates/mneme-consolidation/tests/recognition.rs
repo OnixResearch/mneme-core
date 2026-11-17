@@ -792,4 +792,45 @@ fn audio_is_divided_into_bounded_chunks_and_a_mismatched_plan_is_refused() {
             }
         })
     );
+    // Spans placed by the caller divide the capture exactly, or are refused.
+    let mut spans = audio.clone();
+    spans.job_id = "spans".to_owned();
+    for refused in [
+        vec![],
+        vec![120, 240],
+        vec![120, 120, 250],
+        vec![130, 120, 250],
+        vec![0, 250],
+        vec![50, 100, 150, 200, 250],
+    ] {
+        spans.plan = mneme_consolidation::recognition::UnitPlan::AudioSpans {
+            ends: refused.clone(),
+        };
+        if refused.len() == 5 {
+            spans.limits.max_units = 4;
+        }
+        assert!(
+            matches!(
+                mneme_consolidation::recognition::queue(&mut workspace, &spans),
+                Err(mneme_consolidation::recognition::Failure::Invalid(_))
+            ),
+            "{refused:?} was planned"
+        );
+    }
+    spans.limits.max_units = audio.limits.max_units;
+    spans.plan = mneme_consolidation::recognition::UnitPlan::AudioSpans {
+        ends: vec![120, 250],
+    };
+    let queued =
+        mneme_consolidation::recognition::queue(&mut workspace, &spans).expect("queue spans");
+    let selectors: Vec<_> = queued.units.iter().map(|unit| unit.selector).collect();
+    assert_eq!(
+        selectors,
+        [(0, 120), (120, 250)].map(|(start_tick, end_tick)| {
+            mneme_consolidation::recognition::UnitSelector::Audio {
+                start_tick,
+                end_tick,
+            }
+        })
+    );
 }

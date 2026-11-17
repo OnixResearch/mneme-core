@@ -525,7 +525,7 @@ fn plan(
     let capture = super::publication::eligible_capture(workspace, job, digest)?
         .map_err(super::Failure::Invalid)?
         .capture;
-    let selectors = super::plan::units(job.plan, capture.media_extent, job.limits.max_units)?;
+    let selectors = super::plan::units(&job.plan, capture.media_extent, job.limits.max_units)?;
     Ok(super::durable::Progress::new(
         identity.definition.clone(),
         digest,

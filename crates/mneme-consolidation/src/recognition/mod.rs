@@ -43,12 +43,17 @@ pub struct Recognizer {
 }
 
 /// How a capture is divided into units.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UnitPlan {
     /// One unit per page of a page or ink capture.
     Pages,
     /// Consecutive intervals of an audio capture, each at most `ticks` long.
     AudioChunks { ticks: u64 },
+    /// Consecutive intervals of an audio capture ending at `ends`: strictly
+    /// increasing tick offsets, the last of them the capture's duration. A
+    /// caller places them where the audio allows, such as in pauses, so no
+    /// unit cuts a word another unit also hears.
+    AudioSpans { ends: Vec<u64> },
     /// The whole capture as one unit.
     Whole,
 }

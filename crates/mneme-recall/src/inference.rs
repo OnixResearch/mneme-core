@@ -528,7 +528,7 @@ fn spawn_worker(worker: &WorkerCommand) -> Result<std::process::Child, Invocatio
         .env_clear()
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     #[cfg(unix)]
     {
         command.current_dir("/");
@@ -691,6 +691,50 @@ struct WorkerIo {
     writer: std::thread::JoinHandle<bool>,
     reader: std::thread::JoinHandle<bool>,
     output_receiver: std::sync::mpsc::Receiver<CapturedOutput>,
+    /// The end of what the worker wrote to stderr, drained so it never blocks.
+    diagnostics: std::thread::JoinHandle<Vec<u8>>,
+}
+
+/// Bytes of a worker's stderr kept, from its end, to say why it failed.
+const MAX_DIAGNOSTIC_BYTES: usize = 1024;
+/// Characters of that tail a failure's detail quotes.
+const MAX_QUOTED_DIAGNOSTIC_CHARS: usize = 400;
+
+/// Read a worker's stderr to its end, keeping only its last bytes.
+fn drain_diagnostics(mut stderr: std::process::ChildStderr) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut tail = Vec::with_capacity(MAX_DIAGNOSTIC_BYTES);
+    let mut chunk = [0_u8; 4_096];
+    loop {
+        match stderr.read(&mut chunk) {
+            Ok(0) => return tail,
+            Ok(bytes) => {
+                tail.extend_from_slice(&chunk[..bytes]);
+                let excess = tail.len().saturating_sub(MAX_DIAGNOSTIC_BYTES);
+                tail.drain(..excess);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return tail,
+        }
+    }
+}
+
+/// The last nonblank line of a worker's stderr, as printable text.
+fn quoted_diagnostic(tail: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(tail);
+    let line = text.lines().map(str::trim).rfind(|line| !line.is_empty())?;
+    let printable: String = line
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(MAX_QUOTED_DIAGNOSTIC_CHARS)
+        .collect();
+    Some(printable)
 }
 
 /// What the supervisor writes to a worker's stdin.
@@ -721,6 +765,24 @@ fn start_worker_io(
             child,
             "worker stdout was unavailable",
         ));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        return Err(terminate_after_start_failure(
+            child,
+            "worker stderr was unavailable",
+        ));
+    };
+    let diagnostics = match std::thread::Builder::new()
+        .name("mneme-inference-diagnostics".to_owned())
+        .spawn(move || drain_diagnostics(stderr))
+    {
+        Ok(thread) => thread,
+        Err(_) => {
+            return Err(terminate_after_start_failure(
+                child,
+                "cannot start the worker's diagnostics reader",
+            ));
+        }
     };
     let (output_sender, output_receiver) = std::sync::mpsc::sync_channel(1);
     let reader = match std::thread::Builder::new()
@@ -758,6 +820,7 @@ fn start_worker_io(
         writer,
         reader,
         output_receiver,
+        diagnostics,
     })
 }
 
@@ -905,21 +968,24 @@ impl WorkerExecution {
     }
 }
 
-/// Result of both I/O helpers after joining them.
+/// Result of the I/O helpers after joining them.
 struct WorkerThreads {
     is_input_written: bool,
     is_output_sent: bool,
     output: Option<CapturedOutput>,
+    diagnostics: Vec<u8>,
 }
 
 fn collect_worker_threads(io: WorkerIo) -> WorkerThreads {
     let is_input_written = matches!(io.writer.join(), Ok(true));
     let is_output_sent = matches!(io.reader.join(), Ok(true));
     let output = io.output_receiver.try_recv().ok();
+    let diagnostics = io.diagnostics.join().unwrap_or_default();
     WorkerThreads {
         is_input_written,
         is_output_sent,
         output,
+        diagnostics,
     }
 }
 
@@ -942,8 +1008,11 @@ fn classify_exit(
             Some(CapturedOutput::Complete(output)) => Some(output.len()),
             Some(CapturedOutput::Oversized | CapturedOutput::Failed) | None => None,
         };
-        let mut failed =
-            WorkerExecution::failed("worker exited unsuccessfully or did not consume its input");
+        let reason = "worker exited unsuccessfully or did not consume its input";
+        let mut failed = match quoted_diagnostic(&threads.diagnostics) {
+            Some(diagnostic) => WorkerExecution::failed(&format!("{reason}: {diagnostic}")),
+            None => WorkerExecution::failed(reason),
+        };
         failed.observed_output_bytes = observed_output_bytes;
         return failed;
     }
@@ -1231,6 +1300,26 @@ mod tests {
         assert_eq!(outcome.status, InvocationStatus::Unavailable);
         assert!(outcome.output.is_none());
         assert_eq!(outcome.usage, UsageTelemetry::Unavailable);
+    }
+
+    #[test]
+    fn a_failed_worker_says_why_from_the_end_of_its_stderr() {
+        // More stderr than is kept, then the reason, then a failing exit.
+        let script = "while read -r line; do :; done; i=0; \
+            while [ $i -lt 300 ]; do echo \"progress $i\" >&2; i=$((i+1)); done; \
+            echo 'error: model file missing' >&2; exit 3";
+        let outcome = invoke_json(
+            &command("/usr/bin/sh", &["-c", script]),
+            b"{}".to_vec(),
+            limits(),
+            &InvocationControl::new(),
+        );
+        assert_eq!(outcome.status, InvocationStatus::Failed);
+        let detail = outcome.detail.unwrap_or_default();
+        assert_eq!(
+            detail,
+            "worker exited unsuccessfully or did not consume its input: error: model file missing"
+        );
     }
 
     #[test]

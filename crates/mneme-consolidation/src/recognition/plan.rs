@@ -38,15 +38,63 @@ impl UnitSelector {
 
 /// Divide a capture with `extent` into units under `plan`.
 pub(super) fn units(
-    plan: super::UnitPlan,
+    plan: &super::UnitPlan,
     extent: Option<mneme_core::MediaExtent>,
     max_units: u32,
 ) -> Result<Vec<UnitSelector>, super::Failure> {
     match plan {
         super::UnitPlan::Whole => whole_unit(extent),
         super::UnitPlan::Pages => page_units(extent, max_units),
-        super::UnitPlan::AudioChunks { ticks } => audio_units(extent, ticks, max_units),
+        super::UnitPlan::AudioChunks { ticks } => audio_units(extent, *ticks, max_units),
+        super::UnitPlan::AudioSpans { ends } => audio_spans(extent, ends, max_units),
     }
+}
+
+/// The audio capture's duration in ticks.
+fn audio_duration(extent: Option<mneme_core::MediaExtent>) -> Result<u64, super::Failure> {
+    match extent {
+        Some(mneme_core::MediaExtent::Audio { duration_ticks, .. }) => Ok(duration_ticks),
+        Some(mneme_core::MediaExtent::Pages { .. } | mneme_core::MediaExtent::InkPages { .. })
+        | None => Err(super::Failure::Invalid(
+            "an audio plan needs an audio capture".to_owned(),
+        )),
+    }
+}
+
+/// Units ending at `ends`, which must divide the whole capture: strictly
+/// increasing, the last at its duration, and no more than the job admits.
+fn audio_spans(
+    extent: Option<mneme_core::MediaExtent>,
+    ends: &[u64],
+    max_units: u32,
+) -> Result<Vec<UnitSelector>, super::Failure> {
+    let duration = audio_duration(extent)?;
+    let is_admitted = u32::try_from(ends.len()).is_ok_and(|count| count <= max_units);
+    if !is_admitted {
+        return Err(super::Failure::Invalid(
+            "the capture has more audio spans than the job admits".to_owned(),
+        ));
+    }
+    if ends.last() != Some(&duration) {
+        return Err(super::Failure::Invalid(
+            "audio spans must end at the capture's duration".to_owned(),
+        ));
+    }
+    let mut selectors = Vec::with_capacity(ends.len());
+    let mut start = 0_u64;
+    for &end in ends {
+        if end <= start {
+            return Err(super::Failure::Invalid(
+                "audio spans must be nonempty and in order".to_owned(),
+            ));
+        }
+        selectors.push(UnitSelector::Audio {
+            start_tick: start,
+            end_tick: end,
+        });
+        start = end;
+    }
+    Ok(selectors)
 }
 
 /// A whole-capture unit: its answers carry no page, so a multi-page capture is
@@ -105,15 +153,7 @@ fn audio_units(
     ticks: u64,
     max_units: u32,
 ) -> Result<Vec<UnitSelector>, super::Failure> {
-    let duration = match extent {
-        Some(mneme_core::MediaExtent::Audio { duration_ticks, .. }) => duration_ticks,
-        Some(mneme_core::MediaExtent::Pages { .. } | mneme_core::MediaExtent::InkPages { .. })
-        | None => {
-            return Err(super::Failure::Invalid(
-                "an audio plan needs an audio capture".to_owned(),
-            ));
-        }
-    };
+    let duration = audio_duration(extent)?;
     let Some(whole) = duration.checked_div(ticks) else {
         return Err(super::Failure::Invalid(
             "an audio plan needs a positive chunk length".to_owned(),
