@@ -874,7 +874,7 @@ impl ApiService {
         let run = view
             .recognition_run(*run_id)
             .map_err(|_| crate::error::ApiError::missing())?;
-        if run.segments.len() > 4096 {
+        if run.segments.len() > mneme_core::MAX_RECOGNITION_SEGMENTS {
             return Err(crate::error::ApiError::new(
                 crate::error::ApiErrorCode::Limit,
                 "recognition run exceeds the bounded segment read limit",
@@ -982,6 +982,7 @@ impl ApiService {
         context: RecognitionReadContext<'_>,
     ) -> crate::error::CallResult<Vec<mneme_core::Value>> {
         let mut segments = Vec::with_capacity(context.run.segments.len());
+        let mut encoded_bytes = context.output_text.len();
         for segment_id in &context.run.segments {
             let segment_record =
                 self.visible_record(context.view, context.workspace, *segment_id)?;
@@ -1008,7 +1009,15 @@ impl ApiService {
                 )
                 .map_err(|_| crate::error::ApiError::missing())?;
             self.validate_recognition_segment_read(&context, *segment_id, &segment, &media)?;
-            segments.push(recognition_segment_value(&segment));
+            let value = recognition_segment_value(&segment);
+            encoded_bytes = encoded_bytes.saturating_add(mneme_core::encode(&value).len());
+            if encoded_bytes > MAX_RECOGNITION_READ_BYTES {
+                return Err(crate::error::ApiError::new(
+                    crate::error::ApiErrorCode::Limit,
+                    "recognition read exceeds its bounded response size",
+                ));
+            }
+            segments.push(value);
         }
         Ok(segments)
     }
@@ -1520,6 +1529,10 @@ struct Context {
     scope: mneme_core::ScopeId,
     generation: u64,
 }
+
+/// The most encoded bytes one `recognition.read` returns: its text plus every
+/// segment mapping.
+const MAX_RECOGNITION_READ_BYTES: usize = 8 * 1024 * 1024;
 
 /// A recognition run's checked input and output sources, their shared
 /// ancestry roots and the output's retained text.

@@ -7,6 +7,12 @@
 /// [`Acquisition`] classes. Earlier versions declared any symbol.
 pub const ACQUISITION_SCHEMA_VERSION: u32 = 5;
 
+/// The most segments one recognition run may name.
+pub const MAX_RECOGNITION_SEGMENTS: usize = 4096;
+
+/// The most stroke ids one ink location may name.
+pub const MAX_INK_STROKES: usize = 4096;
+
 /// How source content entered the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Acquisition {
@@ -415,7 +421,7 @@ impl MediaLocation {
                 if layer.trim().is_empty()
                     || layer.len() > 256
                     || strokes.is_empty()
-                    || strokes.len() > 4096
+                    || strokes.len() > MAX_INK_STROKES
                 {
                     return Err("ink location needs a layer and between 1 and 4096 stroke ids");
                 }
@@ -612,6 +618,10 @@ fn parse_ink_strokes(
     let items = fields[3]
         .as_sequence()
         .ok_or_else(|| type_error(path, "ink stroke sequence"))?;
+    // Refuse an oversized location before copying any stroke id.
+    if items.is_empty() || items.len() > MAX_INK_STROKES {
+        return Err(type_error(path, "between 1 and 4096 ink stroke ids"));
+    }
     let strokes = items
         .iter()
         .map(|item| {

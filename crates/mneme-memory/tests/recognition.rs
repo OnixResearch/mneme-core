@@ -344,3 +344,37 @@ fn a_legacy_acquisition_symbol_reads_as_imported_and_survives_pruning() {
         "rewriting a source keeps its stored acquisition symbol"
     );
 }
+
+#[test]
+fn a_later_run_cannot_claim_existing_machine_text() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let claimant = mneme_memory::build_recognition_run(
+        common::rid(0xa9),
+        common::rev(0xb9),
+        &common::scope(),
+        mneme_memory::RecognitionRunOptions {
+            input: fixture.input,
+            input_digest: fixture.input_digest,
+            output: fixture.output,
+            output_digest: mneme_core::ContentDigest::of_source_bytes(b"hello world"),
+            model: "other-model@sha256:09",
+            runtime: "test-runtime@sha256:02",
+            adapter: "test-adapter@sha256:03",
+            preprocessing: "test-preprocess@sha256:04",
+            configuration: "test-config@sha256:05",
+            segments: &[],
+            coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
+            status: mneme_core::RecognitionStatus::Complete,
+            scores: &[],
+            alternatives: &[],
+        },
+    )
+    .expect("run draft");
+    let refused = mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .commit(common::batch("claimant-run", vec![claimant], Vec::new()));
+    assert!(
+        refused.is_err(),
+        "a run must commit the text it produced, not claim another run's"
+    );
+}

@@ -1305,6 +1305,13 @@ fn validate_recognition_run(
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<()> {
     let run = crate::model::RecognitionRunView::parse(envelope.clone())?;
+    // A raw draft is held to the builder's bound; a longer run could never
+    // be read back.
+    if run.segments.len() > mneme_core::MAX_RECOGNITION_SEGMENTS {
+        return Err(crate::failure::EvidenceError::policy(
+            "a recognition run names more segments than its bound",
+        ));
+    }
     let input_record = context.reference(envelope, run.input.source())?;
     let output_record = context.reference(envelope, run.output.source())?;
     if input_record.kind != mneme_core::RecordKind::SourceRevision
@@ -1314,6 +1321,13 @@ fn validate_recognition_run(
     {
         return Err(crate::failure::EvidenceError::policy(
             "recognition input and output sources must be in the run scope",
+        ));
+    }
+    // The text a run produced is committed with it; a later run cannot claim
+    // text another run produced.
+    if !context.batch_records.contains(&run.output.source()) {
+        return Err(crate::failure::EvidenceError::policy(
+            "a recognition run's text must be committed in the run's own batch",
         ));
     }
     let input = context
@@ -1956,7 +1970,9 @@ fn validate_recognition_run_options(
         .copied()
         .collect::<std::collections::BTreeSet<_>>()
         .len();
-    if options.segments.len() > 4096 || unique_segments != options.segments.len() {
+    if options.segments.len() > mneme_core::MAX_RECOGNITION_SEGMENTS
+        || unique_segments != options.segments.len()
+    {
         return Err(crate::failure::EvidenceError::policy(
             "recognition run segment ids must be unique and bounded",
         ));
