@@ -77,7 +77,8 @@ takes them in order of preference:
 
 1. a text whose bytes are retained, before a pruned or erased one;
 2. a corrected text, before machine output;
-3. a complete run's text, before a partial, failed or cancelled one;
+3. among machine output, a complete run's text before a partial, failed or
+   cancelled one;
 4. the most recently committed.
 
 It selects each text unless the texts already selected cover all of its part.
@@ -86,7 +87,9 @@ machine output of that part only, and a part nothing newer covers keeps its
 text. Reprocessing never displaces retained text a person corrected, and
 choosing a reprocessed result is a correction of it. Where a newer text covers
 only some of an older one's part, both are selected and searched. A text that
-two runs name appears once, with the part of the run committed first. Current
+two runs name appears once, with the part of the run committed first. A
+pruned capture keeps its extent, so its texts are selected the same way after
+pruning. Current
 and historical recall search only selected texts; inspection recall also
 returns alternatives. Forgetting an original forgets every derivative, including a
 transcript corrected since: a correction's own revision chain is followed back

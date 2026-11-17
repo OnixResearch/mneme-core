@@ -671,6 +671,18 @@ struct Run<'a> {
     has_covers_field: bool,
 }
 
+/// Unit coverage consistent with a run's status.
+fn coverage_for(status: mneme_core::RecognitionStatus) -> mneme_core::RecognitionCoverage {
+    let (completed, total) = match status {
+        mneme_core::RecognitionStatus::Complete => (1, 1),
+        mneme_core::RecognitionStatus::Partial => (1, 2),
+        mneme_core::RecognitionStatus::Failed
+        | mneme_core::RecognitionStatus::Unsupported
+        | mneme_core::RecognitionStatus::Cancelled => (0, 1),
+    };
+    mneme_core::RecognitionCoverage::new(completed, total).expect("coverage")
+}
+
 /// Commit a new text record recognized from `capture`, with at most one
 /// segment.
 fn recognize_run(
@@ -712,7 +724,7 @@ fn recognize_run(
             preprocessing: "test-preprocess@sha256:04",
             configuration: "test-config@sha256:05",
             segments: &segments,
-            coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
+            coverage: coverage_for(run.status),
             status: run.status,
             scores: &[],
             alternatives: &[],
@@ -1284,4 +1296,44 @@ fn a_text_two_runs_name_is_selected_once() {
     assert_eq!(shown.run.covers, first_half);
     assert!(selection.alternatives.is_empty());
     assert!(view.unselected_recognized_texts().is_empty());
+}
+
+#[test]
+fn choosing_a_partial_reprocess_selects_it_over_an_earlier_correction() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let corrected = correct(
+        &mut workspace,
+        &fixture,
+        (fixture.output, 0xb5),
+        "hello, world",
+        Some(0xa5),
+    );
+    let partial = recognize_run(
+        &mut workspace,
+        (fixture.input, fixture.input_digest),
+        &Run {
+            byte: 0xc0,
+            text: "hello wor",
+            segment: None,
+            covers: mneme_core::CapturePart::Whole,
+            status: mneme_core::RecognitionStatus::Partial,
+            has_covers_field: true,
+        },
+    )
+    .expect("partial run");
+    // Machine output from a partial run never displaces the correction ...
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![corrected]);
+    // ... but a person choosing it makes it the most recent corrected text.
+    let chosen = correct(
+        &mut workspace,
+        &fixture,
+        (partial, 0xc8),
+        "hello world",
+        None,
+    );
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![chosen]);
+    assert_eq!(pins(&selection.alternatives), vec![corrected]);
 }

@@ -3055,6 +3055,7 @@ fn reprocess_media(
     input: mneme_core::SourcePin,
     location: &mneme_core::MediaLocation,
     text: &[u8],
+    covers: mneme_core::CapturePart,
 ) -> mneme_core::SourcePin {
     let audio = b"bounded audio fixture";
     let input_digest = mneme_core::ContentDigest::of_source_bytes(audio);
@@ -3091,7 +3092,7 @@ fn reprocess_media(
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
-            covers: mneme_core::CapturePart::Whole,
+            covers,
         },
     )
     .expect("run");
@@ -3144,6 +3145,7 @@ fn only_the_selected_transcript_of_a_capture_is_searched() {
         input,
         &location,
         b"The transcript says cedar project again.",
+        mneme_core::CapturePart::Whole,
     );
     // The newer machine transcript is the capture's text; the earlier one
     // stays readable through inspection only.
@@ -3235,6 +3237,7 @@ fn pruning_an_earlier_correction_never_displaces_the_chosen_transcript() {
         input,
         &location,
         b"The transcript says cedar project again.",
+        mneme_core::CapturePart::Whole,
     );
     // The person chooses the reprocessed transcript: a correction of it.
     correct_transcript(
@@ -3271,4 +3274,46 @@ fn pruning_an_earlier_correction_never_displaces_the_chosen_transcript() {
         transcript_sources(&mut harness, mneme_recall::TemporalMode::Current),
         std::collections::BTreeSet::from([reprocessed.source()])
     );
+}
+
+#[test]
+fn a_pruned_capture_keeps_its_selection_in_a_view_without_its_history() {
+    let mut harness = Harness::new();
+    let (input, location) = add_recognized_media(&mut harness);
+    let original = mneme_core::SourcePin::new(rid(0xe2), rev(0xe3));
+    // A newer text covers the capture's whole duration as an interval, so it
+    // covers the original's whole part only when the extent is known.
+    let reprocessed = reprocess_media(
+        &mut harness,
+        input,
+        &location,
+        b"The transcript says cedar project again.",
+        mneme_core::CapturePart::Audio {
+            start_tick: 0,
+            end_tick: 100,
+        },
+    );
+    let request = mneme_retention::Request {
+        actor: "recall-test".to_owned(),
+        scope: scope(),
+        base_revision: harness.workspace.current_revision().expect("base"),
+        idempotency_key: "prune-capture".to_owned(),
+        operation: mneme_retention::OperationKind::SourcePruning,
+        selector: mneme_retention::Selector::Source(input.source()),
+        effective: None,
+        policy: retention_policy(),
+    };
+    mneme_retention::Engine::new(&mut harness.workspace)
+        .execute(request)
+        .expect("prune the capture");
+    let without_history = mneme_memory::View::new(
+        harness.workspace.snapshot().expect("snapshot"),
+        harness.root.clone(),
+    );
+    let selection = without_history.capture_texts(input, &scope());
+    let pins = |texts: &[mneme_memory::beliefs::captures::Text]| {
+        texts.iter().map(|text| text.pin).collect::<Vec<_>>()
+    };
+    assert_eq!(pins(&selection.selected), vec![reprocessed]);
+    assert_eq!(pins(&selection.alternatives), vec![original]);
 }

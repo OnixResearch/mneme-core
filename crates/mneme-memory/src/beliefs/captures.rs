@@ -6,7 +6,8 @@
 //!
 //! 1. a text whose bytes are retained, before a pruned or erased one;
 //! 2. a corrected text, before machine output;
-//! 3. a complete run's text, before a partial, failed or cancelled one;
+//! 3. among machine output, a complete run's text before a partial, failed or
+//!    cancelled one;
 //! 4. the most recently committed.
 //!
 //! A text is selected unless the more preferred texts already selected cover
@@ -229,10 +230,7 @@ impl super::View {
                 .then(right.revision_order.cmp(&left.revision_order))
                 .then(left.pin.cmp(&right.pin))
         });
-        let extent = self
-            .source_at(capture.source(), capture.revision())
-            .ok()
-            .and_then(|source| source.media_extent);
+        let extent = self.capture_extent(capture, texts.first().map(|text| text.run.input_digest));
         let mut selection = Selection {
             capture,
             selected: Vec::with_capacity(texts.len()),
@@ -251,6 +249,23 @@ impl super::View {
             .selected
             .sort_by_key(|text| (part_position(text.run.covers), text.pin));
         selection
+    }
+
+    /// The capture's extent. A pruned capture is rewritten as a new revision
+    /// that keeps its extent, so when the view does not hold the revision the
+    /// runs name, the current revision serves if it replaced exactly those
+    /// bytes.
+    fn capture_extent(
+        &self,
+        capture: mneme_core::SourcePin,
+        input_digest: Option<mneme_core::ContentDigest>,
+    ) -> Option<mneme_core::MediaExtent> {
+        if let Ok(source) = self.source_at(capture.source(), capture.revision()) {
+            return source.media_extent;
+        }
+        let current = self.source(capture.source()).ok()?;
+        let is_rewrite = input_digest.is_some() && current.prior_digest == input_digest;
+        is_rewrite.then_some(current.media_extent).flatten()
     }
 
     /// Read the segments of the selected texts, and of the alternatives when
@@ -304,8 +319,10 @@ impl super::View {
     }
 }
 
+/// A corrected text counts as complete: a person chose it, whatever the run
+/// that produced it reported.
 const fn is_complete(text: &Text) -> bool {
-    matches!(text.run.status, mneme_core::RecognitionStatus::Complete)
+    text.is_corrected || matches!(text.run.status, mneme_core::RecognitionStatus::Complete)
 }
 
 /// Whether the parts in `covered` together cover all of `part`. A whole
