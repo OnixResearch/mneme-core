@@ -110,23 +110,27 @@ record and revision, never by digest, and refuses every other request in the
 same way. A receiver checks each chunk against the digest signed for its place
 and keeps it under `transfers/<signer key id>/<digest>/`, beside the blob store
 and never in it. Chunks may arrive in any order, more than once and across
-restarts, within 1 GiB for all pending transfers. Until every chunk is here and
-the whole asset hashes to its digest, `import_records` defers the source and
-everything that depends on it, including text recognized from it, and reports
-them; a later import of the same bundle publishes them, up to 512 MiB of
-assets per import; a source waiting for one still arriving keeps its own
-chunks. Bytes already held for another source are used without chunks.
+restarts, within 1 GiB for all pending transfers: a transfer starts only when
+its whole asset fits beside the room every started transfer holds, and a
+started transfer keeps every chunk, so it always finishes. Until every chunk
+is here and the whole asset hashes to its digest, `import_records` defers the
+source and everything that depends on it, including text recognized from it,
+and reports them; a later import of the same bundle publishes them, parents
+before what needs them, up to 512 MiB of assets per import. What waits for an
+asset still arriving is decided before any bytes are read, and keeps its own
+chunks. Bytes a source of the asset's own scope already holds are used without
+chunks; bytes held in another scope never are.
 `wanted_chunks` names the chunks a transport still needs to send,
 `pending_assets`, `transfer_usage` and `media_arrival` report what is
 arriving, and a pending source is never in the ledger.
 `release_untrusted` removes transfers from keys no longer trusted. A
 chunk of a forgotten source, or of bytes whose replay a forget blocks, is
-refused and its transfer removed; applying a barrier removes what arrived of
-its source, an import refuses the asset, and a local forget searches pending
-transfers as one of its cleanup locations. A small export is still a version
-1 bundle. A reader that knows only version 1 refuses a version 2 bundle as
-malformed, so every device exchanging larger originals must be upgraded; this
-reader refuses later versions as an unsupported profile.
+refused and its transfer removed; applying a barrier the first time removes
+what arrived of its source or bytes, an import refuses the asset, and a local
+forget searches pending transfers as one of its cleanup locations. A small
+export is still a version 1 bundle. A reader that knows only version 1 refuses
+a version 2 bundle as malformed, so every device exchanging larger originals
+must be upgraded; this reader refuses later versions as an unsupported profile.
 
 The shared API exposes `recognition.read` with a scoped `{scope, run}` payload.
 It returns the run's exact source pins and digests, model/runtime configuration,

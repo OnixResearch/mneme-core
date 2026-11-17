@@ -439,9 +439,10 @@ pub fn asset_chunk(
 
 /// Keep one chunk of an asset the authenticated bundle names, once it hashes
 /// to the digest the manifest signed for its place. The chunk is refused, and
-/// what the transfer held is removed, when the source or its bytes were
-/// forgotten here; a chunk that would take pending transfers past their bound
-/// is refused too.
+/// what the transfer held is removed, when every source of its bytes was
+/// forgotten here. A transfer's first chunk is admitted only while its whole
+/// asset fits beside the room every started transfer holds; a later chunk of
+/// a started transfer is always kept, so a started transfer can finish.
 pub fn receive_chunk(
     workspace: &mneme_store::Workspace,
     bundle: &super::AuthenticatedBundle,
@@ -468,30 +469,34 @@ pub fn receive_chunk(
     }
     let root = workspace.root();
     let directory = mneme_store::payload::transfer_path(root, &bundle.bundle.key_id, digest)?;
-    let total = asset.chunk_count();
-    match need(workspace, &bundle.bundle, digest)? {
-        Need::Forgotten => {
-            remove_transfer(&directory)?;
-            return Err(super::Error::AssetForgotten);
-        }
-        Need::Held => {
-            return Ok(ChunkReceipt {
-                received: total,
-                total,
-                is_new: false,
-            });
-        }
-        Need::Chunks => {}
+    let blocked =
+        super::blocked_records(&bundle.bundle.records, &workspace.active_suppressions()?)?;
+    let is_forgotten = bundle
+        .bundle
+        .assets
+        .iter()
+        .filter(|asset| asset.digest == digest)
+        .all(|asset| blocked.contains(&asset.source));
+    if is_forgotten {
+        remove_transfer(&directory)?;
+        return Err(super::Error::AssetForgotten);
     }
-    open_transfer(&directory, &bundle.bundle.issuer, asset)?;
+    let total = asset.chunk_count();
     let path = directory.join(chunk_name(index));
     let is_new = !is_file_of_length(&path, bytes.len())?;
     if is_new {
-        let held = transfer_usage_in(root)?.bytes;
-        let length = u64::try_from(bytes.len()).map_err(|_| super::Error::TransferQuotaExceeded)?;
-        if held.saturating_add(length) > MAX_TRANSFER_BYTES {
-            return Err(super::Error::TransferQuotaExceeded);
+        if held_chunks(&directory, asset)? == 0 {
+            // Bytes already here need no transfer: the chunk changes nothing.
+            if is_held_here(workspace, &bundle.bundle, digest, &blocked)? {
+                return Ok(ChunkReceipt {
+                    received: total,
+                    total,
+                    is_new: false,
+                });
+            }
+            admit(root, &directory, asset.byte_length)?;
         }
+        open_transfer(&directory, &bundle.bundle.issuer, asset)?;
         write_atomically(&path, bytes)?;
     }
     Ok(ChunkReceipt {
@@ -501,9 +506,246 @@ pub fn receive_chunk(
     })
 }
 
-/// Decide each of a bundle's assets for one import: publish those whose
-/// chunks are all here and make the asset, refuse forgotten ones, and defer
-/// the rest with every record that needs them.
+/// Whether every source of these bytes the bundle offers and this workspace
+/// has not forgotten is here already, or has the bytes from a source of its
+/// own scope.
+fn is_held_here(
+    workspace: &mneme_store::Workspace,
+    bundle: &super::SignedBundle,
+    digest: mneme_core::ContentDigest,
+    blocked: &std::collections::BTreeSet<mneme_core::RecordId>,
+) -> Result<bool, super::Error> {
+    let snapshot = workspace.snapshot()?;
+    let local = snapshot
+        .records
+        .iter()
+        .map(|record| (record.record_id, record))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let here = local_bytes(workspace, &local)?;
+    for asset in bundle
+        .assets
+        .iter()
+        .filter(|asset| asset.digest == digest && !blocked.contains(&asset.source))
+    {
+        if !here.contains(&(asset.scope.clone(), digest)) && !holds_digest(&local, asset)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Admit the first chunk of a transfer only when its whole asset fits beside
+/// the room the other transfers hold: a started transfer holds room for its
+/// whole asset, and anything else in a transfer directory counts as it is.
+fn admit(root: &std::path::Path, own: &std::path::Path, length: u64) -> Result<(), super::Error> {
+    let mut reserved = length;
+    for directory in transfer_directories(root)? {
+        let held = directory_usage(&directory)?.bytes;
+        let whole = if directory == own {
+            0
+        } else {
+            started_length(&directory)?
+        };
+        reserved = reserved.saturating_add(held.max(whole));
+    }
+    if reserved > MAX_TRANSFER_BYTES {
+        return Err(super::Error::TransferQuotaExceeded);
+    }
+    Ok(())
+}
+
+/// The room a transfer holds: its whole asset's length once one of its
+/// chunks is here, and none before or when its manifest cannot be read.
+fn started_length(directory: &std::path::Path) -> Result<u64, super::Error> {
+    let Ok(Some((_, asset))) = read_manifest(directory) else {
+        return Ok(0);
+    };
+    Ok(if held_chunks(directory, &asset)? > 0 {
+        asset.byte_length
+    } else {
+        0
+    })
+}
+
+/// The bytes the unforgotten sources of each scope hold here, by digest: an
+/// asset takes bytes already here only from a source of its own scope.
+fn local_bytes(
+    workspace: &mneme_store::Workspace,
+    local: &std::collections::BTreeMap<mneme_core::RecordId, &mneme_core::RecordEnvelope>,
+) -> Result<
+    std::collections::BTreeSet<(mneme_core::ScopeId, mneme_core::ContentDigest)>,
+    super::Error,
+> {
+    let suppressions = workspace.active_suppressions()?;
+    let mut held = std::collections::BTreeSet::new();
+    for record in local.values() {
+        let Some(length) = super::retained_length(record) else {
+            continue;
+        };
+        let Some(digest) = crate::model::SourceView::parse((*record).clone())?.digest() else {
+            continue;
+        };
+        let is_forgotten = suppressions.iter().any(|suppression| {
+            suppression.target == record.record_id || suppression.content_digest == Some(digest)
+        });
+        if !is_forgotten && mneme_store::payload::blob_is_present(workspace.root(), digest, length)?
+        {
+            held.insert((record.scope.clone(), digest));
+        }
+    }
+    Ok(held)
+}
+
+/// Where one asset stands before an import reads any of its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Standing {
+    /// Its source is forgotten here.
+    Refused,
+    /// Its source is already here with these bytes.
+    Held,
+    /// A source of its scope already holds its bytes here.
+    Local,
+    /// Every chunk is here.
+    Arrived,
+    /// A chunk is missing.
+    Arriving,
+}
+
+fn standing(
+    directory: &std::path::Path,
+    asset: &Asset,
+    blocked: &std::collections::BTreeSet<mneme_core::RecordId>,
+    local: &std::collections::BTreeMap<mneme_core::RecordId, &mneme_core::RecordEnvelope>,
+    here: &std::collections::BTreeSet<(mneme_core::ScopeId, mneme_core::ContentDigest)>,
+) -> Result<Standing, super::Error> {
+    if blocked.contains(&asset.source) {
+        return Ok(Standing::Refused);
+    }
+    if holds_digest(local, asset)? {
+        return Ok(Standing::Held);
+    }
+    if here.contains(&(asset.scope.clone(), asset.digest)) {
+        return Ok(Standing::Local);
+    }
+    Ok(if held_chunks(directory, asset)? == asset.chunk_count() {
+        Standing::Arrived
+    } else {
+        Standing::Arriving
+    })
+}
+
+/// The assets one import publishes, in order, and the sources that wait.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Plan {
+    /// Indexes of the assets to publish, each after every asset it needs.
+    publish: Vec<usize>,
+    /// Sources that wait, with every record that needs them.
+    deferred: std::collections::BTreeSet<mneme_core::RecordId>,
+}
+
+/// Plan one import's publication: nothing whose bytes, or the bytes of an
+/// asset it needs, are still arriving, and the rest parents first while what
+/// is published stays within the budget. The defer function adds every
+/// record that needs one of a set of sources.
+fn plan_arrivals(
+    assets: &[Asset],
+    standings: &[Standing],
+    budget: u64,
+    defer: &dyn Fn(&mut std::collections::BTreeSet<mneme_core::RecordId>),
+) -> Plan {
+    let mut deferred = assets
+        .iter()
+        .zip(standings)
+        .filter(|(_, standing)| **standing == Standing::Arriving)
+        .map(|(asset, _)| asset.source)
+        .collect::<std::collections::BTreeSet<_>>();
+    defer(&mut deferred);
+    let candidates = assets
+        .iter()
+        .zip(standings)
+        .enumerate()
+        .filter(|(_, (asset, standing))| {
+            matches!(**standing, Standing::Local | Standing::Arrived)
+                && !deferred.contains(&asset.source)
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let (order, tangled) = parents_first(assets, &candidates);
+    let mut plan = Plan {
+        publish: Vec::with_capacity(order.len()),
+        deferred,
+    };
+    // Assets that need one another can never be published one at a time.
+    if !tangled.is_empty() {
+        plan.deferred.extend(
+            tangled
+                .iter()
+                .filter_map(|index| assets.get(*index))
+                .map(|asset| asset.source),
+        );
+        defer(&mut plan.deferred);
+    }
+    let mut spent = 0_u64;
+    for index in order {
+        let Some(asset) = assets.get(index) else {
+            continue;
+        };
+        if plan.deferred.contains(&asset.source) {
+            continue;
+        }
+        if spent.saturating_add(asset.byte_length) > budget {
+            plan.deferred.insert(asset.source);
+            defer(&mut plan.deferred);
+            continue;
+        }
+        spent = spent.saturating_add(asset.byte_length);
+        plan.publish.push(index);
+    }
+    plan
+}
+
+/// Order the candidates so each comes after every candidate whose
+/// dependents include it, ties by index; candidates that need one another
+/// are returned apart.
+fn parents_first(assets: &[Asset], candidates: &[usize]) -> (Vec<usize>, Vec<usize>) {
+    let is_needed_by = |parent: usize, child: usize| {
+        parent != child
+            && assets
+                .get(parent)
+                .zip(assets.get(child))
+                .is_some_and(|(parent, child)| parent.dependents.contains(&child.source))
+    };
+    let mut unplaced = candidates
+        .iter()
+        .map(|&child| {
+            let parents = candidates
+                .iter()
+                .filter(|&&parent| is_needed_by(parent, child))
+                .count();
+            (child, parents)
+        })
+        .collect::<std::collections::BTreeMap<usize, usize>>();
+    let mut order = Vec::with_capacity(candidates.len());
+    while let Some(next) = unplaced
+        .iter()
+        .find(|(_, parents)| **parents == 0)
+        .map(|(index, _)| *index)
+    {
+        unplaced.remove(&next);
+        order.push(next);
+        for (child, parents) in &mut unplaced {
+            if is_needed_by(next, *child) {
+                *parents = parents.saturating_sub(1);
+            }
+        }
+    }
+    (order, unplaced.into_keys().collect())
+}
+
+/// Decide each of a bundle's assets for one import: refuse forgotten ones,
+/// defer those whose bytes, or the bytes of an asset they need, are still
+/// arriving, with every record that needs them, and publish the rest parents
+/// first within the import's budget.
 pub(super) fn arrivals(
     workspace: &mneme_store::Workspace,
     bundle: &super::SignedBundle,
@@ -511,134 +753,133 @@ pub(super) fn arrivals(
     local: &std::collections::BTreeMap<mneme_core::RecordId, &mneme_core::RecordEnvelope>,
 ) -> Result<Arrivals, super::Error> {
     let root = workspace.root();
-    let mut arrivals = Arrivals::default();
-    let mut published = 0_u64;
+    let here = local_bytes(workspace, local)?;
+    let mut standings = Vec::with_capacity(bundle.assets.len());
     for asset in &bundle.assets {
         let directory = mneme_store::payload::transfer_path(root, &bundle.key_id, asset.digest)?;
-        if blocked.contains(&asset.source) {
-            remove_transfer(&directory)?;
-            arrivals.refused.push(asset.digest);
+        standings.push(standing(&directory, asset, blocked, local, &here)?);
+    }
+    let defer = |sources: &mut std::collections::BTreeSet<mneme_core::RecordId>| {
+        super::add_dependents(&bundle.records, sources);
+    };
+    let plan = plan_arrivals(&bundle.assets, &standings, MAX_PUBLISHED_BYTES, &defer);
+    let mut arrivals = Arrivals {
+        deferred: plan.deferred,
+        ..Arrivals::default()
+    };
+    for index in plan.publish {
+        let (Some(asset), Some(standing)) = (bundle.assets.get(index), standings.get(index)) else {
+            continue;
+        };
+        // An asset another one's damage held back waits with it.
+        if arrivals.deferred.contains(&asset.source) {
             continue;
         }
-        if holds_digest(local, asset)? {
-            remove_transfer(&directory)?;
-            continue;
-        }
-        let assembly = if published.saturating_add(asset.byte_length) > MAX_PUBLISHED_BYTES {
-            Assembly::Incomplete
-        } else if mneme_store::payload::blob_is_present(root, asset.digest, asset.byte_length)? {
-            // Another source already brought these bytes; they are verified
-            // as they are read.
+        let directory = mneme_store::payload::transfer_path(root, &bundle.key_id, asset.digest)?;
+        let assembly = if *standing == Standing::Local {
+            // Bytes a source of this scope brought, verified as they are read.
             Assembly::Complete(mneme_store::payload::read(root, asset.digest)?)
         } else {
             assemble(&directory, asset)?
         };
         match assembly {
             Assembly::Complete(bytes) => {
-                published = published.saturating_add(asset.byte_length);
                 arrivals.ready.insert(asset.source, bytes);
             }
             Assembly::Incomplete => {
-                open_transfer(&directory, &bundle.issuer, asset)?;
-                arrivals.pending.push(asset.digest);
                 arrivals.deferred.insert(asset.source);
+                defer(&mut arrivals.deferred);
             }
             Assembly::Corrupt => {
                 remove_transfer(&directory)?;
                 arrivals.refused.push(asset.digest);
                 arrivals.deferred.insert(asset.source);
+                defer(&mut arrivals.deferred);
             }
         }
     }
-    super::add_dependents(&bundle.records, &mut arrivals.deferred);
-    // A source whose bytes are here but which needs a source still arriving
-    // waits with it; its chunks stay, and it is reported pending.
-    let waiting = arrivals
-        .ready
-        .keys()
-        .filter(|source| arrivals.deferred.contains(*source))
-        .copied()
-        .collect::<Vec<_>>();
-    for source in waiting {
-        arrivals.ready.remove(&source);
-        if let Some(asset) = bundle.assets.iter().find(|asset| asset.source == source) {
-            arrivals.pending.push(asset.digest);
-        }
-    }
+    settle(root, bundle, &standings, &mut arrivals)?;
     Ok(arrivals)
 }
 
-/// What a bundle's sources of one digest still need here.
-enum Need {
-    /// Every source of the digest was forgotten here.
-    Forgotten,
-    /// Every source of the digest is held, or its bytes are.
-    Held,
-    /// Chunks: a source of the digest is neither held nor forgotten.
-    Chunks,
-}
-
-fn need(
-    workspace: &mneme_store::Workspace,
+/// Report the refused and waiting assets, keep the transfers waiting assets
+/// need, and remove those nothing needs any more. A digest names one
+/// transfer, which several sources of the same bytes share.
+fn settle(
+    root: &std::path::Path,
     bundle: &super::SignedBundle,
-    digest: mneme_core::ContentDigest,
-) -> Result<Need, super::Error> {
-    let blocked = super::blocked_records(&bundle.records, &workspace.active_suppressions()?)?;
-    let open = bundle
+    standings: &[Standing],
+    arrivals: &mut Arrivals,
+) -> Result<(), super::Error> {
+    arrivals
+        .ready
+        .retain(|source, _| !arrivals.deferred.contains(source));
+    let mut waiting = std::collections::BTreeSet::new();
+    for (asset, standing) in bundle.assets.iter().zip(standings) {
+        match standing {
+            Standing::Refused => arrivals.refused.push(asset.digest),
+            Standing::Held => {}
+            Standing::Local | Standing::Arrived | Standing::Arriving => {
+                let is_waiting = arrivals.deferred.contains(&asset.source)
+                    && !arrivals.refused.contains(&asset.digest);
+                if is_waiting {
+                    arrivals.pending.push(asset.digest);
+                    if *standing != Standing::Local {
+                        waiting.insert(asset.digest);
+                    }
+                }
+            }
+        }
+    }
+    let publishing = bundle
         .assets
         .iter()
-        .filter(|asset| asset.digest == digest && !blocked.contains(&asset.source))
-        .collect::<Vec<_>>();
-    let Some(first) = open.first() else {
-        return Ok(Need::Forgotten);
-    };
-    if mneme_store::payload::blob_is_present(workspace.root(), digest, first.byte_length)? {
-        return Ok(Need::Held);
+        .filter(|asset| arrivals.ready.contains_key(&asset.source))
+        .map(|asset| asset.digest)
+        .collect::<std::collections::BTreeSet<_>>();
+    for asset in &bundle.assets {
+        let directory = mneme_store::payload::transfer_path(root, &bundle.key_id, asset.digest)?;
+        if waiting.contains(&asset.digest) {
+            open_transfer(&directory, &bundle.issuer, asset)?;
+        } else if !publishing.contains(&asset.digest) {
+            // Published bytes leave with the import's commit.
+            remove_transfer(&directory)?;
+        }
     }
+    Ok(())
+}
+
+/// The chunks of a bundle's assets this workspace still wants, by digest: an
+/// asset whose source is held or forgotten, whose bytes a source of its own
+/// scope holds, or with every chunk here is not listed. A transport sends or
+/// reads only these.
+pub fn wanted_chunks(
+    workspace: &mneme_store::Workspace,
+    bundle: &super::AuthenticatedBundle,
+) -> Result<Vec<(mneme_core::ContentDigest, Vec<u32>)>, super::Error> {
     let snapshot = workspace.snapshot()?;
     let local = snapshot
         .records
         .iter()
         .map(|record| (record.record_id, record))
-        .collect();
-    for asset in open {
-        if !holds_digest(&local, asset)? {
-            return Ok(Need::Chunks);
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let here = local_bytes(workspace, &local)?;
+    let blocked =
+        super::blocked_records(&bundle.bundle.records, &workspace.active_suppressions()?)?;
+    let mut wanted = Vec::with_capacity(bundle.bundle.assets.len());
+    for asset in &bundle.bundle.assets {
+        let is_listed = wanted.iter().any(|(digest, _)| *digest == asset.digest);
+        let is_satisfied = blocked.contains(&asset.source)
+            || here.contains(&(asset.scope.clone(), asset.digest))
+            || holds_digest(&local, asset)?;
+        if is_listed || is_satisfied {
+            continue;
         }
-    }
-    Ok(Need::Held)
-}
-
-/// The chunks of a bundle's assets this workspace still wants, by digest; an
-/// asset held, forgotten or with every chunk here is not listed. A transport
-/// sends or reads only these.
-pub fn wanted_chunks(
-    workspace: &mneme_store::Workspace,
-    bundle: &super::AuthenticatedBundle,
-) -> Result<Vec<(mneme_core::ContentDigest, Vec<u32>)>, super::Error> {
-    let mut digests = bundle
-        .bundle
-        .assets
-        .iter()
-        .map(|asset| asset.digest)
-        .collect::<Vec<_>>();
-    digests.sort();
-    digests.dedup();
-    let mut wanted = Vec::with_capacity(digests.len());
-    for digest in digests {
-        let Need::Chunks = need(workspace, &bundle.bundle, digest)? else {
-            continue;
-        };
-        let Some(asset) = bundle
-            .bundle
-            .assets
-            .iter()
-            .find(|asset| asset.digest == digest)
-        else {
-            continue;
-        };
-        let directory =
-            mneme_store::payload::transfer_path(workspace.root(), &bundle.bundle.key_id, digest)?;
+        let directory = mneme_store::payload::transfer_path(
+            workspace.root(),
+            &bundle.bundle.key_id,
+            asset.digest,
+        )?;
         let mut missing = Vec::with_capacity(asset.chunks.len());
         for index in 0..asset.chunk_count() {
             let Some((_, length)) = asset.chunk_span(index) else {
@@ -649,9 +890,10 @@ pub fn wanted_chunks(
             }
         }
         if !missing.is_empty() {
-            wanted.push((digest, missing));
+            wanted.push((asset.digest, missing));
         }
     }
+    wanted.sort();
     Ok(wanted)
 }
 
@@ -662,11 +904,20 @@ pub fn release_pending_source(
     source: mneme_core::RecordId,
 ) -> Result<u64, super::Error> {
     let mut released = 0_u64;
-    for directory in transfer_directories(workspace.root())? {
-        let is_named = read_manifest(&directory)?.is_some_and(|(_, asset)| asset.source == source);
-        if is_named {
-            remove_transfer(&directory)?;
-            released = released.saturating_add(1);
+    let transfers = workspace
+        .root()
+        .join(mneme_store::payload::TRANSFER_DIRECTORY);
+    for owner in every_directory(&transfers)? {
+        for directory in every_directory(&owner)? {
+            // A manifest that cannot be read names no source.
+            let is_named = matches!(
+                read_manifest(&directory),
+                Ok(Some((_, asset))) if asset.source == source
+            );
+            if is_named {
+                remove_transfer(&directory)?;
+                released = released.saturating_add(1);
+            }
         }
     }
     Ok(released)
@@ -940,25 +1191,55 @@ fn read_directories(directory: &std::path::Path) -> Result<Vec<std::path::PathBu
 fn transfer_usage_in(root: &std::path::Path) -> Result<TransferUsage, super::Error> {
     let mut usage = TransferUsage::default();
     for directory in transfer_directories(root)? {
-        usage.transfers = usage.transfers.saturating_add(1);
-        for entry in std::fs::read_dir(&directory).map_err(|error| io_error(&directory, error))? {
-            let entry = entry.map_err(|error| io_error(&directory, error))?;
-            let name = entry.file_name();
-            let is_chunk = name.to_string_lossy().ends_with(CHUNK_SUFFIX);
-            let metadata = entry
-                .metadata()
-                .map_err(|error| io_error(&entry.path(), error))?;
-            // Everything a transfer holds counts against the bound, including
-            // a write a crash interrupted.
-            if metadata.is_file() && name != MANIFEST_FILE {
-                usage.bytes = usage.bytes.saturating_add(metadata.len());
-                if is_chunk {
-                    usage.chunks = usage.chunks.saturating_add(1);
-                }
+        let held = directory_usage(&directory)?;
+        usage.transfers = usage.transfers.saturating_add(held.transfers);
+        usage.chunks = usage.chunks.saturating_add(held.chunks);
+        usage.bytes = usage.bytes.saturating_add(held.bytes);
+    }
+    Ok(usage)
+}
+
+/// What one transfer directory holds; its manifest is not counted, and
+/// everything else is, including a write a crash interrupted.
+fn directory_usage(directory: &std::path::Path) -> Result<TransferUsage, super::Error> {
+    let mut usage = TransferUsage {
+        transfers: 1,
+        ..TransferUsage::default()
+    };
+    for entry in std::fs::read_dir(directory).map_err(|error| io_error(directory, error))? {
+        let entry = entry.map_err(|error| io_error(directory, error))?;
+        let name = entry.file_name();
+        let metadata = entry
+            .metadata()
+            .map_err(|error| io_error(&entry.path(), error))?;
+        if metadata.is_file() && name != MANIFEST_FILE {
+            usage.bytes = usage.bytes.saturating_add(metadata.len());
+            if name.to_string_lossy().ends_with(CHUNK_SUFFIX) {
+                usage.chunks = usage.chunks.saturating_add(1);
             }
         }
     }
     Ok(usage)
+}
+
+/// Every directory in a directory, however many there are.
+fn every_directory(directory: &std::path::Path) -> Result<Vec<std::path::PathBuf>, super::Error> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io_error(directory, error)),
+    };
+    entries
+        .map(|entry| {
+            let entry = entry.map_err(|error| io_error(directory, error))?;
+            let is_directory = entry
+                .file_type()
+                .map_err(|error| io_error(&entry.path(), error))?
+                .is_dir();
+            Ok(is_directory.then(|| entry.path()))
+        })
+        .filter_map(Result::transpose)
+        .collect()
 }
 
 fn remove_transfer(directory: &std::path::Path) -> Result<(), super::Error> {
@@ -1007,4 +1288,104 @@ fn write_atomically(path: &std::path::Path, bytes: &[u8]) -> Result<(), super::E
 
 fn io_error(path: &std::path::Path, error: std::io::Error) -> super::Error {
     super::Error::Store(mneme_store::Failure::io(path, error))
+}
+
+#[cfg(test)]
+mod tests {
+    const MIB: u64 = 1024 * 1024;
+
+    fn record(seed: u8) -> mneme_core::RecordId {
+        mneme_core::RecordId::from_bytes([seed; 16])
+    }
+
+    fn asset(seed: u8, byte_length: u64, dependents: &[u8]) -> super::Asset {
+        super::Asset {
+            source: record(seed),
+            revision: mneme_core::RevisionId::from_bytes([seed; 16]),
+            scope: mneme_core::ScopeId::new(mneme_core::ScopeClass::User, "default")
+                .expect("scope"),
+            digest: mneme_core::ContentDigest::of_source_bytes(&[seed]),
+            byte_length,
+            media_type: mneme_core::Symbol::new("image/png"),
+            chunk_bytes: super::ASSET_CHUNK_BYTES,
+            chunks: Vec::new(),
+            dependents: dependents.iter().map(|seed| record(*seed)).collect(),
+            count: 0,
+        }
+    }
+
+    /// Every record that needs one of the sources: a manifest's dependents
+    /// already reach through others.
+    fn needing(
+        assets: &[super::Asset],
+    ) -> impl Fn(&mut std::collections::BTreeSet<mneme_core::RecordId>) + '_ {
+        |sources| {
+            let more = assets
+                .iter()
+                .filter(|asset| sources.contains(&asset.source))
+                .flat_map(|asset| asset.dependents.iter().copied())
+                .collect::<Vec<_>>();
+            sources.extend(more);
+        }
+    }
+
+    #[test]
+    fn a_parent_publishes_before_what_needs_it_spends_the_budget() {
+        // Two derived images that sort before their scan.
+        let assets = vec![
+            asset(0xd1, 3 * MIB / 2, &[]),
+            asset(0xd2, 3 * MIB / 2, &[]),
+            asset(0xd9, 2 * MIB + 17, &[0xd1, 0xd2]),
+        ];
+        let arrived = [super::Standing::Arrived; 3];
+        let first = super::plan_arrivals(&assets, &arrived, 3 * MIB, &needing(&assets));
+        assert_eq!(first.publish, vec![2], "the scan goes first");
+        assert_eq!(
+            first.deferred,
+            [record(0xd1), record(0xd2)].into_iter().collect()
+        );
+        // Once the scan is held, the next import publishes both images.
+        let next = [
+            super::Standing::Arrived,
+            super::Standing::Arrived,
+            super::Standing::Held,
+        ];
+        let second = super::plan_arrivals(&assets, &next, 3 * MIB, &needing(&assets));
+        assert_eq!(second.publish, vec![0, 1]);
+        assert!(second.deferred.is_empty());
+    }
+
+    #[test]
+    fn an_arriving_parent_holds_back_what_needs_it_before_any_bytes_are_read() {
+        let assets = vec![asset(0xd1, 10, &[]), asset(0xd9, 10, &[0xd1])];
+        let standings = [super::Standing::Arrived, super::Standing::Arriving];
+        let plan = super::plan_arrivals(&assets, &standings, u64::MAX, &needing(&assets));
+        assert!(plan.publish.is_empty());
+        assert_eq!(
+            plan.deferred,
+            [record(0xd1), record(0xd9)].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn the_budget_admits_exactly_its_bytes() {
+        let assets = vec![asset(1, 6, &[]), asset(2, 4, &[]), asset(3, 1, &[])];
+        let arrived = [super::Standing::Arrived; 3];
+        let plan = super::plan_arrivals(&assets, &arrived, 10, &needing(&assets));
+        assert_eq!(
+            plan.publish,
+            vec![0, 1],
+            "6 and 4 fill a budget of 10 exactly"
+        );
+        assert_eq!(plan.deferred, [record(3)].into_iter().collect());
+    }
+
+    #[test]
+    fn sources_that_need_one_another_wait() {
+        let assets = vec![asset(1, 10, &[2]), asset(2, 10, &[1]), asset(3, 10, &[])];
+        let local = [super::Standing::Local; 3];
+        let plan = super::plan_arrivals(&assets, &local, u64::MAX, &needing(&assets));
+        assert_eq!(plan.publish, vec![2]);
+        assert_eq!(plan.deferred, [record(1), record(2)].into_iter().collect());
+    }
 }

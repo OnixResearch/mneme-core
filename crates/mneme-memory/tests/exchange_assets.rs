@@ -246,25 +246,31 @@ fn send(
 /// Re-sign a version 2 bundle after `edit` changes its signed asset entry, as
 /// a trusted but faulty peer could.
 fn resign_asset(document: &str, edit: impl FnOnce(&mut Vec<mneme_core::Value>)) -> String {
+    resign_assets(document, |assets| {
+        if let Some(first) = assets.first_mut() {
+            edit(first);
+        }
+    })
+}
+
+/// Edit the fields of every asset a bundle names, and sign it again.
+fn resign_assets(document: &str, edit: impl FnOnce(&mut Vec<Vec<mneme_core::Value>>)) -> String {
     let value = mneme_core::decode_document(document).expect("bundle document");
     let outer = value.as_record().expect("bundle record");
     let signed = outer.fields()[0].as_record().expect("signed record");
     let mut fields = signed.fields().to_vec();
-    let asset = fields[8]
+    let mut assets = fields[8]
         .as_set()
         .expect("asset set")
         .iter()
-        .next()
-        .expect("one asset")
-        .as_record()
-        .expect("asset record")
-        .clone();
-    let mut asset_fields = asset.fields().to_vec();
-    edit(&mut asset_fields);
-    fields[8] = mneme_core::Value::set([mneme_core::Value::record_named(
-        "exchange-asset",
-        asset_fields,
-    )]);
+        .map(|asset| asset.as_record().expect("asset record").fields().to_vec())
+        .collect::<Vec<_>>();
+    edit(&mut assets);
+    fields[8] = mneme_core::Value::set(
+        assets
+            .into_iter()
+            .map(|asset| mneme_core::Value::record_named("exchange-asset", asset)),
+    );
     let signed = mneme_core::Value::record_named("mneme-record-exchange-signed-v2", fields);
     let mut message = b"mneme.record-exchange.v2\0".to_vec();
     message.extend_from_slice(&mneme_core::encode(&signed));
@@ -513,24 +519,22 @@ fn corrupt_substituted_and_oversized_assets_fail_explicitly() {
         Err(mneme_memory::exchange::Error::ScopeNotAccepted(_))
     ));
 
-    // Fill the transfer bound with a sparse leftover; a new chunk is refused.
-    let leftover = receiver_temp
-        .path()
-        .join("transfers")
-        .join("ab".repeat(32))
-        .join("cd".repeat(32));
-    std::fs::create_dir_all(&leftover).expect("leftover transfer");
-    let chunk_bytes = u64::from(mneme_memory::exchange::ASSET_CHUNK_BYTES);
-    std::fs::File::create(leftover.join("0.chunk"))
-        .and_then(|file| file.set_len(mneme_memory::exchange::MAX_TRANSFER_BYTES - chunk_bytes))
-        .expect("sparse leftover chunk");
-    // What the transfers hold may reach their bound, never pass it.
+    // A write a crash interrupted fills the bound but for the first asset:
+    // its transfer may start and fills the bound exactly, and once started it
+    // keeps every chunk; another asset's transfer cannot start.
+    leftover_write(
+        receiver_temp.path(),
+        mneme_memory::exchange::MAX_TRANSFER_BYTES - first.byte_length(),
+    );
     let fits = mneme_memory::exchange::asset_chunk(&origin, first, 2).expect("chunk");
     mneme_memory::exchange::receive_chunk(&receiver, &bundle, first.digest(), 2, &fits)
-        .expect("a chunk that fills the bound exactly");
-    let over = mneme_memory::exchange::asset_chunk(&origin, first, 1).expect("chunk");
+        .expect("a transfer that fills the bound exactly starts");
+    let later = mneme_memory::exchange::asset_chunk(&origin, first, 1).expect("chunk");
+    mneme_memory::exchange::receive_chunk(&receiver, &bundle, first.digest(), 1, &later)
+        .expect("a started transfer keeps its chunks");
+    let over = mneme_memory::exchange::asset_chunk(&origin, second, 0).expect("chunk");
     assert!(matches!(
-        mneme_memory::exchange::receive_chunk(&receiver, &bundle, first.digest(), 1, &over),
+        mneme_memory::exchange::receive_chunk(&receiver, &bundle, second.digest(), 0, &over),
         Err(mneme_memory::exchange::Error::TransferQuotaExceeded)
     ));
     assert!(import(&mut receiver, &export.bundle).imported.is_empty());
@@ -716,27 +720,7 @@ fn a_second_source_with_bytes_already_here_arrives_without_chunks() {
     import(&mut receiver, &first.bundle);
     send(&origin, &receiver, &first, &[0, 1, 2, 3]);
     import(&mut receiver, &first.bundle);
-    let copy = mneme_core::SourcePin::new(common::rid(0xe0), common::rev(0xe1));
-    let (copy_record, copy_blob) = mneme_memory::build_captured_source(
-        copy.source(),
-        copy.revision(),
-        &common::scope(),
-        mneme_memory::SourceOptions {
-            bytes: &recording.bytes,
-            media_type: "audio/wav",
-            entity: None,
-            path_hint: None,
-        },
-        mneme_core::MediaExtent::Audio {
-            duration_ticks: 60_000,
-            time_base: mneme_core::TimeBase::new(1, 1_000).expect("time base"),
-            channels: 1,
-        },
-    )
-    .expect("a second capture of the same bytes");
-    common::engine(&mut origin)
-        .commit(common::batch("copy", vec![copy_record], vec![copy_blob]))
-        .expect("commit the copy");
+    let copy = capture(&mut origin, (0xe0, &common::scope()), &recording.bytes);
     let second = export(&origin);
     assert!(
         mneme_memory::exchange::wanted_chunks(&receiver, &authenticate(&second.bundle))
@@ -797,4 +781,282 @@ fn chunks_that_make_other_bytes_are_refused_and_removed() {
 
 fn recording_digest(recording: &Recording) -> mneme_core::ContentDigest {
     mneme_core::ContentDigest::of_source_bytes(&recording.bytes)
+}
+
+/// Commit a capture of `bytes` in `scope` as source `seed`.
+fn capture(
+    workspace: &mut mneme_store::Workspace,
+    (seed, scope): (u8, &mneme_core::ScopeId),
+    bytes: &[u8],
+) -> mneme_core::SourcePin {
+    let pin = mneme_core::SourcePin::new(common::rid(seed), common::rev(seed.wrapping_add(1)));
+    let (record, blob) = mneme_memory::build_captured_source(
+        pin.source(),
+        pin.revision(),
+        scope,
+        mneme_memory::SourceOptions {
+            bytes,
+            media_type: "audio/wav",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_core::MediaExtent::Audio {
+            duration_ticks: 60_000,
+            time_base: mneme_core::TimeBase::new(1, 1_000).expect("time base"),
+            channels: 1,
+        },
+    )
+    .expect("a capture");
+    common::engine(workspace)
+        .commit(common::batch_in(scope, "capture", vec![record], vec![blob]))
+        .expect("commit the capture");
+    pin
+}
+
+/// A sparse file a crashed write left in a transfer of no bundle here.
+fn leftover_write(root: &std::path::Path, length: u64) {
+    let leftover = root
+        .join("transfers")
+        .join("ab".repeat(32))
+        .join("cd".repeat(32));
+    std::fs::create_dir_all(&leftover).expect("leftover transfer");
+    std::fs::File::create(leftover.join(".incoming-crashed"))
+        .and_then(|file| file.set_len(length))
+        .expect("sparse leftover write");
+}
+
+#[test]
+fn transfers_already_started_finish_when_the_bound_is_reached() {
+    let (_origin_temp, mut origin) = common::setup();
+    for seed in [0xa0, 0xb0, 0xc0] {
+        record(&mut origin, seed, AUDIO_BYTES);
+    }
+    let export = export(&origin);
+    let (receiver_temp, mut receiver) = receiver();
+    import(&mut receiver, &export.bundle);
+    let bundle = authenticate(&export.bundle);
+    // Room for two whole recordings, though the first chunks of all three
+    // would fit: a third transfer must not start, or none could finish.
+    let chunk_bytes = u64::from(mneme_memory::exchange::ASSET_CHUNK_BYTES);
+    leftover_write(
+        receiver_temp.path(),
+        mneme_memory::exchange::MAX_TRANSFER_BYTES - 9 * chunk_bytes - 1,
+    );
+    let deliver = |asset: &mneme_memory::exchange::Asset, index: u32| {
+        let chunk = mneme_memory::exchange::asset_chunk(&origin, asset, index).expect("chunk");
+        mneme_memory::exchange::receive_chunk(&receiver, &bundle, asset.digest(), index, &chunk)
+    };
+    let outcomes = export
+        .assets
+        .iter()
+        .flat_map(|asset| (0..asset.chunk_count() - 1).map(move |index| (asset, index)))
+        .map(|(asset, index)| deliver(asset, index))
+        .collect::<Vec<_>>();
+    assert!(
+        outcomes.iter().all(|outcome| matches!(
+            outcome,
+            Ok(_) | Err(mneme_memory::exchange::Error::TransferQuotaExceeded)
+        )),
+        "{outcomes:?}"
+    );
+    let refused = outcomes.iter().filter(|outcome| outcome.is_err()).count();
+    assert_eq!(refused, 3, "the third recording's transfer does not start");
+    let (started, waiting) = export.assets.split_at(2);
+    for asset in started {
+        deliver(asset, asset.chunk_count() - 1).expect("a started transfer finishes");
+    }
+    let outcome = import(&mut receiver, &export.bundle);
+    for asset in started {
+        assert!(outcome.imported.contains(&asset.source()), "{outcome:?}");
+    }
+    assert_eq!(
+        outcome.pending,
+        waiting
+            .iter()
+            .map(|asset| asset.digest())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn bytes_held_in_another_scope_are_not_taken_for_a_peers_source() {
+    let (_origin_temp, origin, recording) = origin_with_recording();
+    let export = export(&origin);
+    let (_receiver_temp, mut receiver) = receiver();
+    // The same bytes are here already, in a scope the peer does not share.
+    capture(
+        &mut receiver,
+        (0x70, &common::project_scope("oak")),
+        &recording.bytes,
+    );
+    let wanted = mneme_memory::exchange::wanted_chunks(&receiver, &authenticate(&export.bundle))
+        .expect("wanted");
+    assert_eq!(
+        wanted,
+        vec![(recording_digest(&recording), vec![0, 1, 2, 3])]
+    );
+    let outcome = import(&mut receiver, &export.bundle);
+    assert!(!outcome.imported.contains(&recording.audio.source()));
+    assert_eq!(outcome.pending, vec![recording_digest(&recording)]);
+}
+
+#[test]
+fn sources_of_the_same_bytes_share_one_chunk_layout() {
+    let (_origin_temp, mut origin, recording) = origin_with_recording();
+    capture(&mut origin, (0xe0, &common::scope()), &recording.bytes);
+    let document = export(&origin).bundle;
+    let twice = 2 * mneme_memory::exchange::ASSET_CHUNK_BYTES;
+    let pieces = recording
+        .bytes
+        .chunks(usize::try_from(twice).expect("chunk size"))
+        .map(|piece| mneme_core::ContentDigest::of_source_bytes(piece).to_value())
+        .collect::<Vec<_>>();
+    let other_layout = resign_assets(&document, |assets| {
+        if let Some(second) = assets.get_mut(1) {
+            second[6] = mneme_core::Value::integer(twice);
+            second[7] = mneme_core::Value::sequence(pieces);
+        }
+    });
+    assert!(matches!(
+        mneme_memory::exchange::authenticate_json(other_layout.as_bytes(), &policy_for(shared())),
+        Err(mneme_memory::exchange::Error::MalformedBundle)
+    ));
+}
+
+#[test]
+fn transfers_of_devices_no_longer_trusted_are_released() {
+    let (_origin_temp, origin, _recording) = origin_with_recording();
+    let export = export(&origin);
+    let (_receiver_temp, mut receiver) = receiver();
+    import(&mut receiver, &export.bundle);
+    send(&origin, &receiver, &export, &[0]);
+    let trusted = policy_for(shared());
+    assert_eq!(
+        mneme_memory::exchange::release_untrusted(&receiver, &trusted).expect("release"),
+        0
+    );
+    assert_eq!(
+        mneme_memory::exchange::transfer_usage(&receiver)
+            .expect("usage")
+            .chunks,
+        1
+    );
+    let revoked = mneme_memory::exchange::Policy::new(std::iter::empty()).expect("policy");
+    assert_eq!(
+        mneme_memory::exchange::release_untrusted(&receiver, &revoked).expect("release"),
+        1
+    );
+    assert_eq!(
+        mneme_memory::exchange::transfer_usage(&receiver).expect("usage"),
+        mneme_memory::exchange::TransferUsage::default()
+    );
+}
+
+#[test]
+fn a_transfer_cannot_start_in_room_started_transfers_need() {
+    let (_origin_temp, mut origin) = common::setup();
+    for seed in [0xa0, 0xb0] {
+        record(&mut origin, seed, AUDIO_BYTES);
+    }
+    let export = export(&origin);
+    let (receiver_temp, mut receiver) = receiver();
+    import(&mut receiver, &export.bundle);
+    let bundle = authenticate(&export.bundle);
+    let [first, second] = export.assets.as_slice() else {
+        return assert_eq!(export.assets.len(), 2);
+    };
+    // One byte short of room for both whole recordings.
+    leftover_write(
+        receiver_temp.path(),
+        mneme_memory::exchange::MAX_TRANSFER_BYTES - first.byte_length() - second.byte_length() + 1,
+    );
+    let deliver = |asset: &mneme_memory::exchange::Asset, index: u32| {
+        let chunk = mneme_memory::exchange::asset_chunk(&origin, asset, index).expect("chunk");
+        mneme_memory::exchange::receive_chunk(&receiver, &bundle, asset.digest(), index, &chunk)
+    };
+    deliver(first, 0).expect("the first transfer starts");
+    // The first holds one chunk so far, yet room for all of it.
+    assert!(matches!(
+        deliver(second, 0),
+        Err(mneme_memory::exchange::Error::TransferQuotaExceeded)
+    ));
+    for index in 1..first.chunk_count() {
+        deliver(first, index).expect("the started transfer finishes");
+    }
+    assert!(
+        mneme_memory::exchange::transfer_usage(&receiver)
+            .expect("usage")
+            .bytes
+            <= mneme_memory::exchange::MAX_TRANSFER_BYTES
+    );
+    let outcome = import(&mut receiver, &export.bundle);
+    assert!(outcome.imported.contains(&first.source()));
+}
+
+#[test]
+fn bytes_published_for_one_scope_stay_for_a_source_of_another_still_waiting() {
+    let (_origin_temp, mut origin) = common::setup();
+    let text = TRANSCRIPT
+        .iter()
+        .chain(b" ")
+        .copied()
+        .cycle()
+        .take(100 * 1024)
+        .collect::<Vec<_>>();
+    // A large transcript recognized from a recording, and a capture of the
+    // same bytes in another shared scope.
+    let recording = record_with(&mut origin, 0xa0, AUDIO_BYTES, &text);
+    let elsewhere = common::project_scope("elsewhere");
+    let copy = capture(&mut origin, (0x90, &elsewhere), &text);
+    let scopes = std::collections::BTreeSet::from([common::scope(), elsewhere]);
+    let export = mneme_memory::exchange::export_workspace(&origin, ISSUER, &SECRET, &scopes)
+        .expect("export");
+    let policy = policy_for(scopes);
+    let authenticated = || {
+        mneme_memory::exchange::authenticate_json(export.bundle.as_bytes(), &policy)
+            .expect("authenticated")
+    };
+    let (_receiver_temp, mut receiver) = receiver();
+    let bundle = authenticated();
+    deliver_digest(
+        (&origin, &receiver),
+        &export,
+        &bundle,
+        mneme_core::ContentDigest::of_source_bytes(&text),
+    );
+    let first = mneme_memory::exchange::import_records(&mut receiver, authenticated(), "reviewer")
+        .expect("first import");
+    assert!(first.imported.contains(&copy.source()));
+    assert!(first.deferred.contains(&recording.transcript.source()));
+    deliver_digest(
+        (&origin, &receiver),
+        &export,
+        &bundle,
+        recording_digest(&recording),
+    );
+    let second = mneme_memory::exchange::import_records(&mut receiver, authenticated(), "reviewer")
+        .expect("second import");
+    assert!(
+        second.imported.contains(&recording.transcript.source()),
+        "{second:?}"
+    );
+}
+
+/// Deliver every chunk of the asset of `digest` from the origin.
+fn deliver_digest(
+    (origin, receiver): (&mneme_store::Workspace, &mneme_store::Workspace),
+    export: &mneme_memory::exchange::Export,
+    bundle: &mneme_memory::exchange::AuthenticatedBundle,
+    digest: mneme_core::ContentDigest,
+) {
+    let asset = export
+        .assets
+        .iter()
+        .find(|asset| asset.digest() == digest)
+        .expect("asset");
+    for index in 0..asset.chunk_count() {
+        let chunk = mneme_memory::exchange::asset_chunk(origin, asset, index).expect("chunk");
+        mneme_memory::exchange::receive_chunk(receiver, bundle, digest, index, &chunk)
+            .expect("chunk received");
+    }
 }

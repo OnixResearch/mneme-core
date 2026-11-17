@@ -352,9 +352,6 @@ impl<'w> Engine<'w> {
         if issuer.trim().is_empty() || barrier.operation_kind != "forget" {
             return Err(PolicyError::Invalid("invalid exchange barrier"));
         }
-        // Whatever arrived of the forgotten source goes, also when the barrier
-        // was applied before: its chunks may have arrived since.
-        self.release_barrier_transfers(barrier)?;
         // A barrier applied before, as a forget or as a tombstone, is applied:
         // an importer applies every bundle's barriers on every import, and the
         // workspace has usually moved on since.
@@ -370,6 +367,19 @@ impl<'w> Engine<'w> {
         {
             return Ok(());
         }
+        self.apply_new_barrier(issuer, barrier)?;
+        // Whatever arrived of the forgotten source goes once the barrier
+        // holds: from then on no chunk of it is accepted.
+        self.release_barrier_transfers(barrier)
+    }
+
+    /// Apply a barrier not applied before, as a forget of what is here or as
+    /// a tombstone for what is not.
+    fn apply_new_barrier(
+        &mut self,
+        issuer: &str,
+        barrier: &mneme_memory::exchange::Barrier,
+    ) -> Result<()> {
         let has_scope_target = self
             .workspace
             .snapshot()?

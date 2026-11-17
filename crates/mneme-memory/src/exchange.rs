@@ -567,6 +567,8 @@ pub fn import_records(
         .iter()
         .filter(|asset| arrivals.ready.contains_key(&asset.source()))
         .map(|asset| asset.digest())
+        // Bytes another source still waits for keep their transfer.
+        .filter(|digest| !arrivals.pending.contains(digest))
         .collect::<Vec<_>>();
     let mut held_back = blocked;
     held_back.extend(arrivals.deferred.iter().copied());

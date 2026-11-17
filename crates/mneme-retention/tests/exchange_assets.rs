@@ -404,3 +404,95 @@ fn a_barrier_removes_what_arrived_of_its_source_without_the_old_bundle() {
         mneme_memory::exchange::MediaArrival::Forgotten
     );
 }
+
+/// Copy every transfer under one workspace's transfers directory into
+/// another's, as a restored backup would bring them back.
+fn copy_transfers(from: &std::path::Path, to: &std::path::Path) {
+    for owner in std::fs::read_dir(from).expect("owners") {
+        let owner = owner.expect("owner").path();
+        for transfer in std::fs::read_dir(&owner).expect("transfers") {
+            let transfer = transfer.expect("transfer").path();
+            let target = to
+                .join(owner.file_name().expect("owner name"))
+                .join(transfer.file_name().expect("transfer name"));
+            std::fs::create_dir_all(&target).expect("target transfer");
+            for file in std::fs::read_dir(&transfer).expect("files") {
+                let file = file.expect("file").path();
+                std::fs::copy(&file, target.join(file.file_name().expect("file name")))
+                    .expect("copy");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_restored_transfer_of_a_forgotten_source_is_never_named_arriving() {
+    let origin_temp = tempfile::tempdir().expect("origin");
+    let mut origin = workspace(origin_temp.path());
+    let recording = record(&mut origin);
+    let old = mneme_memory::exchange::export_workspace(&origin, ISSUER, &SECRET, &shared())
+        .expect("export before forgetting");
+    // One device received a chunk before the forget; another did not.
+    let early_temp = tempfile::tempdir().expect("early");
+    let mut early = workspace(early_temp.path());
+    import(&mut early, &old.bundle);
+    deliver(&origin, &early, &old, 0).expect("first chunk");
+    let late_temp = tempfile::tempdir().expect("late");
+    let mut late = workspace(late_temp.path());
+    import(&mut late, &old.bundle);
+    forget(&mut origin, recording.audio.source());
+    let current = mneme_memory::exchange::export_workspace(&origin, ISSUER, &SECRET, &shared())
+        .expect("export with the barrier");
+    for barrier in authenticate(&current.bundle).barriers() {
+        mneme_retention::Engine::new(&mut late)
+            .apply_exchange_barrier(ISSUER, barrier)
+            .expect("barrier");
+    }
+    copy_transfers(
+        &early_temp.path().join("transfers"),
+        &late_temp.path().join("transfers"),
+    );
+    assert!(
+        mneme_memory::exchange::pending_assets(&late)
+            .expect("pending")
+            .is_empty()
+    );
+    assert_eq!(
+        mneme_memory::exchange::media_arrival(
+            &late,
+            recording.audio.source(),
+            recording.audio.revision()
+        )
+        .expect("arrival"),
+        mneme_memory::exchange::MediaArrival::Forgotten
+    );
+}
+
+#[test]
+fn a_barrier_without_a_content_digest_removes_its_sources_transfer() {
+    let origin_temp = tempfile::tempdir().expect("origin");
+    let mut origin = workspace(origin_temp.path());
+    let recording = record(&mut origin);
+    let old = mneme_memory::exchange::export_workspace(&origin, ISSUER, &SECRET, &shared())
+        .expect("export before forgetting");
+    let receiver_temp = tempfile::tempdir().expect("receiver");
+    let mut receiver = workspace(receiver_temp.path());
+    import(&mut receiver, &old.bundle);
+    deliver(&origin, &receiver, &old, 0).expect("first chunk");
+    forget(&mut origin, recording.audio.source());
+    let current = mneme_memory::exchange::export_workspace(&origin, ISSUER, &SECRET, &shared())
+        .expect("export with the barrier");
+    // A device that no longer held the source's bytes names no digest: the
+    // transfer is found by the source its manifest names.
+    for barrier in authenticate(&current.bundle).barriers() {
+        let mut barrier = barrier.clone();
+        barrier.content_digest = None;
+        mneme_retention::Engine::new(&mut receiver)
+            .apply_exchange_barrier(ISSUER, &barrier)
+            .expect("barrier");
+    }
+    assert_eq!(
+        mneme_memory::exchange::transfer_usage(&receiver).expect("usage"),
+        mneme_memory::exchange::TransferUsage::default()
+    );
+}
