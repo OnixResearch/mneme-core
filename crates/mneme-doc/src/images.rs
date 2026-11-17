@@ -300,6 +300,12 @@ pub fn import(
             derived_from: None,
             media_extent: Some(mneme_core::MediaExtent::Pages { page_count: 1 }),
             media_transform: None,
+            // Regions on the image are checked against its decoded size.
+            media_frame: Some(mneme_core::CoordinateFrame::Pixels {
+                width: decoded.width,
+                height: decoded.height,
+            }),
+            ink_inventory: None,
             correction: None,
         },
     )?;

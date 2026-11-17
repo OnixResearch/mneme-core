@@ -46,9 +46,9 @@ pub use hashing::{kernel_digest, request_fingerprint};
 pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
 pub use lineage::{
     ACQUISITION_SCHEMA_VERSION, Acquisition, AlignmentDisposition, CoordinateFrame,
-    CorrectionProvenance, MAX_INK_STROKES, MAX_RECOGNITION_SEGMENTS, MediaExtent, MediaLocation,
-    MediaTransform, RecognitionAlternative, RecognitionCoverage, RecognitionScore,
-    RecognitionStatus, SourcePin, TimeBase,
+    CorrectionProvenance, InkInventory, MAX_INK_LAYERS, MAX_INK_STROKES, MAX_RECOGNITION_SEGMENTS,
+    MediaExtent, MediaLocation, MediaTransform, RecognitionAlternative, RecognitionCoverage,
+    RecognitionScore, RecognitionStatus, SourcePin, TimeBase,
 };
 pub use payload::{RetainedSource, SourceContent, SourceSpan};
 pub use pointer::{Reference, RevisionEntry, SnapshotIndex};

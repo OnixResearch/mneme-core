@@ -10,8 +10,14 @@ pub const ACQUISITION_SCHEMA_VERSION: u32 = 5;
 /// The most segments one recognition run may name.
 pub const MAX_RECOGNITION_SEGMENTS: usize = 4096;
 
-/// The most stroke ids one ink location may name.
+/// The most stroke ids one ink location, or one declared ink layer, may name.
 pub const MAX_INK_STROKES: usize = 4096;
+
+/// The most page layers one ink source may declare.
+pub const MAX_INK_LAYERS: usize = 4096;
+
+/// The longest ink layer name or stroke id, in bytes.
+const MAX_INK_ID_BYTES: usize = 256;
 
 /// How source content entered the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -266,6 +272,132 @@ impl MediaExtent {
     }
 }
 
+/// The stroke ids an ink source declares, by zero-based page and layer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InkInventory {
+    layers: std::collections::BTreeMap<(u32, String), std::collections::BTreeSet<String>>,
+}
+
+impl InkInventory {
+    /// Construct from `(page, layer, strokes)` entries, each layer once, with
+    /// non-empty, bounded and unique names and stroke ids.
+    pub fn new(
+        entries: impl IntoIterator<Item = (u32, String, Vec<String>)>,
+    ) -> Result<Self, &'static str> {
+        let mut layers = std::collections::BTreeMap::new();
+        for (page, layer, strokes) in entries {
+            if layers.len() >= MAX_INK_LAYERS {
+                return Err("an ink source declares at most 4096 layers");
+            }
+            if !is_ink_id(&layer) || strokes.is_empty() || strokes.len() > MAX_INK_STROKES {
+                return Err("an ink layer needs a name and between 1 and 4096 stroke ids");
+            }
+            let declared = strokes
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if !declared.iter().all(|stroke| is_ink_id(stroke)) {
+                return Err("ink stroke ids must be non-empty and bounded");
+            }
+            if layers.insert((page, layer), declared).is_some() {
+                return Err("an ink layer is declared once per page");
+            }
+        }
+        Ok(InkInventory { layers })
+    }
+
+    /// Whether the layer on `page` declares every one of `strokes`.
+    pub fn holds(&self, page: u32, layer: &str, strokes: &[String]) -> bool {
+        self.layers
+            .get(&(page, layer.to_owned()))
+            .is_some_and(|declared| strokes.iter().all(|stroke| declared.contains(stroke)))
+    }
+
+    /// The highest page any layer is declared on.
+    pub fn last_page(&self) -> Option<u32> {
+        self.layers.keys().map(|(page, _)| *page).max()
+    }
+
+    /// Encode as `<ink-strokes [<ink-layer page layer [stroke ...]> ...]>`.
+    pub fn to_value(&self) -> crate::typed::Value {
+        let layers = self
+            .layers
+            .iter()
+            .map(|((page, layer), strokes)| {
+                crate::typed::Value::record_named(
+                    "ink-layer",
+                    vec![
+                        crate::typed::Value::integer(*page),
+                        crate::typed::Value::string(layer.clone()),
+                        crate::typed::Value::sequence(
+                            strokes
+                                .iter()
+                                .cloned()
+                                .map(crate::typed::Value::string)
+                                .collect(),
+                        ),
+                    ],
+                )
+            })
+            .collect();
+        crate::typed::Value::record_named(
+            "ink-strokes",
+            vec![crate::typed::Value::sequence(layers)],
+        )
+    }
+
+    /// Decode, refusing oversized sequences before copying them.
+    pub fn from_value(
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
+        let record = expect_record(value, "ink-strokes", path)?;
+        let [layers] = record.fields() else {
+            return Err(type_error(path, "ink layer sequence"));
+        };
+        let layers = layers
+            .as_sequence()
+            .filter(|layers| layers.len() <= MAX_INK_LAYERS)
+            .ok_or_else(|| type_error(path, "at most 4096 ink layers"))?;
+        let mut entries = Vec::with_capacity(layers.len());
+        for (index, layer) in layers.iter().enumerate() {
+            entries.push(ink_layer(layer, &path.index(index))?);
+        }
+        Self::new(entries).map_err(|message| invalid_interval(path, message))
+    }
+}
+
+fn ink_layer(
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+) -> Result<(u32, String, Vec<String>), crate::problem::Diagnostic> {
+    let record = expect_record(value, "ink-layer", path)?;
+    let [page, layer, strokes] = record.fields() else {
+        return Err(type_error(path, "ink layer page, name and strokes"));
+    };
+    let page = u32_value(page).ok_or_else(|| type_error(path, "non-negative page index"))?;
+    let layer = layer
+        .as_string()
+        .ok_or_else(|| type_error(path, "ink layer name"))?
+        .to_owned();
+    let items = strokes
+        .as_sequence()
+        .filter(|items| !items.is_empty() && items.len() <= MAX_INK_STROKES)
+        .ok_or_else(|| type_error(path, "between 1 and 4096 ink stroke ids"))?;
+    let strokes = items
+        .iter()
+        .map(|item| {
+            item.as_string()
+                .map(str::to_owned)
+                .ok_or_else(|| type_error(path, "ink stroke id text"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((page, layer, strokes))
+}
+
+fn is_ink_id(text: &str) -> bool {
+    !text.trim().is_empty() && text.len() <= MAX_INK_ID_BYTES
+}
+
 /// Coordinate units and bounds for one page plane.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CoordinateFrame {
@@ -475,6 +607,40 @@ impl MediaLocation {
         }
     }
 
+    /// Validate the location against everything its pinned source declares:
+    /// its extent, its page frame and its ink strokes. A page region must use
+    /// the source's declared frame, or normalized coordinates when it
+    /// declares none; ink strokes must be declared by the source.
+    pub fn validate_source(
+        &self,
+        extent: MediaExtent,
+        frame: Option<CoordinateFrame>,
+        ink: Option<&InkInventory>,
+    ) -> Result<(), &'static str> {
+        self.validate_extent(extent)?;
+        match self {
+            MediaLocation::Audio { .. } => Ok(()),
+            MediaLocation::PageRegion { frame: used, .. } => {
+                if *used == CoordinateFrame::Normalized || frame == Some(*used) {
+                    Ok(())
+                } else {
+                    Err("a page region must use its source's frame or normalized coordinates")
+                }
+            }
+            MediaLocation::InkStrokes {
+                page,
+                layer,
+                strokes,
+            } => {
+                if ink.is_some_and(|inventory| inventory.holds(*page, layer, strokes)) {
+                    Ok(())
+                } else {
+                    Err("ink strokes must be declared by their ink source")
+                }
+            }
+        }
+    }
+
     /// Encode the typed media-native location.
     pub fn to_value(&self) -> crate::typed::Value {
         match self {
@@ -678,6 +844,67 @@ impl MediaTransform {
     /// Coefficients `[a, b, tx, c, d, ty]` for the affine mapping.
     pub const fn coefficients(self) -> [f64; 6] {
         self.coefficients
+    }
+
+    /// The region of the original image that a region of the processed image
+    /// covers: the bounding box of its mapped corners in the original's frame,
+    /// clamped to that frame. A normalized region is first scaled to the
+    /// processed image's frame. `None` for any other location or frame.
+    pub fn map_region(&self, location: &MediaLocation) -> Option<MediaLocation> {
+        let MediaLocation::PageRegion {
+            page,
+            frame,
+            x,
+            y,
+            width,
+            height,
+        } = location
+        else {
+            return None;
+        };
+        let is_normalized = *frame == CoordinateFrame::Normalized;
+        if !is_normalized && *frame != self.from {
+            return None;
+        }
+        let (scale_x, scale_y) = if is_normalized {
+            self.from.bounds()
+        } else {
+            (1.0, 1.0)
+        };
+        let (left, top) = (x * scale_x, y * scale_y);
+        let (right, bottom) = ((x + width) * scale_x, (y + height) * scale_y);
+        let corners = [(left, top), (right, top), (left, bottom), (right, bottom)]
+            .map(|(corner_x, corner_y)| self.map(corner_x, corner_y));
+        let (max_x, max_y) = self.to.bounds();
+        let low_x = corners
+            .iter()
+            .map(|corner| corner.0)
+            .fold(max_x, f64::min)
+            .max(0.0);
+        let low_y = corners
+            .iter()
+            .map(|corner| corner.1)
+            .fold(max_y, f64::min)
+            .max(0.0);
+        let high_x = corners
+            .iter()
+            .map(|corner| corner.0)
+            .fold(0.0, f64::max)
+            .min(max_x);
+        let high_y = corners
+            .iter()
+            .map(|corner| corner.1)
+            .fold(0.0, f64::max)
+            .min(max_y);
+        let mapped = MediaLocation::PageRegion {
+            page: *page,
+            frame: self.to,
+            x: low_x,
+            y: low_y,
+            width: high_x - low_x,
+            height: high_y - low_y,
+        };
+        mapped.validate().ok().map(|()| mapped)
     }
 
     /// Check finite, invertible mapping and all transformed plane corners.
@@ -1389,6 +1616,130 @@ mod tests {
             strokes: vec!["same".to_owned(), "same".to_owned()],
         };
         assert!(duplicate.validate().is_err());
+    }
+
+    fn region(frame: CoordinateFrame, x: f64, y: f64, size: f64) -> MediaLocation {
+        MediaLocation::PageRegion {
+            page: 0,
+            frame,
+            x,
+            y,
+            width: size,
+            height: size,
+        }
+    }
+
+    #[test]
+    fn a_page_region_must_use_its_sources_frame_or_normalized_coordinates() {
+        let pages = MediaExtent::Pages { page_count: 1 };
+        let image = CoordinateFrame::Pixels {
+            width: 400,
+            height: 300,
+        };
+        let oversized = CoordinateFrame::Pixels {
+            width: 10_000,
+            height: 10_000,
+        };
+        assert!(
+            region(image, 10.0, 10.0, 20.0)
+                .validate_source(pages, Some(image), None)
+                .is_ok()
+        );
+        assert!(
+            region(oversized, 5_000.0, 10.0, 20.0)
+                .validate_source(pages, Some(image), None)
+                .is_err(),
+            "a region in a frame larger than the image is refused"
+        );
+        let normalized = region(CoordinateFrame::Normalized, 0.25, 0.25, 0.5);
+        assert!(normalized.validate_source(pages, Some(image), None).is_ok());
+        assert!(normalized.validate_source(pages, None, None).is_ok());
+        assert!(
+            region(image, 10.0, 10.0, 20.0)
+                .validate_source(pages, None, None)
+                .is_err(),
+            "without a declared frame only normalized regions can be checked"
+        );
+    }
+
+    #[test]
+    fn ink_strokes_must_be_declared_by_their_source() {
+        let pages = MediaExtent::InkPages { page_count: 2 };
+        let inventory =
+            InkInventory::new([(1, "pen".to_owned(), vec!["s1".to_owned(), "s2".to_owned()])])
+                .expect("inventory");
+        let strokes = |page: u32, layer: &str, ids: &[&str]| MediaLocation::InkStrokes {
+            page,
+            layer: layer.to_owned(),
+            strokes: ids.iter().map(|id| (*id).to_owned()).collect(),
+        };
+        assert!(
+            strokes(1, "pen", &["s2"])
+                .validate_source(pages, None, Some(&inventory))
+                .is_ok()
+        );
+        for refused in [
+            strokes(1, "pen", &["s3"]),
+            strokes(0, "pen", &["s1"]),
+            strokes(1, "marker", &["s1"]),
+        ] {
+            assert!(
+                refused
+                    .validate_source(pages, None, Some(&inventory))
+                    .is_err()
+            );
+        }
+        assert!(
+            strokes(1, "pen", &["s1"])
+                .validate_source(pages, None, None)
+                .is_err()
+        );
+        let decoded =
+            InkInventory::from_value(&inventory.to_value(), &crate::problem::Path::root())
+                .expect("inventory roundtrip");
+        assert_eq!(decoded, inventory);
+        assert!(
+            InkInventory::new([
+                (0, "pen".to_owned(), vec!["s1".to_owned()]),
+                (0, "pen".to_owned(), vec!["s2".to_owned()]),
+            ])
+            .is_err(),
+            "a layer is declared once per page"
+        );
+    }
+
+    #[test]
+    fn a_processed_region_maps_onto_the_original() {
+        let processed = CoordinateFrame::Pixels {
+            width: 200,
+            height: 150,
+        };
+        let original = CoordinateFrame::Pixels {
+            width: 400,
+            height: 300,
+        };
+        let transform =
+            MediaTransform::new(processed, original, [2.0, 0.0, 0.0, 0.0, 2.0, 0.0]).expect("2x");
+        assert_eq!(
+            transform.map_region(&region(processed, 10.0, 20.0, 30.0)),
+            Some(region(original, 20.0, 40.0, 60.0))
+        );
+        assert_eq!(
+            transform.map_region(&region(CoordinateFrame::Normalized, 0.5, 0.0, 0.5)),
+            Some(MediaLocation::PageRegion {
+                page: 0,
+                frame: original,
+                x: 200.0,
+                y: 0.0,
+                width: 200.0,
+                height: 150.0,
+            })
+        );
+        assert_eq!(
+            transform.map_region(&region(original, 10.0, 10.0, 10.0)),
+            None,
+            "a region in another frame does not map"
+        );
     }
 
     #[test]

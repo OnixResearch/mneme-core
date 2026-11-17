@@ -43,6 +43,10 @@ pub struct SourceView {
     pub derived_from: Option<mneme_core::SourcePin>,
     pub media_extent: Option<mneme_core::MediaExtent>,
     pub media_transform: Option<mneme_core::MediaTransform>,
+    /// The coordinate frame a page or ink source's pages use.
+    pub media_frame: Option<mneme_core::CoordinateFrame>,
+    /// The stroke ids an ink source declares.
+    pub ink_inventory: Option<mneme_core::InkInventory>,
     pub correction: Option<mneme_core::CorrectionProvenance>,
     pub path_hint: Option<String>,
     pub entity: Option<mneme_core::RecordId>,
@@ -63,6 +67,16 @@ impl SourceView {
         let derived_from = optional_source_pin(&record, "derived-from")?;
         let media_extent = optional_media_extent(&record)?;
         let media_transform = optional_media_transform(&record)?;
+        let media_frame = parse_optional_media_value(
+            &record,
+            "media-frame",
+            mneme_core::CoordinateFrame::from_value,
+        )?;
+        let ink_inventory = parse_optional_media_value(
+            &record,
+            "ink-strokes",
+            mneme_core::InkInventory::from_value,
+        )?;
         let correction = optional_correction(&record)?;
         Ok(SourceView {
             acquisition,
@@ -70,6 +84,8 @@ impl SourceView {
             derived_from,
             media_extent,
             media_transform,
+            media_frame,
+            ink_inventory,
             correction,
             path_hint: optional_text(&record, "path-hint"),
             entity: optional_reference_target(&record, "entity")?,

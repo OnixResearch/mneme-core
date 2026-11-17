@@ -1252,6 +1252,15 @@ fn validate_source_parent(
             "a transformed media source must declare its coordinate extent",
         ));
     }
+    // A transform maps the derivative's own frame onto its parent's.
+    if let Some(transform) = source.media_transform
+        && (source.media_frame != Some(transform.from_frame())
+            || parent_view.media_frame != Some(transform.to_frame()))
+    {
+        return Err(crate::failure::EvidenceError::policy(
+            "a media transform must map the derivative's declared frame onto its parent's",
+        ));
+    }
     Ok(())
 }
 
@@ -1450,7 +1459,7 @@ fn validate_segment_media_location(
     })?;
     segment
         .location
-        .validate_extent(extent)
+        .validate_source(extent, media.media_frame, media.ink_inventory.as_ref())
         .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))
 }
 
@@ -1619,6 +1628,10 @@ pub struct SourceProvenance<'a> {
     pub derived_from: Option<mneme_core::SourcePin>,
     pub media_extent: Option<mneme_core::MediaExtent>,
     pub media_transform: Option<mneme_core::MediaTransform>,
+    /// The coordinate frame a page or ink source's pages use.
+    pub media_frame: Option<mneme_core::CoordinateFrame>,
+    /// The stroke ids an ink source declares.
+    pub ink_inventory: Option<&'a mneme_core::InkInventory>,
     pub correction: Option<&'a mneme_core::CorrectionProvenance>,
 }
 
@@ -1839,6 +1852,15 @@ fn source_payload(
             transform.to_value(),
         ));
     }
+    if let Some(frame) = provenance.media_frame {
+        entries.push((mneme_core::Symbol::from("media-frame"), frame.to_value()));
+    }
+    if let Some(inventory) = provenance.ink_inventory {
+        entries.push((
+            mneme_core::Symbol::from("ink-strokes"),
+            inventory.to_value(),
+        ));
+    }
     if let Some(correction) = provenance.correction {
         entries.push((
             mneme_core::Symbol::from("correction"),
@@ -1866,6 +1888,8 @@ pub fn build_captured_source(
             derived_from: None,
             media_extent: Some(extent),
             media_transform: None,
+            media_frame: None,
+            ink_inventory: None,
             correction: None,
         },
     )
@@ -1905,6 +1929,8 @@ pub fn build_recognized_source(
             derived_from: Some(input),
             media_extent: None,
             media_transform: None,
+            media_frame: None,
+            ink_inventory: None,
             correction: None,
         },
     )
@@ -1936,6 +1962,8 @@ pub fn build_corrected_source(
             derived_from: Some(predecessor),
             media_extent: None,
             media_transform: None,
+            media_frame: None,
+            ink_inventory: None,
             correction: Some(correction),
         },
     )
@@ -2264,6 +2292,15 @@ pub fn build_unavailable_source_preserving(
         fields.push((
             mneme_core::Symbol::from("media-transform"),
             transform.to_value(),
+        ));
+    }
+    if let Some(frame) = source.media_frame {
+        fields.push((mneme_core::Symbol::from("media-frame"), frame.to_value()));
+    }
+    if let Some(inventory) = &source.ink_inventory {
+        fields.push((
+            mneme_core::Symbol::from("ink-strokes"),
+            inventory.to_value(),
         ));
     }
     if let Some(correction) = &source.correction {

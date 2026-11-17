@@ -1009,7 +1009,10 @@ impl ApiService {
                 )
                 .map_err(|_| crate::error::ApiError::missing())?;
             self.validate_recognition_segment_read(&context, *segment_id, &segment, &media)?;
-            let value = recognition_segment_value(&segment);
+            let original = media
+                .media_transform
+                .and_then(|transform| transform.map_region(&segment.location));
+            let value = recognition_segment_value(&segment, original.as_ref());
             encoded_bytes = encoded_bytes.saturating_add(mneme_core::encode(&value).len());
             if encoded_bytes > MAX_RECOGNITION_READ_BYTES {
                 return Err(crate::error::ApiError::new(
@@ -1037,9 +1040,12 @@ impl ApiService {
         let span_end = usize::try_from(segment.text_span.end())
             .ok()
             .and_then(|end| end.checked_add(1));
-        let is_location_valid = media
-            .media_extent
-            .is_some_and(|extent| segment.location.validate_extent(extent).is_ok());
+        let is_location_valid = media.media_extent.is_some_and(|extent| {
+            segment
+                .location
+                .validate_source(extent, media.media_frame, media.ink_inventory.as_ref())
+                .is_ok()
+        });
         let is_span_valid = span_start
             .zip(span_end)
             .is_some_and(|(start, end)| context.output_text.get(start..end).is_some());
@@ -4083,7 +4089,12 @@ fn source_metadata_value(source: &mneme_memory::SourceView) -> mneme_core::Value
     ])
 }
 
-fn recognition_segment_value(segment: &mneme_memory::RecognitionSegmentView) -> mneme_core::Value {
+/// One segment mapping; `original` is where its region lies on the original
+/// image when the media source is a processed derivative.
+fn recognition_segment_value(
+    segment: &mneme_memory::RecognitionSegmentView,
+    original: Option<&mneme_core::MediaLocation>,
+) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("id"),
@@ -4118,6 +4129,10 @@ fn recognition_segment_value(segment: &mneme_memory::RecognitionSegmentView) -> 
         (
             mneme_core::Symbol::from("location"),
             segment.location.to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("original-location"),
+            original.map_or_else(none_value, mneme_core::MediaLocation::to_value),
         ),
     ])
 }

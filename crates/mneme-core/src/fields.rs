@@ -265,6 +265,10 @@ pub enum FieldType {
     RecognitionAlternatives,
     /// Human correction provenance and alignment disposition.
     CorrectionProvenance,
+    /// The coordinate frame a page or ink source's pages use.
+    CoordinateFrame,
+    /// The stroke ids an ink source declares, by page and layer.
+    InkInventory,
 }
 
 /// One declared payload field.
@@ -556,6 +560,8 @@ impl RecordSchema {
                     optional("derived-from", reference(Some(RecordKind::SourceRevision))),
                     optional("media-extent", FieldType::MediaExtent),
                     optional("media-transform", FieldType::MediaTransform),
+                    optional("media-frame", FieldType::CoordinateFrame),
+                    optional("ink-strokes", FieldType::InkInventory),
                     optional("correction", FieldType::CorrectionProvenance),
                 ]);
             }
@@ -907,6 +913,10 @@ pub fn validate_field(
             value,
             path,
         ),
+        FieldType::CoordinateFrame => {
+            parsed(crate::lineage::CoordinateFrame::from_value, value, path)
+        }
+        FieldType::InkInventory => parsed(crate::lineage::InkInventory::from_value, value, path),
     }
 }
 
@@ -1367,6 +1377,49 @@ fn validate_source_domain(
             &path.field("media-transform"),
             "a media transform requires an exact derived-from source pin",
         ));
+    }
+    diagnostics.extend(validate_page_media(payload, path));
+    diagnostics
+}
+
+/// A page frame belongs to a page or ink source, and an ink inventory to an
+/// ink source whose pages cover every layer it declares.
+fn validate_page_media(
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    let extent = payload
+        .get(&crate::typed::Symbol::from("media-extent"))
+        .and_then(|value| {
+            crate::lineage::MediaExtent::from_value(value, &path.field("media-extent")).ok()
+        });
+    let page_count = match extent {
+        Some(
+            crate::lineage::MediaExtent::Pages { page_count }
+            | crate::lineage::MediaExtent::InkPages { page_count },
+        ) => Some(page_count),
+        Some(crate::lineage::MediaExtent::Audio { .. }) | None => None,
+    };
+    let mut diagnostics = Vec::new();
+    if payload.contains_key(&crate::typed::Symbol::from("media-frame")) && page_count.is_none() {
+        diagnostics.push(domain_error(
+            &path.field("media-frame"),
+            "a page frame requires a page or ink media extent",
+        ));
+    }
+    if let Some(value) = payload.get(&crate::typed::Symbol::from("ink-strokes")) {
+        let is_ink = matches!(extent, Some(crate::lineage::MediaExtent::InkPages { .. }));
+        let is_covered =
+            crate::lineage::InkInventory::from_value(value, &path.field("ink-strokes"))
+                .ok()
+                .and_then(|inventory| inventory.last_page())
+                .is_none_or(|last| page_count.is_some_and(|count| last < count));
+        if !(is_ink && is_covered) {
+            diagnostics.push(domain_error(
+                &path.field("ink-strokes"),
+                "an ink inventory requires an ink extent covering its pages",
+            ));
+        }
     }
     diagnostics
 }

@@ -378,3 +378,183 @@ fn a_later_run_cannot_claim_existing_machine_text() {
         "a run must commit the text it produced, not claim another run's"
     );
 }
+
+fn image_source(
+    pin: mneme_core::SourcePin,
+    bytes: &[u8],
+    frame: mneme_core::CoordinateFrame,
+    derived: Option<(mneme_core::SourcePin, mneme_core::MediaTransform)>,
+) -> (mneme_store::RecordDraft, mneme_store::SourceBlobDraft) {
+    mneme_memory::build_source_with_provenance(
+        pin.source(),
+        pin.revision(),
+        &common::scope(),
+        mneme_memory::SourceOptions {
+            bytes,
+            media_type: "image/png",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_memory::SourceProvenance {
+            acquisition: mneme_core::Acquisition::Captured,
+            derived_from: derived.map(|(parent, _)| parent),
+            media_extent: Some(mneme_core::MediaExtent::Pages { page_count: 1 }),
+            media_transform: derived.map(|(_, transform)| transform),
+            media_frame: Some(frame),
+            ink_inventory: None,
+            correction: None,
+        },
+    )
+    .expect("image source")
+}
+
+/// Commit machine text recognized from `media` with one segment at
+/// `location`, as one batch.
+fn recognize(
+    workspace: &mut mneme_store::Workspace,
+    media: (mneme_core::SourcePin, &[u8]),
+    location: &mneme_core::MediaLocation,
+    seed: u8,
+) -> mneme_memory::Result<mneme_store::CommitOutcome> {
+    let (input, input_bytes) = media;
+    let text = mneme_core::SourcePin::new(common::rid(seed), common::rev(seed));
+    let (run_id, segment_id) = (common::rid(seed + 1), common::rid(seed + 2));
+    let (text_record, text_blob) = mneme_memory::build_recognized_source(
+        text.source(),
+        text.revision(),
+        &common::scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"page words",
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        input,
+    )
+    .expect("recognized text");
+    let input_digest = mneme_core::ContentDigest::of_source_bytes(input_bytes);
+    let run = mneme_memory::build_recognition_run(
+        run_id,
+        common::rev(seed + 1),
+        &common::scope(),
+        mneme_memory::RecognitionRunOptions {
+            input,
+            input_digest,
+            output: text,
+            output_digest: mneme_core::ContentDigest::of_source_bytes(b"page words"),
+            model: "ocr-model@sha256:01",
+            runtime: "test-runtime@sha256:02",
+            adapter: "test-adapter@sha256:03",
+            preprocessing: "none",
+            configuration: "test-config@sha256:05",
+            segments: &[segment_id],
+            coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
+            status: mneme_core::RecognitionStatus::Complete,
+            scores: &[],
+            alternatives: &[],
+        },
+    )
+    .expect("run");
+    let segment = mneme_memory::build_recognition_segment(
+        segment_id,
+        common::rev(seed + 2),
+        &common::scope(),
+        mneme_memory::RecognitionSegmentOptions {
+            run: Some(run_id),
+            text_source: text,
+            span: mneme_core::SourceSpan::new(0, 3).expect("span"),
+            media_source: input,
+            media_digest: input_digest,
+            location,
+        },
+    )
+    .expect("segment");
+    mneme_memory::Engine::new(workspace, mneme_memory::Access::Operator).commit(common::batch(
+        &format!("recognize-{seed}"),
+        vec![text_record, run, segment],
+        vec![text_blob],
+    ))
+}
+
+#[test]
+fn page_regions_are_checked_against_the_image_and_its_crop() {
+    let (_temp, mut workspace) = common::setup();
+    let image = mneme_core::CoordinateFrame::Pixels {
+        width: 400,
+        height: 300,
+    };
+    let crop_frame = mneme_core::CoordinateFrame::Pixels {
+        width: 200,
+        height: 150,
+    };
+    let original = mneme_core::SourcePin::new(common::rid(0xd0), common::rev(0xd0));
+    let crop = mneme_core::SourcePin::new(common::rid(0xd1), common::rev(0xd1));
+    let transform =
+        mneme_core::MediaTransform::new(crop_frame, image, [2.0, 0.0, 0.0, 0.0, 2.0, 0.0])
+            .expect("2x transform");
+    let (original_record, original_blob) = image_source(original, b"original image", image, None);
+    let (crop_record, crop_blob) = image_source(
+        crop,
+        b"cropped image",
+        crop_frame,
+        Some((original, transform)),
+    );
+    mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .commit(common::batch(
+            "images",
+            vec![original_record, crop_record],
+            vec![original_blob, crop_blob],
+        ))
+        .expect("a crop whose transform maps its frame onto the original's");
+    let on_crop = mneme_core::MediaLocation::PageRegion {
+        page: 0,
+        frame: crop_frame,
+        x: 10.0,
+        y: 20.0,
+        width: 30.0,
+        height: 30.0,
+    };
+    recognize(&mut workspace, (crop, b"cropped image"), &on_crop, 0xe0)
+        .expect("a region on the crop, in the crop's frame");
+    let oversized = mneme_core::MediaLocation::PageRegion {
+        page: 0,
+        frame: mneme_core::CoordinateFrame::Pixels {
+            width: 10_000,
+            height: 10_000,
+        },
+        x: 5_000.0,
+        y: 10.0,
+        width: 20.0,
+        height: 20.0,
+    };
+    assert!(
+        recognize(
+            &mut workspace,
+            (original, b"original image"),
+            &oversized,
+            0xe4
+        )
+        .is_err(),
+        "a region outside the 400x300 image is refused"
+    );
+    let mismatched = mneme_core::SourcePin::new(common::rid(0xd2), common::rev(0xd2));
+    let (mismatched_record, mismatched_blob) = image_source(
+        mismatched,
+        b"mislabelled crop",
+        mneme_core::CoordinateFrame::Pixels {
+            width: 100,
+            height: 75,
+        },
+        Some((original, transform)),
+    );
+    assert!(
+        mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+            .commit(common::batch(
+                "mismatched-crop",
+                vec![mismatched_record],
+                vec![mismatched_blob],
+            ))
+            .is_err(),
+        "a transform must start from the derivative's own frame"
+    );
+}
