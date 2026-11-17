@@ -101,6 +101,152 @@ fn signed_import_is_trusted_reviewable_and_idempotent() {
     assert!(second.already_present.contains(&assertion));
 }
 
+fn text_options(bytes: &[u8]) -> mneme_memory::SourceOptions<'_> {
+    mneme_memory::SourceOptions {
+        bytes,
+        media_type: "text/plain; charset=utf-8",
+        entity: None,
+        path_hint: None,
+    }
+}
+
+#[test]
+fn a_corrected_transcript_stays_out_of_export_and_the_rest_imports() {
+    let (_origin_temp, mut origin) = common::setup();
+    let original = mneme_core::SourcePin::new(common::rid(0xc0), common::rev(0xc1));
+    let transcript = mneme_core::SourcePin::new(common::rid(0xc2), common::rev(0xc3));
+    let (audio, audio_blob) = mneme_memory::build_captured_source(
+        original.source(),
+        original.revision(),
+        &common::scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"recorded audio",
+            media_type: "audio/wav",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_core::MediaExtent::Audio {
+            duration_ticks: 100,
+            time_base: mneme_core::TimeBase::new(1, 100).expect("time base"),
+            channels: 1,
+        },
+    )
+    .expect("captured audio");
+    let (text, text_blob) = mneme_memory::build_recognized_source(
+        transcript.source(),
+        transcript.revision(),
+        &common::scope(),
+        text_options(b"hello world"),
+        original,
+    )
+    .expect("recognized text");
+    let location = mneme_core::MediaLocation::Audio {
+        start_tick: 20,
+        end_tick: 40,
+        time_base: mneme_core::TimeBase::new(1, 100).expect("time base"),
+        channel: 0,
+    };
+    let audio_digest = mneme_core::ContentDigest::of_source_bytes(b"recorded audio");
+    let (run_id, segment_id) = (common::rid(0xc5), common::rid(0xc6));
+    let run = mneme_memory::build_recognition_run(
+        run_id,
+        common::rev(0xc7),
+        &common::scope(),
+        mneme_memory::RecognitionRunOptions {
+            input: original,
+            input_digest: audio_digest,
+            output: transcript,
+            output_digest: mneme_core::ContentDigest::of_source_bytes(b"hello world"),
+            model: "test-model@sha256:01",
+            runtime: "test-runtime@sha256:02",
+            adapter: "test-adapter@sha256:03",
+            preprocessing: "test-preprocess@sha256:04",
+            configuration: "test-config@sha256:05",
+            segments: &[segment_id],
+            coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
+            status: mneme_core::RecognitionStatus::Complete,
+            scores: &[],
+            alternatives: &[],
+        },
+    )
+    .expect("recognition run");
+    let segment = mneme_memory::build_recognition_segment(
+        segment_id,
+        common::rev(0xc8),
+        &common::scope(),
+        mneme_memory::RecognitionSegmentOptions {
+            run: Some(run_id),
+            text_source: transcript,
+            span: mneme_core::SourceSpan::new(0, 4).expect("span"),
+            media_source: original,
+            media_digest: audio_digest,
+            location: &location,
+        },
+    )
+    .expect("recognition segment");
+    common::engine(&mut origin)
+        .commit(common::batch(
+            "recognized",
+            vec![audio, text, run, segment],
+            vec![audio_blob, text_blob],
+        ))
+        .expect("commit recognition");
+    let correction = mneme_core::CorrectionProvenance::new(
+        "human-reviewer",
+        "inserted a word",
+        mneme_core::AlignmentDisposition::Updated,
+    )
+    .expect("correction");
+    let (corrected, corrected_blob) = mneme_memory::build_corrected_source(
+        transcript,
+        common::rev(0xc4),
+        &common::scope(),
+        text_options(b"well hello world"),
+        &correction,
+    )
+    .expect("corrected text");
+    let corrected_pin = mneme_core::SourcePin::new(transcript.source(), common::rev(0xc4));
+    let alignment = mneme_memory::build_recognition_segment(
+        common::rid(0xc9),
+        common::rev(0xca),
+        &common::scope(),
+        mneme_memory::RecognitionSegmentOptions {
+            run: None,
+            text_source: corrected_pin,
+            span: mneme_core::SourceSpan::new(5, 9).expect("updated span"),
+            media_source: original,
+            media_digest: audio_digest,
+            location: &location,
+        },
+    )
+    .expect("fresh alignment");
+    common::engine(&mut origin)
+        .commit(common::batch(
+            "corrected",
+            vec![corrected, alignment],
+            vec![corrected_blob],
+        ))
+        .expect("commit correction");
+    let secret = [0x93; 32];
+    let document =
+        mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
+            .expect("signed export");
+    let authenticated = mneme_memory::exchange::authenticate_json(
+        document.as_bytes(),
+        &trusted_policy("device-a", &secret),
+    )
+    .expect("trusted signature");
+    let (_receiver_temp, mut receiver) = receiver();
+    let outcome =
+        mneme_memory::exchange::import_records(&mut receiver, authenticated, "local-reviewer")
+            .expect("the rest of the scope imports");
+    assert!(outcome.imported.contains(&original.source()));
+    assert!(
+        !outcome.imported.contains(&transcript.source()),
+        "a correction cannot be validated without its earlier revision"
+    );
+}
+
 #[test]
 fn exchange_authentication_rejects_untrusted_and_tampered_signers() {
     let (_origin_temp, mut origin) = common::setup();

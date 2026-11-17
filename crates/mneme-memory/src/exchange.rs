@@ -252,6 +252,7 @@ pub fn export_workspace(
         .collect::<std::collections::BTreeSet<_>>();
     let suppressions = workspace.active_suppressions()?;
     let blocked = blocked_records(&snapshot.records, &suppressions)?;
+    let history_bound = history_bound_records(&snapshot.records);
     let records = snapshot
         .records
         .iter()
@@ -259,6 +260,7 @@ pub fn export_workspace(
         .filter(|record| !is_note_local(record, &note_sources, &note_documents, &note_entities))
         .filter(|record| !has_foreign_origin(record))
         .filter(|record| !blocked.contains(&record.record_id))
+        .filter(|record| !history_bound.contains(&record.record_id))
         .cloned()
         .collect::<Vec<_>>();
     if records.len() > MAX_RECORDS {
@@ -1312,34 +1314,91 @@ fn blocked_records(
             blocked.insert(record.record_id);
         }
     }
+    add_dependents(records, &mut blocked);
+    Ok(blocked)
+}
+
+/// Add every record that refers, directly or through others, to one in `set`.
+fn add_dependents(
+    records: &[mneme_core::RecordEnvelope],
+    set: &mut std::collections::BTreeSet<mneme_core::RecordId>,
+) {
     loop {
-        let prior = blocked.len();
+        let prior = set.len();
         for record in records {
-            if !blocked.contains(&record.record_id)
+            if !set.contains(&record.record_id)
                 && dependency_targets(&record.payload)
                     .iter()
-                    .any(|target| blocked.contains(target))
+                    .any(|target| set.contains(target))
             {
-                blocked.insert(record.record_id);
+                set.insert(record.record_id);
             }
         }
-        if blocked.len() == prior {
+        if set.len() == prior {
             break;
         }
     }
-    Ok(blocked)
+}
+
+/// Records an importer cannot validate on their own, and everything that
+/// depends on them. Import checks a correction against its source's earlier
+/// revision, and a recognition run or segment against the exact revisions it
+/// pins, but a bundle carries only current revisions.
+fn history_bound_records(
+    records: &[mneme_core::RecordEnvelope],
+) -> std::collections::BTreeSet<mneme_core::RecordId> {
+    let current = records
+        .iter()
+        .map(|record| (record.record_id, record.revision_id))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut bound = records
+        .iter()
+        .filter(|record| needs_history(record, &current))
+        .map(|record| record.record_id)
+        .collect();
+    add_dependents(records, &mut bound);
+    bound
+}
+
+fn needs_history(
+    record: &mneme_core::RecordEnvelope,
+    current: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RevisionId>,
+) -> bool {
+    match record.kind {
+        mneme_core::RecordKind::SourceRevision => crate::model::SourceView::parse(record.clone())
+            .is_ok_and(|source| source.acquisition == mneme_core::Acquisition::Corrected),
+        mneme_core::RecordKind::RecognitionRun | mneme_core::RecordKind::RecognitionSegment => {
+            payload_references(&record.payload)
+                .into_iter()
+                .any(|reference| match reference {
+                    mneme_core::Reference::Pinned {
+                        target, revision, ..
+                    } => current.get(&target) != Some(&revision),
+                    mneme_core::Reference::Local { .. }
+                    | mneme_core::Reference::External { .. }
+                    | mneme_core::Reference::Unresolved { .. } => false,
+                })
+        }
+        _ => false,
+    }
 }
 
 fn dependency_targets(
     payload: &mneme_core::Payload,
 ) -> std::collections::BTreeSet<mneme_core::RecordId> {
-    let mut result = std::collections::BTreeSet::new();
+    payload_references(payload)
+        .into_iter()
+        .filter_map(|reference| reference.target())
+        .collect()
+}
+
+/// Every reference anywhere in `payload`.
+fn payload_references(payload: &mneme_core::Payload) -> Vec<mneme_core::Reference> {
+    let mut result = Vec::new();
     let mut pending = vec![payload.to_value()];
     while let Some(value) = pending.pop() {
         if let Some(reference) = reference_value(&value) {
-            if let Some(target) = reference.target() {
-                result.insert(target);
-            }
+            result.push(reference);
             continue;
         }
         match value {
