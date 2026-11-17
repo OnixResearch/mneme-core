@@ -10,7 +10,7 @@
     "profile_hash": "b3:3fd67a2616779e6ed6b3c51e744e34d94a9ea0a3ce50f85d532eced949838822",
     "config_hash": "b3:b065a7ffe479551539355f2da753fdc11a7e39910ebdaa1a65a02093ce66d2b1"
   },
-  "baseline_hash": "b3:493d676261a83b807ab14fe2863610c73c9aacbf480022badc14a92c88e70a8f",
+  "baseline_hash": "b3:7994a33af0f6c5e99d50fb4e7cef756b62a0cdd09735e2f26fb4557193e47291",
   "findings": [
     {
       "stable_id": "b3:002cd10692d692b9",
@@ -50,6 +50,19 @@
       "column": 133,
       "message": "function `from_value` has 0 assertion(s) in 34 lines (need 2+)",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:008517ae0f2da778",
+      "semantic_id": "b3:008517ae0f2da778",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/exact_cosine_cost.rs",
+      "line": 158,
+      "column": 11,
+      "message": "function `main` has 0 assertion(s) in 21 lines (need 2+)",
+      "crate_name": "exact_cosine_cost"
     },
     {
       "stable_id": "b3:0091b674bc29d04b",
@@ -4914,6 +4927,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:3743307a2a07bf69",
+      "semantic_id": "b3:3743307a2a07bf69",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2212,
+      "column": 87,
+      "message": "function `logging_semantic` has 0 assertion(s) in 35 lines (need 2+)",
+      "crate_name": "recall"
+    },
+    {
       "stable_id": "b3:37851cb24491b7e8",
       "semantic_id": "b3:37851cb24491b7e8",
       "identity_status": "computed",
@@ -9178,6 +9204,19 @@
       "crate_name": "datalog"
     },
     {
+      "stable_id": "b3:68efba7e04725678",
+      "semantic_id": "b3:68efba7e04725678",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/exact_cosine_cost.rs",
+      "line": 59,
+      "column": 63,
+      "message": "function `rank` has 0 assertion(s) in 30 lines (need 2+)",
+      "crate_name": "exact_cosine_cost"
+    },
+    {
       "stable_id": "b3:690b30f7d4b6c291",
       "semantic_id": "b3:690b30f7d4b6c291",
       "identity_status": "computed",
@@ -10320,6 +10359,19 @@
       "column": 49,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_memory"
+    },
+    {
+      "stable_id": "b3:767022274cd3a1a1",
+      "semantic_id": "b3:767022274cd3a1a1",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/exact_cosine_cost.rs",
+      "line": 110,
+      "column": 55,
+      "message": "function `noop_embedding_round_trip_micros` has 0 assertion(s) in 47 lines (need 2+)",
+      "crate_name": "exact_cosine_cost"
     },
     {
       "stable_id": "b3:76b3b5b1829bf0d4",
@@ -13609,6 +13661,19 @@
       "column": 38,
       "message": "function `validate_recognition_segment_domain` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:9934a76619dac12e",
+      "semantic_id": "b3:9934a76619dac12e",
+      "identity_status": "computed",
+      "lint": "allocation_in_loop",
+      "group": "tigerstyle::performance",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/exact_cosine_cost.rs",
+      "line": 145,
+      "column": 13,
+      "message": "Vec allocation constructor runs inside a loop",
+      "crate_name": "exact_cosine_cost"
     },
     {
       "stable_id": "b3:99771c26fe11bbb9",
@@ -17119,6 +17184,19 @@
       "column": 22,
       "message": "function `new` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "api"
+    },
+    {
+      "stable_id": "b3:c53d34500fc47833",
+      "semantic_id": "b3:c53d34500fc47833",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2216,
+      "column": 37,
+      "message": "unprotected unsigned multiplication may overflow",
+      "crate_name": "recall"
     },
     {
       "stable_id": "b3:c582f9dc175286dd",
