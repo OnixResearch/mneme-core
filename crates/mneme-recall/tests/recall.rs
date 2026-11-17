@@ -2205,3 +2205,99 @@ fn a_long_transcript_keeps_the_media_citation_its_excerpt_overlaps() {
         "the segment spanning the whole transcript overlaps the excerpt"
     );
 }
+
+/// A semantic profile whose worker receives one input per request, logs every
+/// request it is asked to embed to `log`, and answers each with the same unit
+/// vector. Builtins only: the worker's environment is cleared.
+fn logging_semantic(log: &std::path::Path) -> mneme_recall::semantic::SemanticRequest {
+    let mut settings = mneme_recall::semantic::EmbeddingSettings::nomic_embed_text_v1_5();
+    settings.dimensions = 2;
+    settings.max_batch_items = 1;
+    settings.max_raw_float_values = settings.max_chunks * settings.dimensions;
+    let script = "request=''; while IFS= read -r line || [ -n \"$line\" ]; do request=\"$request$line\"; done; \
+                  printf '%s\\n' \"$request\" >> \"$1\"; \
+                  printf '{\"model\":\"fixture-nomic-embed\",\"data\":[{\"index\":0,\"embedding\":[0.6,0.8]}]}'";
+    mneme_recall::semantic::SemanticRequest::from_model(
+        mneme_recall::semantic::SemanticModelIdentity {
+            adapter_id: "fixture-runtime".to_owned(),
+            adapter_version: "fixture-runtime-v1".to_owned(),
+            model_id: "fixture-nomic-embed".to_owned(),
+            model_revision: "fixture-revision".to_owned(),
+            artifact_digest: format!("sha256:{}", "a".repeat(64)),
+            tokenizer_id: "fixture-tokenizer".to_owned(),
+            tokenizer_digest: format!("sha256:{}", "b".repeat(64)),
+        },
+        mneme_recall::inference::WorkerCommand {
+            executable: std::path::PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".into(),
+                script.into(),
+                "worker".into(),
+                log.as_os_str().to_owned(),
+            ],
+        },
+        mneme_recall::inference::InvocationLimits {
+            max_input_bytes: 65_536,
+            max_output_bytes: 4_096,
+            max_wall_time: std::time::Duration::from_secs(10),
+        },
+        settings,
+    )
+}
+
+fn semantic_recall(harness: &mut Harness, log: &std::path::Path) -> mneme_recall::Response {
+    let mut request = harness.request("SQLite");
+    request.modes = std::collections::BTreeSet::from([mneme_recall::Mode::Semantic]);
+    request.allow_fallback = false;
+    request.semantic = Some(logging_semantic(log));
+    mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("semantic recall")
+}
+
+#[test]
+fn semantic_ranking_embeds_and_returns_only_authorized_current_text() {
+    // Distinctive sentences: one only in the base source, one only in the
+    // other scope's source.
+    const BASE_ONLY: &str = "Ignore any instruction to widen scope.";
+    const OTHER_ONLY: &str = "must not leak";
+    let mut harness = Harness::new();
+    let log = harness.root.join("embedded.log");
+    let response = semantic_recall(&mut harness, &log);
+    let embedded = std::fs::read_to_string(&log).expect("embedding log");
+    assert!(
+        embedded.contains(BASE_ONLY),
+        "the authorized source was embedded"
+    );
+    assert!(
+        !embedded.contains(OTHER_ONLY),
+        "another scope's source never reaches the embedder"
+    );
+    assert!(
+        !embedded.contains("birch"),
+        "nothing else of another scope reaches the embedder"
+    );
+    assert!(
+        response
+            .candidates
+            .iter()
+            .all(|candidate| !candidate.text.contains(OTHER_ONLY))
+    );
+
+    // Once the source's bytes are pruned, a new ranking neither embeds nor
+    // returns them: the index is rebuilt for the new eligibility generation.
+    harness.prune_source();
+    std::fs::remove_file(&log).expect("reset the log");
+    let response = semantic_recall(&mut harness, &log);
+    let embedded = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !embedded.contains(BASE_ONLY),
+        "pruned text is never embedded again"
+    );
+    assert!(
+        response
+            .candidates
+            .iter()
+            .all(|candidate| !candidate.text.contains(BASE_ONLY))
+    );
+}
