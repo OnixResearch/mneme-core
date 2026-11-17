@@ -93,7 +93,12 @@ impl SourcePin {
                 revision,
                 kind: crate::fields::RecordKind::SourceRevision,
             } => Ok(SourcePin::new(target, revision)),
-            _ => Err(type_error(path, "pinned source-revision reference")),
+            crate::pointer::Reference::Pinned { .. }
+            | crate::pointer::Reference::Local { .. }
+            | crate::pointer::Reference::External { .. }
+            | crate::pointer::Reference::Unresolved { .. } => {
+                Err(type_error(path, "pinned source-revision reference"))
+            }
         }
     }
 }
@@ -146,24 +151,25 @@ pub enum MediaExtent {
 impl MediaExtent {
     /// Validate publicly constructible extent variants.
     pub fn validate(self) -> Result<(), &'static str> {
-        match self {
+        let is_bounded = match self {
             MediaExtent::Audio {
                 duration_ticks,
                 time_base,
                 channels,
-            } if duration_ticks > 0
-                && time_base.numerator > 0
-                && time_base.denominator > 0
-                && channels > 0 =>
-            {
-                Ok(())
+            } => {
+                duration_ticks > 0
+                    && time_base.numerator > 0
+                    && time_base.denominator > 0
+                    && channels > 0
             }
-            MediaExtent::Pages { page_count } | MediaExtent::InkPages { page_count }
-                if page_count > 0 =>
-            {
-                Ok(())
+            MediaExtent::Pages { page_count } | MediaExtent::InkPages { page_count } => {
+                page_count > 0
             }
-            _ => Err("media extent must have positive, unit-bearing bounds"),
+        };
+        if is_bounded {
+            Ok(())
+        } else {
+            Err("media extent must have positive, unit-bearing bounds")
         }
     }
 

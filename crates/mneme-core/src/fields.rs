@@ -862,68 +862,50 @@ pub fn validate_field(
             kind,
             allow_external,
             allow_unresolved,
-        } => validate_reference_field(
-            value,
-            path,
-            index,
-            kind,
-            ReferenceValidation {
-                allow_external,
-                allow_unresolved,
-            },
-        ),
-        FieldType::ReferenceSet {
+        }
+        | FieldType::ReferenceSet {
             kind,
             allow_external,
             allow_unresolved,
-        } => validate_reference_set_field(
-            value,
-            path,
-            index,
-            kind,
-            ReferenceValidation {
+        } => {
+            let validation = ReferenceValidation {
                 allow_external,
                 allow_unresolved,
-            },
-        ),
+            };
+            if matches!(ty, FieldType::ReferenceSet { .. }) {
+                validate_reference_set_field(value, path, index, kind, validation)
+            } else {
+                validate_reference_field(value, path, index, kind, validation)
+            }
+        }
         FieldType::ValidTime => validate_valid_time_field(value, path),
-        FieldType::Digest => {
-            validate_parsed_field(crate::hashing::ContentDigest::from_value(value, path))
-        }
-        FieldType::Span => {
-            validate_parsed_field(crate::payload::SourceSpan::from_value(value, path))
-        }
-        FieldType::SourceContent => {
-            validate_parsed_field(crate::payload::SourceContent::from_value(value, path))
-        }
+        FieldType::Digest => parsed(crate::hashing::ContentDigest::from_value, value, path),
+        FieldType::Span => parsed(crate::payload::SourceSpan::from_value, value, path),
+        FieldType::SourceContent => parsed(crate::payload::SourceContent::from_value, value, path),
         FieldType::WorkspaceRevision => {
-            validate_parsed_field(crate::ids::WorkspaceRevisionId::from_value(value, path))
+            parsed(crate::ids::WorkspaceRevisionId::from_value, value, path)
         }
         FieldType::Extraction => validate_extraction_field(value, path),
         FieldType::IncludeMap => validate_include_map_field(value, path, index),
-        FieldType::Acquisition => {
-            validate_parsed_field(crate::provenance::Acquisition::from_value(value, path))
-        }
-        FieldType::MediaExtent => {
-            validate_parsed_field(crate::provenance::MediaExtent::from_value(value, path))
-        }
+        FieldType::Acquisition => parsed(crate::lineage::Acquisition::from_value, value, path),
+        FieldType::MediaExtent => parsed(crate::lineage::MediaExtent::from_value, value, path),
         FieldType::MediaTransform => {
-            validate_parsed_field(crate::provenance::MediaTransform::from_value(value, path))
+            parsed(crate::lineage::MediaTransform::from_value, value, path)
         }
-        FieldType::MediaLocation => {
-            validate_parsed_field(crate::provenance::MediaLocation::from_value(value, path))
+        FieldType::MediaLocation => parsed(crate::lineage::MediaLocation::from_value, value, path),
+        FieldType::RecognitionCoverage => {
+            parsed(crate::lineage::RecognitionCoverage::from_value, value, path)
         }
-        FieldType::RecognitionCoverage => validate_parsed_field(
-            crate::provenance::RecognitionCoverage::from_value(value, path),
-        ),
         FieldType::RecognitionScores => {
-            validate_sequence_field(value, path, crate::provenance::validate_scores)
+            validate_sequence_field(value, path, crate::lineage::validate_scores)
         }
         FieldType::RecognitionAlternatives => {
-            validate_sequence_field(value, path, crate::provenance::validate_alternatives)
+            validate_sequence_field(value, path, crate::lineage::validate_alternatives)
         }
-        FieldType::CorrectionProvenance => validate_parsed_field(
-            crate::provenance::CorrectionProvenance::from_value(value, path),
+        FieldType::CorrectionProvenance => parsed(
+            crate::lineage::CorrectionProvenance::from_value,
+            value,
+            path,
         ),
     }
 }
@@ -1081,6 +1063,15 @@ fn validate_valid_time_field(
             Err(diagnostic) => vec![diagnostic],
         },
     }
+}
+
+/// Diagnostics from parsing `value` as one typed field.
+fn parsed<T>(
+    parse: fn(&crate::typed::Value, &crate::problem::Path) -> Result<T, crate::problem::Diagnostic>,
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    validate_parsed_field(parse(value, path))
 }
 
 fn validate_parsed_field<T>(
@@ -1328,7 +1319,7 @@ fn validate_source_domain(
     let mut diagnostics = Vec::with_capacity(6);
     let acquisition = payload
         .get(&crate::typed::Symbol::from("acquisition"))
-        .map(|value| crate::provenance::Acquisition::from_value(value, &path.field("acquisition")));
+        .map(|value| crate::lineage::Acquisition::from_value(value, &path.field("acquisition")));
     let acquisition = match acquisition {
         Some(Ok(acquisition)) => Some(acquisition),
         Some(Err(diagnostic)) => {
@@ -1340,15 +1331,13 @@ fn validate_source_domain(
     let correction = payload.get(&crate::typed::Symbol::from("correction"));
     let has_correction = correction.is_some();
     if let Some(correction) = correction
-        && let Err(diagnostic) = crate::provenance::CorrectionProvenance::from_value(
-            correction,
-            &path.field("correction"),
-        )
+        && let Err(diagnostic) =
+            crate::lineage::CorrectionProvenance::from_value(correction, &path.field("correction"))
     {
         diagnostics.push(diagnostic);
     }
     if acquisition
-        .is_some_and(|value| (value == crate::provenance::Acquisition::Corrected) != has_correction)
+        .is_some_and(|value| (value == crate::lineage::Acquisition::Corrected) != has_correction)
     {
         diagnostics.push(domain_error(
             &path.field("correction"),
@@ -1356,7 +1345,7 @@ fn validate_source_domain(
         ));
     }
     if let Some(reference) = payload.get(&crate::typed::Symbol::from("derived-from"))
-        && crate::provenance::SourcePin::from_value(reference, &path.field("derived-from")).is_err()
+        && crate::lineage::SourcePin::from_value(reference, &path.field("derived-from")).is_err()
     {
         diagnostics.push(domain_error(
             &path.field("derived-from"),
@@ -1403,9 +1392,9 @@ fn validate_recognition_run_domain(
     ) {
         let parsed_status = status
             .as_symbol()
-            .and_then(|symbol| crate::provenance::RecognitionStatus::parse(symbol.as_str()));
+            .and_then(|symbol| crate::lineage::RecognitionStatus::parse(symbol.as_str()));
         let parsed_coverage =
-            crate::provenance::RecognitionCoverage::from_value(coverage, &path.field("coverage"));
+            crate::lineage::RecognitionCoverage::from_value(coverage, &path.field("coverage"));
         match (parsed_status, parsed_coverage) {
             (Some(status), Ok(coverage)) => {
                 if let Err(message) = status.validate_coverage(coverage) {
@@ -1421,7 +1410,7 @@ fn validate_recognition_run_domain(
     }
     for name in ["input", "output"] {
         if let Some(value) = payload.get(&crate::typed::Symbol::from(name))
-            && crate::provenance::SourcePin::from_value(value, &path.field(name)).is_err()
+            && crate::lineage::SourcePin::from_value(value, &path.field(name)).is_err()
         {
             diagnostics.push(domain_error(
                 &path.field(name),
@@ -1439,7 +1428,7 @@ fn validate_recognition_segment_domain(
     let mut diagnostics = Vec::with_capacity(3);
     for name in ["text-source", "media-source"] {
         if let Some(value) = payload.get(&crate::typed::Symbol::from(name))
-            && crate::provenance::SourcePin::from_value(value, &path.field(name)).is_err()
+            && crate::lineage::SourcePin::from_value(value, &path.field(name)).is_err()
         {
             diagnostics.push(domain_error(
                 &path.field(name),
@@ -1449,7 +1438,7 @@ fn validate_recognition_segment_domain(
     }
     if let Some(value) = payload.get(&crate::typed::Symbol::from("location"))
         && let Err(diagnostic) =
-            crate::provenance::MediaLocation::from_value(value, &path.field("location"))
+            crate::lineage::MediaLocation::from_value(value, &path.field("location"))
     {
         diagnostics.push(diagnostic);
     }

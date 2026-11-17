@@ -21,11 +21,11 @@ pub mod fields;
 pub mod fixtures;
 pub mod hashing;
 pub mod ids;
+pub mod lineage;
 pub mod payload;
 pub mod pointer;
 pub mod problem;
 pub mod projection;
-pub mod provenance;
 pub mod tenancy;
 pub mod text;
 #[allow(unknown_lints)] // public transport module path
@@ -44,15 +44,15 @@ pub use fields::{
 pub use hashing::{ContentDigest, EncodingProfile, HashAlgorithm, ValueBoundary};
 pub use hashing::{kernel_digest, request_fingerprint};
 pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
-pub use payload::{RetainedSource, SourceContent, SourceSpan};
-pub use pointer::{Reference, RevisionEntry, SnapshotIndex};
-pub use problem::{Diagnostic, ErrorCode, Path, Stage, render_diagnostics};
-pub use projection::{AdapterCapabilities, ValueKind, project_value};
-pub use provenance::{
+pub use lineage::{
     Acquisition, AlignmentDisposition, CoordinateFrame, CorrectionProvenance, MediaExtent,
     MediaLocation, MediaTransform, RecognitionAlternative, RecognitionCoverage, RecognitionScore,
     RecognitionStatus, SourcePin, TimeBase,
 };
+pub use payload::{RetainedSource, SourceContent, SourceSpan};
+pub use pointer::{Reference, RevisionEntry, SnapshotIndex};
+pub use problem::{Diagnostic, ErrorCode, Path, Stage, render_diagnostics};
+pub use projection::{AdapterCapabilities, ValueKind, project_value};
 pub use tenancy::{ScopeClass, ScopeId};
 pub use transport::{
     decode_document, decode_document_value, decode_nested_value, decode_value, encode_document,

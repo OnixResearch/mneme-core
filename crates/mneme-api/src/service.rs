@@ -1028,18 +1028,18 @@ impl ApiService {
         let span_end = usize::try_from(segment.text_span.end())
             .ok()
             .and_then(|end| end.checked_add(1));
-        let location_is_valid = media
+        let is_location_valid = media
             .media_extent
             .is_some_and(|extent| segment.location.validate_extent(extent).is_ok());
-        let span_is_valid = span_start
+        let is_span_valid = span_start
             .zip(span_end)
             .is_some_and(|(start, end)| context.output_text.get(start..end).is_some());
         if segment.run != Some(context.run.record.record_id)
             || segment.text_source != context.run.output
             || media.digest().or(media.prior_digest) != Some(segment.media_digest)
-            || !location_is_valid
+            || !is_location_valid
             || media_roots != *context.input_roots
-            || !span_is_valid
+            || !is_span_valid
         {
             return Err(crate::error::ApiError::missing());
         }
