@@ -483,6 +483,7 @@ impl super::Workspace {
             self.retention_location_identity(operation_id, location_id)?;
         match location_kind.as_str() {
             "staging" => self.inspect_temporaries(operation_id, location_id),
+            "asset-transfers" => self.inspect_transfers(operation_id, location_id),
             "sqlite-payloads" => self.inspect_ledger(operation_id, location_id),
             "temporary-exports" => self.inspect_unregistered_store(operation_id, location_id),
             "participant-store" => {
@@ -631,6 +632,31 @@ impl super::Workspace {
                     );
                 }
             };
+        let state = if removed > 0 {
+            crate::lifecycle::RetentionLocationState::Purged
+        } else {
+            crate::lifecycle::RetentionLocationState::Absent
+        };
+        self.record_location_state(operation_id, location_id, state, None)
+    }
+
+    /// Remove pending asset transfers of the operation's targeted bytes, so a
+    /// forgotten source's chunks cannot finish arriving and be published.
+    fn inspect_transfers(
+        &mut self,
+        operation_id: &str,
+        location_id: &str,
+    ) -> crate::error::Result<()> {
+        let targets = self.retention_target_digests(operation_id)?;
+        let _sweep = self.exclusive_sweep_lock()?;
+        let Ok(removed) = crate::payload::purge_targeted_transfers(&self.root, &targets) else {
+            return self.record_location_state(
+                operation_id,
+                location_id,
+                crate::lifecycle::RetentionLocationState::Failed,
+                Some("transfer-inspection-failed"),
+            );
+        };
         let state = if removed > 0 {
             crate::lifecycle::RetentionLocationState::Purged
         } else {

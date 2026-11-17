@@ -98,6 +98,30 @@ revisions, so a corrected source, a run or segment pinning a non-current
 revision, and everything depending on them are left out of export rather than
 failing the receiver's import.
 
+An exchange bundle carries sources of up to 1 MiB inside it, within 2 MiB.
+An export that does not fit is a version 2 bundle (`mneme-record-exchange-v2`),
+and each of its retained sources over 64 KiB travels beside it as an asset of
+at most 256 MiB, cut into 1 MiB chunks. The bundle signs each asset's source
+revision, scope, digest, length and media type, the digest of every chunk, and
+the bundle records that depend on the source; authentication refuses an entry
+that differs from its signed source record. `asset_chunk` reads a chunk for
+sending. `grant_asset` selects one current, shared, unforgotten source by its
+record and revision, never by digest, and refuses every other request in the
+same way. A receiver checks each chunk against the digest signed for its place
+and keeps it under `transfers/<signer key id>/<digest>/`, beside the blob store
+and never in it. Chunks may arrive in any order, more than once and across
+restarts, within 1 GiB for all pending transfers. Until every chunk is here and
+the whole asset hashes to its digest, `import_records` defers the source and
+everything that depends on it, including text recognized from it, and reports
+them; a later import of the same bundle publishes them, up to 512 MiB of
+assets per import. `pending_assets`, `transfer_usage` and `media_arrival`
+report what is arriving; a pending source is never in the ledger. A chunk of a
+forgotten source, or of bytes whose replay a forget blocks, is refused and its
+transfer removed, an import refuses the asset, and a forget searches pending
+transfers as one of its cleanup locations. A small export is still a version
+1 bundle. A reader of version 1 refuses version 2 as an unsupported profile,
+and later versions are refused the same way.
+
 The shared API exposes `recognition.read` with a scoped `{scope, run}` payload.
 It returns the run's exact source pins and digests, model/runtime configuration,
 bounded recognized text, source acquisition/transform metadata, coverage/status,

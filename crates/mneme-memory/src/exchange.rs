@@ -5,15 +5,34 @@
 //! exact source blobs, note aliases keyed by path and content digest, and
 //! forgotten-source barriers. Authentication is deliberately separate from
 //! record admission and from applying a retention barrier.
+//!
+//! A version 1 bundle carries every source inside it. When a source is too
+//! large for that, the export is a version 2 bundle, which signs a manifest
+//! of its large sources; their bytes travel beside it as chunks (see
+//! [`receive_chunk`]). A receiver that only reads version 1 refuses a version
+//! 2 bundle as an unsupported profile.
 
 use ed25519_dalek::Signer as _;
 use sha2::Digest as _;
 
+mod assets;
+
+pub use assets::{
+    ASSET_CHUNK_BYTES, Asset, ChunkReceipt, MAX_EXCHANGE_ASSET_BYTES, MAX_TRANSFER_BYTES,
+    MediaArrival, PendingAsset, TransferUsage, asset_chunk, grant_asset, media_arrival,
+    pending_assets, receive_chunk, transfer_usage,
+};
+
 const BUNDLE_LABEL: &str = "mneme-record-exchange-v1";
 const SIGNED_LABEL: &str = "mneme-record-exchange-signed-v1";
+const BUNDLE_LABEL_V2: &str = "mneme-record-exchange-v2";
+const SIGNED_LABEL_V2: &str = "mneme-record-exchange-signed-v2";
+/// Every version of the bundle label begins so.
+const BUNDLE_LABEL_FAMILY: &str = "mneme-record-exchange-v";
 const ENCODING_PROFILE: &str = "preserves-canonical-binary-v1";
 const SIGNATURE_PROFILE: &str = "ed25519-strict-v1";
 const SIGNATURE_DOMAIN: &[u8] = b"mneme.record-exchange.v1\0";
+const SIGNATURE_DOMAIN_V2: &[u8] = b"mneme.record-exchange.v2\0";
 const KEY_ID_DOMAIN: &[u8] = b"mneme.record-exchange.key-id.v1\0";
 const IMPORTED_ORIGIN_FIELD: &str = "exchange-origin";
 const IMPORTED_ACTOR_PREFIX: &str = "mneme-exchange-import:";
@@ -28,6 +47,8 @@ pub const MAX_EXCHANGE_BUNDLE_BYTES: usize = 2 * 1024 * 1024;
 /// The largest exact source blob admitted to one bundle.
 #[allow(unknown_lints, usize_in_public_api)] // the bound is a byte-count limit
 pub const MAX_EXCHANGE_SOURCE_BYTES: usize = 1024 * 1024;
+/// [`MAX_EXCHANGE_SOURCE_BYTES`] as a source length.
+const MAX_INLINE_SOURCE_LENGTH: u64 = 1024 * 1024;
 
 /// A peer key admitted by the local trust policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,14 +142,23 @@ struct SourceItem {
     bytes: Vec<u8>,
 }
 
+/// A bundle's format: version 2 adds the signed manifest of large sources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Version {
+    One,
+    Two,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SignedBundle {
+    version: Version,
     issuer: String,
     key_id: String,
     records: Vec<mneme_core::RecordEnvelope>,
     sources: Vec<SourceItem>,
     notes: Vec<NoteReference>,
     barriers: Vec<Barrier>,
+    assets: Vec<Asset>,
     signature: [u8; 64],
 }
 
@@ -153,6 +183,20 @@ impl AuthenticatedBundle {
     pub fn barriers(&self) -> &[Barrier] {
         &self.bundle.barriers
     }
+
+    /// The large sources the bundle names without carrying their bytes.
+    pub fn assets(&self) -> &[Asset] {
+        &self.bundle.assets
+    }
+}
+
+/// A signed bundle and the large sources that travel beside it as chunks.
+pub struct Export {
+    /// The signed bundle document.
+    pub bundle: String,
+    /// The sources the bundle names but does not carry; their chunks are read
+    /// with [`asset_chunk`].
+    pub assets: Vec<Asset>,
 }
 
 /// Record import result for one authenticated bundle.
@@ -164,6 +208,12 @@ pub struct ImportOutcome {
     pub already_present: Vec<mneme_core::RecordId>,
     /// Foreign decision records retained as history, not applied to assertions.
     pub decisions: Vec<mneme_core::RecordId>,
+    /// Records waiting for an asset's bytes: its source and what needs it.
+    pub deferred: Vec<mneme_core::RecordId>,
+    /// Assets whose bytes are still arriving.
+    pub pending: Vec<mneme_core::ContentDigest>,
+    /// Assets refused: forgotten here, or chunks that do not make the asset.
+    pub refused: Vec<mneme_core::ContentDigest>,
 }
 
 /// Exchange failures. Cryptographic verification and local policy refusals remain distinct.
@@ -214,6 +264,25 @@ pub enum Error {
     /// Memory validation refused the imported records.
     #[error("record exchange memory validation failed: {0}")]
     Memory(#[from] crate::failure::EvidenceError),
+    /// An asset is longer than an exchange carries.
+    #[error("record exchange asset exceeds the asset byte limit")]
+    AssetTooLarge,
+    /// Pending transfers would hold more than their bound.
+    #[error("pending asset transfers would exceed their byte limit")]
+    TransferQuotaExceeded,
+    /// A chunk does not hash to the digest the manifest signed for its place,
+    /// or has the wrong length.
+    #[error("asset chunk does not match its signed manifest")]
+    CorruptChunk,
+    /// The bundle's manifest names no asset with this digest.
+    #[error("record exchange bundle names no such asset")]
+    UnknownAsset,
+    /// The asset's source or bytes were forgotten here; its chunks are refused.
+    #[error("asset was forgotten on this device; its bytes are refused")]
+    AssetForgotten,
+    /// The selected source cannot be sent.
+    #[error("the selected source is not available to send")]
+    AssetUnavailable,
 }
 
 /// Derive the public key associated with a 32-byte Ed25519 device secret.
@@ -226,18 +295,87 @@ pub fn public_key(secret: &[u8; 32]) -> [u8; 32] {
 /// Export the workspace's authored records in `scopes` as one bounded,
 /// signed bundle; records, barriers and notes in other scopes stay on the
 /// device.
+///
+/// The bundle is version 1, carrying every source, whenever that fits;
+/// otherwise it is version 2, and each source over 64 KiB travels beside it
+/// as an asset.
 pub fn export_workspace(
     workspace: &mneme_store::Workspace,
     issuer: &str,
     secret: &[u8; 32],
     scopes: &std::collections::BTreeSet<mneme_core::ScopeId>,
-) -> Result<String, Error> {
+) -> Result<Export, Error> {
     validate_issuer(issuer)?;
     if scopes.is_empty() {
         return Err(Error::NoSharedScope);
     }
     let snapshot = workspace.snapshot()?;
     let notes = note_references(workspace, &snapshot)?;
+    let records = exportable(workspace, &snapshot, &notes, scopes)?;
+    let notes = shared_notes(notes, &snapshot, scopes);
+    let mut barriers = export_barriers(workspace, &workspace.active_suppressions()?)?;
+    barriers.retain(|barrier| scopes.contains(&barrier.scope));
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(secret);
+    let mut bundle = SignedBundle {
+        version: Version::One,
+        issuer: issuer.to_owned(),
+        key_id: public_key_id(&signing_key.verifying_key().to_bytes()),
+        records,
+        sources: Vec::new(),
+        notes,
+        barriers,
+        assets: Vec::new(),
+        signature: [0; 64],
+    };
+    let is_inline = bundle.records.iter().all(|record| {
+        retained_length(record).is_none_or(|length| length <= MAX_INLINE_SOURCE_LENGTH)
+    });
+    if is_inline {
+        bundle.sources = source_items(workspace, &bundle.records, MAX_INLINE_SOURCE_LENGTH)?;
+        bundle.sign(&signing_key);
+        match bundle.to_json_document() {
+            Ok(document) => {
+                return Ok(Export {
+                    bundle: document,
+                    assets: Vec::new(),
+                });
+            }
+            Err(Error::InputTooLarge) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    bundle.version = Version::Two;
+    bundle.sources = source_items(workspace, &bundle.records, assets::INLINE_SOURCE_BYTES)?;
+    bundle.assets = asset_items(workspace, &bundle.records)?;
+    bundle.sign(&signing_key);
+    Ok(Export {
+        bundle: bundle.to_json_document()?,
+        assets: bundle.assets,
+    })
+}
+
+/// The records `scopes` share with other devices.
+fn exportable_records(
+    workspace: &mneme_store::Workspace,
+    scopes: &std::collections::BTreeSet<mneme_core::ScopeId>,
+) -> Result<Vec<mneme_core::RecordEnvelope>, Error> {
+    if scopes.is_empty() {
+        return Err(Error::NoSharedScope);
+    }
+    let snapshot = workspace.snapshot()?;
+    let notes = note_references(workspace, &snapshot)?;
+    exportable(workspace, &snapshot, &notes, scopes)
+}
+
+/// The current records in `scopes` another device can import: never a
+/// note's own records, a record imported from elsewhere, a forgotten one, or
+/// one that cannot be checked without history the bundle does not carry.
+fn exportable(
+    workspace: &mneme_store::Workspace,
+    snapshot: &mneme_store::Snapshot,
+    notes: &[NoteReference],
+    scopes: &std::collections::BTreeSet<mneme_core::ScopeId>,
+) -> Result<Vec<mneme_core::RecordEnvelope>, Error> {
     let note_sources = notes
         .iter()
         .map(|note| note.source)
@@ -266,27 +404,46 @@ pub fn export_workspace(
     if records.len() > MAX_RECORDS {
         return Err(Error::MalformedBundle);
     }
-    let sources = source_items(workspace, &records)?;
-    let notes = shared_notes(notes, &snapshot, scopes);
-    let mut barriers = export_barriers(workspace, &suppressions)?;
-    barriers.retain(|barrier| scopes.contains(&barrier.scope));
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(secret);
-    let mut bundle = SignedBundle {
-        issuer: issuer.to_owned(),
-        key_id: public_key_id(&signing_key.verifying_key().to_bytes()),
-        records,
-        sources,
-        notes,
-        barriers,
-        signature: [0; 64],
+    Ok(records)
+}
+
+/// The length of a retained source record's bytes.
+fn retained_length(record: &mneme_core::RecordEnvelope) -> Option<u64> {
+    if record.kind != mneme_core::RecordKind::SourceRevision {
+        return None;
+    }
+    let source = crate::model::SourceView::parse(record.clone()).ok()?;
+    let mneme_core::SourceContent::Retained(retained) = source.content else {
+        return None;
     };
-    let signed = bundle.signed_value();
-    let mut message =
-        Vec::with_capacity(SIGNATURE_DOMAIN.len() + mneme_core::encode(&signed).len());
-    message.extend_from_slice(SIGNATURE_DOMAIN);
-    message.extend_from_slice(&mneme_core::encode(&signed));
-    bundle.signature = signing_key.sign(&message).to_bytes();
-    bundle.to_json_document()
+    Some(retained.byte_length())
+}
+
+/// The large retained sources of `records`, cut into chunks.
+fn asset_items(
+    workspace: &mneme_store::Workspace,
+    records: &[mneme_core::RecordEnvelope],
+) -> Result<Vec<Asset>, Error> {
+    let mut items = Vec::new();
+    for record in records
+        .iter()
+        .filter(|record| record.kind == mneme_core::RecordKind::SourceRevision)
+    {
+        let source = crate::model::SourceView::parse(record.clone())?;
+        let mneme_core::SourceContent::Retained(retained) = &source.content else {
+            continue;
+        };
+        if retained.byte_length() <= assets::INLINE_SOURCE_BYTES {
+            continue;
+        }
+        if items.len() >= MAX_SOURCE_BLOBS {
+            return Err(Error::MalformedBundle);
+        }
+        let dependents = assets::dependents_of(records, record.record_id);
+        items.push(assets::asset_of(workspace, record, retained, dependents)?);
+    }
+    items.sort();
+    Ok(items)
 }
 
 /// Authenticate one signed bundle using only a trusted, host-owned key policy.
@@ -303,19 +460,20 @@ pub fn authenticate_json(input: &[u8], policy: &Policy) -> Result<AuthenticatedB
     if peer.key_id != bundle.key_id {
         return Err(Error::InvalidSignature);
     }
-    let signed = bundle.signed_value();
-    let mut message =
-        Vec::with_capacity(SIGNATURE_DOMAIN.len() + mneme_core::encode(&signed).len());
-    message.extend_from_slice(SIGNATURE_DOMAIN);
-    message.extend_from_slice(&mneme_core::encode(&signed));
     let signature = ed25519_dalek::Signature::from_bytes(&bundle.signature);
     peer.key
-        .verify_strict(&message, &signature)
+        .verify_strict(&bundle.signing_message(), &signature)
         .map_err(|_| Error::InvalidSignature)?;
     if let Some(scope) = unaccepted_scope(&bundle, &peer.scopes) {
         return Err(Error::ScopeNotAccepted(scope));
     }
-    let digest = mneme_core::ContentDigest::of_payload(&signed);
+    let inline = bundle
+        .sources
+        .iter()
+        .map(|source| source.digest)
+        .collect::<std::collections::BTreeSet<_>>();
+    assets::check_assets(&bundle.records, &inline, &bundle.assets)?;
+    let digest = mneme_core::ContentDigest::of_payload(&bundle.signed_value());
     Ok(AuthenticatedBundle { bundle, digest })
 }
 
@@ -330,6 +488,7 @@ fn unaccepted_scope(
         .iter()
         .map(|record| &record.scope)
         .chain(bundle.barriers.iter().map(|barrier| &barrier.scope))
+        .chain(bundle.assets.iter().map(|asset| &asset.scope))
         .find(|scope| !accepted.contains(*scope))
         .cloned()
 }
@@ -360,6 +519,10 @@ fn shared_notes(
 /// Retention barriers must be applied before this call. Imported assertions
 /// are always reduced to proposals, while decisions remain archival records
 /// and never change a local assertion's lifecycle.
+///
+/// A source whose asset has not arrived whole is not imported, nor is any
+/// record that needs it: they are reported as deferred, and a later import
+/// of the same bundle publishes them once the asset's chunks make it.
 pub fn import_records(
     workspace: &mut mneme_store::Workspace,
     authenticated: AuthenticatedBundle,
@@ -377,17 +540,36 @@ pub fn import_records(
         &authenticated.bundle.records,
         &suppressions,
     )?);
+    let local = snapshot
+        .records
+        .iter()
+        .map(|record| (record.record_id, record))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let arrivals = assets::arrivals(workspace, &authenticated.bundle, &blocked, &local)?;
+    let published = authenticated
+        .bundle
+        .assets
+        .iter()
+        .filter(|asset| arrivals.ready.contains_key(&asset.source))
+        .map(|asset| asset.digest)
+        .collect::<Vec<_>>();
+    let mut held_back = blocked;
+    held_back.extend(arrivals.deferred.iter().copied());
     let mut prepared = prepare_records(
         workspace,
         &snapshot,
         &authenticated.bundle,
         &note_map,
-        &blocked,
+        &held_back,
+        arrivals.ready,
     )?;
     let mut outcome = ImportOutcome {
         imported: Vec::new(),
         already_present: Vec::new(),
         decisions: Vec::new(),
+        deferred: arrivals.deferred.into_iter().collect(),
+        pending: arrivals.pending,
+        refused: arrivals.refused,
     };
     prepared.sort_by_key(|record| (record.scope.clone(), record.record_id));
     let mut scopes = std::collections::BTreeMap::<mneme_core::ScopeId, Vec<PreparedRecord>>::new();
@@ -407,6 +589,7 @@ pub fn import_records(
             &mut outcome,
         )?;
     }
+    assets::finish_transfers(workspace.root(), &authenticated.bundle.key_id, &published)?;
     outcome.imported.sort();
     outcome.imported.dedup();
     outcome.already_present.sort();
@@ -501,11 +684,16 @@ fn commit_record_batch(
     records: Vec<mneme_store::RecordDraft>,
     source_blobs: Vec<mneme_store::SourceBlobDraft>,
 ) -> Result<(), Error> {
+    let ids = records
+        .iter()
+        .map(|record| record.record_id)
+        .collect::<Vec<_>>();
     let key = import_key(
         "records",
         options.issuer,
         options.bundle_digest,
         options.scope,
+        &ids,
     );
     let batch = crate::Batch {
         actor: options.actor.to_owned(),
@@ -525,11 +713,16 @@ fn commit_decision_records(
     records: Vec<mneme_store::RecordDraft>,
 ) -> Result<(), Error> {
     let base = workspace.current_revision()?;
+    let ids = records
+        .iter()
+        .map(|record| record.record_id)
+        .collect::<Vec<_>>();
     let key = import_key(
         "decisions",
         options.issuer,
         options.bundle_digest,
         options.scope,
+        &ids,
     );
     workspace.commit(mneme_store::CommitCommand {
         base,
@@ -563,6 +756,7 @@ fn prepare_records(
     bundle: &SignedBundle,
     note_map: &NoteIdentityMap,
     blocked: &std::collections::BTreeSet<mneme_core::RecordId>,
+    mut ready: std::collections::BTreeMap<mneme_core::RecordId, Vec<u8>>,
 ) -> Result<Vec<PreparedRecord>, Error> {
     let local = snapshot
         .records
@@ -581,7 +775,7 @@ fn prepare_records(
         .try_reserve(bundle.records.len())
         .map_err(|_| Error::InputTooLarge)?;
     for record in &context.bundle.records {
-        if let Some(candidate) = prepare_record(&context, record)? {
+        if let Some(candidate) = prepare_record(&context, &mut ready, record)? {
             candidates.push(candidate);
         }
     }
@@ -590,6 +784,7 @@ fn prepare_records(
 
 fn prepare_record(
     context: &RecordPreparation<'_>,
+    ready: &mut std::collections::BTreeMap<mneme_core::RecordId, Vec<u8>>,
     record: &mneme_core::RecordEnvelope,
 ) -> Result<Option<PreparedRecord>, Error> {
     if is_note_local(
@@ -610,7 +805,7 @@ fn prepare_record(
         return Err(Error::AmbiguousNote);
     }
     let is_decision = record.kind == mneme_core::RecordKind::Decision;
-    let source = source_for_record(record, &context.bundle.sources, &context.local)?;
+    let source = source_for_record(record, &context.bundle.sources, ready, &context.local)?;
     let existing = context.local.get(&record.record_id).copied();
     let presence = match existing {
         Some(current) => existing_record_state(
@@ -689,9 +884,12 @@ fn verify_existing_payload(
     Ok(())
 }
 
+/// The bytes a source record's import must supply: from the bundle, or from
+/// an asset whose chunks made it.
 fn source_for_record(
     record: &mneme_core::RecordEnvelope,
     sources: &[SourceItem],
+    ready: &mut std::collections::BTreeMap<mneme_core::RecordId, Vec<u8>>,
     local: &std::collections::BTreeMap<mneme_core::RecordId, &mneme_core::RecordEnvelope>,
 ) -> Result<Option<(mneme_core::ContentDigest, Vec<u8>, mneme_core::Symbol)>, Error> {
     if record.kind != mneme_core::RecordKind::SourceRevision {
@@ -706,6 +904,13 @@ fn source_for_record(
         if existing.digest() == Some(retained.digest()) {
             return Ok(None);
         }
+    }
+    if let Some(bytes) = ready.remove(&record.record_id) {
+        return Ok(Some((
+            retained.digest(),
+            bytes,
+            retained.media_type().clone(),
+        )));
     }
     let Some(item) = sources.iter().find(|item| item.digest == retained.digest()) else {
         return Err(Error::MalformedBundle);
@@ -1219,9 +1424,12 @@ fn note_reference(
     })
 }
 
+/// The bytes of every retained source in `records` no longer than
+/// `inline_limit`; longer ones travel as assets.
 fn source_items(
     workspace: &mneme_store::Workspace,
     records: &[mneme_core::RecordEnvelope],
+    inline_limit: u64,
 ) -> Result<Vec<SourceItem>, Error> {
     let mut items = Vec::with_capacity(records.len());
     for record in records
@@ -1232,10 +1440,10 @@ fn source_items(
         let mneme_core::SourceContent::Retained(retained) = source.content else {
             continue;
         };
-        let length = usize::try_from(retained.byte_length()).map_err(|_| Error::InputTooLarge)?;
-        if length > MAX_EXCHANGE_SOURCE_BYTES {
-            return Err(Error::InputTooLarge);
+        if retained.byte_length() > inline_limit {
+            continue;
         }
+        let length = usize::try_from(retained.byte_length()).map_err(|_| Error::InputTooLarge)?;
         let bytes = mneme_store::payload::read(workspace.root(), retained.digest())?;
         if bytes.len() != length {
             return Err(Error::MalformedBundle);
@@ -1471,11 +1679,15 @@ fn has_issuer(record: &mneme_core::RecordEnvelope, issuer: &str) -> bool {
         == Some(issuer)
 }
 
+/// The idempotency key of one import commit. It names the records the commit
+/// holds, so a bundle whose assets arrive later is imported in parts, each
+/// under its own key.
 fn import_key(
     kind: &str,
     issuer: &str,
     bundle_digest: mneme_core::ContentDigest,
     scope: &mneme_core::ScopeId,
+    records: &[mneme_core::RecordId],
 ) -> String {
     let fingerprint = mneme_core::ContentDigest::of_payload(&mneme_core::Value::record_named(
         "exchange-import-key",
@@ -1484,6 +1696,7 @@ fn import_key(
             mneme_core::Value::string(issuer),
             bundle_digest.to_value(),
             scope.to_value(),
+            mneme_core::Value::set(records.iter().map(|record| record.to_value())),
         ],
     ));
     format!("exchange-{kind}-{}", fingerprint.to_hex())
@@ -1518,28 +1731,56 @@ fn hex(bytes: &[u8]) -> String {
 
 impl SignedBundle {
     fn signed_value(&self) -> mneme_core::Value {
-        mneme_core::Value::record_named(
-            SIGNED_LABEL,
-            vec![
-                mneme_core::Value::symbol(ENCODING_PROFILE),
-                mneme_core::Value::symbol(SIGNATURE_PROFILE),
-                mneme_core::Value::string(self.issuer.clone()),
-                mneme_core::Value::string(self.key_id.clone()),
-                mneme_core::Value::set(
-                    self.records
-                        .iter()
-                        .map(mneme_core::RecordEnvelope::to_value),
-                ),
-                mneme_core::Value::set(self.sources.iter().map(source_value)),
-                mneme_core::Value::set(self.notes.iter().map(note_value)),
-                mneme_core::Value::set(self.barriers.iter().map(barrier_value)),
-            ],
-        )
+        let mut fields = vec![
+            mneme_core::Value::symbol(ENCODING_PROFILE),
+            mneme_core::Value::symbol(SIGNATURE_PROFILE),
+            mneme_core::Value::string(self.issuer.clone()),
+            mneme_core::Value::string(self.key_id.clone()),
+            mneme_core::Value::set(
+                self.records
+                    .iter()
+                    .map(mneme_core::RecordEnvelope::to_value),
+            ),
+            mneme_core::Value::set(self.sources.iter().map(source_value)),
+            mneme_core::Value::set(self.notes.iter().map(note_value)),
+            mneme_core::Value::set(self.barriers.iter().map(barrier_value)),
+        ];
+        let label = match self.version {
+            Version::One => SIGNED_LABEL,
+            Version::Two => {
+                fields.push(mneme_core::Value::set(
+                    self.assets.iter().map(assets::asset_value),
+                ));
+                SIGNED_LABEL_V2
+            }
+        };
+        mneme_core::Value::record_named(label, fields)
+    }
+
+    /// The bytes the signature covers, separated by version.
+    fn signing_message(&self) -> Vec<u8> {
+        let domain = match self.version {
+            Version::One => SIGNATURE_DOMAIN,
+            Version::Two => SIGNATURE_DOMAIN_V2,
+        };
+        let encoded = mneme_core::encode(&self.signed_value());
+        let mut message = Vec::with_capacity(domain.len().saturating_add(encoded.len()));
+        message.extend_from_slice(domain);
+        message.extend_from_slice(&encoded);
+        message
+    }
+
+    fn sign(&mut self, key: &ed25519_dalek::SigningKey) {
+        self.signature = key.sign(&self.signing_message()).to_bytes();
     }
 
     fn to_json_document(&self) -> Result<String, Error> {
+        let label = match self.version {
+            Version::One => BUNDLE_LABEL,
+            Version::Two => BUNDLE_LABEL_V2,
+        };
         let document = mneme_core::Value::record_named(
-            BUNDLE_LABEL,
+            label,
             vec![
                 self.signed_value(),
                 mneme_core::Value::bytes(self.signature.to_vec()),
@@ -1553,8 +1794,17 @@ impl SignedBundle {
     }
 
     fn from_value(value: mneme_core::Value) -> Result<Self, Error> {
-        let outer = record_fields(&value, BUNDLE_LABEL, 2)?;
-        let signed = record_fields(&outer[0], SIGNED_LABEL, 8)?;
+        let version = bundle_version(&value)?;
+        let (outer, signed) = match version {
+            Version::One => {
+                let outer = record_fields(&value, BUNDLE_LABEL, 2)?;
+                (outer, record_fields(&outer[0], SIGNED_LABEL, 8)?)
+            }
+            Version::Two => {
+                let outer = record_fields(&value, BUNDLE_LABEL_V2, 2)?;
+                (outer, record_fields(&outer[0], SIGNED_LABEL_V2, 9)?)
+            }
+        };
         if read_symbol(&signed[0])? != ENCODING_PROFILE
             || read_symbol(&signed[1])? != SIGNATURE_PROFILE
         {
@@ -1567,19 +1817,44 @@ impl SignedBundle {
         let sources = read_source_set(&signed[5])?;
         let notes = read_note_set(&signed[6])?;
         let barriers = read_barrier_set(&signed[7])?;
+        let assets = match signed.get(8) {
+            Some(value) => assets::read_asset_set(value)?,
+            None => Vec::new(),
+        };
         let signature_bytes = signed_bytes(&outer[1])?;
         let signature: [u8; 64] = signature_bytes
             .try_into()
             .map_err(|_| Error::MalformedBundle)?;
         Ok(SignedBundle {
+            version,
             issuer,
             key_id,
             records,
             sources,
             notes,
             barriers,
+            assets,
             signature,
         })
+    }
+}
+
+/// The version a bundle document declares. A later version of this exchange
+/// is refused as unsupported, and anything else as malformed.
+fn bundle_version(value: &mneme_core::Value) -> Result<Version, Error> {
+    let label = value
+        .as_record()
+        .and_then(|record| record.label().as_symbol())
+        .map(mneme_core::Symbol::as_str)
+        .ok_or(Error::MalformedBundle)?;
+    if label == BUNDLE_LABEL {
+        Ok(Version::One)
+    } else if label == BUNDLE_LABEL_V2 {
+        Ok(Version::Two)
+    } else if label.starts_with(BUNDLE_LABEL_FAMILY) {
+        Err(Error::UnsupportedProfile)
+    } else {
+        Err(Error::MalformedBundle)
     }
 }
 

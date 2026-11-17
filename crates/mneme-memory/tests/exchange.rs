@@ -73,7 +73,8 @@ fn signed_import_is_trusted_reviewable_and_idempotent() {
     let secret = [0x91; 32];
     let document =
         mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
-            .expect("signed export");
+            .expect("signed export")
+            .bundle;
     let policy = trusted_policy("device-a", &secret);
     let authenticated = mneme_memory::exchange::authenticate_json(document.as_bytes(), &policy)
         .expect("trusted signature");
@@ -231,7 +232,8 @@ fn a_corrected_transcript_stays_out_of_export_and_the_rest_imports() {
     let secret = [0x93; 32];
     let document =
         mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
-            .expect("signed export");
+            .expect("signed export")
+            .bundle;
     let authenticated = mneme_memory::exchange::authenticate_json(
         document.as_bytes(),
         &trusted_policy("device-a", &secret),
@@ -255,7 +257,8 @@ fn exchange_authentication_rejects_untrusted_and_tampered_signers() {
     let secret = [0xa2; 32];
     let document =
         mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
-            .expect("signed export");
+            .expect("signed export")
+            .bundle;
     let untrusted =
         mneme_memory::exchange::Policy::new(std::iter::empty()).expect("empty local trust policy");
     assert!(matches!(
@@ -278,7 +281,8 @@ fn a_bundle_in_a_scope_the_peer_is_not_trusted_for_is_refused_by_name() {
     let secret = [0xb3; 32];
     let document =
         mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
-            .expect("signed export");
+            .expect("signed export")
+            .bundle;
     let policy = trusted_for(
         "device-a",
         &secret,
@@ -302,7 +306,8 @@ fn records_in_unshared_scopes_stay_on_the_device() {
     let only_oak = std::collections::BTreeSet::from([other_scope()]);
     let document =
         mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &only_oak)
-            .expect("signed export of another scope");
+            .expect("signed export of another scope")
+            .bundle;
     // A record of the unshared cedar scope in the bundle would be refused by
     // a peer trusted only for oak.
     let authenticated = mneme_memory::exchange::authenticate_json(
@@ -406,7 +411,8 @@ fn signed_import_turns_open_comment_into_proposed() {
     let secret = [0x91; 32];
     let bundle_json =
         mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared())
-            .expect("signed export");
+            .expect("signed export")
+            .bundle;
     let policy = trusted_policy("device-a", &secret);
     let authenticated = mneme_memory::exchange::authenticate_json(bundle_json.as_bytes(), &policy)
         .expect("trusted signature");

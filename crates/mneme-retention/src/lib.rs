@@ -508,7 +508,8 @@ impl<'w> Engine<'w> {
             // The store owns inspection for these kinds; the caller's claimed
             // state is not trusted, so a location is verified only after it was
             // actually searched.
-            "staging" | "temporary-exports" | "sqlite-payloads" | "publication-intent" => {
+            "staging" | "asset-transfers" | "temporary-exports" | "sqlite-payloads"
+            | "publication-intent" => {
                 self.workspace.verify_retention_location(
                     operation_id,
                     &location.location_id,
@@ -1798,6 +1799,7 @@ fn add_inventory_locations(
 ) -> Result<()> {
     for (kind, label) in [
         ("staging", "workspace-staging"),
+        ("asset-transfers", "workspace-asset-transfers"),
         ("temporary-exports", "workspace-temporary-exports"),
         ("sqlite-payloads", "workspace-sqlite-payloads"),
     ] {

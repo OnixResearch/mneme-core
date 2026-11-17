@@ -198,7 +198,8 @@ fn forgotten_barrier_blocks_a_delayed_bundle_when_target_is_absent() {
         &secret,
         &std::collections::BTreeSet::from([scope()]),
     )
-    .expect("pre-forget bundle");
+    .expect("pre-forget bundle")
+    .bundle;
     forget_source(&mut origin);
     let current_document = mneme_memory::exchange::export_workspace(
         &origin,
@@ -206,7 +207,8 @@ fn forgotten_barrier_blocks_a_delayed_bundle_when_target_is_absent() {
         &secret,
         &std::collections::BTreeSet::from([scope()]),
     )
-    .expect("bundle with forget barrier");
+    .expect("bundle with forget barrier")
+    .bundle;
 
     let current_policy = policy(&secret);
     let current = authenticate(&current_document, &current_policy);

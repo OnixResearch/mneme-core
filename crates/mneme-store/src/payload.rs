@@ -25,6 +25,10 @@ pub const STAGING_DIRECTORY: &str = "staging";
 pub const WORKING_DIRECTORY: &str = "working";
 /// Store-owned directory holding one ownership lock file per logical job.
 pub const JOB_DIRECTORY: &str = "jobs";
+/// Chunks of large sources still arriving from another device. They sit
+/// beside the blob store and never in it, so no part of an asset is a
+/// canonical source before the whole of it is verified and committed.
+pub const TRANSFER_DIRECTORY: &str = "transfers";
 /// Workspace-root file naming a working tree other than `working/`: `..` for
 /// the directory containing the workspace root, or the absolute path of a
 /// folder elsewhere.
@@ -230,6 +234,110 @@ pub fn blob_path(root: &std::path::Path, digest: mneme_core::ContentDigest) -> s
         .join(digest.algorithm().symbol())
         .join(&hex[0..2])
         .join(hex)
+}
+
+/// The directory of one pending transfer, kept under the key id of the device
+/// that signed it. An owner is a key id, never a device's chosen name, so it
+/// is always one path component.
+pub fn transfer_path(
+    root: &std::path::Path,
+    owner: &str,
+    digest: mneme_core::ContentDigest,
+) -> crate::error::Result<std::path::PathBuf> {
+    if parse_hex_32(owner).is_none() {
+        return Err(crate::error::Failure::InvalidCommand(
+            "a transfer owner is a 64-digit key id".to_owned(),
+        ));
+    }
+    Ok(root
+        .join(TRANSFER_DIRECTORY)
+        .join(owner)
+        .join(digest.to_hex()))
+}
+
+/// Read `length` bytes of a stored blob from `offset`, without the rest of it.
+///
+/// The caller checks what it reads against digests it already holds: a range
+/// cannot be checked against the blob's own digest.
+#[allow(unknown_lints, usize_in_public_api)] // a bounded in-memory read length
+pub fn read_range(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    offset: u64,
+    length: usize,
+) -> crate::error::Result<Vec<u8>> {
+    let path = blob_path(root, digest);
+    let mut file = std::fs::File::open(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            crate::error::Failure::MissingBlob {
+                digest: digest.to_hex(),
+            }
+        } else {
+            crate::error::Failure::io(&path, error)
+        }
+    })?;
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(offset))
+        .map_err(|error| crate::error::Failure::io(&path, error))?;
+    let mut bytes = vec![0; length];
+    std::io::Read::read_exact(&mut file, &mut bytes).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            crate::error::Failure::CorruptBlob {
+                digest: digest.to_hex(),
+                reason: "stored bytes end before the requested range".to_owned(),
+            }
+        } else {
+            crate::error::Failure::io(&path, error)
+        }
+    })?;
+    Ok(bytes)
+}
+
+/// Remove every pending transfer of a targeted digest, whichever device sent
+/// it, and return how many were removed.
+#[allow(unknown_lints, usize_in_public_api)] // local directory-entry count
+pub fn purge_targeted_transfers(
+    root: &std::path::Path,
+    targets: &std::collections::BTreeSet<[u8; 32]>,
+) -> crate::error::Result<usize> {
+    let max_owners = 100_000_usize;
+    let transfers = root.join(TRANSFER_DIRECTORY);
+    if !transfers.is_dir() {
+        return Ok(0);
+    }
+    let mut removed = 0_usize;
+    for (index, owner) in std::fs::read_dir(&transfers)
+        .map_err(|error| crate::error::Failure::io(&transfers, error))?
+        .enumerate()
+    {
+        if index >= max_owners {
+            return Err(crate::error::Failure::io(
+                &transfers,
+                std::io::Error::other("transfer inspection exceeds its owner bound"),
+            ));
+        }
+        let owner = owner.map_err(|error| crate::error::Failure::io(&transfers, error))?;
+        let is_directory = owner
+            .file_type()
+            .map_err(|error| crate::error::Failure::io(owner.path(), error))?
+            .is_dir();
+        if !is_directory {
+            continue;
+        }
+        for target in targets {
+            let path = owner.path().join(hex_32(target));
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => removed = removed.saturating_add(1),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(crate::error::Failure::io(&path, error)),
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// Lowercase hexadecimal of a 32-byte digest.
+fn hex_32(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Stage exact bytes into the immutable blob store.
