@@ -344,6 +344,88 @@ fn beliefs(harness: &mut Harness) -> Vec<mneme_memory::AssertionView> {
         .expect("beliefs")
 }
 
+fn text_options(bytes: &[u8]) -> mneme_memory::SourceOptions<'_> {
+    mneme_memory::SourceOptions {
+        bytes,
+        media_type: "text/plain; charset=utf-8",
+        entity: None,
+        path_hint: None,
+    }
+}
+
+#[test]
+fn forgetting_an_original_forgets_a_transcript_corrected_since() {
+    let mut harness = Harness::new(Box::new(mneme_store::NoFaults));
+    let original = mneme_core::SourcePin::new(rid(0x60), rev(0x61));
+    let transcript = mneme_core::SourcePin::new(rid(0x62), rev(0x63));
+    let time_base = mneme_core::TimeBase::new(1, 100).expect("time base");
+    let (audio, audio_blob) = mneme_memory::build_captured_source(
+        original.source(),
+        original.revision(),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"recorded audio",
+            media_type: "audio/wav",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_core::MediaExtent::Audio {
+            duration_ticks: 100,
+            time_base,
+            channels: 1,
+        },
+    )
+    .expect("captured audio");
+    let (text, text_blob) = mneme_memory::build_recognized_source(
+        transcript.source(),
+        transcript.revision(),
+        &scope(),
+        text_options(b"hello world"),
+        original,
+    )
+    .expect("recognized text");
+    harness.commit(
+        "recognized",
+        vec![audio, text],
+        vec![audio_blob, text_blob],
+        None,
+    );
+    let correction = mneme_core::CorrectionProvenance::new(
+        "human-reviewer",
+        "inserted a word",
+        mneme_core::AlignmentDisposition::Updated,
+    )
+    .expect("correction");
+    let (corrected, corrected_blob) = mneme_memory::build_corrected_source(
+        transcript,
+        rev(0x64),
+        &scope(),
+        text_options(b"well hello world"),
+        &correction,
+    )
+    .expect("corrected text");
+    harness.commit("corrected", vec![corrected], vec![corrected_blob], None);
+    let request = harness.request(
+        mneme_retention::OperationKind::Forget,
+        mneme_retention::Selector::Source(original.source()),
+        "forget-original",
+        scope(),
+    );
+    let plan = mneme_retention::Engine::new(&mut harness.workspace)
+        .plan(request)
+        .expect("plan");
+    // The corrected revision derives from the transcript's own earlier
+    // revision, which derives from the original.
+    assert!(
+        plan.suppressed.iter().any(|suppression| {
+            suppression.target == transcript.source()
+                && suppression.kind == mneme_core::RecordKind::SourceRevision
+        }),
+        "the corrected transcript must be forgotten with its original: {:?}",
+        plan.suppressed
+    );
+}
+
 #[test]
 fn pruning_keeps_a_permitted_assertion_and_reports_pruned_bytes() {
     let mut harness = Harness::new(Box::new(mneme_store::NoFaults));

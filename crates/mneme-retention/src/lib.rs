@@ -2165,13 +2165,34 @@ fn add_derived_source(
     deps: &mut Dependencies,
 ) -> Result<bool> {
     let source = context.view.source(record.record_id)?;
-    let is_dependent = source
-        .derived_from
-        .is_some_and(|parent| closure.contains(&parent.source()));
+    let is_dependent = foreign_parent(context, record.record_id, source)?
+        .is_some_and(|parent| closure.contains(&parent));
     if is_dependent {
         deps.derived_sources.insert(record.record_id);
     }
     Ok(is_dependent)
+}
+
+/// The first parent of `source` outside its own record. A correction derives
+/// from an earlier revision of the same record, so its chain is followed back
+/// to the revision that derived from another source.
+fn foreign_parent(
+    context: &PlanContext<'_>,
+    record: mneme_core::RecordId,
+    mut source: mneme_memory::SourceView,
+) -> Result<Option<mneme_core::RecordId>> {
+    for _ in 0..MAX_SOURCE_REVISIONS {
+        match source.derived_from {
+            Some(parent) if parent.source() == record => {
+                source = context.view.source_at(parent.source(), parent.revision())?;
+            }
+            Some(parent) => return Ok(Some(parent.source())),
+            None => return Ok(None),
+        }
+    }
+    Err(PolicyError::Policy(
+        "a source's own revision chain exceeds its bound",
+    ))
 }
 
 fn add_recognition_run(
