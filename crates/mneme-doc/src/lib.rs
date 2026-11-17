@@ -750,6 +750,13 @@ impl DocumentReads {
         self.context.view.snapshot()
     }
 
+    /// The memory view the session reads, for reads beside the documents at
+    /// the same revision, such as the recognized text of media a note
+    /// references.
+    pub fn view(&self) -> &mneme_memory::View {
+        &self.context.view
+    }
+
     /// Read the exact source bytes of one current document.
     pub fn source_bytes(&self, document_id: mneme_core::RecordId) -> Result<Vec<u8>> {
         let document = self
