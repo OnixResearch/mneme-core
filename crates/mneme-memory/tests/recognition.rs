@@ -659,41 +659,53 @@ fn audio_location(start_tick: u64, end_tick: u64) -> mneme_core::MediaLocation {
     }
 }
 
-/// Recognize the fixture's capture again: a new text record with at most one
-/// segment, published by a run covering `covers`. Identities derive from
-/// `byte`.
-fn rerecognize(
-    workspace: &mut mneme_store::Workspace,
-    fixture: &Fixture,
-    (byte, text): (u8, &str),
+/// One recognition run to commit over a capture.
+struct Run<'a> {
+    /// Identities derive from this byte.
+    byte: u8,
+    text: &'a str,
     segment: Option<mneme_core::MediaLocation>,
     covers: mneme_core::CapturePart,
+    status: mneme_core::RecognitionStatus,
+    /// Write the `covers` field; without it the run covers its whole capture.
+    has_covers_field: bool,
+}
+
+/// Commit a new text record recognized from `capture`, with at most one
+/// segment.
+fn recognize_run(
+    workspace: &mut mneme_store::Workspace,
+    (capture, capture_digest): (mneme_core::SourcePin, mneme_core::ContentDigest),
+    run: &Run<'_>,
 ) -> mneme_memory::Result<mneme_core::SourcePin> {
-    let output = mneme_core::SourcePin::new(common::rid(byte), common::rev(byte));
-    let run_id = common::rid(byte.wrapping_add(1));
-    let segment_id = common::rid(byte.wrapping_add(2));
+    let output = mneme_core::SourcePin::new(common::rid(run.byte), common::rev(run.byte));
+    let run_id = common::rid(run.byte.wrapping_add(1));
+    let segment_id = common::rid(run.byte.wrapping_add(2));
     let (text_record, text_blob) = mneme_memory::build_recognized_source(
         output.source(),
         output.revision(),
         &common::scope(),
         mneme_memory::SourceOptions {
-            bytes: text.as_bytes(),
+            bytes: run.text.as_bytes(),
             media_type: "text/plain; charset=utf-8",
             entity: None,
             path_hint: None,
         },
-        fixture.input,
+        capture,
     )?;
-    let segments = segment.as_ref().map_or(Vec::new(), |_| vec![segment_id]);
-    let run = mneme_memory::build_recognition_run(
+    let segments = run
+        .segment
+        .as_ref()
+        .map_or(Vec::new(), |_| vec![segment_id]);
+    let mut run_record = mneme_memory::build_recognition_run(
         run_id,
-        common::rev(byte.wrapping_add(1)),
+        common::rev(run.byte.wrapping_add(1)),
         &common::scope(),
         mneme_memory::RecognitionRunOptions {
-            input: fixture.input,
-            input_digest: fixture.input_digest,
+            input: capture,
+            input_digest: capture_digest,
             output,
-            output_digest: mneme_core::ContentDigest::of_source_bytes(text.as_bytes()),
+            output_digest: mneme_core::ContentDigest::of_source_bytes(run.text.as_bytes()),
             model: "test-model@sha256:01",
             runtime: "test-runtime@sha256:02",
             adapter: "test-adapter@sha256:03",
@@ -701,34 +713,60 @@ fn rerecognize(
             configuration: "test-config@sha256:05",
             segments: &segments,
             coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
-            status: mneme_core::RecognitionStatus::Complete,
+            status: run.status,
             scores: &[],
             alternatives: &[],
-            covers,
+            covers: run.covers,
         },
     )?;
-    let mut records = vec![text_record, run];
-    if let Some(location) = &segment {
+    if !run.has_covers_field {
+        run_record.payload.remove("covers");
+    }
+    let mut records = vec![text_record, run_record];
+    if let Some(location) = &run.segment {
         records.push(mneme_memory::build_recognition_segment(
             segment_id,
-            common::rev(byte.wrapping_add(2)),
+            common::rev(run.byte.wrapping_add(2)),
             &common::scope(),
             mneme_memory::RecognitionSegmentOptions {
                 run: Some(run_id),
                 text_source: output,
                 span: mneme_core::SourceSpan::new(0, 0).expect("text span"),
-                media_source: fixture.input,
-                media_digest: fixture.input_digest,
+                media_source: capture,
+                media_digest: capture_digest,
                 location,
             },
         )?);
     }
     mneme_memory::Engine::new(workspace, mneme_memory::Access::Operator).commit(common::batch(
-        &format!("rerecognize-{byte}"),
+        &format!("rerecognize-{}", run.byte),
         records,
         vec![text_blob],
     ))?;
     Ok(output)
+}
+
+/// Recognize the fixture's audio capture again as a complete run covering
+/// `covers`.
+fn rerecognize(
+    workspace: &mut mneme_store::Workspace,
+    fixture: &Fixture,
+    (byte, text): (u8, &str),
+    segment: Option<mneme_core::MediaLocation>,
+    covers: mneme_core::CapturePart,
+) -> mneme_memory::Result<mneme_core::SourcePin> {
+    recognize_run(
+        workspace,
+        (fixture.input, fixture.input_digest),
+        &Run {
+            byte,
+            text,
+            segment,
+            covers,
+            status: mneme_core::RecognitionStatus::Complete,
+            has_covers_field: true,
+        },
+    )
 }
 
 /// Correct `text` as a new revision. With a segment the alignment is
@@ -987,4 +1025,263 @@ fn a_run_must_cover_a_part_of_its_input_that_holds_its_segments() {
     let selection = capture_selection(&mut workspace, &fixture);
     assert_eq!(pins(&selection.selected), vec![fixture.output]);
     assert!(selection.alternatives.is_empty());
+}
+
+#[test]
+fn a_partial_reprocess_leaves_the_rest_of_the_capture_its_text() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let first_half = mneme_core::CapturePart::Audio {
+        start_tick: 0,
+        end_tick: 50,
+    };
+    let early = rerecognize(
+        &mut workspace,
+        &fixture,
+        (0xc0, "early"),
+        Some(audio_location(20, 40)),
+        first_half,
+    )
+    .expect("first half");
+    // Nothing newer covers ticks 50 to 100, so the whole transcript stays.
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(
+        pins(&selection.selected)
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([fixture.output, early])
+    );
+    assert!(selection.alternatives.is_empty());
+}
+
+#[test]
+fn choosing_a_reprocessed_half_keeps_the_corrected_whole() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let corrected = correct(
+        &mut workspace,
+        &fixture,
+        (fixture.output, 0xb5),
+        "hello, world",
+        Some(0xa5),
+    );
+    let first_half = mneme_core::CapturePart::Audio {
+        start_tick: 0,
+        end_tick: 50,
+    };
+    let second_half = mneme_core::CapturePart::Audio {
+        start_tick: 50,
+        end_tick: 100,
+    };
+    let early = rerecognize(
+        &mut workspace,
+        &fixture,
+        (0xc0, "early"),
+        Some(audio_location(20, 40)),
+        first_half,
+    )
+    .expect("first half");
+    let late = rerecognize(
+        &mut workspace,
+        &fixture,
+        (0xd0, "late"),
+        Some(audio_location(60, 80)),
+        second_half,
+    )
+    .expect("second half");
+    let chosen = correct(&mut workspace, &fixture, (late, 0xd8), "late", None);
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(
+        pins(&selection.selected)
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([corrected, chosen])
+    );
+    assert_eq!(pins(&selection.alternatives), vec![early]);
+}
+
+#[test]
+fn an_incomplete_newer_run_never_displaces_a_complete_text() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let cancelled = recognize_run(
+        &mut workspace,
+        (fixture.input, fixture.input_digest),
+        &Run {
+            byte: 0xc0,
+            text: "hel",
+            segment: None,
+            covers: mneme_core::CapturePart::Whole,
+            status: mneme_core::RecognitionStatus::Cancelled,
+            has_covers_field: true,
+        },
+    )
+    .expect("cancelled run");
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![fixture.output]);
+    assert_eq!(pins(&selection.alternatives), vec![cancelled]);
+}
+
+#[test]
+fn a_run_without_a_declared_part_covers_its_whole_capture() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let undeclared = recognize_run(
+        &mut workspace,
+        (fixture.input, fixture.input_digest),
+        &Run {
+            byte: 0xc0,
+            text: "hello there",
+            segment: None,
+            covers: mneme_core::CapturePart::Audio {
+                start_tick: 0,
+                end_tick: 10,
+            },
+            status: mneme_core::RecognitionStatus::Complete,
+            has_covers_field: false,
+        },
+    )
+    .expect("run without covers");
+    let view = mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .view()
+        .expect("view");
+    assert_eq!(
+        view.recognition_run(common::rid(0xc1)).expect("run").covers,
+        mneme_core::CapturePart::Whole
+    );
+    // As a whole-capture text, the newer run replaces the original.
+    let selection = view.capture_texts(fixture.input, &common::scope());
+    assert_eq!(pins(&selection.selected), vec![undeclared]);
+    assert_eq!(pins(&selection.alternatives), vec![fixture.output]);
+}
+
+#[test]
+fn page_parts_are_selected_page_by_page() {
+    let (_temp, mut workspace) = common::setup();
+    let bytes = b"two page scan";
+    let capture = mneme_core::SourcePin::new(common::rid(0x61), common::rev(0x61));
+    let (record, blob) = paged_image_source(
+        capture,
+        (bytes, 2),
+        mneme_core::CoordinateFrame::Normalized,
+        None,
+    );
+    mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .commit(common::batch("scan", vec![record], vec![blob]))
+        .expect("scan");
+    let digest = mneme_core::ContentDigest::of_source_bytes(bytes);
+    let region = |page: u32| mneme_core::MediaLocation::PageRegion {
+        page,
+        frame: mneme_core::CoordinateFrame::Normalized,
+        x: 0.1,
+        y: 0.1,
+        width: 0.5,
+        height: 0.1,
+    };
+    let page_run = |byte: u8, page: u32| Run {
+        byte,
+        text: "page words",
+        segment: Some(region(page)),
+        covers: mneme_core::CapturePart::Page(page),
+        status: mneme_core::RecognitionStatus::Complete,
+        has_covers_field: true,
+    };
+    let first =
+        recognize_run(&mut workspace, (capture, digest), &page_run(0xc0, 0)).expect("page 0");
+    let second =
+        recognize_run(&mut workspace, (capture, digest), &page_run(0xc4, 1)).expect("page 1");
+    let again =
+        recognize_run(&mut workspace, (capture, digest), &page_run(0xc8, 0)).expect("page 0 again");
+    let selection = mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .view()
+        .expect("view")
+        .capture_texts(capture, &common::scope());
+    assert_eq!(pins(&selection.selected), vec![again, second]);
+    assert_eq!(pins(&selection.alternatives), vec![first]);
+    // A segment outside its run's page is refused.
+    let misplaced = Run {
+        segment: Some(region(1)),
+        ..page_run(0xcc, 0)
+    };
+    assert!(recognize_run(&mut workspace, (capture, digest), &misplaced).is_err());
+}
+
+#[test]
+fn a_text_two_runs_name_is_selected_once() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let text = mneme_core::SourcePin::new(common::rid(0xc0), common::rev(0xc0));
+    let (text_record, text_blob) = mneme_memory::build_recognized_source(
+        text.source(),
+        text.revision(),
+        &common::scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"hello again",
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        fixture.input,
+    )
+    .expect("text");
+    let first_half = mneme_core::CapturePart::Audio {
+        start_tick: 0,
+        end_tick: 50,
+    };
+    let run = |byte: u8, covers: mneme_core::CapturePart| {
+        mneme_memory::build_recognition_run(
+            common::rid(byte),
+            common::rev(byte),
+            &common::scope(),
+            mneme_memory::RecognitionRunOptions {
+                input: fixture.input,
+                input_digest: fixture.input_digest,
+                output: text,
+                output_digest: mneme_core::ContentDigest::of_source_bytes(b"hello again"),
+                model: "test-model@sha256:01",
+                runtime: "test-runtime@sha256:02",
+                adapter: "test-adapter@sha256:03",
+                preprocessing: "test-preprocess@sha256:04",
+                configuration: "test-config@sha256:05",
+                segments: &[],
+                coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
+                status: mneme_core::RecognitionStatus::Complete,
+                scores: &[],
+                alternatives: &[],
+                covers,
+            },
+        )
+        .expect("run")
+    };
+    mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .commit(common::batch(
+            "two-runs",
+            vec![
+                text_record,
+                run(0xc1, first_half),
+                run(0xc2, mneme_core::CapturePart::Whole),
+            ],
+            vec![text_blob],
+        ))
+        .expect("two runs naming one text");
+    let view = mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .view()
+        .expect("view");
+    // The text appears once, with the part of the run with the lower id,
+    // so the original whole transcript still covers the rest of the capture.
+    let selection = view.capture_texts(fixture.input, &common::scope());
+    assert_eq!(
+        pins(&selection.selected)
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([fixture.output, text])
+    );
+    let shown = selection
+        .selected
+        .iter()
+        .find(|selected| selected.pin == text)
+        .expect("text");
+    assert_eq!(shown.run.covers, first_half);
+    assert!(selection.alternatives.is_empty());
+    assert!(view.unselected_recognized_texts().is_empty());
 }

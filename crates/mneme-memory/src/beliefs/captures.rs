@@ -1,13 +1,25 @@
-//! The recognized texts of a capture, and the one presented for each part.
+//! The recognized texts of a capture, and which of them are presented.
 //!
 //! A capture may be recognized more than once: reprocessing publishes another
-//! run with its own text, and a person may correct any text. For each part of
-//! the capture one text is selected: a corrected text before machine output,
-//! then the most recently committed. The rest are alternatives. They stay in
-//! history and can be compared and chosen, but they are not presented or
-//! searched as the capture's text. Choosing an alternative is a correction of
-//! it, which makes it the most recent corrected text, so a background result can
-//! never displace text a person corrected.
+//! run with its own text, and a person may correct any text. Texts are taken
+//! in order of preference:
+//!
+//! 1. a text whose bytes are retained, before a pruned or erased one;
+//! 2. a corrected text, before machine output;
+//! 3. a complete run's text, before a partial, failed or cancelled one;
+//! 4. the most recently committed.
+//!
+//! A text is selected unless the more preferred texts already selected cover
+//! all of the part of the capture it covers. Otherwise it is an alternative:
+//! kept in history and offered for comparison and choice, but not presented or
+//! searched as the capture's text. A reprocessed part therefore replaces older
+//! machine output of that part only, a part nothing newer covers keeps its
+//! text, and a background result never displaces retained text a person
+//! corrected. Choosing an alternative is a correction of it, which makes it the
+//! most recent corrected text.
+
+/// Processed derivatives between a segment's media and its capture, at most.
+const MAX_TRANSFORM_STEPS: usize = 64;
 
 /// One recognized text of a capture, at its current revision.
 #[derive(Clone, Debug, PartialEq)]
@@ -16,10 +28,12 @@ pub struct Text {
     pub pin: mneme_core::SourcePin,
     /// A person corrected the text: its current revision is a correction.
     pub is_corrected: bool,
+    /// The current revision's bytes are retained.
+    pub is_available: bool,
     /// The run whose output was the text's first revision.
     pub run: crate::model::RecognitionRunView,
-    /// Segments aligned to the current revision. A correction that
-    /// invalidated alignment has none.
+    /// Segments aligned to the current revision, when they were read. A
+    /// correction that invalidated alignment has none.
     pub segments: Vec<crate::model::RecognitionSegmentView>,
     /// The current revision is a correction that declared its alignment
     /// invalidated.
@@ -28,13 +42,14 @@ pub struct Text {
     pub revision_order: u64,
 }
 
-/// A capture's recognized texts: the one selected for each part, and the rest.
+/// A capture's recognized texts: those presented, and the rest.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Selection {
     pub capture: mneme_core::SourcePin,
-    /// At most one text for any part of the capture, in capture order.
+    /// Texts presented for the capture, in capture order.
     pub selected: Vec<Text>,
-    /// Texts sharing a part with a selected text, most preferred first.
+    /// Texts whose whole part is covered by selected texts, most preferred
+    /// first.
     pub alternatives: Vec<Text>,
 }
 
@@ -47,9 +62,6 @@ impl Selection {
         }
     }
 }
-
-/// Processed derivatives between a segment's media and its capture, at most.
-const MAX_TRANSFORM_STEPS: usize = 64;
 
 impl super::View {
     /// Where `location`, given on `media`, lies on `capture`: each processed
@@ -76,49 +88,94 @@ impl super::View {
     }
 
     /// The recognized texts of `capture` that a caller working in `base` may
-    /// read, selected per part.
+    /// read, with the segments of every text.
     pub fn capture_texts(
         &self,
         capture: mneme_core::SourcePin,
         base: &mneme_core::ScopeId,
     ) -> Selection {
-        self.capture_selections(Some(base))
+        let mut selection = self
+            .text_candidates(Some(base), Some(capture))
             .remove(&capture)
-            .unwrap_or_else(|| Selection::empty(capture))
+            .map_or_else(
+                || Selection::empty(capture),
+                |texts| self.select(capture, texts),
+            );
+        self.attach_segments(std::slice::from_mut(&mut selection), true);
+        selection
     }
 
-    /// Selections for every capture with recognized text, restricted to
-    /// texts readable from `base` when one is given.
+    /// Selections for every capture with recognized text, restricted to texts
+    /// readable from `base` when one is given, with the segments of their
+    /// selected texts.
     pub fn capture_selections(
         &self,
         base: Option<&mneme_core::ScopeId>,
     ) -> std::collections::BTreeMap<mneme_core::SourcePin, Selection> {
+        let mut selections: Vec<Selection> = self
+            .text_candidates(base, None)
+            .into_iter()
+            .map(|(capture, texts)| self.select(capture, texts))
+            .collect();
+        self.attach_segments(&mut selections, false);
+        selections
+            .into_iter()
+            .map(|selection| (selection.capture, selection))
+            .collect()
+    }
+
+    /// Text records that are not selected for any capture. No segment is read.
+    pub fn unselected_recognized_texts(&self) -> std::collections::BTreeSet<mneme_core::RecordId> {
+        let selections: Vec<Selection> = self
+            .text_candidates(None, None)
+            .into_iter()
+            .map(|(capture, texts)| self.select(capture, texts))
+            .collect();
+        let selected: std::collections::BTreeSet<mneme_core::RecordId> = selections
+            .iter()
+            .flat_map(|selection| &selection.selected)
+            .map(|text| text.pin.source())
+            .collect();
+        selections
+            .iter()
+            .flat_map(|selection| &selection.alternatives)
+            .map(|text| text.pin.source())
+            .filter(|record| !selected.contains(record))
+            .collect()
+    }
+
+    /// One text per text record for each capture, claimed by the run naming it
+    /// that was committed first, the lowest record id among runs committed
+    /// together; segments are not read.
+    fn text_candidates(
+        &self,
+        base: Option<&mneme_core::ScopeId>,
+        capture: Option<mneme_core::SourcePin>,
+    ) -> std::collections::BTreeMap<mneme_core::SourcePin, Vec<Text>> {
+        let mut runs: Vec<crate::model::RecognitionRunView> = self
+            .current_runs()
+            .filter(|run| {
+                capture.is_none_or(|capture| run.input == capture)
+                    && base.is_none_or(|base| self.content_readable_in(&run.record.scope, base))
+            })
+            .collect();
+        runs.sort_by_key(|run| {
+            (
+                run.output.source(),
+                run.record.recorded.revision_order(),
+                run.record.record_id,
+            )
+        });
+        runs.dedup_by_key(|run| run.output.source());
         let mut texts: std::collections::BTreeMap<mneme_core::SourcePin, Vec<Text>> =
             std::collections::BTreeMap::new();
-        for run in self.current_runs() {
-            let is_readable =
-                base.is_none_or(|base| self.content_readable_in(&run.record.scope, base));
-            if !is_readable {
-                continue;
-            }
+        for run in runs {
             let capture = run.input;
             if let Some(text) = self.current_text(run) {
                 texts.entry(capture).or_default().push(text);
             }
         }
         texts
-            .into_iter()
-            .map(|(capture, texts)| (capture, select(capture, texts)))
-            .collect()
-    }
-
-    /// Text records that are not selected for their part of their capture.
-    pub fn unselected_recognized_texts(&self) -> std::collections::BTreeSet<mneme_core::RecordId> {
-        self.capture_selections(None)
-            .into_values()
-            .flat_map(|selection| selection.alternatives)
-            .map(|text| text.pin.source())
-            .collect()
     }
 
     fn current_runs(&self) -> impl Iterator<Item = crate::model::RecognitionRunView> + '_ {
@@ -131,23 +188,26 @@ impl super::View {
             .filter_map(|record| crate::model::RecognitionRunView::parse(record.clone()).ok())
     }
 
-    /// The run's text at its current revision: its own output, or a later
-    /// correction of it. A later machine revision belongs to another run.
+    /// The run's text at its current revision: its machine output, a pruned
+    /// or erased revision of it, or a correction.
     fn current_text(&self, run: crate::model::RecognitionRunView) -> Option<Text> {
         let record = self.records.get(&run.output.source())?;
         if self.suppression_for(record).is_some() {
             return None;
         }
         let source = crate::model::SourceView::parse(record.clone()).ok()?;
-        let is_corrected = source.acquisition == mneme_core::Acquisition::Corrected;
-        if !is_corrected && record.revision_id != run.output.revision() {
-            return None;
-        }
-        let pin = mneme_core::SourcePin::new(record.record_id, record.revision_id);
+        let is_corrected = match source.acquisition {
+            mneme_core::Acquisition::Corrected => true,
+            mneme_core::Acquisition::MachineRecognized => false,
+            mneme_core::Acquisition::Authored
+            | mneme_core::Acquisition::Imported
+            | mneme_core::Acquisition::Captured => return None,
+        };
         Some(Text {
-            pin,
+            pin: mneme_core::SourcePin::new(record.record_id, record.revision_id),
             is_corrected,
-            segments: self.recognition_segments_for_source(pin.source(), pin.revision()),
+            is_available: source.availability == crate::model::SourceAvailability::Retained,
+            segments: Vec::new(),
             is_alignment_invalidated: source
                 .correction
                 .as_ref()
@@ -156,38 +216,171 @@ impl super::View {
             run,
         })
     }
-}
 
-/// Select the most preferred text for each part; a text sharing a part with
-/// one already selected is an alternative.
-fn select(capture: mneme_core::SourcePin, mut texts: Vec<Text>) -> Selection {
-    texts.sort_by(|left, right| {
-        right
-            .is_corrected
-            .cmp(&left.is_corrected)
-            .then(right.revision_order.cmp(&left.revision_order))
-            .then(left.pin.cmp(&right.pin))
-    });
-    let mut selection = Selection {
-        capture,
-        selected: Vec::with_capacity(texts.len()),
-        alternatives: Vec::with_capacity(texts.len()),
-    };
-    for text in texts {
-        let is_shared = selection
+    /// Select texts in order of preference: each is selected unless the texts
+    /// already selected cover its whole part.
+    fn select(&self, capture: mneme_core::SourcePin, mut texts: Vec<Text>) -> Selection {
+        texts.sort_by(|left, right| {
+            right
+                .is_available
+                .cmp(&left.is_available)
+                .then(right.is_corrected.cmp(&left.is_corrected))
+                .then(is_complete(right).cmp(&is_complete(left)))
+                .then(right.revision_order.cmp(&left.revision_order))
+                .then(left.pin.cmp(&right.pin))
+        });
+        let extent = self
+            .source_at(capture.source(), capture.revision())
+            .ok()
+            .and_then(|source| source.media_extent);
+        let mut selection = Selection {
+            capture,
+            selected: Vec::with_capacity(texts.len()),
+            alternatives: Vec::with_capacity(texts.len()),
+        };
+        let mut covered: Vec<mneme_core::CapturePart> = Vec::with_capacity(texts.len());
+        for text in texts {
+            if is_covered(text.run.covers, &covered, extent) {
+                selection.alternatives.push(text);
+            } else {
+                covered.push(text.run.covers);
+                selection.selected.push(text);
+            }
+        }
+        selection
             .selected
+            .sort_by_key(|text| (part_position(text.run.covers), text.pin));
+        selection
+    }
+
+    /// Read the segments of the selected texts, and of the alternatives when
+    /// asked, in one pass over the view.
+    fn attach_segments(&self, selections: &mut [Selection], has_alternatives: bool) {
+        let wanted: std::collections::BTreeSet<mneme_core::SourcePin> = selections
             .iter()
-            .any(|chosen| chosen.run.covers.overlaps(&text.run.covers));
-        if is_shared {
-            selection.alternatives.push(text);
-        } else {
-            selection.selected.push(text);
+            .flat_map(|selection| {
+                let alternatives: &[Text] = if has_alternatives {
+                    &selection.alternatives
+                } else {
+                    &[]
+                };
+                selection.selected.iter().chain(alternatives)
+            })
+            .map(|text| text.pin)
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        let mut segments: std::collections::BTreeMap<
+            mneme_core::SourcePin,
+            Vec<crate::model::RecognitionSegmentView>,
+        > = std::collections::BTreeMap::new();
+        for record in self.records.values() {
+            if record.kind != mneme_core::RecordKind::RecognitionSegment
+                || self.suppression_for(record).is_some()
+            {
+                continue;
+            }
+            let Ok(segment) = crate::model::RecognitionSegmentView::parse(record.clone()) else {
+                continue;
+            };
+            if wanted.contains(&segment.text_source) {
+                segments
+                    .entry(segment.text_source)
+                    .or_default()
+                    .push(segment);
+            }
+        }
+        for selection in selections {
+            for text in &mut selection.selected {
+                text.segments = segments.remove(&text.pin).unwrap_or_default();
+            }
+            if has_alternatives {
+                for text in &mut selection.alternatives {
+                    text.segments = segments.remove(&text.pin).unwrap_or_default();
+                }
+            }
         }
     }
-    selection
-        .selected
-        .sort_by_key(|text| (part_position(text.run.covers), text.pin));
-    selection
+}
+
+const fn is_complete(text: &Text) -> bool {
+    matches!(text.run.status, mneme_core::RecognitionStatus::Complete)
+}
+
+/// Whether the parts in `covered` together cover all of `part`. A whole
+/// capture is covered by a selected whole, or by pages or intervals spanning
+/// its extent.
+fn is_covered(
+    part: mneme_core::CapturePart,
+    covered: &[mneme_core::CapturePart],
+    extent: Option<mneme_core::MediaExtent>,
+) -> bool {
+    if covered
+        .iter()
+        .any(|chosen| matches!(chosen, mneme_core::CapturePart::Whole))
+    {
+        return true;
+    }
+    match part {
+        mneme_core::CapturePart::Whole => match extent {
+            Some(
+                mneme_core::MediaExtent::Pages { page_count }
+                | mneme_core::MediaExtent::InkPages { page_count },
+            ) => all_pages_covered(covered, page_count),
+            Some(mneme_core::MediaExtent::Audio { duration_ticks, .. }) => {
+                ticks_covered(covered, (0, duration_ticks))
+            }
+            None => false,
+        },
+        mneme_core::CapturePart::Page(page) => {
+            covered.contains(&mneme_core::CapturePart::Page(page))
+        }
+        mneme_core::CapturePart::Audio {
+            start_tick,
+            end_tick,
+        } => ticks_covered(covered, (start_tick, end_tick)),
+    }
+}
+
+/// Whether every page below `page_count` is covered.
+fn all_pages_covered(covered: &[mneme_core::CapturePart], page_count: u32) -> bool {
+    let pages: std::collections::BTreeSet<u32> = covered
+        .iter()
+        .filter_map(|chosen| match chosen {
+            mneme_core::CapturePart::Page(page) if *page < page_count => Some(*page),
+            mneme_core::CapturePart::Page(_)
+            | mneme_core::CapturePart::Whole
+            | mneme_core::CapturePart::Audio { .. } => None,
+        })
+        .collect();
+    usize::try_from(page_count).is_ok_and(|count| pages.len() == count)
+}
+
+/// Whether the covered audio intervals span `[start, end)` without a gap.
+fn ticks_covered(covered: &[mneme_core::CapturePart], (start, end): (u64, u64)) -> bool {
+    let mut intervals: Vec<(u64, u64)> = covered
+        .iter()
+        .filter_map(|chosen| match chosen {
+            mneme_core::CapturePart::Audio {
+                start_tick,
+                end_tick,
+            } => Some((*start_tick, *end_tick)),
+            mneme_core::CapturePart::Whole | mneme_core::CapturePart::Page(_) => None,
+        })
+        .collect();
+    intervals.sort_unstable();
+    let mut reached = start;
+    for (from, to) in intervals {
+        if from > reached {
+            break;
+        }
+        reached = reached.max(to);
+        if reached >= end {
+            return true;
+        }
+    }
+    reached >= end
 }
 
 /// Where a part begins within its capture.

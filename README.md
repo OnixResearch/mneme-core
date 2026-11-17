@@ -72,16 +72,23 @@ records rather than replacing corrected text. These records make recognized
 text searchable as evidence, but recognition does not accept or promote an
 assertion.
 
-A capture recognized more than once has one selected text for each part.
-`View::capture_texts` selects per part:
+A capture recognized more than once may have several texts. `View::capture_texts`
+takes them in order of preference:
 
-- a corrected text before machine output;
-- then the most recently committed text.
+1. a text whose bytes are retained, before a pruned or erased one;
+2. a corrected text, before machine output;
+3. a complete run's text, before a partial, failed or cancelled one;
+4. the most recently committed.
 
-Every other text sharing that part is an alternative, kept in history.
-Reprocessing therefore never displaces text a person corrected, and choosing a
-reprocessed result is a correction of it. Current and historical recall search
-only selected texts; inspection recall also returns alternatives. Forgetting an original forgets every derivative, including a
+It selects each text unless the texts already selected cover all of its part.
+The rest are alternatives, kept in history. Reprocessing a part replaces older
+machine output of that part only, and a part nothing newer covers keeps its
+text. Reprocessing never displaces retained text a person corrected, and
+choosing a reprocessed result is a correction of it. Where a newer text covers
+only some of an older one's part, both are selected and searched. A text that
+two runs name appears once, with the part of the run committed first. Current
+and historical recall search only selected texts; inspection recall also
+returns alternatives. Forgetting an original forgets every derivative, including a
 transcript corrected since: a correction's own revision chain is followed back
 to the source it was derived from. Exchange bundles carry only current
 revisions, so a corrected source, a run or segment pinning a non-current

@@ -3183,3 +3183,92 @@ fn only_the_selected_transcript_of_a_capture_is_searched() {
         std::collections::BTreeSet::from([original])
     );
 }
+
+/// Correct a transcript revision, declaring its alignment invalidated.
+fn correct_transcript(
+    harness: &mut Harness,
+    predecessor: mneme_core::SourcePin,
+    revision: u8,
+    text: &[u8],
+) -> mneme_core::SourcePin {
+    let correction = mneme_core::CorrectionProvenance::new(
+        "reviewer",
+        "corrected the transcript",
+        mneme_core::AlignmentDisposition::Invalidated,
+    )
+    .expect("correction");
+    let (corrected, blob) = mneme_memory::build_corrected_source(
+        predecessor,
+        rev(revision),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: text,
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        &correction,
+    )
+    .expect("corrected transcript");
+    harness.commit(
+        scope(),
+        &format!("correct-{revision}"),
+        vec![corrected],
+        vec![blob],
+    );
+    mneme_core::SourcePin::new(predecessor.source(), rev(revision))
+}
+
+#[test]
+fn pruning_an_earlier_correction_never_displaces_the_chosen_transcript() {
+    let mut harness = Harness::new();
+    let (input, location) = add_recognized_media(&mut harness);
+    let original = mneme_core::SourcePin::new(rid(0xe2), rev(0xe3));
+    correct_transcript(
+        &mut harness,
+        original,
+        0xf6,
+        b"The transcript says Cedar project.",
+    );
+    let reprocessed = reprocess_media(
+        &mut harness,
+        input,
+        &location,
+        b"The transcript says cedar project again.",
+    );
+    // The person chooses the reprocessed transcript: a correction of it.
+    correct_transcript(
+        &mut harness,
+        reprocessed,
+        0xf7,
+        b"The transcript says Cedar project again.",
+    );
+    for temporal in [
+        mneme_recall::TemporalMode::Current,
+        mneme_recall::TemporalMode::Historical,
+    ] {
+        assert_eq!(
+            transcript_sources(&mut harness, temporal),
+            std::collections::BTreeSet::from([reprocessed.source()])
+        );
+    }
+    // Retention prunes the earlier correction's bytes; the pruned text can
+    // no longer be shown, so it never outranks the chosen transcript.
+    let request = mneme_retention::Request {
+        actor: "recall-test".to_owned(),
+        scope: scope(),
+        base_revision: harness.workspace.current_revision().expect("base"),
+        idempotency_key: "prune-earlier-transcript".to_owned(),
+        operation: mneme_retention::OperationKind::SourcePruning,
+        selector: mneme_retention::Selector::Source(original.source()),
+        effective: None,
+        policy: retention_policy(),
+    };
+    mneme_retention::Engine::new(&mut harness.workspace)
+        .execute(request)
+        .expect("prune");
+    assert_eq!(
+        transcript_sources(&mut harness, mneme_recall::TemporalMode::Current),
+        std::collections::BTreeSet::from([reprocessed.source()])
+    );
+}

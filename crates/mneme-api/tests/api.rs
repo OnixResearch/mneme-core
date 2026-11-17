@@ -1898,6 +1898,10 @@ fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
         field(data(&response), "output-digest"),
         &output_digest.to_value()
     );
+    assert_eq!(
+        field(data(&response), "covers"),
+        &mneme_core::CapturePart::Whole.to_value()
+    );
     let segments = sequence(data(&response), "segments");
     assert_eq!(segments.len(), 1);
     assert_eq!(

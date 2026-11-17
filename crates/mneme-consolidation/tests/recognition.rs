@@ -262,6 +262,19 @@ fn a_capture_is_queued_without_a_recognizer_and_recognized_later() {
         assert_eq!(run.input, media);
         assert_eq!(run.segments.len(), 1);
     }
+    // Each run declares the page its unit covered.
+    let mut covered: Vec<mneme_core::CapturePart> =
+        committed.iter().map(|run| run.covers).collect();
+    covered.sort_by_key(|part| match part {
+        mneme_core::CapturePart::Page(page) => *page,
+        mneme_core::CapturePart::Whole | mneme_core::CapturePart::Audio { .. } => u32::MAX,
+    });
+    assert_eq!(
+        covered,
+        (0..3)
+            .map(mneme_core::CapturePart::Page)
+            .collect::<Vec<_>>()
+    );
     // Progress holds no recognized text and no media, and the job keeps
     // nothing but its claim and its progress.
     let progress = std::fs::read(progress_file(temp.path())).expect("progress");

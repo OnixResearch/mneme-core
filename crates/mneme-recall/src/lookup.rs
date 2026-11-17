@@ -44,6 +44,12 @@ pub(crate) fn build_index(
         recognition_media_locations(view, request, sources, budget)?;
     let unselected_texts = match request.temporal {
         crate::model::TemporalMode::Current | crate::model::TemporalMode::Historical => {
+            // Selection reads each recognition run once; charge for it first.
+            for record in &view.snapshot().records {
+                if record.kind == mneme_core::RecordKind::RecognitionRun {
+                    budget.charge(1)?;
+                }
+            }
             view.unselected_recognized_texts()
         }
         crate::model::TemporalMode::Inspection => std::collections::BTreeSet::new(),
