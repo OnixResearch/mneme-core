@@ -25,6 +25,9 @@ struct BuildScope<'a> {
     entities: &'a std::collections::BTreeMap<mneme_core::RecordId, String>,
     media_locations:
         &'a std::collections::BTreeMap<mneme_core::SourcePin, Vec<crate::model::MediaCitation>>,
+    /// Recognized texts not selected for their part of a capture: kept in
+    /// history and in inspection recall, never searched as primary text.
+    unselected_texts: &'a std::collections::BTreeSet<mneme_core::RecordId>,
 }
 
 /// Build a fresh index for the request's temporal selection.
@@ -39,12 +42,19 @@ pub(crate) fn build_index(
     let entities = entity_labels(view, request, budget)?;
     let (media_locations, skipped_locations) =
         recognition_media_locations(view, request, sources, budget)?;
+    let unselected_texts = match request.temporal {
+        crate::model::TemporalMode::Current | crate::model::TemporalMode::Historical => {
+            view.unselected_recognized_texts()
+        }
+        crate::model::TemporalMode::Inspection => std::collections::BTreeSet::new(),
+    };
     let scope = BuildScope {
         view,
         request,
         sources,
         entities: &entities,
         media_locations: &media_locations,
+        unselected_texts: &unselected_texts,
     };
     let mut index = IndexBuild {
         skipped: skipped_locations,
@@ -301,6 +311,9 @@ impl IndexBuild {
         record: &mneme_core::RecordEnvelope,
         budget: &mut crate::engine::WorkBudget,
     ) -> BuildResult<()> {
+        if scope.unselected_texts.contains(&record.record_id) {
+            return Ok(());
+        }
         let facts = source_facts(scope.view, record, scope.sources, budget)?;
         let key = (record.record_id, record.revision_id);
         let roots = match scope

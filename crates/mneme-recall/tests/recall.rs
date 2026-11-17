@@ -1334,6 +1334,7 @@ fn recognition_records(
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
         },
     )
     .expect("run");
@@ -3046,4 +3047,139 @@ fn expansion_bounds_are_refused_before_any_rule_is_built() {
     deepest.limits.max_recursion_depth =
         usize::from(deepest.hops) + mneme_recall::expansion::ROUNDS_BEYOND_HOPS;
     assert!(deepest.validate().is_ok());
+}
+
+/// Recognize the fixture capture again into a new text record.
+fn reprocess_media(
+    harness: &mut Harness,
+    input: mneme_core::SourcePin,
+    location: &mneme_core::MediaLocation,
+    text: &[u8],
+) -> mneme_core::SourcePin {
+    let audio = b"bounded audio fixture";
+    let input_digest = mneme_core::ContentDigest::of_source_bytes(audio);
+    let output = mneme_core::SourcePin::new(rid(0xf0), rev(0xf1));
+    let (output_record, output_blob) = mneme_memory::build_recognized_source(
+        output.source(),
+        output.revision(),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: text,
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        input,
+    )
+    .expect("reprocessed text");
+    let run = mneme_memory::build_recognition_run(
+        rid(0xf2),
+        rev(0xf3),
+        &scope(),
+        mneme_memory::RecognitionRunOptions {
+            input,
+            input_digest,
+            output,
+            output_digest: mneme_core::ContentDigest::of_source_bytes(text),
+            model: "test-model@sha256:01",
+            runtime: "test-runtime@sha256:02",
+            adapter: "test-adapter@sha256:03",
+            preprocessing: "test-preprocess@sha256:04",
+            configuration: "test-config@sha256:06",
+            segments: &[rid(0xf4)],
+            coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
+            status: mneme_core::RecognitionStatus::Complete,
+            scores: &[],
+            alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
+        },
+    )
+    .expect("run");
+    let segment = mneme_memory::build_recognition_segment(
+        rid(0xf4),
+        rev(0xf5),
+        &scope(),
+        mneme_memory::RecognitionSegmentOptions {
+            run: Some(rid(0xf2)),
+            text_source: output,
+            span: mneme_core::SourceSpan::new(0, text.len() as u64 - 1).expect("text span"),
+            media_source: input,
+            media_digest: input_digest,
+            location,
+        },
+    )
+    .expect("segment");
+    harness.commit(
+        scope(),
+        "reprocessed-media",
+        vec![output_record, run, segment],
+        vec![output_blob],
+    );
+    output
+}
+
+fn transcript_sources(
+    harness: &mut Harness,
+    temporal: mneme_recall::TemporalMode,
+) -> std::collections::BTreeSet<mneme_core::RecordId> {
+    let mut request = harness.request("transcript");
+    request.temporal = temporal;
+    mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("recall")
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.content_kind == mneme_recall::ContentKind::SourceExcerpt)
+        .filter_map(|candidate| candidate.source)
+        .collect()
+}
+
+#[test]
+fn only_the_selected_transcript_of_a_capture_is_searched() {
+    let mut harness = Harness::new();
+    let (input, location) = add_recognized_media(&mut harness);
+    let original = rid(0xe2);
+    let reprocessed = reprocess_media(
+        &mut harness,
+        input,
+        &location,
+        b"The transcript says cedar project again.",
+    );
+    // The newer machine transcript is the capture's text; the earlier one
+    // stays readable through inspection only.
+    assert_eq!(
+        transcript_sources(&mut harness, mneme_recall::TemporalMode::Current),
+        std::collections::BTreeSet::from([reprocessed.source()])
+    );
+    assert_eq!(
+        transcript_sources(&mut harness, mneme_recall::TemporalMode::Inspection),
+        std::collections::BTreeSet::from([original, reprocessed.source()])
+    );
+
+    // A person corrects the earlier transcript: the correction becomes the
+    // searched text, and the newer machine output an alternative.
+    let correction = mneme_core::CorrectionProvenance::new(
+        "reviewer",
+        "fixed the project name",
+        mneme_core::AlignmentDisposition::Invalidated,
+    )
+    .expect("correction");
+    let (corrected, blob) = mneme_memory::build_corrected_source(
+        mneme_core::SourcePin::new(original, rev(0xe3)),
+        rev(0xf6),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"The transcript says Cedar project.",
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        &correction,
+    )
+    .expect("corrected transcript");
+    harness.commit(scope(), "corrected-media", vec![corrected], vec![blob]);
+    assert_eq!(
+        transcript_sources(&mut harness, mneme_recall::TemporalMode::Current),
+        std::collections::BTreeSet::from([original])
+    );
 }

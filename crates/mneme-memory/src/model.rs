@@ -835,6 +835,9 @@ pub struct RecognitionRunView {
     pub status: mneme_core::RecognitionStatus,
     pub scores: Vec<mneme_core::RecognitionScore>,
     pub alternatives: Vec<mneme_core::RecognitionAlternative>,
+    /// The part of the input the run covers: the whole capture when the run
+    /// declares none.
+    pub covers: mneme_core::CapturePart,
 }
 
 impl RecognitionRunView {
@@ -885,6 +888,12 @@ impl RecognitionRunView {
                 "alternatives",
                 mneme_core::RecognitionAlternative::from_value,
             )?,
+            covers: parse_optional_media_value(
+                &record,
+                "covers",
+                mneme_core::CapturePart::from_value,
+            )?
+            .unwrap_or(mneme_core::CapturePart::Whole),
             record,
         })
     }

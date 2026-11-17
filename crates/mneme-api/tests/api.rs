@@ -1835,6 +1835,7 @@ fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
         },
     )
     .expect("recognition run");
@@ -2644,6 +2645,7 @@ fn original_location_follows_every_processing_step_back_to_the_run_input() {
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
         },
     )
     .expect("run");

@@ -724,6 +724,147 @@ impl MediaLocation {
     }
 }
 
+/// The part of a capture one recognition run covers. A run that declares no
+/// part covers its whole capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapturePart {
+    /// The whole capture.
+    Whole,
+    /// One zero-based page of a page or ink capture.
+    Page(u32),
+    /// The half-open tick interval `[start_tick, end_tick)` of an audio capture.
+    Audio { start_tick: u64, end_tick: u64 },
+}
+
+impl CapturePart {
+    /// Validate the part on its own: an audio interval must be non-empty.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match self {
+            CapturePart::Audio {
+                start_tick,
+                end_tick,
+            } if start_tick >= end_tick => Err("a covered audio interval must be non-empty"),
+            CapturePart::Whole | CapturePart::Page(_) | CapturePart::Audio { .. } => Ok(()),
+        }
+    }
+
+    /// Validate the part against its capture's extent.
+    pub fn validate_extent(&self, extent: MediaExtent) -> Result<(), &'static str> {
+        self.validate()?;
+        match (self, extent) {
+            (CapturePart::Whole, _) => Ok(()),
+            (
+                CapturePart::Page(page),
+                MediaExtent::Pages { page_count } | MediaExtent::InkPages { page_count },
+            ) if *page < page_count => Ok(()),
+            (CapturePart::Audio { end_tick, .. }, MediaExtent::Audio { duration_ticks, .. })
+                if *end_tick <= duration_ticks =>
+            {
+                Ok(())
+            }
+            _ => Err("a covered part must lie within its capture's extent"),
+        }
+    }
+
+    /// Whether a location on the capture itself lies within this part.
+    pub fn holds(&self, location: &MediaLocation) -> bool {
+        match (self, location) {
+            (CapturePart::Whole, _) => true,
+            (
+                CapturePart::Page(page),
+                MediaLocation::PageRegion { page: at, .. }
+                | MediaLocation::InkStrokes { page: at, .. },
+            ) => page == at,
+            (
+                CapturePart::Audio {
+                    start_tick,
+                    end_tick,
+                },
+                MediaLocation::Audio {
+                    start_tick: from,
+                    end_tick: to,
+                    ..
+                },
+            ) => start_tick <= from && to <= end_tick,
+            (CapturePart::Page(_), MediaLocation::Audio { .. })
+            | (
+                CapturePart::Audio { .. },
+                MediaLocation::PageRegion { .. } | MediaLocation::InkStrokes { .. },
+            ) => false,
+        }
+    }
+
+    /// Whether two parts of one capture share any of it. Parts of different
+    /// media kinds cannot describe one capture and are treated as sharing it.
+    pub const fn overlaps(&self, other: &CapturePart) -> bool {
+        match (self, other) {
+            (CapturePart::Whole, _) | (_, CapturePart::Whole) => true,
+            (CapturePart::Page(left), CapturePart::Page(right)) => *left == *right,
+            (
+                CapturePart::Audio {
+                    start_tick: left_start,
+                    end_tick: left_end,
+                },
+                CapturePart::Audio {
+                    start_tick: right_start,
+                    end_tick: right_end,
+                },
+            ) => *left_start < *right_end && *right_start < *left_end,
+            (CapturePart::Page(_), CapturePart::Audio { .. })
+            | (CapturePart::Audio { .. }, CapturePart::Page(_)) => true,
+        }
+    }
+
+    /// Encode the covered part.
+    pub fn to_value(&self) -> crate::typed::Value {
+        let fields = match self {
+            CapturePart::Whole => vec![crate::typed::Value::symbol("whole")],
+            CapturePart::Page(page) => vec![
+                crate::typed::Value::symbol("page"),
+                crate::typed::Value::integer(*page),
+            ],
+            CapturePart::Audio {
+                start_tick,
+                end_tick,
+            } => vec![
+                crate::typed::Value::symbol("audio"),
+                crate::typed::Value::integer(*start_tick),
+                crate::typed::Value::integer(*end_tick),
+            ],
+        };
+        crate::typed::Value::record_named("capture-part", fields)
+    }
+
+    /// Decode and validate a covered part.
+    pub fn from_value(
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
+        let record = expect_record(value, "capture-part", path)?;
+        let fields = record.fields();
+        let kind = fields
+            .first()
+            .and_then(crate::typed::Value::as_symbol)
+            .ok_or_else(|| type_error(path, "capture part"))?;
+        let part = match (kind.as_str(), fields.len()) {
+            ("whole", 1) => CapturePart::Whole,
+            ("page", 2) => CapturePart::Page(
+                u32_value(&fields[1]).ok_or_else(|| type_error(path, "page index"))?,
+            ),
+            ("audio", 3) => CapturePart::Audio {
+                start_tick: unsigned(&fields[1])
+                    .ok_or_else(|| type_error(path, "non-negative audio start"))?,
+                end_tick: unsigned(&fields[2])
+                    .ok_or_else(|| type_error(path, "non-negative audio end"))?,
+            },
+            _ => return Err(type_error(path, "valid capture part")),
+        };
+        part.validate()
+            .map_err(|message| invalid_interval(path, message))?;
+        Ok(part)
+    }
+}
+
 fn parse_audio_location(
     fields: &[crate::typed::Value],
     path: &crate::problem::Path,

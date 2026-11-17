@@ -81,6 +81,8 @@ pub(super) struct UnitAttempt<'a> {
     pub identity: &'a super::plan::JobIdentity,
     pub unit: u32,
     pub attempt: u32,
+    /// The part of the capture the unit covers, declared on its run.
+    pub covers: mneme_core::CapturePart,
 }
 
 impl UnitAttempt<'_> {
@@ -249,6 +251,7 @@ fn run_record(
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: attempt.covers,
         },
     )
     .map_err(|error| error.to_string())

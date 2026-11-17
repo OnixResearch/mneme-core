@@ -4037,6 +4037,7 @@ fn append_recognition_run_fields(
                 .collect(),
         ),
     ));
+    fields.push((mneme_core::Symbol::from("covers"), run.covers.to_value()));
 }
 
 fn source_metadata_value(source: &mneme_memory::SourceView) -> mneme_core::Value {

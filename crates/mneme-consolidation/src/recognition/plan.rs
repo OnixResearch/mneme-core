@@ -19,6 +19,23 @@ pub enum UnitSelector {
     Audio { start_tick: u64, end_tick: u64 },
 }
 
+impl UnitSelector {
+    /// The part of the capture this unit covers.
+    pub(super) const fn part(self) -> mneme_core::CapturePart {
+        match self {
+            UnitSelector::Whole => mneme_core::CapturePart::Whole,
+            UnitSelector::Page { page } => mneme_core::CapturePart::Page(page),
+            UnitSelector::Audio {
+                start_tick,
+                end_tick,
+            } => mneme_core::CapturePart::Audio {
+                start_tick,
+                end_tick,
+            },
+        }
+    }
+}
+
 /// Divide a capture with `extent` into units under `plan`.
 pub(super) fn units(
     plan: super::UnitPlan,

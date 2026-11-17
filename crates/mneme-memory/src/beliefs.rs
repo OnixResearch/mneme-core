@@ -5,6 +5,8 @@
 //! canonical state or promotes a proposed assertion.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
+pub mod captures;
+
 /// The policy predicate used for action-completion claims.
 pub const ACTION_COMPLETED_PREDICATE: &str = "action-completed";
 

@@ -167,6 +167,7 @@ fn a_corrected_transcript_stays_out_of_export_and_the_rest_imports() {
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
         },
     )
     .expect("recognition run");

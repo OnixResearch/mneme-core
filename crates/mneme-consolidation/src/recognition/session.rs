@@ -159,6 +159,7 @@ impl<'w> Claimed<'w> {
             identity: &self.identity,
             unit,
             attempt: self.progress.units[index].attempts,
+            covers: self.progress.units[index].selector.part(),
         })
     }
 
@@ -455,6 +456,7 @@ impl Claimed<'_> {
             unit: u32::try_from(unit.index)
                 .map_err(|_| super::Failure::Invalid("unit index out of range".to_owned()))?,
             attempt: self.progress.units[unit.index].attempts,
+            covers: selector.part(),
         };
         let publication = super::publication::publish(
             self.workspace,

@@ -45,7 +45,7 @@ pub use hashing::{ContentDigest, EncodingProfile, HashAlgorithm, ValueBoundary};
 pub use hashing::{kernel_digest, request_fingerprint};
 pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
 pub use lineage::{
-    ACQUISITION_SCHEMA_VERSION, Acquisition, AlignmentDisposition, CoordinateFrame,
+    ACQUISITION_SCHEMA_VERSION, Acquisition, AlignmentDisposition, CapturePart, CoordinateFrame,
     CorrectionProvenance, InkInventory, MAX_INK_LAYERS, MAX_INK_STROKES, MAX_RECOGNITION_SEGMENTS,
     MediaExtent, MediaLocation, MediaTransform, RecognitionAlternative, RecognitionCoverage,
     RecognitionScore, RecognitionStatus, SourcePin, TimeBase,

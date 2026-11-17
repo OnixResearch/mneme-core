@@ -257,6 +257,8 @@ pub enum FieldType {
     MediaTransform,
     /// Audio, page, or ink location.
     MediaLocation,
+    /// The part of a capture a recognition run covers.
+    CapturePart,
     /// Recognition unit coverage.
     RecognitionCoverage,
     /// Bounded provider score sequence.
@@ -586,6 +588,7 @@ impl RecordSchema {
                 required("status", FieldType::Symbol),
                 optional("scores", FieldType::RecognitionScores),
                 optional("alternatives", FieldType::RecognitionAlternatives),
+                optional("covers", FieldType::CapturePart),
             ],
             ExtensionPolicy::Retain,
         ));
@@ -899,6 +902,7 @@ pub fn validate_field(
             parsed(crate::lineage::MediaTransform::from_value, value, path)
         }
         FieldType::MediaLocation => parsed(crate::lineage::MediaLocation::from_value, value, path),
+        FieldType::CapturePart => parsed(crate::lineage::CapturePart::from_value, value, path),
         FieldType::RecognitionCoverage => {
             parsed(crate::lineage::RecognitionCoverage::from_value, value, path)
         }

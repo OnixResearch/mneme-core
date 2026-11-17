@@ -1402,11 +1402,12 @@ fn validate_recognition_run(
             "recognition run pins must match the exact media input and machine-produced text output",
         ));
     }
-    if input.media_extent.is_none() {
-        return Err(crate::failure::EvidenceError::policy(
-            "recognition input must declare a typed media extent",
-        ));
-    }
+    let extent = input.media_extent.ok_or_else(|| {
+        crate::failure::EvidenceError::policy("recognition input must declare a typed media extent")
+    })?;
+    run.covers
+        .validate_extent(extent)
+        .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
     let output_text = validate_utf8_text_source(&output, context)?;
     if mneme_core::ContentDigest::of_source_bytes(output_text.as_bytes()) != run.output_digest {
         return Err(crate::failure::EvidenceError::policy(
@@ -1418,6 +1419,16 @@ fn validate_recognition_run(
             "recognition output must retain the input source's evidence root",
         ));
     }
+    validate_run_segments(envelope, &run, context)
+}
+
+/// Every segment a run names maps the run's exact output and lies within the
+/// part of the input it covers.
+fn validate_run_segments(
+    envelope: &mneme_core::RecordEnvelope,
+    run: &crate::model::RecognitionRunView,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<()> {
     for segment_id in &run.segments {
         let segment = context.view.recognition_segment(*segment_id).map_err(|_| {
             crate::failure::EvidenceError::policy("recognition run segment is missing")
@@ -1425,6 +1436,13 @@ fn validate_recognition_run(
         if segment.run != Some(envelope.record_id) || segment.text_source != run.output {
             return Err(crate::failure::EvidenceError::policy(
                 "recognition run segment must map the run's exact output text revision",
+            ));
+        }
+        // A segment on a processed derivative uses the derivative's own
+        // frame; only one on the input itself is checked against the part.
+        if segment.media_source == run.input && !run.covers.holds(&segment.location) {
+            return Err(crate::failure::EvidenceError::policy(
+                "recognition run segment lies outside the part of the input the run covers",
             ));
         }
     }
@@ -1698,6 +1716,8 @@ pub struct RecognitionRunOptions<'a> {
     pub status: mneme_core::RecognitionStatus,
     pub scores: &'a [mneme_core::RecognitionScore],
     pub alternatives: &'a [mneme_core::RecognitionAlternative],
+    /// The part of the input the run covers.
+    pub covers: mneme_core::CapturePart,
 }
 
 /// Typed mapping from a text byte span to one pinned media source location.
@@ -2055,11 +2075,14 @@ fn validate_recognition_run_options(
             .validate()
             .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
     }
-    Ok(())
+    options
+        .covers
+        .validate()
+        .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))
 }
 
 fn recognition_run_payload(options: &RecognitionRunOptions<'_>) -> mneme_core::Payload {
-    let mut fields = Vec::with_capacity(14);
+    let mut fields = Vec::with_capacity(15);
     append_recognition_pins(&mut fields, options);
     append_recognition_identity(&mut fields, options);
     append_recognition_results(&mut fields, options);
@@ -2140,6 +2163,10 @@ fn append_recognition_results(
                 .map(mneme_core::RecognitionAlternative::to_value)
                 .collect(),
         ),
+    ));
+    fields.push((
+        mneme_core::Symbol::from("covers"),
+        options.covers.to_value(),
     ));
 }
 

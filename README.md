@@ -56,7 +56,10 @@ derivative's transform must map its own declared frame onto its parent's. A
 output source revisions and digests, model/runtime/adapter/preprocessing and
 configuration identities, coverage and status, plus optional scores and
 alternatives; its machine text is committed in the same batch, and it names
-at most 4,096 segments. Each `RecognitionSegment` pins its text source and inclusive
+at most 4,096 segments. A run declares the part of its capture it covers
+(`covers`): the whole capture, one page, or a half-open audio interval within
+the capture's extent. A run that declares none covers the whole capture, and
+its segments on the capture itself must lie within its part. Each `RecognitionSegment` pins its text source and inclusive
 `SourceSpan` byte offsets, media source revision and digest, and typed audio,
 page-region, or ink-stroke location. Text spans remain byte offsets into the
 exact UTF-8 source revision; media coordinates never change that contract.
@@ -67,7 +70,18 @@ edit provenance; alignments must pin that corrected revision or be explicitly
 invalidated. Reprocessing creates new recognized text and recognition-run
 records rather than replacing corrected text. These records make recognized
 text searchable as evidence, but recognition does not accept or promote an
-assertion. Forgetting an original forgets every derivative, including a
+assertion.
+
+A capture recognized more than once has one selected text for each part.
+`View::capture_texts` selects per part:
+
+- a corrected text before machine output;
+- then the most recently committed text.
+
+Every other text sharing that part is an alternative, kept in history.
+Reprocessing therefore never displaces text a person corrected, and choosing a
+reprocessed result is a correction of it. Current and historical recall search
+only selected texts; inspection recall also returns alternatives. Forgetting an original forgets every derivative, including a
 transcript corrected since: a correction's own revision chain is followed back
 to the source it was derived from. Exchange bundles carry only current
 revisions, so a corrected source, a run or segment pinning a non-current

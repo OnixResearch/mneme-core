@@ -50,6 +50,7 @@ fn commit_recognition(workspace: &mut mneme_store::Workspace) -> Fixture {
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
         },
     )
     .expect("recognition run");
@@ -250,6 +251,7 @@ fn recognition_refuses_changed_input_digest_and_out_of_range_media_locations() {
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
         },
     )
     .expect("typed run draft");
@@ -302,6 +304,7 @@ fn recognition_refuses_changed_input_digest_and_out_of_range_media_locations() {
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
         },
     )
     .expect("typed run draft");
@@ -367,6 +370,7 @@ fn a_later_run_cannot_claim_existing_machine_text() {
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
         },
     )
     .expect("run draft");
@@ -460,6 +464,7 @@ fn recognize(
             status: mneme_core::RecognitionStatus::Complete,
             scores: &[],
             alternatives: &[],
+            covers: mneme_core::CapturePart::Whole,
         },
     )
     .expect("run");
@@ -643,4 +648,343 @@ fn a_transform_must_land_on_its_parents_frame_and_pages() {
         "resampled",
     )
     .expect("a transform onto the parent's frame and pages");
+}
+
+fn audio_location(start_tick: u64, end_tick: u64) -> mneme_core::MediaLocation {
+    mneme_core::MediaLocation::Audio {
+        start_tick,
+        end_tick,
+        time_base: mneme_core::TimeBase::new(1, 100).expect("time base"),
+        channel: 0,
+    }
+}
+
+/// Recognize the fixture's capture again: a new text record with at most one
+/// segment, published by a run covering `covers`. Identities derive from
+/// `byte`.
+fn rerecognize(
+    workspace: &mut mneme_store::Workspace,
+    fixture: &Fixture,
+    (byte, text): (u8, &str),
+    segment: Option<mneme_core::MediaLocation>,
+    covers: mneme_core::CapturePart,
+) -> mneme_memory::Result<mneme_core::SourcePin> {
+    let output = mneme_core::SourcePin::new(common::rid(byte), common::rev(byte));
+    let run_id = common::rid(byte.wrapping_add(1));
+    let segment_id = common::rid(byte.wrapping_add(2));
+    let (text_record, text_blob) = mneme_memory::build_recognized_source(
+        output.source(),
+        output.revision(),
+        &common::scope(),
+        mneme_memory::SourceOptions {
+            bytes: text.as_bytes(),
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        fixture.input,
+    )?;
+    let segments = segment.as_ref().map_or(Vec::new(), |_| vec![segment_id]);
+    let run = mneme_memory::build_recognition_run(
+        run_id,
+        common::rev(byte.wrapping_add(1)),
+        &common::scope(),
+        mneme_memory::RecognitionRunOptions {
+            input: fixture.input,
+            input_digest: fixture.input_digest,
+            output,
+            output_digest: mneme_core::ContentDigest::of_source_bytes(text.as_bytes()),
+            model: "test-model@sha256:01",
+            runtime: "test-runtime@sha256:02",
+            adapter: "test-adapter@sha256:03",
+            preprocessing: "test-preprocess@sha256:04",
+            configuration: "test-config@sha256:05",
+            segments: &segments,
+            coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
+            status: mneme_core::RecognitionStatus::Complete,
+            scores: &[],
+            alternatives: &[],
+            covers,
+        },
+    )?;
+    let mut records = vec![text_record, run];
+    if let Some(location) = &segment {
+        records.push(mneme_memory::build_recognition_segment(
+            segment_id,
+            common::rev(byte.wrapping_add(2)),
+            &common::scope(),
+            mneme_memory::RecognitionSegmentOptions {
+                run: Some(run_id),
+                text_source: output,
+                span: mneme_core::SourceSpan::new(0, 0).expect("text span"),
+                media_source: fixture.input,
+                media_digest: fixture.input_digest,
+                location,
+            },
+        )?);
+    }
+    mneme_memory::Engine::new(workspace, mneme_memory::Access::Operator).commit(common::batch(
+        &format!("rerecognize-{byte}"),
+        records,
+        vec![text_blob],
+    ))?;
+    Ok(output)
+}
+
+/// Correct `text` as a new revision. With a segment the alignment is
+/// updated; without one it is declared invalidated.
+fn correct(
+    workspace: &mut mneme_store::Workspace,
+    fixture: &Fixture,
+    (text, revision): (mneme_core::SourcePin, u8),
+    content: &str,
+    segment: Option<u8>,
+) -> mneme_core::SourcePin {
+    let corrected = mneme_core::SourcePin::new(text.source(), common::rev(revision));
+    let alignment = if segment.is_some() {
+        mneme_core::AlignmentDisposition::Updated
+    } else {
+        mneme_core::AlignmentDisposition::Invalidated
+    };
+    let correction = mneme_core::CorrectionProvenance::new("reviewer", "edited", alignment)
+        .expect("correction provenance");
+    let (record, blob) = mneme_memory::build_corrected_source(
+        text,
+        corrected.revision(),
+        &common::scope(),
+        mneme_memory::SourceOptions {
+            bytes: content.as_bytes(),
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        &correction,
+    )
+    .expect("corrected source");
+    let mut records = vec![record];
+    if let Some(segment) = segment {
+        records.push(
+            mneme_memory::build_recognition_segment(
+                common::rid(segment),
+                common::rev(segment),
+                &common::scope(),
+                mneme_memory::RecognitionSegmentOptions {
+                    run: None,
+                    text_source: corrected,
+                    span: mneme_core::SourceSpan::new(0, 0).expect("text span"),
+                    media_source: fixture.input,
+                    media_digest: fixture.input_digest,
+                    location: &fixture.location,
+                },
+            )
+            .expect("aligned segment"),
+        );
+    }
+    mneme_memory::Engine::new(workspace, mneme_memory::Access::Operator)
+        .commit(common::batch(
+            &format!("correct-{revision}"),
+            records,
+            vec![blob],
+        ))
+        .expect("commit correction");
+    corrected
+}
+
+fn capture_selection(
+    workspace: &mut mneme_store::Workspace,
+    fixture: &Fixture,
+) -> mneme_memory::beliefs::captures::Selection {
+    mneme_memory::Engine::new(workspace, mneme_memory::Access::Operator)
+        .view()
+        .expect("view")
+        .capture_texts(fixture.input, &common::scope())
+}
+
+fn pins(texts: &[mneme_memory::beliefs::captures::Text]) -> Vec<mneme_core::SourcePin> {
+    texts.iter().map(|text| text.pin).collect()
+}
+
+#[test]
+fn a_corrected_text_stays_selected_until_a_reprocessed_result_is_chosen() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let whole = mneme_core::CapturePart::Whole;
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![fixture.output]);
+    assert!(selection.alternatives.is_empty());
+
+    // Later machine output replaces earlier machine output.
+    let second = rerecognize(
+        &mut workspace,
+        &fixture,
+        (0xc0, "hello word"),
+        Some(fixture.location.clone()),
+        whole,
+    )
+    .expect("second run");
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![second]);
+    assert_eq!(pins(&selection.alternatives), vec![fixture.output]);
+
+    // A correction outranks machine output published before or after it.
+    let corrected = correct(
+        &mut workspace,
+        &fixture,
+        (fixture.output, 0xb5),
+        "hello, world",
+        Some(0xa5),
+    );
+    let third = rerecognize(
+        &mut workspace,
+        &fixture,
+        (0xd0, "hello world!"),
+        Some(fixture.location.clone()),
+        whole,
+    )
+    .expect("third run");
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![corrected]);
+    assert!(selection.selected[0].is_corrected);
+    assert_eq!(selection.selected[0].segments.len(), 1);
+    assert_eq!(pins(&selection.alternatives), vec![third, second]);
+    let view = mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .view()
+        .expect("view");
+    assert_eq!(
+        view.unselected_recognized_texts(),
+        std::collections::BTreeSet::from([second.source(), third.source()])
+    );
+
+    // Choosing the third result is a correction of it; this one declares its
+    // alignment invalidated, so it carries no segments.
+    let chosen = correct(
+        &mut workspace,
+        &fixture,
+        (third, 0xd8),
+        "hello world!",
+        None,
+    );
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![chosen]);
+    assert!(selection.selected[0].is_alignment_invalidated);
+    assert!(selection.selected[0].segments.is_empty());
+    assert_eq!(pins(&selection.alternatives), vec![corrected, second]);
+
+    // A caller who cannot read the capture's scope sees no texts at all.
+    let other = common::project_scope("elsewhere");
+    let hidden = mneme_memory::Engine::new(
+        &mut workspace,
+        mneme_memory::Access::scopes([other.clone()]),
+    )
+    .view()
+    .expect("view")
+    .capture_texts(fixture.input, &other);
+    assert!(hidden.selected.is_empty());
+    assert!(hidden.alternatives.is_empty());
+}
+
+#[test]
+fn texts_of_different_parts_are_selected_side_by_side() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let first_half = mneme_core::CapturePart::Audio {
+        start_tick: 0,
+        end_tick: 50,
+    };
+    let second_half = mneme_core::CapturePart::Audio {
+        start_tick: 50,
+        end_tick: 100,
+    };
+    let early = rerecognize(
+        &mut workspace,
+        &fixture,
+        (0xc0, "early"),
+        Some(audio_location(20, 40)),
+        first_half,
+    )
+    .expect("first half");
+    let late = rerecognize(
+        &mut workspace,
+        &fixture,
+        (0xd0, "late"),
+        Some(audio_location(60, 80)),
+        second_half,
+    )
+    .expect("second half");
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![early, late]);
+    // The original whole-capture text shares both halves.
+    assert_eq!(pins(&selection.alternatives), vec![fixture.output]);
+
+    // Reprocessing the first half finds no segments, and still replaces only
+    // the first half's text: the run declares the part it covers.
+    let again = rerecognize(&mut workspace, &fixture, (0xe0, "um"), None, first_half)
+        .expect("reprocessed first half");
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![again, late]);
+    assert_eq!(pins(&selection.alternatives), vec![early, fixture.output]);
+}
+
+#[test]
+fn a_run_must_cover_a_part_of_its_input_that_holds_its_segments() {
+    let (_temp, mut workspace) = common::setup();
+    let fixture = commit_recognition(&mut workspace);
+    let refused = |result: mneme_memory::Result<mneme_core::SourcePin>, expected: &str| {
+        assert!(
+            matches!(&result, Err(error) if error.to_string().contains(expected)),
+            "{result:?}"
+        );
+    };
+    refused(
+        rerecognize(
+            &mut workspace,
+            &fixture,
+            (0xc0, "outside"),
+            Some(audio_location(20, 40)),
+            mneme_core::CapturePart::Audio {
+                start_tick: 0,
+                end_tick: 10,
+            },
+        ),
+        "outside the part",
+    );
+    refused(
+        rerecognize(
+            &mut workspace,
+            &fixture,
+            (0xc4, "beyond"),
+            None,
+            mneme_core::CapturePart::Audio {
+                start_tick: 0,
+                end_tick: 200,
+            },
+        ),
+        "within its capture's extent",
+    );
+    refused(
+        rerecognize(
+            &mut workspace,
+            &fixture,
+            (0xc8, "page"),
+            None,
+            mneme_core::CapturePart::Page(0),
+        ),
+        "within its capture's extent",
+    );
+    refused(
+        rerecognize(
+            &mut workspace,
+            &fixture,
+            (0xcc, "empty"),
+            None,
+            mneme_core::CapturePart::Audio {
+                start_tick: 30,
+                end_tick: 30,
+            },
+        ),
+        "non-empty",
+    );
+    let selection = capture_selection(&mut workspace, &fixture);
+    assert_eq!(pins(&selection.selected), vec![fixture.output]);
+    assert!(selection.alternatives.is_empty());
 }
