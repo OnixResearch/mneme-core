@@ -238,8 +238,11 @@ impl IndexBuild {
         );
         // The memory engine treats an episode's source revision as its root, so
         // an episode and its own source never count as independent evidence.
-        let resolved = episode.source.and_then(|source| {
-            let key = readable_source(scope, source)?;
+        // A source the caller cannot read leaves the episode as its own root.
+        let readable = episode
+            .source
+            .and_then(|source| readable_source(scope, source));
+        let resolved = readable.and_then(|key| {
             let roots = scope
                 .view
                 .source_roots(mneme_core::SourcePin::new(key.0, key.1))
@@ -247,7 +250,7 @@ impl IndexBuild {
             let root = roots.iter().next().copied()?;
             Some((key, root))
         });
-        if episode.source.is_some() && resolved.is_none() {
+        if readable.is_some() && resolved.is_none() {
             self.skipped = self.skipped.saturating_add(1);
             self.skip_reasons
                 .insert("episode source ancestry is unavailable".to_owned());

@@ -1791,6 +1791,41 @@ fn episode_candidates_keep_their_source_root() {
 }
 
 #[test]
+fn an_episode_citing_an_unreadable_source_stays_searchable() {
+    let mut harness = Harness::new();
+    let episode = mneme_memory::build_episode(
+        rid(0x6a),
+        rev(0x6b),
+        &scope(),
+        mneme_memory::EpisodeOptions {
+            actor: "agent",
+            episode_type: "observation",
+            occurred: mneme_core::ValidTime::always(),
+            summary: "Walnut episode cites a source this scope cannot read",
+            source: Some(mneme_core::Reference::local(
+                rid(0x72),
+                mneme_core::RecordKind::SourceRevision,
+            )),
+            related: &[],
+        },
+    );
+    harness.commit(scope(), "walnut-episode", vec![episode], Vec::new());
+    let request = harness.request("Walnut");
+    let response = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("episode recall");
+    let candidate = response
+        .candidates
+        .iter()
+        .find(|candidate| candidate.episode == Some(rid(0x6a)))
+        .expect("the episode stays searchable");
+    assert!(
+        candidate.ancestry_roots.contains(&(rid(0x6a), rev(0x6b))),
+        "without a readable source the episode is its own root"
+    );
+}
+
+#[test]
 fn entity_candidates_are_entities_not_assertions() {
     let mut harness = Harness::new();
     let request = harness.request("Cedar");
