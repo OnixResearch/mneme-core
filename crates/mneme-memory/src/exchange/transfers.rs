@@ -485,16 +485,11 @@ pub fn receive_chunk(
     let path = directory.join(chunk_name(index));
     let is_new = !is_file_of_length(&path, bytes.len())?;
     if is_new {
-        if held_chunks(&directory, asset)? == 0 {
-            // Bytes already here need no transfer: the chunk changes nothing.
-            if is_held_here(workspace, &bundle.bundle, digest, &blocked)? {
-                return Ok(ChunkReceipt {
-                    received: total,
-                    total,
-                    is_new: false,
-                });
-            }
-            admit(root, &directory, asset.byte_length)?;
+        if held_chunks(&directory, asset)? == 0
+            && let Some(receipt) =
+                start_transfer(workspace, &bundle.bundle, asset, &blocked, &directory)?
+        {
+            return Ok(receipt);
         }
         open_transfer(&directory, &bundle.bundle.issuer, asset)?;
         write_atomically(&path, bytes)?;
@@ -506,15 +501,17 @@ pub fn receive_chunk(
     })
 }
 
-/// Whether every source of these bytes the bundle offers and this workspace
-/// has not forgotten is here already, or has the bytes from a source of its
-/// own scope.
-fn is_held_here(
+/// Decide whether a transfer may start with this chunk. Bytes already here
+/// need no transfer, and the receipt says so; an asset waits until every
+/// asset it needs is here whole, so it never takes room its parent needs; and
+/// the transfer must fit beside the room started transfers hold.
+fn start_transfer(
     workspace: &mneme_store::Workspace,
     bundle: &super::SignedBundle,
-    digest: mneme_core::ContentDigest,
+    asset: &Asset,
     blocked: &std::collections::BTreeSet<mneme_core::RecordId>,
-) -> Result<bool, super::Error> {
+    directory: &std::path::Path,
+) -> Result<Option<ChunkReceipt>, super::Error> {
     let snapshot = workspace.snapshot()?;
     let local = snapshot
         .records
@@ -522,12 +519,67 @@ fn is_held_here(
         .map(|record| (record.record_id, record))
         .collect::<std::collections::BTreeMap<_, _>>();
     let here = local_bytes(workspace, &local)?;
+    if is_held_here(bundle, (&local, &here), asset.digest, blocked)? {
+        let total = asset.chunk_count();
+        return Ok(Some(ChunkReceipt {
+            received: total,
+            total,
+            is_new: false,
+        }));
+    }
+    if !are_parents_here(workspace.root(), bundle, asset, (&local, &here))? {
+        return Err(super::Error::AssetWaiting);
+    }
+    admit(workspace.root(), directory, asset.byte_length)?;
+    Ok(None)
+}
+
+/// What is here already: the records by identity, and the bytes the
+/// unforgotten sources of each scope hold.
+type Here<'a> = (
+    &'a std::collections::BTreeMap<mneme_core::RecordId, &'a mneme_core::RecordEnvelope>,
+    &'a std::collections::BTreeSet<(mneme_core::ScopeId, mneme_core::ContentDigest)>,
+);
+
+/// Whether every source of these bytes the bundle offers and this workspace
+/// has not forgotten is here already, or has the bytes from a source of its
+/// own scope.
+fn is_held_here(
+    bundle: &super::SignedBundle,
+    (local, here): Here<'_>,
+    digest: mneme_core::ContentDigest,
+    blocked: &std::collections::BTreeSet<mneme_core::RecordId>,
+) -> Result<bool, super::Error> {
     for asset in bundle
         .assets
         .iter()
         .filter(|asset| asset.digest == digest && !blocked.contains(&asset.source))
     {
-        if !here.contains(&(asset.scope.clone(), digest)) && !holds_digest(&local, asset)? {
+        if !here.contains(&(asset.scope.clone(), digest)) && !holds_digest(local, asset)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether every asset this one needs is here whole: held, its bytes held in
+/// its own scope, or with every chunk received.
+fn are_parents_here(
+    root: &std::path::Path,
+    bundle: &super::SignedBundle,
+    asset: &Asset,
+    (local, here): Here<'_>,
+) -> Result<bool, super::Error> {
+    for parent in bundle
+        .assets
+        .iter()
+        .filter(|parent| parent.source != asset.source && parent.dependents.contains(&asset.source))
+    {
+        let directory = mneme_store::payload::transfer_path(root, &bundle.key_id, parent.digest)?;
+        let is_here = holds_digest(local, parent)?
+            || here.contains(&(parent.scope.clone(), parent.digest))
+            || held_chunks(&directory, parent)? == parent.chunk_count();
+        if !is_here {
             return Ok(false);
         }
     }
@@ -867,8 +919,12 @@ pub fn wanted_chunks(
     let blocked =
         super::blocked_records(&bundle.bundle.records, &workspace.active_suppressions()?)?;
     let mut wanted = Vec::with_capacity(bundle.bundle.assets.len());
-    for asset in &bundle.bundle.assets {
-        let is_listed = wanted.iter().any(|(digest, _)| *digest == asset.digest);
+    for (index, asset) in bundle.bundle.assets.iter().enumerate() {
+        let is_listed = wanted.iter().any(
+            |(_, (digest, _)): &(usize, (mneme_core::ContentDigest, Vec<u32>))| {
+                *digest == asset.digest
+            },
+        );
         let is_satisfied = blocked.contains(&asset.source)
             || here.contains(&(asset.scope.clone(), asset.digest))
             || holds_digest(&local, asset)?;
@@ -880,6 +936,13 @@ pub fn wanted_chunks(
             &bundle.bundle.key_id,
             asset.digest,
         )?;
+        // An asset that may not start yet is not wanted yet.
+        let is_started = held_chunks(&directory, asset)? > 0;
+        if !is_started
+            && !are_parents_here(workspace.root(), &bundle.bundle, asset, (&local, &here))?
+        {
+            continue;
+        }
         let mut missing = Vec::with_capacity(asset.chunks.len());
         for index in 0..asset.chunk_count() {
             let Some((_, length)) = asset.chunk_span(index) else {
@@ -890,11 +953,22 @@ pub fn wanted_chunks(
             }
         }
         if !missing.is_empty() {
-            wanted.push((asset.digest, missing));
+            wanted.push((index, (asset.digest, missing)));
         }
     }
-    wanted.sort();
-    Ok(wanted)
+    // Parents first, so a transport sends what others need before them.
+    let indexes = wanted.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+    let (order, tangled) = parents_first(&bundle.bundle.assets, &indexes);
+    Ok(order
+        .into_iter()
+        .chain(tangled)
+        .filter_map(|index| {
+            wanted
+                .iter()
+                .find(|(listed, _)| *listed == index)
+                .map(|(_, entry)| entry.clone())
+        })
+        .collect())
 }
 
 /// Remove every transfer of one source's bytes, whichever device sent it,
@@ -915,6 +989,39 @@ pub fn release_pending_source(
                 Ok(Some((_, asset))) if asset.source == source
             );
             if is_named {
+                remove_transfer(&directory)?;
+                released = released.saturating_add(1);
+            }
+        }
+    }
+    Ok(released)
+}
+
+/// Remove the transfers of the bundles' issuers that none of the bundles
+/// names, as when a bundle left the shared folder before its bytes arrived,
+/// and return how many were removed.
+pub fn release_unnamed(
+    workspace: &mneme_store::Workspace,
+    bundles: &[&super::AuthenticatedBundle],
+) -> Result<u64, super::Error> {
+    let root = workspace.root();
+    let named = bundles
+        .iter()
+        .flat_map(|bundle| {
+            bundle.bundle.assets.iter().map(|asset| {
+                mneme_store::payload::transfer_path(root, &bundle.bundle.key_id, asset.digest)
+            })
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    let owners = bundles
+        .iter()
+        .map(|bundle| bundle.bundle.key_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let transfers = root.join(mneme_store::payload::TRANSFER_DIRECTORY);
+    let mut released = 0_u64;
+    for owner in owners {
+        for directory in every_directory(&transfers.join(owner))? {
+            if !named.contains(&directory) {
                 remove_transfer(&directory)?;
                 released = released.saturating_add(1);
             }
@@ -979,7 +1086,8 @@ pub fn pending_assets(
     };
     let mut pending = Vec::with_capacity(directories.len());
     for directory in directories {
-        let Some((issuer, asset)) = read_manifest(&directory)? else {
+        // A manifest that cannot be read names nothing arriving.
+        let Ok(Some((issuer, asset))) = read_manifest(&directory) else {
             continue;
         };
         if is_forgotten(&asset) {

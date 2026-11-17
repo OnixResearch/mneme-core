@@ -666,7 +666,7 @@ fn an_asset_request_names_one_shared_source_and_learns_nothing_of_others() {
 }
 
 #[test]
-fn a_large_transcript_waits_with_its_recording_and_keeps_its_chunks() {
+fn a_derived_original_waits_until_what_it_needs_is_here() {
     let (_origin_temp, mut origin) = common::setup();
     let text = TRANSCRIPT
         .iter()
@@ -686,23 +686,34 @@ fn a_large_transcript_waits_with_its_recording_and_keeps_its_chunks() {
         .iter()
         .find(|asset| asset.source() == recording.transcript.source())
         .expect("the transcript's asset");
+    // The transcript needs its recording: none of its chunks is taken, and no
+    // room is held for it, before the recording is here whole.
     let chunk = mneme_memory::exchange::asset_chunk(&origin, transcript, 0).expect("chunk");
-    mneme_memory::exchange::receive_chunk(&receiver, &bundle, transcript.digest(), 0, &chunk)
-        .expect("the transcript's only chunk");
-    let waiting = import(&mut receiver, &export.bundle);
-    assert!(waiting.pending.contains(&transcript.digest()));
-    assert!(waiting.deferred.contains(&recording.transcript.source()));
-    let usage = mneme_memory::exchange::transfer_usage(&receiver).expect("usage");
-    assert_eq!(usage.chunks, 1, "the waiting transcript keeps its chunk");
-    let wanted = mneme_memory::exchange::wanted_chunks(&receiver, &bundle).expect("wanted");
+    assert!(matches!(
+        mneme_memory::exchange::receive_chunk(&receiver, &bundle, transcript.digest(), 0, &chunk),
+        Err(mneme_memory::exchange::Error::AssetWaiting)
+    ));
     assert_eq!(
-        wanted,
+        mneme_memory::exchange::transfer_usage(&receiver)
+            .expect("usage")
+            .chunks,
+        0
+    );
+    assert_eq!(
+        mneme_memory::exchange::wanted_chunks(&receiver, &bundle).expect("wanted"),
         vec![(recording_digest(&recording), vec![0, 1, 2, 3])],
-        "only the recording's chunks are wanted"
+        "only the recording is wanted"
     );
     drop(receiver);
     let mut receiver = reopen(&receiver_temp);
     send(&origin, &receiver, &export, &[0, 1, 2, 3]);
+    assert_eq!(
+        mneme_memory::exchange::wanted_chunks(&receiver, &bundle).expect("wanted"),
+        vec![(transcript.digest(), vec![0])],
+        "then the transcript"
+    );
+    mneme_memory::exchange::receive_chunk(&receiver, &bundle, transcript.digest(), 0, &chunk)
+        .expect("the transcript's only chunk");
     let finished = import(&mut receiver, &export.bundle);
     assert!(finished.imported.contains(&recording.transcript.source()));
     assert!(finished.imported.contains(&recording.audio.source()));
@@ -895,6 +906,14 @@ fn bytes_held_in_another_scope_are_not_taken_for_a_peers_source() {
         wanted,
         vec![(recording_digest(&recording), vec![0, 1, 2, 3])]
     );
+    let receipt = send(&origin, &receiver, &export, &[0]);
+    assert!(receipt[0].is_new, "the chunk is kept, not taken as held");
+    assert_eq!(
+        mneme_memory::exchange::transfer_usage(&receiver)
+            .expect("usage")
+            .chunks,
+        1
+    );
     let outcome = import(&mut receiver, &export.bundle);
     assert!(!outcome.imported.contains(&recording.audio.source()));
     assert_eq!(outcome.pending, vec![recording_digest(&recording)]);
@@ -1059,4 +1078,63 @@ fn deliver_digest(
         mneme_memory::exchange::receive_chunk(receiver, bundle, digest, index, &chunk)
             .expect("chunk received");
     }
+}
+
+#[test]
+fn an_unreadable_transfer_manifest_names_nothing_arriving() {
+    let (_origin_temp, origin, recording) = origin_with_recording();
+    let export = export(&origin);
+    let (receiver_temp, mut receiver) = receiver();
+    let broken = receiver_temp
+        .path()
+        .join("transfers")
+        .join("ab".repeat(32))
+        .join("cd".repeat(32));
+    std::fs::create_dir_all(&broken).expect("broken transfer");
+    std::fs::write(broken.join("manifest"), b"not a manifest").expect("broken manifest");
+    import(&mut receiver, &export.bundle);
+    send(&origin, &receiver, &export, &[0]);
+    let pending = mneme_memory::exchange::pending_assets(&receiver).expect("pending");
+    assert_eq!(
+        pending.iter().map(|asset| asset.source).collect::<Vec<_>>(),
+        vec![recording.audio.source()]
+    );
+    assert_eq!(
+        mneme_memory::exchange::media_arrival(
+            &receiver,
+            recording.audio.source(),
+            recording.audio.revision()
+        )
+        .expect("arrival"),
+        mneme_memory::exchange::MediaArrival::Pending {
+            received: 1,
+            total: 4
+        }
+    );
+}
+
+#[test]
+fn a_transfer_no_current_bundle_names_is_released() {
+    let (_origin_temp, origin, _recording) = origin_with_recording();
+    let first = export(&origin);
+    let (_receiver_temp, mut receiver) = receiver();
+    import(&mut receiver, &first.bundle);
+    send(&origin, &receiver, &first, &[0]);
+    let naming = authenticate(&first.bundle);
+    assert_eq!(
+        mneme_memory::exchange::release_unnamed(&receiver, &[&naming]).expect("release"),
+        0
+    );
+    // The same device's only bundle now names another recording.
+    let (_other_temp, mut other) = common::setup();
+    record(&mut other, 0xb0, AUDIO_BYTES);
+    let later = authenticate(&export(&other).bundle);
+    assert_eq!(
+        mneme_memory::exchange::release_unnamed(&receiver, &[&later]).expect("release"),
+        1
+    );
+    assert_eq!(
+        mneme_memory::exchange::transfer_usage(&receiver).expect("usage"),
+        mneme_memory::exchange::TransferUsage::default()
+    );
 }

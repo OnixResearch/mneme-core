@@ -20,8 +20,8 @@ mod transfers;
 pub use transfers::{
     ASSET_CHUNK_BYTES, Asset, ChunkReceipt, MAX_EXCHANGE_ASSET_BYTES, MAX_TRANSFER_BYTES,
     MediaArrival, PendingAsset, TransferUsage, asset_chunk, grant_asset, media_arrival,
-    pending_assets, receive_chunk, release_pending_source, release_untrusted, transfer_usage,
-    wanted_chunks,
+    pending_assets, receive_chunk, release_pending_source, release_unnamed, release_untrusted,
+    transfer_usage, wanted_chunks,
 };
 
 const BUNDLE_LABEL: &str = "mneme-record-exchange-v1";
@@ -284,6 +284,10 @@ pub enum Error {
     /// The asset's source or bytes were forgotten here; its chunks are refused.
     #[error("asset was forgotten on this device; its bytes are refused")]
     AssetForgotten,
+    /// The asset needs another of the bundle's assets that is not here whole
+    /// yet; its chunks are taken once that one is.
+    #[error("asset waits for one it needs to arrive first")]
+    AssetWaiting,
     /// The selected source cannot be sent.
     #[error("the selected source is not available to send")]
     AssetUnavailable,

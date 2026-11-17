@@ -116,14 +116,17 @@ started transfer keeps every chunk, so it always finishes. Until every chunk
 is here and the whole asset hashes to its digest, `import_records` defers the
 source and everything that depends on it, including text recognized from it,
 and reports them; a later import of the same bundle publishes them, parents
-before what needs them, up to 512 MiB of assets per import. What waits for an
-asset still arriving is decided before any bytes are read, and keeps its own
-chunks. Bytes a source of the asset's own scope already holds are used without
-chunks; bytes held in another scope never are.
-`wanted_chunks` names the chunks a transport still needs to send,
-`pending_assets`, `transfer_usage` and `media_arrival` report what is
-arriving, and a pending source is never in the ledger.
-`release_untrusted` removes transfers from keys no longer trusted. A
+before what needs them, up to 512 MiB of assets per import. A derived asset's
+transfer starts only once every asset it needs is here whole (`AssetWaiting`
+until then), so it never takes room its parent needs. What waits for an asset
+still arriving is decided before any bytes are read, and keeps its own chunks.
+Bytes a source of the asset's own scope already holds are used without
+chunks; bytes held in another scope never are. `wanted_chunks` names the
+chunks a transport still needs to send, parents first; `pending_assets`,
+`transfer_usage` and `media_arrival` report what is arriving, and a pending
+source is never in the ledger. `release_untrusted` removes transfers from keys
+no longer trusted, and `release_unnamed` those none of an issuer's current
+bundles names; a manifest that cannot be read names nothing arriving. A
 chunk of a forgotten source, or of bytes whose replay a forget blocks, is
 refused and its transfer removed; applying a barrier the first time removes
 what arrived of its source or bytes, an import refuses the asset, and a local
