@@ -509,7 +509,7 @@ pub(super) fn arrivals(
 }
 
 /// Remove the transfers of assets an import published.
-pub(super) fn finish_transfers(
+pub(super) fn release_published(
     root: &std::path::Path,
     owner: &str,
     published: &[mneme_core::ContentDigest],
@@ -524,8 +524,9 @@ pub(super) fn finish_transfers(
 pub fn pending_assets(
     workspace: &mneme_store::Workspace,
 ) -> Result<Vec<PendingAsset>, super::Error> {
-    let mut pending = Vec::new();
-    for directory in transfer_directories(workspace.root())? {
+    let directories = transfer_directories(workspace.root())?;
+    let mut pending = Vec::with_capacity(directories.len());
+    for directory in directories {
         let Some((issuer, asset)) = read_manifest(&directory)? else {
             continue;
         };

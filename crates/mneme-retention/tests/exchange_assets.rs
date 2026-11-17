@@ -239,7 +239,8 @@ fn assert_media_and_text_absent(workspace: &mut mneme_store::Workspace, recordin
         recording.transcript.source(),
         recording.segment,
     ] {
-        assert!(view.source(record).is_err() && view.recognition_segment(record).is_err());
+        assert!(view.source(record).is_err());
+        assert!(view.recognition_segment(record).is_err());
     }
 }
 
@@ -290,7 +291,8 @@ fn forgetting_during_a_transfer_and_a_delayed_replay_suppress_the_media_and_its_
         delayed.refused,
         vec![mneme_core::ContentDigest::of_source_bytes(&recording.bytes)]
     );
-    assert!(delayed.imported.is_empty() && delayed.pending.is_empty());
+    assert!(delayed.imported.is_empty());
+    assert!(delayed.pending.is_empty());
     assert_media_and_text_absent(&mut receiver, &recording);
 
     drop(receiver);

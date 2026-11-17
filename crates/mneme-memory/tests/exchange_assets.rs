@@ -116,7 +116,38 @@ fn record(workspace: &mut mneme_store::Workspace, seed: u8, length: usize) -> Re
         audio,
     )
     .expect("recognized text");
-    let audio_digest = mneme_core::ContentDigest::of_source_bytes(&bytes);
+    let (run_record, segment_record) = recognition(
+        audio,
+        transcript,
+        (run, segment),
+        mneme_core::ContentDigest::of_source_bytes(&bytes),
+        seed,
+    );
+    common::engine(workspace)
+        .commit(common::batch(
+            &format!("recording-{seed}"),
+            vec![audio_record, text, run_record, segment_record],
+            vec![audio_blob, text_blob],
+        ))
+        .expect("commit recording");
+    Recording {
+        audio,
+        transcript,
+        run,
+        segment,
+        bytes,
+    }
+}
+
+/// The run that recognized `transcript` from `audio`, and its one passage.
+fn recognition(
+    audio: mneme_core::SourcePin,
+    transcript: mneme_core::SourcePin,
+    (run, segment): (mneme_core::RecordId, mneme_core::RecordId),
+    audio_digest: mneme_core::ContentDigest,
+    seed: u8,
+) -> (mneme_store::RecordDraft, mneme_store::RecordDraft) {
+    let time_base = mneme_core::TimeBase::new(1, 1_000).expect("time base");
     let run_record = mneme_memory::build_recognition_run(
         run,
         common::rev(seed.wrapping_add(5)),
@@ -159,20 +190,7 @@ fn record(workspace: &mut mneme_store::Workspace, seed: u8, length: usize) -> Re
         },
     )
     .expect("recognition segment");
-    common::engine(workspace)
-        .commit(common::batch(
-            &format!("recording-{seed}"),
-            vec![audio_record, text, run_record, segment_record],
-            vec![audio_blob, text_blob],
-        ))
-        .expect("commit recording");
-    Recording {
-        audio,
-        transcript,
-        run,
-        segment,
-        bytes,
-    }
+    (run_record, segment_record)
 }
 
 fn origin_with_recording() -> (tempfile::TempDir, mneme_store::Workspace, Recording) {
@@ -300,7 +318,8 @@ fn a_recording_larger_than_a_bundle_arrives_in_chunks_and_its_passage_opens() {
 
     let second = import(&mut receiver, &export.bundle);
     assert_eq!(second.imported, waiting);
-    assert!(second.deferred.is_empty() && second.pending.is_empty());
+    assert!(second.deferred.is_empty());
+    assert!(second.pending.is_empty());
     let view = common::engine(&mut receiver).view().expect("receiver view");
     assert_eq!(
         view.source_status(recording.audio.source()).expect("audio"),

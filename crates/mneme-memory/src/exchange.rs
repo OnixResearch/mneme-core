@@ -15,9 +15,9 @@
 use ed25519_dalek::Signer as _;
 use sha2::Digest as _;
 
-mod assets;
+mod transfers;
 
-pub use assets::{
+pub use transfers::{
     ASSET_CHUNK_BYTES, Asset, ChunkReceipt, MAX_EXCHANGE_ASSET_BYTES, MAX_TRANSFER_BYTES,
     MediaArrival, PendingAsset, TransferUsage, asset_chunk, grant_asset, media_arrival,
     pending_assets, receive_chunk, transfer_usage,
@@ -345,7 +345,7 @@ pub fn export_workspace(
         }
     }
     bundle.version = Version::Two;
-    bundle.sources = source_items(workspace, &bundle.records, assets::INLINE_SOURCE_BYTES)?;
+    bundle.sources = source_items(workspace, &bundle.records, transfers::INLINE_SOURCE_BYTES)?;
     bundle.assets = asset_items(workspace, &bundle.records)?;
     bundle.sign(&signing_key);
     Ok(Export {
@@ -433,14 +433,16 @@ fn asset_items(
         let mneme_core::SourceContent::Retained(retained) = &source.content else {
             continue;
         };
-        if retained.byte_length() <= assets::INLINE_SOURCE_BYTES {
+        if retained.byte_length() <= transfers::INLINE_SOURCE_BYTES {
             continue;
         }
         if items.len() >= MAX_SOURCE_BLOBS {
             return Err(Error::MalformedBundle);
         }
-        let dependents = assets::dependents_of(records, record.record_id);
-        items.push(assets::asset_of(workspace, record, retained, dependents)?);
+        let dependents = transfers::dependents_of(records, record.record_id);
+        items.push(transfers::asset_of(
+            workspace, record, retained, dependents,
+        )?);
     }
     items.sort();
     Ok(items)
@@ -472,7 +474,7 @@ pub fn authenticate_json(input: &[u8], policy: &Policy) -> Result<AuthenticatedB
         .iter()
         .map(|source| source.digest)
         .collect::<std::collections::BTreeSet<_>>();
-    assets::check_assets(&bundle.records, &inline, &bundle.assets)?;
+    transfers::check_assets(&bundle.records, &inline, &bundle.assets)?;
     let digest = mneme_core::ContentDigest::of_payload(&bundle.signed_value());
     Ok(AuthenticatedBundle { bundle, digest })
 }
@@ -545,7 +547,7 @@ pub fn import_records(
         .iter()
         .map(|record| (record.record_id, record))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let arrivals = assets::arrivals(workspace, &authenticated.bundle, &blocked, &local)?;
+    let arrivals = transfers::arrivals(workspace, &authenticated.bundle, &blocked, &local)?;
     let published = authenticated
         .bundle
         .assets
@@ -560,8 +562,10 @@ pub fn import_records(
         &snapshot,
         &authenticated.bundle,
         &note_map,
-        &held_back,
-        arrivals.ready,
+        Admission {
+            held_back: &held_back,
+            ready: arrivals.ready,
+        },
     )?;
     let mut outcome = ImportOutcome {
         imported: Vec::new(),
@@ -589,14 +593,21 @@ pub fn import_records(
             &mut outcome,
         )?;
     }
-    assets::finish_transfers(workspace.root(), &authenticated.bundle.key_id, &published)?;
-    outcome.imported.sort();
-    outcome.imported.dedup();
-    outcome.already_present.sort();
-    outcome.already_present.dedup();
-    outcome.decisions.sort();
-    outcome.decisions.dedup();
-    Ok(outcome)
+    transfers::release_published(workspace.root(), &authenticated.bundle.key_id, &published)?;
+    Ok(settled(outcome))
+}
+
+/// An outcome with each list in order and named once.
+fn settled(mut outcome: ImportOutcome) -> ImportOutcome {
+    for records in [
+        &mut outcome.imported,
+        &mut outcome.already_present,
+        &mut outcome.decisions,
+    ] {
+        records.sort();
+        records.dedup();
+    }
+    outcome
 }
 
 #[derive(Clone, Debug)]
@@ -619,6 +630,14 @@ struct RecordPreparation<'a> {
     note_map: &'a NoteIdentityMap,
     blocked: &'a std::collections::BTreeSet<mneme_core::RecordId>,
     local: std::collections::BTreeMap<mneme_core::RecordId, &'a mneme_core::RecordEnvelope>,
+}
+
+/// What an import admits besides the bundle: the records it holds back,
+/// forgotten or waiting for an asset, and the verified bytes of assets it
+/// publishes.
+struct Admission<'a> {
+    held_back: &'a std::collections::BTreeSet<mneme_core::RecordId>,
+    ready: std::collections::BTreeMap<mneme_core::RecordId, Vec<u8>>,
 }
 
 struct ScopeCommit<'a> {
@@ -755,9 +774,12 @@ fn prepare_records(
     snapshot: &mneme_store::Snapshot,
     bundle: &SignedBundle,
     note_map: &NoteIdentityMap,
-    blocked: &std::collections::BTreeSet<mneme_core::RecordId>,
-    mut ready: std::collections::BTreeMap<mneme_core::RecordId, Vec<u8>>,
+    admission: Admission<'_>,
 ) -> Result<Vec<PreparedRecord>, Error> {
+    let Admission {
+        held_back: blocked,
+        mut ready,
+    } = admission;
     let local = snapshot
         .records
         .iter()
@@ -1749,7 +1771,7 @@ impl SignedBundle {
             Version::One => SIGNED_LABEL,
             Version::Two => {
                 fields.push(mneme_core::Value::set(
-                    self.assets.iter().map(assets::asset_value),
+                    self.assets.iter().map(transfers::asset_value),
                 ));
                 SIGNED_LABEL_V2
             }
@@ -1818,7 +1840,7 @@ impl SignedBundle {
         let notes = read_note_set(&signed[6])?;
         let barriers = read_barrier_set(&signed[7])?;
         let assets = match signed.get(8) {
-            Some(value) => assets::read_asset_set(value)?,
+            Some(value) => transfers::read_asset_set(value)?,
             None => Vec::new(),
         };
         let signature_bytes = signed_bytes(&outer[1])?;
