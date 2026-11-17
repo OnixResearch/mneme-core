@@ -1009,10 +1009,9 @@ impl ApiService {
                 )
                 .map_err(|_| crate::error::ApiError::missing())?;
             self.validate_recognition_segment_read(&context, *segment_id, &segment, &media)?;
-            let original = original_location(
-                context.view,
+            let original = context.view.location_on_capture(
                 context.run.input,
-                (segment.media_source, &media),
+                segment.media_source,
                 &segment.location,
             );
             let value = recognition_segment_value(&segment, original.as_ref());
@@ -4097,33 +4096,6 @@ fn source_metadata_value(source: &mneme_memory::SourceView) -> mneme_core::Value
                 .map_or_else(none_value, mneme_core::CorrectionProvenance::to_value),
         ),
     ])
-}
-
-/// Processed images between a segment's media and its run's input, at most.
-const MAX_TRANSFORM_STEPS: usize = 64;
-
-/// Where `location`, given on `media`, lies on the run's input: each processed
-/// image's transform maps one step back toward the input. None when a step has
-/// no transform or does not map, or the chain does not reach the input.
-fn original_location(
-    view: &mneme_memory::View,
-    input: mneme_core::SourcePin,
-    media: (mneme_core::SourcePin, &mneme_memory::SourceView),
-    location: &mneme_core::MediaLocation,
-) -> Option<mneme_core::MediaLocation> {
-    let (mut pin, source) = media;
-    let (mut transform, mut parent) = (source.media_transform, source.derived_from);
-    let mut mapped = location.clone();
-    for _ in 0..=MAX_TRANSFORM_STEPS {
-        if pin == input {
-            return Some(mapped);
-        }
-        mapped = transform?.map_region(&mapped)?;
-        pin = parent?;
-        let step = view.source_at(pin.source(), pin.revision()).ok()?;
-        (transform, parent) = (step.media_transform, step.derived_from);
-    }
-    None
 }
 
 /// One segment mapping; `original` is where its region lies on the run's

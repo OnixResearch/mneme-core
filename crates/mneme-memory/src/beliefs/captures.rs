@@ -48,7 +48,33 @@ impl Selection {
     }
 }
 
+/// Processed derivatives between a segment's media and its capture, at most.
+const MAX_TRANSFORM_STEPS: usize = 64;
+
 impl super::View {
+    /// Where `location`, given on `media`, lies on `capture`: each processed
+    /// derivative's transform maps it one step back toward the capture. `None`
+    /// when a step has no transform or does not map the location, or the chain
+    /// does not reach the capture.
+    pub fn location_on_capture(
+        &self,
+        capture: mneme_core::SourcePin,
+        media: mneme_core::SourcePin,
+        location: &mneme_core::MediaLocation,
+    ) -> Option<mneme_core::MediaLocation> {
+        let mut pin = media;
+        let mut mapped = location.clone();
+        for _ in 0..=MAX_TRANSFORM_STEPS {
+            if pin == capture {
+                return Some(mapped);
+            }
+            let step = self.source_at(pin.source(), pin.revision()).ok()?;
+            mapped = step.media_transform?.map_region(&mapped)?;
+            pin = step.derived_from?;
+        }
+        None
+    }
+
     /// The recognized texts of `capture` that a caller working in `base` may
     /// read, selected per part.
     pub fn capture_texts(
