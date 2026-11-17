@@ -3732,6 +3732,11 @@ fn document_history(
             continue;
         };
         if record.revision_id != pin.revision && loaded.insert(pin.source) {
+            if history.len() >= max_records {
+                return Err(DocumentError::Invalid(
+                    "document source ancestry exceeds the 1M revision bound",
+                ));
+            }
             history.extend(
                 workspace
                     .record_histories_of(snapshot, &std::collections::BTreeSet::from([pin.source]))?

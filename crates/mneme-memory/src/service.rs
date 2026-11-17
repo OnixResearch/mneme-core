@@ -1334,18 +1334,32 @@ fn validate_correction_alignment(
     Ok(())
 }
 
-fn validate_recognition_run(
-    envelope: &mneme_core::RecordEnvelope,
+/// A raw run draft is held to the builders' segment bound, since a longer run
+/// could never be read back, and commits the text it produced: a later run
+/// cannot claim text another run produced.
+fn validate_run_bounds(
+    run: &crate::model::RecognitionRunView,
     context: &BatchValidation<'_>,
 ) -> crate::failure::Result<()> {
-    let run = crate::model::RecognitionRunView::parse(envelope.clone())?;
-    // A raw draft is held to the builder's bound; a longer run could never
-    // be read back.
     if run.segments.len() > mneme_core::MAX_RECOGNITION_SEGMENTS {
         return Err(crate::failure::EvidenceError::policy(
             "a recognition run names more segments than its bound",
         ));
     }
+    if !context.batch_records.contains(&run.output.source()) {
+        return Err(crate::failure::EvidenceError::policy(
+            "a recognition run's text must be committed in the run's own batch",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recognition_run(
+    envelope: &mneme_core::RecordEnvelope,
+    context: &BatchValidation<'_>,
+) -> crate::failure::Result<()> {
+    let run = crate::model::RecognitionRunView::parse(envelope.clone())?;
+    validate_run_bounds(&run, context)?;
     let input_record = context.reference(envelope, run.input.source())?;
     let output_record = context.reference(envelope, run.output.source())?;
     if input_record.kind != mneme_core::RecordKind::SourceRevision
@@ -1355,13 +1369,6 @@ fn validate_recognition_run(
     {
         return Err(crate::failure::EvidenceError::policy(
             "recognition input and output sources must be in the run scope",
-        ));
-    }
-    // The text a run produced is committed with it; a later run cannot claim
-    // text another run produced.
-    if !context.batch_records.contains(&run.output.source()) {
-        return Err(crate::failure::EvidenceError::policy(
-            "a recognition run's text must be committed in the run's own batch",
         ));
     }
     let input = context
@@ -2266,6 +2273,32 @@ pub fn build_unavailable_source_with_digest(
 
 /// Build a pruned revision while preserving acquisition, media extent,
 /// transformation parent, correction lineage, and the exact prior digest.
+/// Keep a source's media extent, transform, frame and ink inventory on a
+/// rewritten revision.
+fn preserve_media_fields(
+    source: &crate::model::SourceView,
+    fields: &mut Vec<(mneme_core::Symbol, mneme_core::Value)>,
+) {
+    if let Some(extent) = source.media_extent {
+        fields.push((mneme_core::Symbol::from("media-extent"), extent.to_value()));
+    }
+    if let Some(transform) = source.media_transform {
+        fields.push((
+            mneme_core::Symbol::from("media-transform"),
+            transform.to_value(),
+        ));
+    }
+    if let Some(frame) = source.media_frame {
+        fields.push((mneme_core::Symbol::from("media-frame"), frame.to_value()));
+    }
+    if let Some(inventory) = &source.ink_inventory {
+        fields.push((
+            mneme_core::Symbol::from("ink-strokes"),
+            inventory.to_value(),
+        ));
+    }
+}
+
 pub fn build_unavailable_source_preserving(
     source: &crate::model::SourceView,
     revision_id: mneme_core::RevisionId,
@@ -2310,24 +2343,7 @@ pub fn build_unavailable_source_preserving(
     if let Some(parent) = source.derived_from {
         fields.push((mneme_core::Symbol::from("derived-from"), parent.to_value()));
     }
-    if let Some(extent) = source.media_extent {
-        fields.push((mneme_core::Symbol::from("media-extent"), extent.to_value()));
-    }
-    if let Some(transform) = source.media_transform {
-        fields.push((
-            mneme_core::Symbol::from("media-transform"),
-            transform.to_value(),
-        ));
-    }
-    if let Some(frame) = source.media_frame {
-        fields.push((mneme_core::Symbol::from("media-frame"), frame.to_value()));
-    }
-    if let Some(inventory) = &source.ink_inventory {
-        fields.push((
-            mneme_core::Symbol::from("ink-strokes"),
-            inventory.to_value(),
-        ));
-    }
+    preserve_media_fields(source, &mut fields);
     if let Some(correction) = &source.correction {
         fields.push((
             mneme_core::Symbol::from("correction"),

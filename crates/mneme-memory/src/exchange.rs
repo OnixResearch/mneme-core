@@ -1364,41 +1364,45 @@ fn needs_history(
     record: &mneme_core::RecordEnvelope,
     current: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RevisionId>,
 ) -> bool {
-    match record.kind {
-        mneme_core::RecordKind::SourceRevision => crate::model::SourceView::parse(record.clone())
-            .is_ok_and(|source| source.acquisition == mneme_core::Acquisition::Corrected),
-        mneme_core::RecordKind::RecognitionRun | mneme_core::RecordKind::RecognitionSegment => {
-            payload_references(&record.payload)
-                .into_iter()
-                .any(|reference| match reference {
-                    mneme_core::Reference::Pinned {
-                        target, revision, ..
-                    } => current.get(&target) != Some(&revision),
-                    mneme_core::Reference::Local { .. }
-                    | mneme_core::Reference::External { .. }
-                    | mneme_core::Reference::Unresolved { .. } => false,
-                })
-        }
-        _ => false,
+    if record.kind == mneme_core::RecordKind::SourceRevision {
+        return crate::model::SourceView::parse(record.clone())
+            .is_ok_and(|source| source.acquisition == mneme_core::Acquisition::Corrected);
     }
+    if record.kind != mneme_core::RecordKind::RecognitionRun
+        && record.kind != mneme_core::RecordKind::RecognitionSegment
+    {
+        return false;
+    }
+    let mut has_history_pin = false;
+    visit_references(&record.payload, |reference| {
+        if let mneme_core::Reference::Pinned {
+            target, revision, ..
+        } = reference
+        {
+            has_history_pin |= current.get(&target) != Some(&revision);
+        }
+    });
+    has_history_pin
 }
 
 fn dependency_targets(
     payload: &mneme_core::Payload,
 ) -> std::collections::BTreeSet<mneme_core::RecordId> {
-    payload_references(payload)
-        .into_iter()
-        .filter_map(|reference| reference.target())
-        .collect()
+    let mut result = std::collections::BTreeSet::new();
+    visit_references(payload, |reference| {
+        if let Some(target) = reference.target() {
+            result.insert(target);
+        }
+    });
+    result
 }
 
-/// Every reference anywhere in `payload`.
-fn payload_references(payload: &mneme_core::Payload) -> Vec<mneme_core::Reference> {
-    let mut result = Vec::new();
+/// Call `visit` with every reference anywhere in `payload`.
+fn visit_references(payload: &mneme_core::Payload, mut visit: impl FnMut(mneme_core::Reference)) {
     let mut pending = vec![payload.to_value()];
     while let Some(value) = pending.pop() {
         if let Some(reference) = reference_value(&value) {
-            result.push(reference);
+            visit(reference);
             continue;
         }
         match value {
@@ -1420,7 +1424,6 @@ fn payload_references(payload: &mneme_core::Payload) -> Vec<mneme_core::Referenc
             | mneme_core::Value::Symbol(_) => {}
         }
     }
-    result
 }
 
 fn is_note_local(
