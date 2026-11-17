@@ -7,14 +7,14 @@
 //! per job, so it excludes runners in any process and is released when its
 //! holder drops it or dies.
 
+/// Random bytes in a temporary progress file's name.
+const TEMPORARY_NAME_BYTES: u32 = 16;
+
 /// Largest progress record a job may keep beside its claim.
 pub const MAX_JOB_PROGRESS_BYTES: usize = 16 * 1_048_576;
 /// [`MAX_JOB_PROGRESS_BYTES`] as a read bound, plus the one byte that shows a
 /// file is longer.
 const PROGRESS_READ_BOUND: u64 = 16 * 1_048_576 + 1;
-
-/// Process-local counter that keeps one process's temporary files apart.
-static TEMPORARY_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Exclusive ownership of one logical job, held until dropped.
 ///
@@ -43,9 +43,16 @@ impl JobClaim {
         let directory = self.progress.parent().ok_or_else(|| {
             crate::error::Failure::UnsupportedLayout("job progress has no directory".to_owned())
         })?;
-        let unique = TEMPORARY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temporary = directory.join(format!(".progress.{}.{unique}.tmp", std::process::id()));
-        write_synced(&temporary, bytes)?;
+        // A random name: a reused process id must not meet a temporary file a
+        // crashed save left behind.
+        let temporary = directory.join(format!(
+            ".progress.{}.tmp",
+            crate::payload::random_hex(TEMPORARY_NAME_BYTES)?
+        ));
+        if let Err(error) = write_synced(&temporary, bytes) {
+            discard(&temporary);
+            return Err(error);
+        }
         if let Err(error) = std::fs::rename(&temporary, &self.progress) {
             discard(&temporary);
             return Err(crate::error::Failure::io(&self.progress, error));

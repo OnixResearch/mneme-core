@@ -93,6 +93,11 @@ impl Job {
             ));
         }
         limits.unit.validate().map_err(Failure::Invalid)?;
+        if !self.access.allows(&self.scope) {
+            return Err(Failure::Invalid(
+                "the job's access does not include its scope".to_owned(),
+            ));
+        }
         let recognizer = &self.recognizer;
         let has_identities = [
             self.job_id.as_str(),
@@ -105,12 +110,12 @@ impl Job {
         ]
         .iter()
         .all(|identity| !identity.trim().is_empty());
-        if !has_identities || !recognizer.worker.executable.is_absolute() {
+        if !has_identities {
             return Err(Failure::Invalid(
-                "a recognition job needs its identities and an absolute worker path".to_owned(),
+                "a recognition job needs its identities".to_owned(),
             ));
         }
-        Ok(())
+        recognizer.worker.validate().map_err(Failure::Invalid)
     }
 }
 

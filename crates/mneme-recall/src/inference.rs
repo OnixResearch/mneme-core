@@ -133,13 +133,21 @@ impl InvocationConfig {
     /// Validate the operator-owned worker command and pinned model identity.
     pub fn validate(&self) -> Result<(), String> {
         self.descriptor.validate()?;
-        if !self.worker.executable.is_absolute() {
+        self.worker.validate()
+    }
+}
+
+impl WorkerCommand {
+    /// Refuse a relative executable, which a search path could resolve to
+    /// anything, and argument lists beyond the hard bounds.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.executable.is_absolute() {
             return Err("worker executable must be an absolute path".to_owned());
         }
-        if self.worker.args.len() > MAX_COMMAND_ARGS {
+        if self.args.len() > MAX_COMMAND_ARGS {
             return Err("worker argument count exceeds the configured hard limit".to_owned());
         }
-        let argument_bytes = self.worker.args.iter().fold(0_usize, |total, argument| {
+        let argument_bytes = self.args.iter().fold(0_usize, |total, argument| {
             total.saturating_add(os_str_bytes(argument).len())
         });
         if argument_bytes > MAX_COMMAND_BYTES {
@@ -383,6 +391,7 @@ pub fn invoke_media(
         configuration_digest: invocation.configuration_digest,
     };
     if let Some(failure) = media_preflight_failure(
+        invocation.worker,
         &invocation.header,
         &invocation.media,
         invocation.limits,
@@ -434,6 +443,7 @@ fn media_input_digest(header: &[u8], media: &[u8]) -> String {
 }
 
 fn media_preflight_failure(
+    worker: &WorkerCommand,
     header: &[u8],
     media: &[u8],
     limits: MediaInvocationLimits,
@@ -445,7 +455,7 @@ fn media_preflight_failure(
             detail: detail.to_owned(),
         })
     };
-    if let Err(detail) = limits.validate() {
+    if let Err(detail) = worker.validate().and_then(|()| limits.validate()) {
         return refused(InvocationStatus::Failed, &detail);
     }
     // One line: the newline after it is the only boundary the worker sees.

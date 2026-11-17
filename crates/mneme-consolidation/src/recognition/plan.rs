@@ -26,9 +26,35 @@ pub(super) fn units(
     max_units: u32,
 ) -> Result<Vec<UnitSelector>, super::Failure> {
     match plan {
-        super::UnitPlan::Whole => Ok(vec![UnitSelector::Whole]),
+        super::UnitPlan::Whole => whole_unit(extent),
         super::UnitPlan::Pages => page_units(extent, max_units),
         super::UnitPlan::AudioChunks { ticks } => audio_units(extent, ticks, max_units),
+    }
+}
+
+/// A whole-capture unit: its answers carry no page, so a multi-page capture is
+/// recognized page by page, and a capture without an extent cannot be aligned
+/// or published at all.
+fn whole_unit(
+    extent: Option<mneme_core::MediaExtent>,
+) -> Result<Vec<UnitSelector>, super::Failure> {
+    match extent {
+        Some(mneme_core::MediaExtent::Audio { .. }) => Ok(vec![UnitSelector::Whole]),
+        Some(
+            mneme_core::MediaExtent::Pages { page_count }
+            | mneme_core::MediaExtent::InkPages { page_count },
+        ) => {
+            if page_count == 1 {
+                Ok(vec![UnitSelector::Whole])
+            } else {
+                Err(super::Failure::Invalid(
+                    "a capture with several pages is recognized page by page".to_owned(),
+                ))
+            }
+        }
+        None => Err(super::Failure::Invalid(
+            "a capture without a media extent cannot be recognized".to_owned(),
+        )),
     }
 }
 

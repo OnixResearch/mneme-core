@@ -4,6 +4,10 @@
 /// The media type of published recognized text.
 const TEXT_MEDIA_TYPE: &str = "text/plain; charset=utf-8";
 
+/// How often publication rechecks the capture and retries when the workspace
+/// moved between the check and the commit.
+const PUBLISH_TRIES: u32 = 3;
+
 /// How a unit's publication ended.
 pub(super) enum Outcome {
     /// The run was committed.
@@ -14,6 +18,14 @@ pub(super) enum Outcome {
     Rejected(String),
     /// The capture can no longer be read under the job.
     Suppressed(String),
+    /// The workspace kept moving between the recheck and the commit.
+    Conflicted(String),
+}
+
+/// The capture as the job may read it, and the revision it was read at.
+pub(super) struct Eligible {
+    pub capture: mneme_memory::SourceView,
+    pub revision: mneme_core::WorkspaceRevisionId,
 }
 
 /// The capture as the job may read it now: still the current revision,
@@ -22,7 +34,7 @@ pub(super) fn eligible_capture(
     workspace: &mut mneme_store::Workspace,
     job: &super::Job,
     digest: mneme_core::ContentDigest,
-) -> Result<Result<mneme_memory::SourceView, String>, super::Failure> {
+) -> Result<Result<Eligible, String>, super::Failure> {
     let view = mneme_memory::Engine::new(workspace, job.access.clone())
         .view()
         .map_err(|error| super::Failure::Store(error.to_string()))?;
@@ -45,7 +57,10 @@ pub(super) fn eligible_capture(
     {
         return Ok(Err("the capture's bytes are no longer retained".to_owned()));
     }
-    Ok(Ok(capture))
+    Ok(Ok(Eligible {
+        capture,
+        revision: view.revision(),
+    }))
 }
 
 /// Whether the run a unit attempt would publish is already committed: a
@@ -105,23 +120,37 @@ pub(super) fn publish(
     if recognized.text.is_empty() && recognized.segments.is_empty() {
         return Ok(Outcome::Empty);
     }
-    if let Err(reason) = eligible_capture(workspace, job, media_digest)? {
-        return Ok(Outcome::Suppressed(reason));
+    for _ in 0..PUBLISH_TRIES {
+        // The commit is made at the revision the capture was checked at, so a
+        // capture revised, pruned or withdrawn since cannot slip through.
+        let eligible = match eligible_capture(workspace, job, media_digest)? {
+            Ok(eligible) => eligible,
+            Err(reason) => return Ok(Outcome::Suppressed(reason)),
+        };
+        let batch = match records(job, (attempt, media_digest), recognized) {
+            Ok(batch) => batch,
+            Err(reason) => return Ok(Outcome::Rejected(reason)),
+        };
+        match mneme_memory::Engine::new(workspace, job.access.clone())
+            .commit_at_base(batch, eligible.revision)
+        {
+            Ok(_) => return Ok(Outcome::Published(attempt.run())),
+            Err(mneme_memory::EvidenceError::Store(
+                mneme_store::Failure::StaleBase { .. }
+                | mneme_store::Failure::BarrierAdvanced { .. },
+            )) => {}
+            Err(
+                error @ (mneme_memory::EvidenceError::Policy(_)
+                | mneme_memory::EvidenceError::Validation(_)
+                | mneme_memory::EvidenceError::Invalid(_)
+                | mneme_memory::EvidenceError::InvalidRecord { .. }),
+            ) => return Ok(Outcome::Rejected(error.to_string())),
+            Err(error) => return Err(super::Failure::Store(error.to_string())),
+        }
     }
-    let batch = match records(job, (attempt, media_digest), recognized) {
-        Ok(batch) => batch,
-        Err(reason) => return Ok(Outcome::Rejected(reason)),
-    };
-    match mneme_memory::Engine::new(workspace, job.access.clone()).commit(batch) {
-        Ok(_) => Ok(Outcome::Published(attempt.run())),
-        Err(
-            error @ (mneme_memory::EvidenceError::Policy(_)
-            | mneme_memory::EvidenceError::Validation(_)
-            | mneme_memory::EvidenceError::Invalid(_)
-            | mneme_memory::EvidenceError::InvalidRecord { .. }),
-        ) => Ok(Outcome::Rejected(error.to_string())),
-        Err(error) => Err(super::Failure::Store(error.to_string())),
-    }
+    Ok(Outcome::Conflicted(
+        "the workspace kept changing while the unit was published".to_owned(),
+    ))
 }
 
 /// The text, run and segment records of one unit attempt, as one batch.

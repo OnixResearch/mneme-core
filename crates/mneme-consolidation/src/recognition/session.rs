@@ -74,6 +74,7 @@ pub fn status(
     workspace: &mneme_store::Workspace,
     job: &super::Job,
 ) -> Result<Option<super::Report>, super::Failure> {
+    job.validate()?;
     let identity = super::plan::JobIdentity::of(job);
     let Some(bytes) = workspace
         .job_progress(&identity.claim)
@@ -205,6 +206,16 @@ impl<'w> Claimed<'w> {
             if control.is_cancelled() || started.elapsed() >= self.job.limits.max_run_time {
                 break;
             }
+            // The capture is checked again before its bytes reach each worker:
+            // a capture forgotten or revised during an earlier unit is never
+            // sent again.
+            if let Err(reason) =
+                super::publication::eligible_capture(self.workspace, self.job, digest)?
+            {
+                self.progress
+                    .settle_pending(super::UnitState::Suppressed, &reason);
+                break;
+            }
             let unit = UnitRun {
                 index,
                 capture: &capture,
@@ -234,7 +245,7 @@ impl<'w> Claimed<'w> {
             return Ok(None);
         };
         match super::publication::eligible_capture(self.workspace, self.job, digest)? {
-            Ok(capture) => Ok(Some((capture, digest))),
+            Ok(eligible) => Ok(Some((eligible.capture, digest))),
             Err(reason) => {
                 self.progress
                     .settle_pending(super::UnitState::Suppressed, &reason);
@@ -313,6 +324,12 @@ impl Claimed<'_> {
             unit.control,
         );
         self.charge_outcome(&outcome)?;
+        if outcome.status == mneme_recall::inference::InvocationStatus::Unavailable {
+            // Nothing ran, so nothing was published under this attempt: the
+            // attempt is given back and only the invocation stays charged.
+            let reserved = &mut self.progress.units[unit.index];
+            reserved.attempts = reserved.attempts.saturating_sub(1);
+        }
         let settled = self.settle(unit, selector, &outcome)?;
         let flow = settled.flow;
         self.record(unit.index, settled);
@@ -464,6 +481,9 @@ impl Claimed<'_> {
             super::publication::Outcome::Suppressed(reason) => {
                 Settled::new(super::UnitState::Suppressed, Some(&reason), Flow::Stop)
             }
+            super::publication::Outcome::Conflicted(reason) => {
+                Settled::new(super::UnitState::Failed, Some(&reason), Flow::Continue)
+            }
         })
     }
 }
@@ -501,7 +521,8 @@ fn plan(
         ));
     };
     let capture = super::publication::eligible_capture(workspace, job, digest)?
-        .map_err(super::Failure::Invalid)?;
+        .map_err(super::Failure::Invalid)?
+        .capture;
     let selectors = super::plan::units(job.plan, capture.media_extent, job.limits.max_units)?;
     Ok(super::durable::Progress::new(
         identity.definition.clone(),

@@ -25,6 +25,10 @@ esac"#;
 const BLOCKING: &str = r#"while [ ! -e "$2" ]; do :; done
 printf '{"status":"complete","text":"late words"}'"#;
 
+/// Waits for the release file, then declines the unit.
+const BLOCKING_UNSUPPORTED: &str = r#"while [ ! -e "$2" ]; do :; done
+printf '{"status":"unsupported"}'"#;
+
 /// Never answers.
 const ENDLESS: &str = "while :; do :; done";
 
@@ -75,6 +79,12 @@ fn scan(
 ) {
     let temp = tempfile::tempdir().expect("temp");
     let mut workspace = mneme_store::Workspace::create(temp.path(), config()).expect("create");
+    let media = capture_scan(&mut workspace, pages);
+    (temp, workspace, media)
+}
+
+/// Commit a captured scan of `pages` 400x300 pages.
+fn capture_scan(workspace: &mut mneme_store::Workspace, pages: u32) -> mneme_core::SourcePin {
     let media = mneme_core::SourcePin::new(
         mneme_core::RecordId::from_bytes([0x51; 16]),
         mneme_core::RevisionId::from_bytes([0x52; 16]),
@@ -103,8 +113,17 @@ fn scan(
         },
     )
     .expect("captured scan");
-    commit(&mut workspace, "capture", (vec![record], vec![blob]));
-    (temp, workspace, media)
+    commit(workspace, "capture", (vec![record], vec![blob]));
+    media
+}
+
+/// Rewrite the job's saved progress, as a runner that stopped might have left it.
+fn edit_progress(root: &std::path::Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let path = progress_file(root);
+    let mut progress: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("progress");
+    edit(&mut progress);
+    std::fs::write(&path, serde_json::to_vec(&progress).expect("encode")).expect("write");
 }
 
 /// A shell worker that reads its header, drains the media, records its start
@@ -116,7 +135,7 @@ fn worker(
 ) -> mneme_recall::inference::WorkerCommand {
     let script = format!(
         "IFS= read -r header; while IFS= read -r line || [ -n \"$line\" ]; do :; done; \
-         printf 'start\\n' >> \"$1\"; {answer}"
+         printf '%s' \"$\" > \"$1.pid\"; printf 'start\\n' >> \"$1\"; {answer}"
     );
     mneme_recall::inference::WorkerCommand {
         executable: std::path::PathBuf::from("/bin/sh"),
@@ -275,37 +294,44 @@ fn a_restart_reconciles_committed_units_and_never_redispatches_uncertain_ones() 
         std::time::Duration::from_secs(60),
     );
     let control = mneme_recall::inference::InvocationControl::new();
+    mneme_consolidation::recognition::queue(&mut workspace, &job).expect("queue");
+    // As if a runner had reserved unit 2 and stopped before its worker answered.
+    edit_progress(temp.path(), |progress| {
+        progress["units"][2]["state"] = "dispatched".into();
+        progress["units"][2]["attempts"] = 1.into();
+    });
     let first =
-        mneme_consolidation::recognition::run(&mut workspace, &job, &control).expect("first run");
-    // As if a runner had stopped twice: after committing unit 1 but before
-    // saving it, and after reserving a new attempt of unit 2.
-    let path = progress_file(temp.path());
-    let mut progress: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("progress");
-    progress["units"][1]["state"] = "dispatched".into();
-    progress["units"][2]["state"] = "dispatched".into();
-    progress["units"][2]["attempts"] = 2.into();
-    std::fs::write(&path, serde_json::to_vec(&progress).expect("encode")).expect("write");
-    let mut resumed = open(temp.path());
-    let report =
-        mneme_consolidation::recognition::run(&mut resumed, &job, &control).expect("resume");
+        mneme_consolidation::recognition::run(&mut open(temp.path()), &job, &control).expect("run");
     assert_eq!(
-        report.units[1].state,
-        mneme_consolidation::recognition::UnitState::Published
-    );
-    assert_eq!(
-        report.units[1].run, first.units[1].run,
-        "reconciled, not repeated"
-    );
-    assert_eq!(
-        report.units[2].state,
-        mneme_consolidation::recognition::UnitState::Uncertain
+        states(&first),
+        [
+            mneme_consolidation::recognition::UnitState::Published,
+            mneme_consolidation::recognition::UnitState::Published,
+            mneme_consolidation::recognition::UnitState::Uncertain,
+        ]
     );
     assert_eq!(
         starts(&log),
-        3,
-        "nothing was dispatched again automatically"
+        2,
+        "the uncertain unit was not dispatched again"
     );
+    // As if a runner had committed unit 0's run and stopped before saving that.
+    edit_progress(temp.path(), |progress| {
+        progress["units"][0]["state"] = "dispatched".into();
+        progress["units"][0]["run"] = serde_json::Value::Null;
+    });
+    let mut resumed = open(temp.path());
+    let reconciled =
+        mneme_consolidation::recognition::run(&mut resumed, &job, &control).expect("resume");
+    assert_eq!(
+        reconciled.units[0].state,
+        mneme_consolidation::recognition::UnitState::Published
+    );
+    assert_eq!(
+        reconciled.units[0].run, first.units[0].run,
+        "reconciled to the committed run"
+    );
+    assert_eq!(starts(&log), 2, "a committed unit is not dispatched again");
     let retried = mneme_consolidation::recognition::retry(&mut resumed, &job).expect("retry");
     assert_eq!(
         retried.units[2].state,
@@ -316,12 +342,8 @@ fn a_restart_reconciles_committed_units_and_never_redispatches_uncertain_ones() 
         rerun.state,
         mneme_consolidation::recognition::JobState::Complete
     );
-    assert_eq!((rerun.units[2].attempts, starts(&log)), (3, 4));
-    assert_eq!(
-        runs(&mut resumed).len(),
-        4,
-        "the retried attempt is a new, charged run"
-    );
+    assert_eq!((rerun.units[2].attempts, starts(&log)), (2, 3));
+    assert_eq!(runs(&mut resumed).len(), 3, "no unit was published twice");
 }
 
 #[test]
@@ -360,17 +382,18 @@ fn a_second_runner_is_refused_while_a_unit_runs() {
     assert_eq!(starts(&log), 1);
 }
 
-#[test]
-fn forgetting_the_capture_during_a_unit_suppresses_its_publication() {
-    let (temp, mut workspace, media) = scan(2);
+/// Forget the capture while the first unit's worker runs, then let it answer
+/// with `answer`. Returns the run's report and the workers started.
+fn forget_during_first_unit(answer: &str) -> (mneme_consolidation::recognition::Report, usize) {
+    let (temp, mut workspace, media) = scan(3);
     let (log, release) = (temp.path().join("starts"), temp.path().join("release"));
     let job = job(
         media,
-        worker(BLOCKING, &log, &release),
+        worker(answer, &log, &release),
         std::time::Duration::from_secs(60),
     );
     let control = mneme_recall::inference::InvocationControl::new();
-    std::thread::scope(|threads| {
+    let report = std::thread::scope(|threads| {
         let runner =
             threads.spawn(|| mneme_consolidation::recognition::run(&mut workspace, &job, &control));
         await_start(&log, &runner);
@@ -394,22 +417,42 @@ fn forgetting_the_capture_during_a_unit_suppresses_its_publication() {
             })
             .expect("forget the capture while its unit runs");
         std::fs::write(&release, b"").expect("release");
-        let report = runner.join().expect("runner").expect("run");
-        assert_eq!(
-            states(&report),
-            [mneme_consolidation::recognition::UnitState::Suppressed; 2],
-            "the late answer and the unit not yet run are both suppressed"
-        );
-        assert_eq!(
-            report.state,
-            mneme_consolidation::recognition::JobState::Failed
-        );
+        runner.join().expect("runner").expect("run")
     });
-    assert_eq!(starts(&log), 1);
     assert!(
         runs(&mut open(temp.path())).is_empty(),
         "nothing was published"
     );
+    (report, starts(&log))
+}
+
+#[test]
+fn forgetting_the_capture_during_a_unit_suppresses_its_publication() {
+    let (report, started) = forget_during_first_unit(BLOCKING);
+    assert_eq!(
+        states(&report),
+        [mneme_consolidation::recognition::UnitState::Suppressed; 3],
+        "the late answer and the units not yet run are suppressed"
+    );
+    assert_eq!(
+        report.state,
+        mneme_consolidation::recognition::JobState::Failed
+    );
+    assert_eq!(started, 1);
+}
+
+#[test]
+fn a_forgotten_capture_is_never_sent_to_another_worker() {
+    let (report, started) = forget_during_first_unit(BLOCKING_UNSUPPORTED);
+    assert_eq!(
+        states(&report),
+        [
+            mneme_consolidation::recognition::UnitState::Unsupported,
+            mneme_consolidation::recognition::UnitState::Suppressed,
+            mneme_consolidation::recognition::UnitState::Suppressed,
+        ]
+    );
+    assert_eq!(started, 1, "no later unit received the forgotten capture");
 }
 
 #[test]
@@ -500,8 +543,11 @@ fn a_timed_out_or_cancelled_worker_is_reaped_and_publishes_nothing() {
             mneme_consolidation::recognition::JobState::Cancelled
         );
     });
-    // A release after cancellation reaches no worker: it was reaped.
-    std::fs::write(&release, b"").expect("release");
+    let pid = std::fs::read_to_string(format!("{}.pid", log.display())).expect("worker pid");
+    assert!(
+        !std::path::Path::new(&format!("/proc/{}", pid.trim())).exists(),
+        "the cancelled worker was killed and reaped"
+    );
     assert!(runs(&mut workspace).is_empty());
     let retried = mneme_consolidation::recognition::retry(&mut workspace, &blocked).expect("retry");
     assert_eq!(
@@ -511,29 +557,160 @@ fn a_timed_out_or_cancelled_worker_is_reaped_and_publishes_nothing() {
 }
 
 #[test]
-fn an_unavailable_recognizer_leaves_the_capture_and_the_job_waiting() {
+fn a_recognizer_installed_after_capture_recognizes_the_waiting_units() {
     let (temp, mut workspace, media) = scan(2);
+    let recognizer = temp.path().join("recognizer");
     let missing = mneme_recall::inference::WorkerCommand {
-        executable: temp.path().join("no-recognizer"),
+        executable: recognizer.clone(),
         args: Vec::new(),
     };
     let job = job(media, missing, std::time::Duration::from_secs(60));
+    let control = mneme_recall::inference::InvocationControl::new();
+    // More runs than the job allows attempts per unit.
+    for _ in 0..4 {
+        let waiting = mneme_consolidation::recognition::run(&mut workspace, &job, &control)
+            .expect("run without a recognizer");
+        assert_eq!(
+            waiting.state,
+            mneme_consolidation::recognition::JobState::Queued
+        );
+        assert_eq!(
+            states(&waiting),
+            [mneme_consolidation::recognition::UnitState::Pending; 2]
+        );
+        assert_eq!(
+            waiting.units[0].attempts, 0,
+            "nothing ran, so no attempt is spent"
+        );
+    }
+    assert!(runs(&mut workspace).is_empty());
+    let log = temp.path().join("starts");
+    let script = format!(
+        "#!/bin/sh\nIFS= read -r header; while IFS= read -r line || [ -n \"$line\" ]; do :; done\n\
+         printf 'start\\n' >> '{}'\n{GOOD}\n",
+        log.display()
+    );
+    std::fs::write(&recognizer, script).expect("install the recognizer");
+    std::fs::set_permissions(
+        &recognizer,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("make it executable");
+    let report = mneme_consolidation::recognition::run(&mut workspace, &job, &control)
+        .expect("run with the recognizer");
+    assert_eq!(
+        report.state,
+        mneme_consolidation::recognition::JobState::Complete
+    );
+    assert_eq!(report.units[0].attempts, 1);
+    assert_eq!(
+        report.charged.invocations, 6,
+        "the four unavailable tries stay charged"
+    );
+    assert_eq!(starts(&log), 2);
+}
+
+#[test]
+fn a_job_whose_access_excludes_its_scope_is_refused() {
+    let (temp, mut workspace, media) = scan(1);
+    let log = temp.path().join("starts");
+    let mut job = job(
+        media,
+        worker(GOOD, &log, &log),
+        std::time::Duration::from_secs(60),
+    );
+    job.access = mneme_memory::Access::scopes([mneme_core::ScopeId::new(
+        mneme_core::ScopeClass::Project,
+        "elsewhere",
+    )
+    .expect("scope")]);
+    let control = mneme_recall::inference::InvocationControl::new();
+    assert!(matches!(
+        mneme_consolidation::recognition::run(&mut workspace, &job, &control),
+        Err(mneme_consolidation::recognition::Failure::Invalid(_))
+    ));
+    assert!(matches!(
+        mneme_consolidation::recognition::status(&workspace, &job),
+        Err(mneme_consolidation::recognition::Failure::Invalid(_))
+    ));
+    assert_eq!(starts(&log), 0);
+    assert!(runs(&mut workspace).is_empty());
+}
+
+/// Commits an unrelated record through a second handle just before the armed
+/// handle's next commit transaction starts.
+struct ConcurrentWriter {
+    root: std::path::PathBuf,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl mneme_store::FaultInjector for ConcurrentWriter {
+    fn inject(&self, point: mneme_store::FaultPoint) -> bool {
+        if point == mneme_store::FaultPoint::BeforeCommitTransaction
+            && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            let note = mneme_memory::build_source(
+                mneme_core::RecordId::from_bytes([0x71; 16]),
+                mneme_core::RevisionId::from_bytes([0x72; 16]),
+                &scope(),
+                mneme_memory::SourceOptions {
+                    bytes: b"an unrelated note",
+                    media_type: "text/plain",
+                    entity: None,
+                    path_hint: None,
+                },
+            )
+            .expect("note");
+            commit(
+                &mut open(&self.root),
+                "unrelated",
+                (vec![note.0], vec![note.1]),
+            );
+        }
+        false
+    }
+}
+
+#[test]
+fn a_commit_racing_a_publication_is_retried_not_lost() {
+    let temp = tempfile::tempdir().expect("temp");
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut workspace = mneme_store::Workspace::create(
+        temp.path(),
+        mneme_store::WorkspaceConfig {
+            clock: Box::new(mneme_store::FixedClock::new(
+                mneme_core::Timestamp::from_nanos(1_000),
+            )),
+            faults: Box::new(ConcurrentWriter {
+                root: temp.path().to_path_buf(),
+                armed: std::sync::Arc::clone(&armed),
+            }),
+        },
+    )
+    .expect("create");
+    let media = capture_scan(&mut workspace, 2);
+    let log = temp.path().join("starts");
+    let job = job(
+        media,
+        worker(GOOD, &log, &log),
+        std::time::Duration::from_secs(60),
+    );
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
     let report = mneme_consolidation::recognition::run(
         &mut workspace,
         &job,
         &mneme_recall::inference::InvocationControl::new(),
     )
-    .expect("run");
+    .expect("a racing commit does not abort the run");
+    assert!(
+        !armed.load(std::sync::atomic::Ordering::SeqCst),
+        "the race was injected"
+    );
     assert_eq!(
         report.state,
-        mneme_consolidation::recognition::JobState::Queued
+        mneme_consolidation::recognition::JobState::Complete
     );
-    assert_eq!(
-        states(&report),
-        [mneme_consolidation::recognition::UnitState::Pending; 2]
-    );
-    assert_eq!(report.units[0].attempts, 1, "the attempt stays charged");
-    assert!(runs(&mut workspace).is_empty());
+    assert_eq!((starts(&log), runs(&mut workspace).len()), (2, 2));
 }
 
 #[test]
@@ -577,6 +754,20 @@ fn audio_is_divided_into_bounded_chunks_and_a_mismatched_plan_is_refused() {
         Err(mneme_consolidation::recognition::Failure::Invalid(_))
     ));
     audio.plan = mneme_consolidation::recognition::UnitPlan::AudioChunks { ticks: 100 };
+    let mut whole_scan = job(
+        capture_scan(&mut workspace, 3),
+        worker(GOOD, &log, &log),
+        std::time::Duration::from_secs(60),
+    );
+    whole_scan.job_id = "whole-scan".to_owned();
+    whole_scan.plan = mneme_consolidation::recognition::UnitPlan::Whole;
+    assert!(
+        matches!(
+            mneme_consolidation::recognition::queue(&mut workspace, &whole_scan),
+            Err(mneme_consolidation::recognition::Failure::Invalid(_))
+        ),
+        "a multi-page capture is recognized page by page"
+    );
     let queued = mneme_consolidation::recognition::queue(&mut workspace, &audio).expect("queue");
     let selectors: Vec<_> = queued.units.iter().map(|unit| unit.selector).collect();
     assert_eq!(
