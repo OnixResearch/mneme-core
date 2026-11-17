@@ -2547,3 +2547,155 @@ fn disabled_or_unauthorized_reasoning_does_not_block_baseline_recall() {
     assert!(recall.ok, "{:?}", recall.value);
     assert_eq!(context_revision(&recall), seeded.revision);
 }
+
+/// A captured single-page image source, optionally processed from a parent.
+fn image_source(
+    pin: mneme_core::SourcePin,
+    bytes: &[u8],
+    frame: mneme_core::CoordinateFrame,
+    derived: Option<(mneme_core::SourcePin, mneme_core::MediaTransform)>,
+) -> (mneme_store::RecordDraft, mneme_store::SourceBlobDraft) {
+    mneme_memory::build_source_with_provenance(
+        pin.source(),
+        pin.revision(),
+        &cedar(),
+        mneme_memory::SourceOptions {
+            bytes,
+            media_type: "image/png",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_memory::SourceProvenance {
+            acquisition: mneme_core::Acquisition::Captured,
+            derived_from: derived.map(|(parent, _)| parent),
+            media_extent: Some(mneme_core::MediaExtent::Pages { page_count: 1 }),
+            media_transform: derived.map(|(_, transform)| transform),
+            media_frame: Some(frame),
+            ink_inventory: None,
+            correction: None,
+        },
+    )
+    .expect("image source")
+}
+
+#[test]
+fn original_location_follows_every_processing_step_back_to_the_run_input() {
+    let harness = Harness::new();
+    let image = mneme_core::CoordinateFrame::Pixels {
+        width: 400,
+        height: 300,
+    };
+    let crop_frame = mneme_core::CoordinateFrame::Pixels {
+        width: 100,
+        height: 75,
+    };
+    let original = mneme_core::SourcePin::new(rid(0xd0), rev(0xd0));
+    let rotated = mneme_core::SourcePin::new(rid(0xd1), rev(0xd1));
+    let crop = mneme_core::SourcePin::new(rid(0xd2), rev(0xd2));
+    let rotate =
+        mneme_core::MediaTransform::new(image, image, [-1.0, 0.0, 400.0, 0.0, -1.0, 300.0])
+            .expect("180 degree rotation");
+    let cut = mneme_core::MediaTransform::new(crop_frame, image, [1.0, 0.0, 50.0, 0.0, 1.0, 40.0])
+        .expect("crop of the rotated image");
+    let (original_record, original_blob) = image_source(original, b"original image", image, None);
+    let (rotated_record, rotated_blob) =
+        image_source(rotated, b"rotated image", image, Some((original, rotate)));
+    let (crop_record, crop_blob) =
+        image_source(crop, b"cropped image", crop_frame, Some((rotated, cut)));
+    harness.operator_commit(
+        &cedar(),
+        "rotated-and-cropped-images",
+        vec![original_record, rotated_record, crop_record],
+        vec![original_blob, rotated_blob, crop_blob],
+    );
+    let text = mneme_core::SourcePin::new(rid(0xd3), rev(0xd3));
+    let (text_record, text_blob) = mneme_memory::build_recognized_source(
+        text.source(),
+        text.revision(),
+        &cedar(),
+        mneme_memory::SourceOptions {
+            bytes: b"page words",
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        original,
+    )
+    .expect("recognized text");
+    let run_id = rid(0xd4);
+    let segment_id = rid(0xd5);
+    let input_digest = mneme_core::ContentDigest::of_source_bytes(b"original image");
+    let run = mneme_memory::build_recognition_run(
+        run_id,
+        rev(0xd4),
+        &cedar(),
+        mneme_memory::RecognitionRunOptions {
+            input: original,
+            input_digest,
+            output: text,
+            output_digest: mneme_core::ContentDigest::of_source_bytes(b"page words"),
+            model: "fixture-model@sha256:01",
+            runtime: "fixture-runtime@sha256:02",
+            adapter: "fixture-adapter@sha256:03",
+            preprocessing: "rotate-then-crop",
+            configuration: "fixture-config@sha256:05",
+            segments: &[segment_id],
+            coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
+            status: mneme_core::RecognitionStatus::Complete,
+            scores: &[],
+            alternatives: &[],
+        },
+    )
+    .expect("run");
+    let on_crop = mneme_core::MediaLocation::PageRegion {
+        page: 0,
+        frame: crop_frame,
+        x: 10.0,
+        y: 10.0,
+        width: 20.0,
+        height: 20.0,
+    };
+    let segment = mneme_memory::build_recognition_segment(
+        segment_id,
+        rev(0xd5),
+        &cedar(),
+        mneme_memory::RecognitionSegmentOptions {
+            run: Some(run_id),
+            text_source: text,
+            span: mneme_core::SourceSpan::new(0, 3).expect("span"),
+            media_source: crop,
+            media_digest: mneme_core::ContentDigest::of_source_bytes(b"cropped image"),
+            location: &on_crop,
+        },
+    )
+    .expect("segment");
+    harness.operator_commit(
+        &cedar(),
+        "recognize-the-crop",
+        vec![text_record, run, segment],
+        vec![text_blob],
+    );
+    let response = harness
+        .cedar_service()
+        .execute(&mneme_api::ApiCommand::RecognitionRead {
+            request_id: "recognition".to_owned(),
+            scope: cedar(),
+            run: run_id,
+        });
+    assert!(response.ok, "{:?}", response.value);
+    let segments = sequence(data(&response), "segments");
+    let reported = field(&segments[0], "original-location");
+    let on_original = mneme_core::MediaLocation::PageRegion {
+        page: 0,
+        frame: image,
+        x: 320.0,
+        y: 230.0,
+        width: 20.0,
+        height: 20.0,
+    };
+    assert_eq!(
+        reported,
+        &on_original.to_value(),
+        "the region's place on the run's original input"
+    );
+}
