@@ -3,6 +3,10 @@
 //! `SourceSpan` remains an inclusive byte interval. These types describe
 //! locations in non-text media and carry the units needed to interpret them.
 
+/// The first schema version whose sources must declare one of the closed
+/// [`Acquisition`] classes. Earlier versions declared any symbol.
+pub const ACQUISITION_SCHEMA_VERSION: u32 = 5;
+
 /// How source content entered the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Acquisition {

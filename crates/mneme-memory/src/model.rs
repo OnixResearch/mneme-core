@@ -35,6 +35,11 @@ pub struct SourceView {
     pub content: mneme_core::SourceContent,
     pub availability: SourceAvailability,
     pub acquisition: mneme_core::Acquisition,
+    /// The acquisition value as stored, re-emitted unchanged when the source
+    /// is rewritten. A source older than
+    /// [`mneme_core::ACQUISITION_SCHEMA_VERSION`] may hold a symbol outside the
+    /// closed classes; it reads as [`mneme_core::Acquisition::Imported`].
+    pub acquisition_value: mneme_core::Value,
     pub derived_from: Option<mneme_core::SourcePin>,
     pub media_extent: Option<mneme_core::MediaExtent>,
     pub media_transform: Option<mneme_core::MediaTransform>,
@@ -54,13 +59,14 @@ impl SourceView {
         let availability = source_availability(&record, &content);
         let media_type = retained_media_type(&content);
         let prior_digest = source_prior_digest(&record)?;
-        let acquisition = source_acquisition(&record)?;
+        let (acquisition, acquisition_value) = source_acquisition(&record)?;
         let derived_from = optional_source_pin(&record, "derived-from")?;
         let media_extent = optional_media_extent(&record)?;
         let media_transform = optional_media_transform(&record)?;
         let correction = optional_correction(&record)?;
         Ok(SourceView {
             acquisition,
+            acquisition_value,
             derived_from,
             media_extent,
             media_transform,
@@ -104,12 +110,19 @@ fn source_content(
 
 fn source_acquisition(
     record: &mneme_core::RecordEnvelope,
-) -> crate::failure::Result<mneme_core::Acquisition> {
-    mneme_core::Acquisition::from_value(
-        required(record, "acquisition")?,
-        &mneme_core::Path::root().field("acquisition"),
-    )
-    .map_err(|diagnostic| source_parse_error(record, diagnostic))
+) -> crate::failure::Result<(mneme_core::Acquisition, mneme_core::Value)> {
+    let value = required(record, "acquisition")?;
+    match mneme_core::Acquisition::from_value(value, &mneme_core::Path::root().field("acquisition"))
+    {
+        Ok(acquisition) => Ok((acquisition, value.clone())),
+        Err(_)
+            if record.schema_version < mneme_core::ACQUISITION_SCHEMA_VERSION
+                && value.as_symbol().is_some() =>
+        {
+            Ok((mneme_core::Acquisition::Imported, value.clone()))
+        }
+        Err(diagnostic) => Err(source_parse_error(record, diagnostic)),
+    }
 }
 
 fn source_prior_digest(

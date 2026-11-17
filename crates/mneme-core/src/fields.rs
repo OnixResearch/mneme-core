@@ -1182,10 +1182,18 @@ fn type_mismatch(
 #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
 pub fn validate_domain(
     kind: RecordKind,
+    schema_version: u32,
     payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
     path: &crate::problem::Path,
 ) -> Vec<crate::problem::Diagnostic> {
     match kind {
+        // Sources written before the closed acquisition classes keep the
+        // symbol their schema allowed.
+        RecordKind::SourceRevision
+            if schema_version < crate::lineage::ACQUISITION_SCHEMA_VERSION =>
+        {
+            Vec::new()
+        }
         RecordKind::Assertion => validate_assertion_domain(payload, path),
         RecordKind::Evidence => validate_evidence_domain(payload, path),
         RecordKind::Comment => validate_comment_domain(payload, path),
@@ -1616,6 +1624,25 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_source_keeps_an_acquisition_symbol_outside_the_closed_set() {
+        let registry = SchemaRegistry::production();
+        let mut source = crate::fixtures::source_revision();
+        let mut payload = source.payload.as_map().clone();
+        payload.insert(
+            crate::typed::Symbol::from("acquisition"),
+            crate::typed::Value::symbol("scanned-by-peer"),
+        );
+        source.payload = crate::wire::Payload::new(payload);
+        crate::wire::validate_record_value(&source.to_value(), &registry, None)
+            .expect("a v1 source may declare any acquisition symbol");
+        source.schema_version = crate::lineage::ACQUISITION_SCHEMA_VERSION;
+        assert!(
+            crate::wire::validate_record_value(&source.to_value(), &registry, None).is_err(),
+            "a v5 source must declare a closed acquisition class"
+        );
+    }
+
+    #[test]
     fn lifecycle_and_origin_parse_declared_values() {
         for lifecycle in [
             Lifecycle::Proposed,
@@ -1827,7 +1854,7 @@ mod remark_tests {
         let path = crate::problem::Path::root();
         for status in ["proposed", "open", "resolved", "dismissed"] {
             let p = payload(status, "hello");
-            let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
+            let diagnostics = validate_domain(RecordKind::Comment, 5, &p, &path.field("payload"));
             assert!(diagnostics.is_empty(), "{status}: {diagnostics:?}");
         }
     }
@@ -1836,7 +1863,7 @@ mod remark_tests {
     fn unknown_status_is_refused() {
         let p = payload("bogus", "hello");
         let path = crate::problem::Path::root();
-        let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
+        let diagnostics = validate_domain(RecordKind::Comment, 5, &p, &path.field("payload"));
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].path.to_string(), "$.payload.status");
     }
@@ -1845,7 +1872,7 @@ mod remark_tests {
     fn empty_text_is_refused() {
         let p = payload("open", "");
         let path = crate::problem::Path::root();
-        let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
+        let diagnostics = validate_domain(RecordKind::Comment, 5, &p, &path.field("payload"));
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].path.to_string(), "$.payload.text");
     }
@@ -1855,7 +1882,7 @@ mod remark_tests {
         let big = "a".repeat(16385);
         let p = payload("open", &big);
         let path = crate::problem::Path::root();
-        let diagnostics = validate_domain(RecordKind::Comment, &p, &path.field("payload"));
+        let diagnostics = validate_domain(RecordKind::Comment, 5, &p, &path.field("payload"));
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].path.to_string(), "$.payload.text");
     }

@@ -4020,7 +4020,7 @@ fn source_metadata_value(source: &mneme_memory::SourceView) -> mneme_core::Value
         ),
         (
             mneme_core::Symbol::from("acquisition"),
-            source.acquisition.to_value(),
+            source.acquisition_value.clone(),
         ),
         (
             mneme_core::Symbol::from("availability"),

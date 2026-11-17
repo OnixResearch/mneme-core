@@ -2213,7 +2213,7 @@ pub fn build_unavailable_source_preserving(
         ),
         (
             mneme_core::Symbol::from("acquisition"),
-            source.acquisition.to_value(),
+            source.acquisition_value.clone(),
         ),
         (
             mneme_core::Symbol::from("availability"),

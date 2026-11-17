@@ -519,6 +519,7 @@ pub fn validate_record(
     validate_payload_fields(envelope, kind_schema, context, path, &mut diagnostics);
     diagnostics.extend(crate::fields::validate_domain(
         envelope.kind,
+        envelope.schema_version,
         envelope.payload.as_map(),
         &path.field("payload"),
     ));

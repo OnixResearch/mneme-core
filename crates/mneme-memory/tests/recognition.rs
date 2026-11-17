@@ -316,3 +316,31 @@ fn recognition_refuses_changed_input_digest_and_out_of_range_media_locations() {
             .is_err()
     );
 }
+
+#[test]
+fn a_legacy_acquisition_symbol_reads_as_imported_and_survives_pruning() {
+    let mut source = mneme_core::fixtures::source_revision();
+    let mut payload = source.payload.as_map().clone();
+    payload.insert(
+        mneme_core::Symbol::from("acquisition"),
+        mneme_core::Value::symbol("scanned-by-peer"),
+    );
+    source.payload = mneme_core::Payload::new(payload);
+    let view = mneme_memory::SourceView::parse(source).expect("a v1 source stays readable");
+    assert_eq!(view.acquisition, mneme_core::Acquisition::Imported);
+    assert_eq!(
+        view.acquisition_value,
+        mneme_core::Value::symbol("scanned-by-peer")
+    );
+    let pruned = mneme_memory::build_unavailable_source_preserving(
+        &view,
+        common::rev(0xee),
+        "pruned for the test",
+        "pruned",
+    );
+    assert_eq!(
+        pruned.payload.get("acquisition"),
+        Some(&mneme_core::Value::symbol("scanned-by-peer")),
+        "rewriting a source keeps its stored acquisition symbol"
+    );
+}

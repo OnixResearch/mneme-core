@@ -45,9 +45,9 @@ pub use hashing::{ContentDigest, EncodingProfile, HashAlgorithm, ValueBoundary};
 pub use hashing::{kernel_digest, request_fingerprint};
 pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
 pub use lineage::{
-    Acquisition, AlignmentDisposition, CoordinateFrame, CorrectionProvenance, MediaExtent,
-    MediaLocation, MediaTransform, RecognitionAlternative, RecognitionCoverage, RecognitionScore,
-    RecognitionStatus, SourcePin, TimeBase,
+    ACQUISITION_SCHEMA_VERSION, Acquisition, AlignmentDisposition, CoordinateFrame,
+    CorrectionProvenance, MediaExtent, MediaLocation, MediaTransform, RecognitionAlternative,
+    RecognitionCoverage, RecognitionScore, RecognitionStatus, SourcePin, TimeBase,
 };
 pub use payload::{RetainedSource, SourceContent, SourceSpan};
 pub use pointer::{Reference, RevisionEntry, SnapshotIndex};
