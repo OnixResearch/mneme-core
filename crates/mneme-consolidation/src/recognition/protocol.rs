@@ -6,9 +6,9 @@
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct WorkerAnswer {
     status: AnswerStatus,
-    #[serde(default)]
+    #[serde(default = "String::new")]
     text: String,
-    #[serde(default)]
+    #[serde(default = "Vec::new")]
     segments: Vec<AnswerSegment>,
 }
 

@@ -14,17 +14,15 @@
 //! the capture reaches it through the normal retention rules, and no source
 //! bytes are staged anywhere.
 
-mod answer;
+mod durable;
 mod plan;
-mod progress;
-mod publish;
-mod run;
+mod protocol;
+mod publication;
+mod session;
 
+pub use durable::{Charges, JobState, Report, UnitReport, UnitState};
 pub use plan::UnitSelector;
-pub use progress::{Charges, JobState, RecognitionReport, UnitReport, UnitState};
-pub use run::{
-    queue_recognition_job, recognition_job_status, retry_recognition_units, run_recognition_job,
-};
+pub use session::{queue, retry, run, status};
 
 /// The most units one job admits.
 pub const MAX_RECOGNITION_UNITS: u32 = 10_000;
@@ -57,7 +55,7 @@ pub enum UnitPlan {
 
 /// Finite bounds for one job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RecognitionLimits {
+pub struct Limits {
     pub max_units: u32,
     pub max_attempts_per_unit: u32,
     /// Bounds on each unit's media, answer and wall time.
@@ -69,7 +67,7 @@ pub struct RecognitionLimits {
 
 /// One durable recognition job over a committed capture.
 #[derive(Clone, Debug)]
-pub struct RecognitionJob {
+pub struct Job {
     pub job_id: String,
     pub actor: String,
     pub scope: mneme_core::ScopeId,
@@ -78,10 +76,10 @@ pub struct RecognitionJob {
     pub media: mneme_core::SourcePin,
     pub recognizer: Recognizer,
     pub plan: UnitPlan,
-    pub limits: RecognitionLimits,
+    pub limits: Limits,
 }
 
-impl RecognitionJob {
+impl Job {
     /// Refuse a job outside its finite bounds before any effects.
     fn validate(&self) -> Result<(), Failure> {
         let limits = self.limits;

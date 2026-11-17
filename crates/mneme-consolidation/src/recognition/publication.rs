@@ -5,7 +5,7 @@
 const TEXT_MEDIA_TYPE: &str = "text/plain; charset=utf-8";
 
 /// How a unit's publication ended.
-pub(super) enum Publication {
+pub(super) enum Outcome {
     /// The run was committed.
     Published(mneme_core::RecordId),
     /// The answer recognized no text; nothing was committed.
@@ -20,7 +20,7 @@ pub(super) enum Publication {
 /// retained, unchanged, unsuppressed and visible under the job's access.
 pub(super) fn eligible_capture(
     workspace: &mut mneme_store::Workspace,
-    job: &super::RecognitionJob,
+    job: &super::Job,
     digest: mneme_core::ContentDigest,
 ) -> Result<Result<mneme_memory::SourceView, String>, super::Failure> {
     let view = mneme_memory::Engine::new(workspace, job.access.clone())
@@ -52,7 +52,7 @@ pub(super) fn eligible_capture(
 /// runner can stop after committing and before saving its progress.
 pub(super) fn is_committed(
     workspace: &mut mneme_store::Workspace,
-    job: &super::RecognitionJob,
+    job: &super::Job,
     run: mneme_core::RecordId,
 ) -> Result<bool, super::Failure> {
     let view = mneme_memory::Engine::new(workspace, job.access.clone())
@@ -97,38 +97,38 @@ impl UnitAttempt<'_> {
 /// Publish one unit's recognized text, rechecking the capture first.
 pub(super) fn publish(
     workspace: &mut mneme_store::Workspace,
-    job: &super::RecognitionJob,
+    job: &super::Job,
     attempt: &UnitAttempt<'_>,
     media_digest: mneme_core::ContentDigest,
-    recognized: &super::answer::Recognized,
-) -> Result<Publication, super::Failure> {
+    recognized: &super::protocol::Recognized,
+) -> Result<Outcome, super::Failure> {
     if recognized.text.is_empty() && recognized.segments.is_empty() {
-        return Ok(Publication::Empty);
+        return Ok(Outcome::Empty);
     }
     if let Err(reason) = eligible_capture(workspace, job, media_digest)? {
-        return Ok(Publication::Suppressed(reason));
+        return Ok(Outcome::Suppressed(reason));
     }
     let batch = match records(job, (attempt, media_digest), recognized) {
         Ok(batch) => batch,
-        Err(reason) => return Ok(Publication::Rejected(reason)),
+        Err(reason) => return Ok(Outcome::Rejected(reason)),
     };
     match mneme_memory::Engine::new(workspace, job.access.clone()).commit(batch) {
-        Ok(_) => Ok(Publication::Published(attempt.run())),
+        Ok(_) => Ok(Outcome::Published(attempt.run())),
         Err(
             error @ (mneme_memory::EvidenceError::Policy(_)
             | mneme_memory::EvidenceError::Validation(_)
             | mneme_memory::EvidenceError::Invalid(_)
             | mneme_memory::EvidenceError::InvalidRecord { .. }),
-        ) => Ok(Publication::Rejected(error.to_string())),
+        ) => Ok(Outcome::Rejected(error.to_string())),
         Err(error) => Err(super::Failure::Store(error.to_string())),
     }
 }
 
 /// The text, run and segment records of one unit attempt, as one batch.
 fn records(
-    job: &super::RecognitionJob,
+    job: &super::Job,
     (attempt, media_digest): (&UnitAttempt<'_>, mneme_core::ContentDigest),
-    recognized: &super::answer::Recognized,
+    recognized: &super::protocol::Recognized,
 ) -> Result<mneme_memory::Batch, String> {
     let text = mneme_core::SourcePin::new(attempt.record("text", 0), attempt.revision("text", 0));
     let (text_record, text_blob) = mneme_memory::build_recognized_source(
@@ -193,7 +193,7 @@ fn records(
 }
 
 fn run_record(
-    job: &super::RecognitionJob,
+    job: &super::Job,
     (attempt, media_digest): (&UnitAttempt<'_>, mneme_core::ContentDigest),
     (text, content): (mneme_core::SourcePin, &str),
     segments: &[mneme_core::RecordId],

@@ -165,7 +165,7 @@ pub(super) struct JobIdentity {
 }
 
 impl JobIdentity {
-    pub(super) fn of(job: &super::RecognitionJob) -> Self {
+    pub(super) fn of(job: &super::Job) -> Self {
         let claim = format!("recognition\0{}\0{}", job.scope, job.job_id).into_bytes();
         let seed: [u8; 32] = digest(&[b"mneme.recognition.job.v1", &claim]);
         let fields = definition_fields(job, &seed);
@@ -194,7 +194,7 @@ impl JobIdentity {
 }
 
 /// Every field that determines what a job does, in a fixed order.
-fn definition_fields(job: &super::RecognitionJob, seed: &[u8; 32]) -> Vec<Vec<u8>> {
+fn definition_fields(job: &super::Job, seed: &[u8; 32]) -> Vec<Vec<u8>> {
     let recognizer = &job.recognizer;
     let limits = job.limits;
     let mut fields = vec![

@@ -134,8 +134,8 @@ fn job(
     media: mneme_core::SourcePin,
     worker: mneme_recall::inference::WorkerCommand,
     unit_time: std::time::Duration,
-) -> mneme_consolidation::recognition::RecognitionJob {
-    mneme_consolidation::recognition::RecognitionJob {
+) -> mneme_consolidation::recognition::Job {
+    mneme_consolidation::recognition::Job {
         job_id: "scan-job".to_owned(),
         actor: "recognition-test".to_owned(),
         scope: scope(),
@@ -150,7 +150,7 @@ fn job(
             configuration: "test-config@sha256:05".to_owned(),
         },
         plan: mneme_consolidation::recognition::UnitPlan::Pages,
-        limits: mneme_consolidation::recognition::RecognitionLimits {
+        limits: mneme_consolidation::recognition::Limits {
             max_units: 16,
             max_attempts_per_unit: 3,
             unit: mneme_recall::inference::MediaInvocationLimits {
@@ -168,7 +168,7 @@ fn starts(log: &std::path::Path) -> usize {
 }
 
 fn states(
-    report: &mneme_consolidation::recognition::RecognitionReport,
+    report: &mneme_consolidation::recognition::Report,
 ) -> Vec<mneme_consolidation::recognition::UnitState> {
     report.units.iter().map(|unit| unit.state).collect()
 }
@@ -215,8 +215,7 @@ fn a_capture_is_queued_without_a_recognizer_and_recognized_later() {
         worker(GOOD, &log, &log),
         std::time::Duration::from_secs(60),
     );
-    let queued = mneme_consolidation::recognition::queue_recognition_job(&mut workspace, &job)
-        .expect("queue");
+    let queued = mneme_consolidation::recognition::queue(&mut workspace, &job).expect("queue");
     assert_eq!(
         queued.state,
         mneme_consolidation::recognition::JobState::Queued
@@ -224,10 +223,10 @@ fn a_capture_is_queued_without_a_recognizer_and_recognized_later() {
     assert_eq!((queued.published, queued.total), (0, 3));
     assert_eq!(starts(&log), 0, "queueing runs nothing");
     assert_eq!(
-        mneme_consolidation::recognition::recognition_job_status(&workspace, &job).expect("status"),
+        mneme_consolidation::recognition::status(&workspace, &job).expect("status"),
         Some(queued)
     );
-    let report = mneme_consolidation::recognition::run_recognition_job(
+    let report = mneme_consolidation::recognition::run(
         &mut workspace,
         &job,
         &mneme_recall::inference::InvocationControl::new(),
@@ -277,8 +276,7 @@ fn a_restart_reconciles_committed_units_and_never_redispatches_uncertain_ones() 
     );
     let control = mneme_recall::inference::InvocationControl::new();
     let first =
-        mneme_consolidation::recognition::run_recognition_job(&mut workspace, &job, &control)
-            .expect("first run");
+        mneme_consolidation::recognition::run(&mut workspace, &job, &control).expect("first run");
     // As if a runner had stopped twice: after committing unit 1 but before
     // saving it, and after reserving a new attempt of unit 2.
     let path = progress_file(temp.path());
@@ -290,8 +288,7 @@ fn a_restart_reconciles_committed_units_and_never_redispatches_uncertain_ones() 
     std::fs::write(&path, serde_json::to_vec(&progress).expect("encode")).expect("write");
     let mut resumed = open(temp.path());
     let report =
-        mneme_consolidation::recognition::run_recognition_job(&mut resumed, &job, &control)
-            .expect("resume");
+        mneme_consolidation::recognition::run(&mut resumed, &job, &control).expect("resume");
     assert_eq!(
         report.units[1].state,
         mneme_consolidation::recognition::UnitState::Published
@@ -309,14 +306,12 @@ fn a_restart_reconciles_committed_units_and_never_redispatches_uncertain_ones() 
         3,
         "nothing was dispatched again automatically"
     );
-    let retried = mneme_consolidation::recognition::retry_recognition_units(&mut resumed, &job)
-        .expect("retry");
+    let retried = mneme_consolidation::recognition::retry(&mut resumed, &job).expect("retry");
     assert_eq!(
         retried.units[2].state,
         mneme_consolidation::recognition::UnitState::Pending
     );
-    let rerun = mneme_consolidation::recognition::run_recognition_job(&mut resumed, &job, &control)
-        .expect("rerun");
+    let rerun = mneme_consolidation::recognition::run(&mut resumed, &job, &control).expect("rerun");
     assert_eq!(
         rerun.state,
         mneme_consolidation::recognition::JobState::Complete
@@ -340,16 +335,15 @@ fn a_second_runner_is_refused_while_a_unit_runs() {
     );
     let control = mneme_recall::inference::InvocationControl::new();
     std::thread::scope(|threads| {
-        let runner = threads.spawn(|| {
-            mneme_consolidation::recognition::run_recognition_job(&mut workspace, &job, &control)
-        });
+        let runner =
+            threads.spawn(|| mneme_consolidation::recognition::run(&mut workspace, &job, &control));
         await_start(&log, &runner);
         let mut second = open(temp.path());
         assert!(matches!(
-            mneme_consolidation::recognition::run_recognition_job(&mut second, &job, &control),
+            mneme_consolidation::recognition::run(&mut second, &job, &control),
             Err(mneme_consolidation::recognition::Failure::Busy(_))
         ));
-        let status = mneme_consolidation::recognition::recognition_job_status(&second, &job)
+        let status = mneme_consolidation::recognition::status(&second, &job)
             .expect("status")
             .expect("saved progress");
         assert_eq!(
@@ -377,9 +371,8 @@ fn forgetting_the_capture_during_a_unit_suppresses_its_publication() {
     );
     let control = mneme_recall::inference::InvocationControl::new();
     std::thread::scope(|threads| {
-        let runner = threads.spawn(|| {
-            mneme_consolidation::recognition::run_recognition_job(&mut workspace, &job, &control)
-        });
+        let runner =
+            threads.spawn(|| mneme_consolidation::recognition::run(&mut workspace, &job, &control));
         await_start(&log, &runner);
         let mut other = open(temp.path());
         let base = other.current_revision().expect("base");
@@ -428,7 +421,7 @@ fn bad_answers_are_rejected_before_publication_and_good_units_survive() {
         worker(MIXED, &log, &log),
         std::time::Duration::from_secs(60),
     );
-    let report = mneme_consolidation::recognition::run_recognition_job(
+    let report = mneme_consolidation::recognition::run(
         &mut workspace,
         &job,
         &mneme_recall::inference::InvocationControl::new(),
@@ -470,7 +463,7 @@ fn a_timed_out_or_cancelled_worker_is_reaped_and_publishes_nothing() {
         worker(ENDLESS, &log, &log),
         std::time::Duration::from_secs(1),
     );
-    let report = mneme_consolidation::recognition::run_recognition_job(
+    let report = mneme_consolidation::recognition::run(
         &mut workspace,
         &slow,
         &mneme_recall::inference::InvocationControl::new(),
@@ -490,13 +483,8 @@ fn a_timed_out_or_cancelled_worker_is_reaped_and_publishes_nothing() {
     );
     let control = mneme_recall::inference::InvocationControl::new();
     std::thread::scope(|threads| {
-        let runner = threads.spawn(|| {
-            mneme_consolidation::recognition::run_recognition_job(
-                &mut workspace,
-                &blocked,
-                &control,
-            )
-        });
+        let runner = threads
+            .spawn(|| mneme_consolidation::recognition::run(&mut workspace, &blocked, &control));
         await_start(&log, &runner);
         control.cancel();
         let report = runner.join().expect("runner").expect("cancelled run");
@@ -515,9 +503,7 @@ fn a_timed_out_or_cancelled_worker_is_reaped_and_publishes_nothing() {
     // A release after cancellation reaches no worker: it was reaped.
     std::fs::write(&release, b"").expect("release");
     assert!(runs(&mut workspace).is_empty());
-    let retried =
-        mneme_consolidation::recognition::retry_recognition_units(&mut workspace, &blocked)
-            .expect("retry");
+    let retried = mneme_consolidation::recognition::retry(&mut workspace, &blocked).expect("retry");
     assert_eq!(
         retried.state,
         mneme_consolidation::recognition::JobState::Queued
@@ -532,7 +518,7 @@ fn an_unavailable_recognizer_leaves_the_capture_and_the_job_waiting() {
         args: Vec::new(),
     };
     let job = job(media, missing, std::time::Duration::from_secs(60));
-    let report = mneme_consolidation::recognition::run_recognition_job(
+    let report = mneme_consolidation::recognition::run(
         &mut workspace,
         &job,
         &mneme_recall::inference::InvocationControl::new(),
@@ -587,12 +573,11 @@ fn audio_is_divided_into_bounded_chunks_and_a_mismatched_plan_is_refused() {
         std::time::Duration::from_secs(60),
     );
     assert!(matches!(
-        mneme_consolidation::recognition::queue_recognition_job(&mut workspace, &audio),
+        mneme_consolidation::recognition::queue(&mut workspace, &audio),
         Err(mneme_consolidation::recognition::Failure::Invalid(_))
     ));
     audio.plan = mneme_consolidation::recognition::UnitPlan::AudioChunks { ticks: 100 };
-    let queued = mneme_consolidation::recognition::queue_recognition_job(&mut workspace, &audio)
-        .expect("queue");
+    let queued = mneme_consolidation::recognition::queue(&mut workspace, &audio).expect("queue");
     let selectors: Vec<_> = queued.units.iter().map(|unit| unit.selector).collect();
     assert_eq!(
         selectors,

@@ -29,22 +29,22 @@ impl Settled {
 /// Plan a job over its committed capture and save its progress, without
 /// running anything. The capture needs no recognizer to exist; a queued job
 /// can run later.
-pub fn queue_recognition_job(
+pub fn queue(
     workspace: &mut mneme_store::Workspace,
-    job: &super::RecognitionJob,
-) -> Result<super::RecognitionReport, super::Failure> {
-    Ok(Session::open(workspace, job)?.progress.report())
+    job: &super::Job,
+) -> Result<super::Report, super::Failure> {
+    Ok(Claimed::open(workspace, job)?.progress.report())
 }
 
 /// Dispatch a job's pending units until they are done, the run's time runs
 /// out, the recognizer is unavailable, the capture can no longer be read, or
 /// `control` cancels the run.
-pub fn run_recognition_job(
+pub fn run(
     workspace: &mut mneme_store::Workspace,
-    job: &super::RecognitionJob,
+    job: &super::Job,
     control: &mneme_recall::inference::InvocationControl,
-) -> Result<super::RecognitionReport, super::Failure> {
-    let mut session = Session::open(workspace, job)?;
+) -> Result<super::Report, super::Failure> {
+    let mut session = Claimed::open(workspace, job)?;
     session.run(control)?;
     Ok(session.progress.report())
 }
@@ -52,11 +52,11 @@ pub fn run_recognition_job(
 /// Return units that ended without publication, and have attempts left, to
 /// pending. Attempts and charges are kept: a retry is a new, charged attempt,
 /// not a claim that the earlier one never ran.
-pub fn retry_recognition_units(
+pub fn retry(
     workspace: &mut mneme_store::Workspace,
-    job: &super::RecognitionJob,
-) -> Result<super::RecognitionReport, super::Failure> {
-    let mut session = Session::open(workspace, job)?;
+    job: &super::Job,
+) -> Result<super::Report, super::Failure> {
+    let mut session = Claimed::open(workspace, job)?;
     let max_attempts = job.limits.max_attempts_per_unit;
     for unit in &mut session.progress.units {
         if unit.state.is_retryable() && unit.attempts < max_attempts {
@@ -70,10 +70,10 @@ pub fn retry_recognition_units(
 
 /// A job's saved progress, read without claiming the job, or `None` when the
 /// job was never queued.
-pub fn recognition_job_status(
+pub fn status(
     workspace: &mneme_store::Workspace,
-    job: &super::RecognitionJob,
-) -> Result<Option<super::RecognitionReport>, super::Failure> {
+    job: &super::Job,
+) -> Result<Option<super::Report>, super::Failure> {
     let identity = super::plan::JobIdentity::of(job);
     let Some(bytes) = workspace
         .job_progress(&identity.claim)
@@ -81,7 +81,7 @@ pub fn recognition_job_status(
     else {
         return Ok(None);
     };
-    let progress = super::progress::Progress::decode(&bytes)?;
+    let progress = super::durable::Progress::decode(&bytes)?;
     if progress.definition != identity.definition {
         return Err(different_definition());
     }
@@ -93,20 +93,20 @@ fn different_definition() -> super::Failure {
 }
 
 /// A claimed job and its progress. Only the claim's holder saves progress.
-struct Session<'w> {
+struct Claimed<'w> {
     workspace: &'w mut mneme_store::Workspace,
-    job: &'w super::RecognitionJob,
+    job: &'w super::Job,
     identity: super::plan::JobIdentity,
     claim: mneme_store::JobClaim,
-    progress: super::progress::Progress,
+    progress: super::durable::Progress,
 }
 
-impl<'w> Session<'w> {
+impl<'w> Claimed<'w> {
     /// Claim the job, load or plan its progress, and settle units a stopped
     /// runner left dispatched.
     fn open(
         workspace: &'w mut mneme_store::Workspace,
-        job: &'w super::RecognitionJob,
+        job: &'w super::Job,
     ) -> Result<Self, super::Failure> {
         job.validate()?;
         let identity = super::plan::JobIdentity::of(job);
@@ -124,7 +124,7 @@ impl<'w> Session<'w> {
             .map_err(|error| super::Failure::Store(error.to_string()))?;
         let progress = match saved {
             Some(bytes) => {
-                let progress = super::progress::Progress::decode(&bytes)?;
+                let progress = super::durable::Progress::decode(&bytes)?;
                 if progress.definition != identity.definition {
                     return Err(different_definition());
                 }
@@ -132,7 +132,7 @@ impl<'w> Session<'w> {
             }
             None => plan(workspace, job, &identity)?,
         };
-        let mut session = Session {
+        let mut session = Claimed {
             workspace,
             job,
             identity,
@@ -151,10 +151,10 @@ impl<'w> Session<'w> {
             .map_err(|error| super::Failure::Store(error.to_string()))
     }
 
-    fn attempt(&self, index: usize) -> Result<super::publish::UnitAttempt<'_>, super::Failure> {
+    fn attempt(&self, index: usize) -> Result<super::publication::UnitAttempt<'_>, super::Failure> {
         let unit = u32::try_from(index)
             .map_err(|_| super::Failure::Invalid("unit index out of range".to_owned()))?;
-        Ok(super::publish::UnitAttempt {
+        Ok(super::publication::UnitAttempt {
             identity: &self.identity,
             unit,
             attempt: self.progress.units[index].attempts,
@@ -169,7 +169,7 @@ impl<'w> Session<'w> {
                 continue;
             }
             let run = self.attempt(index)?.run();
-            let is_committed = super::publish::is_committed(self.workspace, self.job, run)?;
+            let is_committed = super::publication::is_committed(self.workspace, self.job, run)?;
             let unit = &mut self.progress.units[index];
             if is_committed {
                 unit.state = super::UnitState::Published;
@@ -233,7 +233,7 @@ impl<'w> Session<'w> {
             );
             return Ok(None);
         };
-        match super::publish::eligible_capture(self.workspace, self.job, digest)? {
+        match super::publication::eligible_capture(self.workspace, self.job, digest)? {
             Ok(capture) => Ok(Some((capture, digest))),
             Err(reason) => {
                 self.progress
@@ -277,7 +277,7 @@ struct UnitRun<'a> {
     control: &'a mneme_recall::inference::InvocationControl,
 }
 
-impl Session<'_> {
+impl Claimed<'_> {
     /// Reserve one unit durably, run its worker on the capture, and settle the
     /// outcome; the progress is saved before and after the worker runs.
     fn dispatch(&mut self, unit: &UnitRun<'_>) -> Result<Flow, super::Failure> {
@@ -416,9 +416,9 @@ impl Session<'_> {
         selector: super::UnitSelector,
         output: &[u8],
     ) -> Result<Settled, super::Failure> {
-        let recognized = match super::answer::parse(output, selector, unit.capture) {
-            Ok(super::answer::Answer::Recognized(recognized)) => recognized,
-            Ok(super::answer::Answer::Unsupported) => {
+        let recognized = match super::protocol::parse(output, selector, unit.capture) {
+            Ok(super::protocol::Answer::Recognized(recognized)) => recognized,
+            Ok(super::protocol::Answer::Unsupported) => {
                 return Ok(Settled::new(
                     super::UnitState::Unsupported,
                     Some("the recognizer cannot recognize this unit"),
@@ -433,30 +433,35 @@ impl Session<'_> {
                 ));
             }
         };
-        let attempt = super::publish::UnitAttempt {
+        let attempt = super::publication::UnitAttempt {
             identity: &self.identity,
             unit: u32::try_from(unit.index)
                 .map_err(|_| super::Failure::Invalid("unit index out of range".to_owned()))?,
             attempt: self.progress.units[unit.index].attempts,
         };
-        let publication =
-            super::publish::publish(self.workspace, self.job, &attempt, unit.digest, &recognized)?;
+        let publication = super::publication::publish(
+            self.workspace,
+            self.job,
+            &attempt,
+            unit.digest,
+            &recognized,
+        )?;
         Ok(match publication {
-            super::publish::Publication::Published(run) => Settled {
+            super::publication::Outcome::Published(run) => Settled {
                 state: super::UnitState::Published,
                 run: Some(run),
                 detail: None,
                 flow: Flow::Continue,
             },
-            super::publish::Publication::Empty => Settled::new(
+            super::publication::Outcome::Empty => Settled::new(
                 super::UnitState::Published,
                 Some("no text was recognized"),
                 Flow::Continue,
             ),
-            super::publish::Publication::Rejected(reason) => {
+            super::publication::Outcome::Rejected(reason) => {
                 Settled::new(super::UnitState::Rejected, Some(&reason), Flow::Continue)
             }
-            super::publish::Publication::Suppressed(reason) => {
+            super::publication::Outcome::Suppressed(reason) => {
                 Settled::new(super::UnitState::Suppressed, Some(&reason), Flow::Stop)
             }
         })
@@ -473,7 +478,7 @@ fn add_bytes(total: u64, amount: usize) -> Result<u64, super::Failure> {
 /// The digest of the job's capture revision, if it has retained bytes.
 fn current_digest(
     workspace: &mut mneme_store::Workspace,
-    job: &super::RecognitionJob,
+    job: &super::Job,
 ) -> Result<Option<mneme_core::ContentDigest>, super::Failure> {
     let view = mneme_memory::Engine::new(workspace, job.access.clone())
         .view()
@@ -487,18 +492,18 @@ fn current_digest(
 /// Divide the job's capture into units: it must be readable now.
 fn plan(
     workspace: &mut mneme_store::Workspace,
-    job: &super::RecognitionJob,
+    job: &super::Job,
     identity: &super::plan::JobIdentity,
-) -> Result<super::progress::Progress, super::Failure> {
+) -> Result<super::durable::Progress, super::Failure> {
     let Some(digest) = current_digest(workspace, job)? else {
         return Err(super::Failure::Invalid(
             "the capture is not a visible source revision with retained bytes".to_owned(),
         ));
     };
-    let capture = super::publish::eligible_capture(workspace, job, digest)?
+    let capture = super::publication::eligible_capture(workspace, job, digest)?
         .map_err(super::Failure::Invalid)?;
     let selectors = super::plan::units(job.plan, capture.media_extent, job.limits.max_units)?;
-    Ok(super::progress::Progress::new(
+    Ok(super::durable::Progress::new(
         identity.definition.clone(),
         digest,
         selectors,

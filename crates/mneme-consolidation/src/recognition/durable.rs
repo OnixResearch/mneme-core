@@ -138,7 +138,7 @@ impl Progress {
         }
     }
 
-    pub(super) fn report(&self) -> RecognitionReport {
+    pub(super) fn report(&self) -> Report {
         let units: Vec<UnitReport> = self.units.iter().map(UnitReport::of).collect();
         let published = units
             .iter()
@@ -157,7 +157,7 @@ impl Progress {
         } else {
             JobState::Failed
         };
-        RecognitionReport {
+        Report {
             state,
             published,
             total,
@@ -211,7 +211,7 @@ impl UnitReport {
 /// A job's typed progress: its state, its coverage, each unit, and what it
 /// has been charged.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecognitionReport {
+pub struct Report {
     pub state: JobState,
     /// Units published, out of `total`.
     pub published: usize,
