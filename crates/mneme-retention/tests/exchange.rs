@@ -239,3 +239,70 @@ fn forgotten_barrier_blocks_a_delayed_bundle_when_target_is_absent() {
         .expect("replayed bundle remains blocked");
     assert_records_absent(&mut receiver);
 }
+
+#[test]
+fn a_barrier_applied_again_after_later_commits_changes_nothing() {
+    let origin_temp = tempfile::tempdir().expect("origin directory");
+    let mut origin = workspace(origin_temp.path());
+    seed_origin(&mut origin);
+    let secret = [0xb4; 32];
+    let shared = std::collections::BTreeSet::from([scope()]);
+    let old_document =
+        mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared)
+            .expect("pre-forget bundle")
+            .bundle;
+    forget_source(&mut origin);
+    let current_document =
+        mneme_memory::exchange::export_workspace(&origin, "device-a", &secret, &shared)
+            .expect("bundle with forget barrier")
+            .bundle;
+    let policy = policy(&secret);
+    let receiver_temp = tempfile::tempdir().expect("receiver directory");
+    let mut receiver = workspace(receiver_temp.path());
+    let apply = |receiver: &mut mneme_store::Workspace| {
+        for barrier in authenticate(&current_document, &policy).barriers() {
+            mneme_retention::Engine::new(receiver)
+                .apply_exchange_barrier("device-a", barrier)
+                .expect("barrier applied");
+        }
+    };
+    apply(&mut receiver);
+    let generation = receiver.eligibility_generation().expect("generation");
+    // An importer applies every bundle's barriers again on each import, after
+    // other commits moved the workspace on.
+    let (local, blob) = mneme_memory::build_source(
+        rid(0x70),
+        rev(0x71),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"a note of the receiver's own",
+            media_type: "text/plain",
+            entity: None,
+            path_hint: None,
+        },
+    )
+    .expect("local source");
+    mneme_memory::Engine::new(&mut receiver, mneme_memory::Access::Operator)
+        .commit(mneme_memory::Batch {
+            actor: "device-owner".to_owned(),
+            scope: scope(),
+            idempotency_key: "receiver-own-note".to_owned(),
+            records: vec![local],
+            source_blobs: vec![blob],
+            publications: Vec::new(),
+        })
+        .expect("a later local commit");
+    apply(&mut receiver);
+    assert_eq!(
+        receiver.eligibility_generation().expect("generation"),
+        generation,
+        "applying a barrier again forgets nothing more"
+    );
+    mneme_memory::exchange::import_records(
+        &mut receiver,
+        authenticate(&old_document, &policy),
+        "local-reviewer",
+    )
+    .expect("the delayed bundle stays blocked");
+    assert_records_absent(&mut receiver);
+}

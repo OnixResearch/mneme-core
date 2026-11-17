@@ -352,6 +352,21 @@ impl<'w> Engine<'w> {
         if issuer.trim().is_empty() || barrier.operation_kind != "forget" {
             return Err(PolicyError::Invalid("invalid exchange barrier"));
         }
+        // A barrier applied before, as a forget or as a tombstone, is applied:
+        // an importer applies every bundle's barriers on every import, and the
+        // workspace has usually moved on since.
+        let actor = format!("mneme-exchange-import:{issuer}");
+        if self
+            .workspace
+            .retention_operation_by_key(
+                &actor,
+                &barrier.scope,
+                &exchange_barrier_key(issuer, barrier),
+            )?
+            .is_some()
+        {
+            return Ok(());
+        }
         let has_scope_target = self
             .workspace
             .snapshot()?
