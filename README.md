@@ -83,6 +83,28 @@ encoded text and segments. The service checks caller authorization,
 source ancestry and digest identity, and the current retention eligibility
 barrier before returning the result.
 
+`mneme_consolidation::recognition` runs durable recognition jobs over a
+committed capture, which needs no recognizer to exist: a job can be queued
+with the capture and run later. A job divides the capture into units (its
+pages, bounded audio intervals, or the whole capture), claims itself through
+`Workspace::claim_job`, and keeps content-free progress beside the claim: unit
+states, attempts, published run identities and charged resources. Each unit is
+reserved durably before its worker starts. The worker reads one JSON header
+line and then exactly the capture's bytes on stdin (`invoke_media`, bounded to
+256 MiB of media, 4 MiB of answer and 30 minutes per unit), never a path or an
+environment, and answers with text, inclusive byte spans and locations within
+the unit. A valid answer is published as its own recognition run only after the
+capture is checked again to be the planned revision, retained, unchanged,
+unforgotten and visible under the job's access; recognized text exists only in
+those records, so forgetting the capture reaches it through the normal
+retention rules. Malformed, oversized or misaligned answers are rejected
+before publication, a timeout or cancellation reaps the worker, an
+unavailable recognizer leaves units waiting, and a capture beyond the unit
+bound is reported unsupported. A runner that stops after dispatching a unit
+leaves it uncertain unless its deterministic run was already committed; an
+uncertain unit is never dispatched again automatically, and an explicit retry
+is a new, charged attempt.
+
 ## Development and verification
 
 The source can be cloned without authentication. The pinned Nix environment

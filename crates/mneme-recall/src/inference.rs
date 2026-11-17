@@ -299,7 +299,7 @@ pub fn invoke_json(
             Some(failure.detail),
         );
     }
-    let child = match spawn_worker(config) {
+    let child = match spawn_worker(&config.worker) {
         Ok(child) => child,
         Err(failure) => {
             return metadata.finish(
@@ -311,8 +311,166 @@ pub fn invoke_json(
             );
         }
     };
+    let execution = supervise_worker(child, WorkerInput::Json(input), limits, control, started);
+    finish_execution(&mut metadata, execution)
+}
+
+/// Hard bound on the media bytes one recognition unit may receive.
+pub const MAX_MEDIA_INVOCATION_BYTES: usize = 256 * 1_048_576;
+/// Hard bound on a recognition unit's JSON header.
+pub const MAX_MEDIA_HEADER_BYTES: usize = 65_536;
+/// Hard bound on one recognition unit's wall time.
+pub const MAX_MEDIA_INVOCATION_WALL_TIME: std::time::Duration =
+    std::time::Duration::from_secs(1_800);
+
+/// Finite limits for one media invocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MediaInvocationLimits {
+    pub max_media_bytes: usize,
+    pub max_output_bytes: usize,
+    pub max_wall_time: std::time::Duration,
+}
+
+impl MediaInvocationLimits {
+    /// Reject limits outside the media hard bounds before any effects.
+    pub fn validate(self) -> Result<(), String> {
+        if self.max_media_bytes == 0
+            || self.max_media_bytes > MAX_MEDIA_INVOCATION_BYTES
+            || self.max_output_bytes == 0
+            || self.max_output_bytes > MAX_INVOCATION_OUTPUT_BYTES
+            || self.max_wall_time.is_zero()
+            || self.max_wall_time > MAX_MEDIA_INVOCATION_WALL_TIME
+        {
+            return Err("media invocation limits are outside the finite hard bounds".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// One media invocation: the pinned worker, its configuration identity, the
+/// unit's JSON header and the authorized media bytes.
+pub struct MediaInvocation<'a> {
+    pub worker: &'a WorkerCommand,
+    /// Digest of everything that determines the worker's behaviour.
+    pub configuration_digest: String,
+    pub header: Vec<u8>,
+    pub media: std::sync::Arc<[u8]>,
+    pub limits: MediaInvocationLimits,
+}
+
+/// Invoke one worker on one unit of authorized media.
+///
+/// The worker reads a single JSON header line, then exactly the media bytes the
+/// header declares, from stdin, and answers with JSON on stdout. It receives no
+/// path, environment or other workspace authority, and the media never reaches
+/// its arguments. Supervision, deadlines, cancellation and output bounds are
+/// those of [`invoke_json`]; only complete JSON output is exposed.
+#[allow(unknown_lints, ambient_clock)] // the host shell enforces the actual monotonic deadline
+pub fn invoke_media(
+    invocation: MediaInvocation<'_>,
+    control: &InvocationControl,
+) -> InvocationOutcome {
+    let started = std::time::Instant::now();
+    let input_bytes = invocation
+        .header
+        .len()
+        .saturating_add(1)
+        .saturating_add(invocation.media.len());
+    let mut metadata = OutcomeMetadata {
+        started,
+        input_bytes,
+        input_digest: media_input_digest(&invocation.header, &invocation.media),
+        configuration_digest: invocation.configuration_digest,
+    };
+    if let Some(failure) = media_preflight_failure(
+        &invocation.header,
+        &invocation.media,
+        invocation.limits,
+        control,
+    ) {
+        return metadata.finish(
+            failure.status,
+            None,
+            UsageTelemetry::Unavailable,
+            None,
+            Some(failure.detail),
+        );
+    }
+    let child = match spawn_worker(invocation.worker) {
+        Ok(child) => child,
+        Err(failure) => {
+            return metadata.finish(
+                failure.status,
+                None,
+                UsageTelemetry::Unavailable,
+                None,
+                Some(failure.detail),
+            );
+        }
+    };
+    // The deadline and output bound are the media limits; the input is
+    // already bounded by the preflight.
+    let limits = InvocationLimits {
+        max_input_bytes: input_bytes,
+        max_output_bytes: invocation.limits.max_output_bytes,
+        max_wall_time: invocation.limits.max_wall_time,
+    };
+    let input = WorkerInput::Media {
+        header: invocation.header,
+        media: invocation.media,
+    };
     let execution = supervise_worker(child, input, limits, control, started);
     finish_execution(&mut metadata, execution)
+}
+
+/// Digest of the exact bytes a media worker reads: header, newline, media.
+fn media_input_digest(header: &[u8], media: &[u8]) -> String {
+    use sha2::Digest as _;
+    let mut digest = sha2::Sha256::new();
+    digest.update(header);
+    digest.update(b"\n");
+    digest.update(media);
+    format_digest(&digest.finalize())
+}
+
+fn media_preflight_failure(
+    header: &[u8],
+    media: &[u8],
+    limits: MediaInvocationLimits,
+    control: &InvocationControl,
+) -> Option<InvocationFailure> {
+    let refused = |status, detail: &str| {
+        Some(InvocationFailure {
+            status,
+            detail: detail.to_owned(),
+        })
+    };
+    if let Err(detail) = limits.validate() {
+        return refused(InvocationStatus::Failed, &detail);
+    }
+    // One line: the newline after it is the only boundary the worker sees.
+    if header.len() > MAX_MEDIA_HEADER_BYTES
+        || header.contains(&b'\n')
+        || !serde_json::from_slice::<serde_json::Value>(header).is_ok_and(|value| value.is_object())
+    {
+        return refused(
+            InvocationStatus::Failed,
+            "media header is not one bounded JSON object",
+        );
+    }
+    if media.len() > limits.max_media_bytes {
+        return refused(
+            InvocationStatus::Oversized,
+            "media exceeds the unit's configured byte limit",
+        );
+    }
+    if control.is_cancelled() {
+        return refused(
+            InvocationStatus::Cancelled,
+            "invocation cancelled before start",
+        );
+    }
+    None
 }
 
 struct InvocationFailure {
@@ -353,10 +511,10 @@ fn preflight_failure(
     None
 }
 
-fn spawn_worker(config: &InvocationConfig) -> Result<std::process::Child, InvocationFailure> {
-    let mut command = std::process::Command::new(&config.worker.executable);
+fn spawn_worker(worker: &WorkerCommand) -> Result<std::process::Child, InvocationFailure> {
+    let mut command = std::process::Command::new(&worker.executable);
     command
-        .args(&config.worker.args)
+        .args(&worker.args)
         .env_clear()
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -525,9 +683,21 @@ struct WorkerIo {
     output_receiver: std::sync::mpsc::Receiver<CapturedOutput>,
 }
 
+/// What the supervisor writes to a worker's stdin.
+enum WorkerInput {
+    /// One complete JSON request.
+    Json(Vec<u8>),
+    /// A JSON header line followed by exactly the media bytes it declares.
+    /// The media is shared, so units of one capture never copy it.
+    Media {
+        header: Vec<u8>,
+        media: std::sync::Arc<[u8]>,
+    },
+}
+
 fn start_worker_io(
     child: &mut std::process::Child,
-    input: Vec<u8>,
+    input: WorkerInput,
     output_limit: usize,
 ) -> Result<WorkerIo, WorkerExecution> {
     let Some(stdin) = child.stdin.take() else {
@@ -592,7 +762,7 @@ fn terminate_after_start_failure(child: &mut std::process::Child, detail: &str) 
 #[allow(unknown_lints, ambient_clock)] // one loop owns the monotonic worker deadline
 fn supervise_worker(
     mut child: std::process::Child,
-    input: Vec<u8>,
+    input: WorkerInput,
     limits: InvocationLimits,
     control: &InvocationControl,
     started: std::time::Instant,
@@ -786,9 +956,16 @@ fn classify_exit(
     }
 }
 
-fn write_input(mut stdin: std::process::ChildStdin, input: &[u8]) -> bool {
+fn write_input(mut stdin: std::process::ChildStdin, input: &WorkerInput) -> bool {
     use std::io::Write as _;
-    stdin.write_all(input).is_ok()
+    match input {
+        WorkerInput::Json(request) => stdin.write_all(request).is_ok(),
+        WorkerInput::Media { header, media } => {
+            stdin.write_all(header).is_ok()
+                && stdin.write_all(b"\n").is_ok()
+                && stdin.write_all(media).is_ok()
+        }
+    }
 }
 
 fn capture_output(mut stdout: std::process::ChildStdout, limit: usize) -> CapturedOutput {
@@ -1097,6 +1274,47 @@ mod tests {
         let outcome = worker.join().expect("worker join");
         assert_eq!(outcome.status, InvocationStatus::Cancelled);
         assert!(outcome.output.is_none());
+    }
+
+    #[test]
+    fn media_beyond_its_bound_or_a_multiline_header_never_reaches_a_worker() {
+        // The worker would record a start if it ran; it must not.
+        let log = tempfile::tempdir().expect("temp");
+        let started = log.path().join("started");
+        let worker = command(
+            "/usr/bin/sh",
+            &[
+                "-c",
+                "printf started > \"$1\"",
+                "worker",
+                started.to_str().expect("utf-8"),
+            ],
+        )
+        .worker;
+        let limits = MediaInvocationLimits {
+            max_media_bytes: 4,
+            max_output_bytes: 1_024,
+            max_wall_time: std::time::Duration::from_secs(1),
+        };
+        let invoke = |header: &[u8], media: &[u8]| {
+            invoke_media(
+                MediaInvocation {
+                    worker: &worker,
+                    configuration_digest: "configuration".to_owned(),
+                    header: header.to_vec(),
+                    media: std::sync::Arc::from(media),
+                    limits,
+                },
+                &InvocationControl::new(),
+            )
+        };
+        assert_eq!(invoke(b"{}", b"12345").status, InvocationStatus::Oversized);
+        assert_eq!(invoke(b"{\n}", b"1234").status, InvocationStatus::Failed);
+        assert_eq!(invoke(b"[]", b"1234").status, InvocationStatus::Failed);
+        assert!(
+            !started.exists(),
+            "no refused invocation started its worker"
+        );
     }
 
     #[test]

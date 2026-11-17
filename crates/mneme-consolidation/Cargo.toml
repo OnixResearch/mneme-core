@@ -13,8 +13,10 @@ mneme-memory.workspace = true
 mneme-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
+mneme-retention.workspace = true
 tempfile.workspace = true
 
 [lints]

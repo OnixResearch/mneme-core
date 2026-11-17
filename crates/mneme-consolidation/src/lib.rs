@@ -18,6 +18,7 @@ pub mod model_extractor {
     pub use crate::supervised::{ModelExtractor, PreparedModelRequest};
 }
 pub mod proposals;
+pub mod recognition;
 pub mod runner;
 
 /// Saturate elapsed nanoseconds for the fixed-width telemetry receipt.
