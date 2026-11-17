@@ -280,7 +280,7 @@ fn minimal_signed_bytes(value: &num_bigint::BigInt) -> Vec<u8> {
 
 /// Whether a compound value may open while `depth` compound values are
 /// already open around it. The decoder and [`check_profile`] share this rule.
-fn compound_admissible(depth: usize) -> bool {
+const fn compound_admissible(depth: usize) -> bool {
     depth < MAX_DEPTH
 }
 
@@ -289,75 +289,74 @@ fn compound_admissible(depth: usize) -> bool {
 ///
 /// Durable admission applies this to a record's complete envelope value, so a
 /// committed record always decodes on a fresh handle. It walks the value the
-/// way [`decode`] reads its encoding, without encoding it.
+/// way [`decode`] reads its encoding, in the same order, without encoding it.
 pub fn check_profile(value: &crate::typed::Value) -> Result<(), crate::problem::Diagnostic> {
-    check_profile_at(value, &crate::problem::Path::root(), 0)
-}
-
-/// [`check_profile`] for a value with `depth` compound values open around
-/// it. Recursion stops at [`MAX_DEPTH`], as the decoder's does.
-fn check_profile_at(
-    value: &crate::typed::Value,
-    path: &crate::problem::Path,
-    depth: usize,
-) -> Result<(), crate::problem::Diagnostic> {
-    match value {
-        crate::typed::Value::SignedInteger(integer) => {
-            if integer_within_byte_limit(integer.as_bigint()) {
-                Ok(())
-            } else {
-                Err(crate::problem::Diagnostic::new(
-                    crate::problem::Stage::Syntax,
-                    crate::problem::ErrorCode::LimitExceeded,
-                    path.clone(),
-                    format!("integer exceeds the {MAX_INTEGER_BYTES}-byte limit"),
-                ))
+    // Each entry is a value, its path, and the compound values open around it.
+    let mut pending = vec![(value, crate::problem::Path::root(), 0_usize)];
+    while let Some((value, path, depth)) = pending.pop() {
+        match value {
+            crate::typed::Value::SignedInteger(integer) => {
+                if !integer_within_byte_limit(integer.as_bigint()) {
+                    return Err(crate::problem::Diagnostic::new(
+                        crate::problem::Stage::Syntax,
+                        crate::problem::ErrorCode::LimitExceeded,
+                        path,
+                        format!("integer exceeds the {MAX_INTEGER_BYTES}-byte limit"),
+                    ));
+                }
             }
-        }
-        crate::typed::Value::Record(record) => {
-            refuse_deep_compound(path, depth)?;
-            check_profile_at(record.label(), &path.field("label"), depth + 1)?;
-            check_items(record.fields(), path, depth)
-        }
-        crate::typed::Value::Sequence(items) => {
-            refuse_deep_compound(path, depth)?;
-            check_items(items, path, depth)
-        }
-        crate::typed::Value::Set(items) => {
-            refuse_deep_compound(path, depth)?;
-            check_items(items, path, depth)
-        }
-        crate::typed::Value::Dictionary(entries) => {
-            refuse_deep_compound(path, depth)?;
-            for (position, (key, item)) in entries.iter().enumerate() {
-                let entry = path.index(position);
-                check_profile_at(key, &entry, depth + 1)?;
-                check_profile_at(item, &entry.field("value"), depth + 1)?;
+            crate::typed::Value::Record(record) => {
+                refuse_deep_compound(&path, depth)?;
+                push_members(&mut pending, record.fields(), &path, depth);
+                pending.push((record.label(), path.field("label"), depth + 1));
             }
-            Ok(())
+            crate::typed::Value::Sequence(items) => {
+                refuse_deep_compound(&path, depth)?;
+                push_members(&mut pending, items, &path, depth);
+            }
+            crate::typed::Value::Set(items) => {
+                refuse_deep_compound(&path, depth)?;
+                push_members(&mut pending, items, &path, depth);
+            }
+            crate::typed::Value::Dictionary(entries) => {
+                refuse_deep_compound(&path, depth)?;
+                pending.reserve(entries.len().saturating_mul(2));
+                for (position, (key, item)) in entries.iter().enumerate().rev() {
+                    let entry = path.index(position);
+                    pending.push((item, entry.field("value"), depth + 1));
+                    pending.push((key, entry, depth + 1));
+                }
+            }
+            crate::typed::Value::Embedded(inner) => {
+                refuse_deep_compound(&path, depth)?;
+                pending.push((inner, path.field("embedded"), depth + 1));
+            }
+            crate::typed::Value::Boolean(_)
+            | crate::typed::Value::Double(_)
+            | crate::typed::Value::String(_)
+            | crate::typed::Value::ByteString(_)
+            | crate::typed::Value::Symbol(_) => {}
         }
-        crate::typed::Value::Embedded(inner) => {
-            refuse_deep_compound(path, depth)?;
-            check_profile_at(inner, &path.field("embedded"), depth + 1)
-        }
-        crate::typed::Value::Boolean(_)
-        | crate::typed::Value::Double(_)
-        | crate::typed::Value::String(_)
-        | crate::typed::Value::ByteString(_)
-        | crate::typed::Value::Symbol(_) => Ok(()),
-    }
-}
-
-/// Check the members of one compound, which sit one level deeper than it.
-fn check_items<'a>(
-    items: impl IntoIterator<Item = &'a crate::typed::Value>,
-    path: &crate::problem::Path,
-    depth: usize,
-) -> Result<(), crate::problem::Diagnostic> {
-    for (position, item) in items.into_iter().enumerate() {
-        check_profile_at(item, &path.index(position), depth + 1)?;
     }
     Ok(())
+}
+
+/// Queue the members of one compound, which sit one level deeper than it, so
+/// the first member is checked first.
+fn push_members<'a, I>(
+    pending: &mut Vec<(&'a crate::typed::Value, crate::problem::Path, usize)>,
+    members: I,
+    path: &crate::problem::Path,
+    depth: usize,
+) where
+    I: IntoIterator<Item = &'a crate::typed::Value>,
+    I::IntoIter: DoubleEndedIterator + ExactSizeIterator,
+{
+    let members = members.into_iter();
+    pending.reserve(members.len());
+    for (position, member) in members.enumerate().rev() {
+        pending.push((member, path.index(position), depth + 1));
+    }
 }
 
 /// The diagnostic for a compound opened at or beyond [`MAX_DEPTH`].
