@@ -3836,3 +3836,109 @@ fn a_folder_workspace_keeps_notes_in_place_and_never_touches_hidden_paths() {
         "an existing folder workspace is not created again"
     );
 }
+
+/// The fixture entity as a successor revision carrying `extension` as a
+/// retained, undeclared field.
+fn entity_successor(extension: mneme_core::Value, revision: u8) -> mneme_core::RecordEnvelope {
+    let entity = mneme_core::fixtures::fixture_batch()
+        .into_iter()
+        .find(|record| record.kind == mneme_core::RecordKind::Entity)
+        .expect("fixture entity");
+    let mut successor = entity.clone();
+    successor.predecessor = Some(entity.revision_id);
+    successor.revision_id = mneme_core::RevisionId::from_bytes([revision; 16]);
+    successor
+        .payload
+        .insert(mneme_core::Symbol::from("codec-profile-probe"), extension);
+    successor
+}
+
+/// Commit one entity successor, returning the outcome.
+fn commit_successor(
+    workspace: &mut mneme_store::Workspace,
+    successor: &mneme_core::RecordEnvelope,
+    key: &str,
+) -> mneme_store::Result<mneme_store::CommitOutcome> {
+    let base = workspace.current_revision().expect("base");
+    workspace.commit(record_command(
+        base,
+        &scope(),
+        key,
+        vec![draft(successor)],
+        Vec::new(),
+        Vec::new(),
+    ))
+}
+
+/// Refuse `refused` and admit `admitted`, then read the admitted revision
+/// back from a fresh handle so no in-memory copy can hide a decode failure.
+fn assert_admits_only_readable(
+    admitted: &mneme_core::RecordEnvelope,
+    refused: &mneme_core::RecordEnvelope,
+    code: mneme_core::ErrorCode,
+) {
+    let temp = tempfile::tempdir().expect("temp");
+    let mut workspace = mneme_store::Workspace::create(temp.path(), config(1_000)).expect("create");
+    let genesis = workspace.current_revision().expect("genesis");
+    workspace
+        .commit(fixture_command(genesis, "fixture"))
+        .expect("fixture");
+    let before = workspace.snapshot().expect("before");
+    let refusal = commit_successor(&mut workspace, refused, "refused");
+    assert!(
+        matches!(
+            &refusal,
+            Err(mneme_store::Failure::Validation(diagnostics))
+                if diagnostics.first().is_some_and(|diagnostic| diagnostic.code == code)
+        ),
+        "an unreadable record must be refused before commit: {refusal:?}"
+    );
+    assert_eq!(workspace.current_revision().expect("head"), before.revision);
+    drop(workspace);
+    let mut reopened = open(temp.path(), 2_000);
+    let after = reopened.snapshot().expect("prior revision stays readable");
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after.records, before.records);
+    commit_successor(&mut reopened, admitted, "admitted").expect("the readable twin commits");
+    drop(reopened);
+    let cold = open(temp.path(), 3_000).snapshot().expect("cold read");
+    let stored = cold
+        .records
+        .iter()
+        .find(|record| record.revision_id == admitted.revision_id)
+        .expect("admitted revision");
+    assert_eq!(
+        stored.payload.get("codec-profile-probe"),
+        admitted.payload.get("codec-profile-probe")
+    );
+}
+
+#[test]
+fn a_commit_admits_only_extensions_a_fresh_handle_can_read() {
+    let mut extension = mneme_core::Value::Boolean(true);
+    for _ in 0..=mneme_core::binary::MAX_DEPTH {
+        let deeper = mneme_core::Value::sequence(vec![extension.clone()]);
+        if mneme_core::binary::check_profile(&entity_successor(deeper.clone(), 0x71).to_value())
+            .is_err()
+        {
+            break;
+        }
+        extension = deeper;
+    }
+    assert_admits_only_readable(
+        &entity_successor(extension.clone(), 0x72),
+        &entity_successor(mneme_core::Value::sequence(vec![extension]), 0x71),
+        mneme_core::ErrorCode::DepthLimitExceeded,
+    );
+}
+
+#[test]
+fn a_commit_admits_only_integers_a_fresh_handle_can_read() {
+    let bits = 8 * mneme_core::binary::MAX_INTEGER_BYTES - 1;
+    let widest = (num_bigint::BigInt::from(1_u8) << bits) - 1_u8;
+    assert_admits_only_readable(
+        &entity_successor(mneme_core::Value::integer(widest.clone()), 0x74),
+        &entity_successor(mneme_core::Value::integer(widest + 1), 0x73),
+        mneme_core::ErrorCode::LimitExceeded,
+    );
+}

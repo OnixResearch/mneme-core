@@ -493,6 +493,7 @@ dependencies = [
  "getrandom 0.4.3",
  "mneme-core",
  "mneme-kernel",
+ "num-bigint",
  "rusqlite",
  "sha2",
  "tempfile",

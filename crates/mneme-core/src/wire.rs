@@ -666,6 +666,8 @@ pub fn validate_record_value(
     registry: &crate::fields::SchemaRegistry,
     index: Option<&crate::pointer::SnapshotIndex>,
 ) -> Result<RecordEnvelope, Vec<crate::problem::Diagnostic>> {
+    // A record that the durable reader would refuse is never admitted.
+    crate::binary::check_profile(value).map_err(|diagnostic| vec![diagnostic])?;
     let envelope = RecordEnvelope::from_value_with_registry(value, registry)?;
     let context = match index {
         Some(snapshot) => RecordContext::against(registry, snapshot),
@@ -739,6 +741,17 @@ fn decode_batch_envelopes(
     let mut diagnostics = Vec::new();
     let mut envelopes = Vec::with_capacity(values.len());
     for (position, value) in values.iter().enumerate() {
+        // Checked on the complete envelope value, before parsing: a record the
+        // durable reader would refuse is never admitted.
+        if let Err(mut diagnostic) = crate::binary::check_profile(value) {
+            diagnostic.path = rebase(
+                diagnostic.path,
+                &crate::problem::Path::root().index(position),
+            );
+            diagnostics.reserve(1);
+            diagnostics.push(diagnostic);
+            continue;
+        }
         match RecordEnvelope::from_value_with_registry(value, registry) {
             Ok(envelope) => envelopes.push(envelope),
             Err(record_diagnostics) => {
@@ -817,6 +830,57 @@ fn rebase(path: crate::problem::Path, prefix: &crate::problem::Path) -> crate::p
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fixture entity carrying `extension` as a retained, undeclared field.
+    fn entity_with_extension(extension: crate::typed::Value) -> RecordEnvelope {
+        let mut entity = crate::fixtures::fixture_batch()
+            .into_iter()
+            .find(|record| record.kind == crate::fields::RecordKind::Entity)
+            .expect("fixture entity");
+        entity
+            .payload
+            .insert(crate::typed::Symbol::from("codec-profile-probe"), extension);
+        entity
+    }
+
+    #[test]
+    fn record_validation_admits_exactly_the_envelopes_the_reader_decodes() {
+        let registry = crate::fields::SchemaRegistry::production();
+        let mut extension = crate::typed::Value::Boolean(true);
+        let mut admitted = None;
+        // Measured on the complete envelope: the payload dictionary and the
+        // envelope record consume levels before the extension starts.
+        for _ in 0..=crate::binary::MAX_DEPTH {
+            let deeper = crate::typed::Value::sequence(vec![extension.clone()]);
+            let value = entity_with_extension(deeper.clone()).to_value();
+            if crate::binary::check_profile(&value).is_err() {
+                break;
+            }
+            extension = deeper;
+            admitted = Some(value);
+        }
+        let admitted = admitted.expect("some extension depth fits");
+        assert!(validate_record_value(&admitted, &registry, None).is_ok());
+        assert!(crate::binary::decode(&crate::binary::encode(&admitted)).is_ok());
+        let refused =
+            entity_with_extension(crate::typed::Value::sequence(vec![extension])).to_value();
+        let diagnostics =
+            validate_record_value(&refused, &registry, None).expect_err("one level deeper");
+        assert_eq!(
+            diagnostics[0].code,
+            crate::problem::ErrorCode::DepthLimitExceeded
+        );
+        assert!(crate::binary::decode(&crate::binary::encode(&refused)).is_err());
+        let single = crate::binary::check_profile(&refused).expect_err("too deep");
+        let batch = validate_batch(&[admitted, refused], &registry, None)
+            .expect_err("batch refuses it too");
+        assert_eq!(batch[0].code, crate::problem::ErrorCode::DepthLimitExceeded);
+        // The diagnostic names the refused compound inside the second record.
+        assert_eq!(
+            batch[0].path,
+            rebase(single.path, &crate::problem::Path::root().index(1))
+        );
+    }
 
     fn record_id(byte: u8) -> crate::ids::RecordId {
         crate::ids::RecordId::from_bytes([byte; 16])

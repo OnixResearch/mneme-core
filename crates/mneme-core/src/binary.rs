@@ -278,6 +278,105 @@ fn minimal_signed_bytes(value: &num_bigint::BigInt) -> Vec<u8> {
     bytes
 }
 
+/// Whether a compound value may open while `depth` compound values are
+/// already open around it. The decoder and [`check_profile`] share this rule.
+fn compound_admissible(depth: usize) -> bool {
+    depth < MAX_DEPTH
+}
+
+/// Refuse a value the decoder would not read back: compound nesting deeper
+/// than [`MAX_DEPTH`] or an integer wider than [`MAX_INTEGER_BYTES`].
+///
+/// Durable admission applies this to a record's complete envelope value, so a
+/// committed record always decodes on a fresh handle. It walks the value the
+/// way [`decode`] reads its encoding, without encoding it.
+pub fn check_profile(value: &crate::typed::Value) -> Result<(), crate::problem::Diagnostic> {
+    check_profile_at(value, &crate::problem::Path::root(), 0)
+}
+
+/// [`check_profile`] for a value with `depth` compound values open around
+/// it. Recursion stops at [`MAX_DEPTH`], as the decoder's does.
+fn check_profile_at(
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+    depth: usize,
+) -> Result<(), crate::problem::Diagnostic> {
+    match value {
+        crate::typed::Value::SignedInteger(integer) => {
+            if integer_within_byte_limit(integer.as_bigint()) {
+                Ok(())
+            } else {
+                Err(crate::problem::Diagnostic::new(
+                    crate::problem::Stage::Syntax,
+                    crate::problem::ErrorCode::LimitExceeded,
+                    path.clone(),
+                    format!("integer exceeds the {MAX_INTEGER_BYTES}-byte limit"),
+                ))
+            }
+        }
+        crate::typed::Value::Record(record) => {
+            refuse_deep_compound(path, depth)?;
+            check_profile_at(record.label(), &path.field("label"), depth + 1)?;
+            check_items(record.fields(), path, depth)
+        }
+        crate::typed::Value::Sequence(items) => {
+            refuse_deep_compound(path, depth)?;
+            check_items(items, path, depth)
+        }
+        crate::typed::Value::Set(items) => {
+            refuse_deep_compound(path, depth)?;
+            check_items(items, path, depth)
+        }
+        crate::typed::Value::Dictionary(entries) => {
+            refuse_deep_compound(path, depth)?;
+            for (position, (key, item)) in entries.iter().enumerate() {
+                let entry = path.index(position);
+                check_profile_at(key, &entry, depth + 1)?;
+                check_profile_at(item, &entry.field("value"), depth + 1)?;
+            }
+            Ok(())
+        }
+        crate::typed::Value::Embedded(inner) => {
+            refuse_deep_compound(path, depth)?;
+            check_profile_at(inner, &path.field("embedded"), depth + 1)
+        }
+        crate::typed::Value::Boolean(_)
+        | crate::typed::Value::Double(_)
+        | crate::typed::Value::String(_)
+        | crate::typed::Value::ByteString(_)
+        | crate::typed::Value::Symbol(_) => Ok(()),
+    }
+}
+
+/// Check the members of one compound, which sit one level deeper than it.
+fn check_items<'a>(
+    items: impl IntoIterator<Item = &'a crate::typed::Value>,
+    path: &crate::problem::Path,
+    depth: usize,
+) -> Result<(), crate::problem::Diagnostic> {
+    for (position, item) in items.into_iter().enumerate() {
+        check_profile_at(item, &path.index(position), depth + 1)?;
+    }
+    Ok(())
+}
+
+/// The diagnostic for a compound opened at or beyond [`MAX_DEPTH`].
+fn refuse_deep_compound(
+    path: &crate::problem::Path,
+    depth: usize,
+) -> Result<(), crate::problem::Diagnostic> {
+    if compound_admissible(depth) {
+        Ok(())
+    } else {
+        Err(crate::problem::Diagnostic::new(
+            crate::problem::Stage::Syntax,
+            crate::problem::ErrorCode::DepthLimitExceeded,
+            path.clone(),
+            format!("compound nesting exceeds {MAX_DEPTH} levels"),
+        ))
+    }
+}
+
 /// Whether `value` fits the declared integer size bound.
 ///
 /// The tagged JSON transport applies this to the integer it parsed, so both
@@ -407,15 +506,7 @@ impl Decoder<'_> {
         path: &crate::problem::Path,
         depth: usize,
     ) -> Result<(), crate::problem::Diagnostic> {
-        if depth >= MAX_DEPTH {
-            return Err(crate::problem::Diagnostic::new(
-                crate::problem::Stage::Syntax,
-                crate::problem::ErrorCode::DepthLimitExceeded,
-                path.clone(),
-                format!("compound nesting exceeds {MAX_DEPTH} levels"),
-            ));
-        }
-        Ok(())
+        refuse_deep_compound(path, depth)
     }
 
     fn skip_annotations(
@@ -759,6 +850,66 @@ fn unterminated(path: &crate::problem::Path, compound: &'static str) -> crate::p
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `levels` compound values of one kind, each holding the next.
+    fn nested(
+        levels: usize,
+        wrap: fn(crate::typed::Value) -> crate::typed::Value,
+    ) -> crate::typed::Value {
+        let mut value = crate::typed::Value::Boolean(true);
+        for _ in 0..levels {
+            value = wrap(value);
+        }
+        value
+    }
+
+    #[test]
+    fn the_profile_check_agrees_with_the_decoder_at_both_limits() {
+        let wrappers: [fn(crate::typed::Value) -> crate::typed::Value; 6] = [
+            |inner| crate::typed::Value::sequence(vec![inner]),
+            |inner| crate::typed::Value::set([inner]),
+            |inner| crate::typed::Value::dictionary([(crate::typed::Value::Boolean(false), inner)]),
+            |inner| crate::typed::Value::dictionary([(inner, crate::typed::Value::Boolean(false))]),
+            |inner| crate::typed::Value::record_named("node", vec![inner]),
+            |inner| crate::typed::Value::record(inner, Vec::new()),
+        ];
+        for wrap in wrappers {
+            let deepest = nested(MAX_DEPTH, wrap);
+            assert!(check_profile(&deepest).is_ok());
+            assert!(decode(&encode(&deepest)).is_ok());
+            let deeper = nested(MAX_DEPTH + 1, wrap);
+            let refused = check_profile(&deeper).expect_err("one level too deep");
+            assert_eq!(refused.code, crate::problem::ErrorCode::DepthLimitExceeded);
+            assert_eq!(
+                decode(&encode(&deeper))
+                    .expect_err("decoder refuses too")
+                    .code,
+                crate::problem::ErrorCode::DepthLimitExceeded
+            );
+        }
+        let embedded = nested(MAX_DEPTH, crate::typed::Value::embedded);
+        assert!(check_profile(&embedded).is_ok());
+        assert!(check_profile(&nested(MAX_DEPTH + 1, crate::typed::Value::embedded)).is_err());
+
+        let widest = crate::typed::Value::integer(
+            (num_bigint::BigInt::from(1) << (8 * MAX_INTEGER_BYTES - 1)) - 1,
+        );
+        let wider = crate::typed::Value::integer(
+            num_bigint::BigInt::from(1) << (8 * MAX_INTEGER_BYTES - 1),
+        );
+        let narrowest = crate::typed::Value::integer(
+            -(num_bigint::BigInt::from(1) << (8 * MAX_INTEGER_BYTES - 1)),
+        );
+        for admitted in [&widest, &narrowest] {
+            assert!(check_profile(admitted).is_ok());
+            assert!(decode(&encode(admitted)).is_ok());
+        }
+        assert_eq!(
+            check_profile(&wider).expect_err("one byte too wide").code,
+            crate::problem::ErrorCode::LimitExceeded
+        );
+        assert!(decode(&encode(&wider)).is_err());
+    }
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()

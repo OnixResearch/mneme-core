@@ -18,6 +18,8 @@ Mneme Core is the standalone Rust library workspace for Mneme's typed memory eng
 
 The workspace keeps the original crate names, public Rust APIs, Rust 1.99.1 toolchain pin, lint policy, and release overflow checks. No schema or runtime behavior is changed by this extraction.
 
+Stored records use the canonical binary Preserves profile, whose reader refuses compound nesting deeper than 40 levels and integers wider than 4,096 bytes. Record validation applies the same limits to a record's complete envelope value, retained unknown fields included, so a typed commit or a migration is refused before anything is written unless a fresh handle can read it back.
+
 ## Provenance and preserved history
 
 The source is **`OnixResearch/mneme` at commit `b77325d65aa2904f45234d1d9029081988a9b981`**, titled “Add retained images and verify weighted retrieval fusion.” The repository was filtered from that source history into a core-only history; the filtered starting revision is `7c8fcb894a827baeee75d29cf9f49ba5e31b6ae7`, with 75 source commits preserved. The 11 crate trees and `proofs/kernel` retain their source paths, Git blobs, and file modes from the cited source commit. Root build and developer tooling are adapted for the standalone library workspace.

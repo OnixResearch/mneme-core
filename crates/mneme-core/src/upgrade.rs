@@ -154,8 +154,13 @@ impl Migration {
             payload,
         };
         let context = crate::wire::RecordContext::isolated(registry);
-        let diagnostics =
-            crate::wire::validate_record(&target, &context, &crate::problem::Path::root());
+        // A migrated record must also be one the durable reader can decode.
+        let diagnostics = match crate::binary::check_profile(&target.to_value()) {
+            Ok(()) => {
+                crate::wire::validate_record(&target, &context, &crate::problem::Path::root())
+            }
+            Err(diagnostic) => vec![diagnostic],
+        };
         if !diagnostics.is_empty() {
             return Err(MigrationFailure {
                 migration: self.name.clone(),
@@ -402,6 +407,32 @@ mod tests {
         assert_eq!(
             failure.diagnostics[0].code,
             crate::problem::ErrorCode::UnsupportedSchemaVersion
+        );
+    }
+
+    #[test]
+    fn a_migration_cannot_return_a_target_the_reader_cannot_decode() {
+        let source = assertion();
+        let migration = Migration::new("synthetic-deep", 1, 2, |payload| {
+            let mut output = add_extraction(payload)?;
+            let mut nested = crate::typed::Value::Boolean(true);
+            for _ in 0..=crate::binary::MAX_DEPTH {
+                nested = crate::typed::Value::sequence(vec![nested]);
+            }
+            output.insert(crate::typed::Symbol::from("note"), nested);
+            Ok(output)
+        });
+        let failure = migration
+            .execute(
+                &registry(),
+                &source,
+                crate::ids::RevisionId::from_bytes([0x45; 16]),
+                crate::clock::RecordedTime::new(crate::clock::Timestamp::from_nanos(9), 9),
+            )
+            .expect_err("a too-deep target is not durable");
+        assert_eq!(
+            failure.diagnostics[0].code,
+            crate::problem::ErrorCode::DepthLimitExceeded
         );
     }
 
