@@ -1250,6 +1250,125 @@ fn historical_inspection_preserves_superseded_unknown_time() {
     assert_eq!(status.valid_time, mneme_core::ValidTime::Unknown);
 }
 
+fn add_recognized_media(harness: &mut Harness) -> (mneme_core::SourcePin, mneme_core::MediaLocation) {
+    let audio = b"bounded audio fixture";
+    let text = b"The transcript says cedar project.";
+    let input = mneme_core::SourcePin::new(rid(0xe0), rev(0xe1));
+    let output = mneme_core::SourcePin::new(rid(0xe2), rev(0xe3));
+    let input_digest = mneme_core::ContentDigest::of_source_bytes(audio);
+    let output_digest = mneme_core::ContentDigest::of_source_bytes(text);
+    let time_base = mneme_core::TimeBase::new(1, 100).expect("time base");
+    let location = mneme_core::MediaLocation::Audio {
+        start_tick: 30,
+        end_tick: 60,
+        time_base,
+        channel: 0,
+    };
+    let (input_record, input_blob) = mneme_memory::build_captured_source(
+        input.source(),
+        input.revision(),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: audio,
+            media_type: "audio/wav",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_core::MediaExtent::Audio {
+            duration_ticks: 100,
+            time_base,
+            channels: 1,
+        },
+    )
+    .expect("captured audio");
+    let (output_record, output_blob) = mneme_memory::build_recognized_source(
+        output.source(),
+        output.revision(),
+        &scope(),
+        text,
+        input,
+        None,
+    )
+    .expect("recognized text");
+    let run_id = rid(0xe4);
+    let segment_id = rid(0xe5);
+    let run = mneme_memory::build_recognition_run(
+        run_id,
+        rev(0xe6),
+        &scope(),
+        mneme_memory::RecognitionRunOptions {
+            input,
+            input_digest,
+            output,
+            output_digest,
+            model: "test-model@sha256:01",
+            runtime: "test-runtime@sha256:02",
+            adapter: "test-adapter@sha256:03",
+            preprocessing: "test-preprocess@sha256:04",
+            configuration: "test-config@sha256:05",
+            segments: &[segment_id],
+            coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("coverage"),
+            status: mneme_core::RecognitionStatus::Complete,
+            scores: &[],
+            alternatives: &[],
+        },
+    )
+    .expect("run");
+    let segment = mneme_memory::build_recognition_segment(
+        segment_id,
+        rev(0xe7),
+        &scope(),
+        mneme_memory::RecognitionSegmentOptions {
+            run: Some(run_id),
+            text_source: output,
+            span: mneme_core::SourceSpan::new(0, text.len() as u64 - 1).expect("text span"),
+            media_source: input,
+            media_digest: input_digest,
+            location: &location,
+        },
+    )
+    .expect("segment");
+    harness.commit(
+        scope(),
+        "recognized-media",
+        vec![input_record, output_record, run, segment],
+        vec![input_blob, output_blob],
+    );
+    (input, location)
+}
+
+#[test]
+fn searchable_recognition_quotes_return_typed_locations_under_scope() {
+    let mut harness = Harness::new();
+    let (input, location) = add_recognized_media(&mut harness);
+    let request = harness.request("transcript");
+    let response = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("scoped recall");
+    let candidate = response
+        .candidates
+        .iter()
+        .find(|candidate| candidate.content_kind == mneme_recall::ContentKind::SourceExcerpt)
+        .expect("recognized text is searchable");
+    assert_eq!(candidate.source, Some(rid(0xe2)));
+    assert_eq!(candidate.ancestry_roots, std::collections::BTreeSet::from([(input.source(), input.revision())]));
+    assert_eq!(candidate.media_locations.len(), 1);
+    assert_eq!(candidate.media_locations[0].media_source, input);
+    assert_eq!(candidate.media_locations[0].location, location);
+
+    let other_request = mneme_recall::Request::lexical(
+        "recall-test",
+        other_scope(),
+        harness.workspace.current_revision().expect("revision"),
+        mneme_core::Timestamp::from_nanos(2_000),
+        "transcript",
+    );
+    let other = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(other_request)
+        .expect("other-scope recall");
+    assert!(other.candidates.iter().all(|candidate| candidate.source != Some(rid(0xe2))));
+}
+
 #[test]
 fn cancellation_never_looks_successful() {
     let mut harness = Harness::new();

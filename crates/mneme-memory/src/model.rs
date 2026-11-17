@@ -29,11 +29,16 @@ impl SourceAvailability {
 }
 
 /// A retained or explicitly unavailable source revision.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SourceView {
     pub record: mneme_core::RecordEnvelope,
     pub content: mneme_core::SourceContent,
     pub availability: SourceAvailability,
+    pub acquisition: mneme_core::Acquisition,
+    pub derived_from: Option<mneme_core::SourcePin>,
+    pub media_extent: Option<mneme_core::MediaExtent>,
+    pub media_transform: Option<mneme_core::MediaTransform>,
+    pub correction: Option<mneme_core::CorrectionProvenance>,
     pub path_hint: Option<String>,
     pub entity: Option<mneme_core::RecordId>,
     pub media_type: Option<mneme_core::Symbol>,
@@ -95,7 +100,27 @@ impl SourceView {
             ),
             None => None,
         };
+        let acquisition = mneme_core::Acquisition::from_value(
+            required(&record, "acquisition")?,
+            &mneme_core::Path::root().field("acquisition"),
+        )
+        .map_err(|diagnostic| {
+            crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "source-revision",
+                diagnostic.to_string(),
+            )
+        })?;
+        let derived_from = optional_source_pin(&record, "derived-from")?;
+        let media_extent = optional_media_extent(&record)?;
+        let media_transform = optional_media_transform(&record)?;
+        let correction = optional_correction(&record)?;
         Ok(SourceView {
+            acquisition,
+            derived_from,
+            media_extent,
+            media_transform,
+            correction,
             path_hint: optional_text(&record, "path-hint"),
             entity: optional_reference_target(&record, "entity")?,
             content,
@@ -120,6 +145,58 @@ impl SourceView {
             mneme_core::SourceContent::Retained(retained) => Some(retained.byte_length()),
             mneme_core::SourceContent::Unavailable { .. } => None,
         }
+    }
+}
+
+/// One source revision pin parsed from a stored reference field.
+fn optional_source_pin(
+    record: &mneme_core::RecordEnvelope,
+    field: &str,
+) -> crate::failure::Result<Option<mneme_core::SourcePin>> {
+    match record.payload.get(field) {
+        Some(value) => mneme_core::SourcePin::from_value(value, &mneme_core::Path::root().field(field))
+            .map(Some)
+            .map_err(|diagnostic| crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "source-revision",
+                diagnostic.to_string(),
+            )),
+        None => Ok(None),
+    }
+}
+
+fn optional_media_extent(
+    record: &mneme_core::RecordEnvelope,
+) -> crate::failure::Result<Option<mneme_core::MediaExtent>> {
+    parse_optional_media_value(record, "media-extent", mneme_core::MediaExtent::from_value)
+}
+
+fn optional_media_transform(
+    record: &mneme_core::RecordEnvelope,
+) -> crate::failure::Result<Option<mneme_core::MediaTransform>> {
+    parse_optional_media_value(record, "media-transform", mneme_core::MediaTransform::from_value)
+}
+
+fn optional_correction(
+    record: &mneme_core::RecordEnvelope,
+) -> crate::failure::Result<Option<mneme_core::CorrectionProvenance>> {
+    parse_optional_media_value(record, "correction", mneme_core::CorrectionProvenance::from_value)
+}
+
+fn parse_optional_media_value<T>(
+    record: &mneme_core::RecordEnvelope,
+    field: &str,
+    parse: impl FnOnce(&mneme_core::Value, &mneme_core::Path) -> Result<T, mneme_core::Diagnostic>,
+) -> crate::failure::Result<Option<T>> {
+    match record.payload.get(field) {
+        Some(value) => parse(value, &mneme_core::Path::root().field(field))
+            .map(Some)
+            .map_err(|diagnostic| crate::failure::EvidenceError::invalid(
+                record.record_id,
+                "source-revision",
+                diagnostic.to_string(),
+            )),
+        None => Ok(None),
     }
 }
 
@@ -672,6 +749,134 @@ impl CommentView {
             record,
         })
     }
+}
+
+/// Exact provider input/output and execution identities for one recognition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecognitionRunView {
+    pub record: mneme_core::RecordEnvelope,
+    pub input: mneme_core::SourcePin,
+    pub input_digest: mneme_core::ContentDigest,
+    pub output: mneme_core::SourcePin,
+    pub output_digest: mneme_core::ContentDigest,
+    pub model: String,
+    pub runtime: String,
+    pub adapter: String,
+    pub preprocessing: String,
+    pub configuration: String,
+    pub segments: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub coverage: mneme_core::RecognitionCoverage,
+    pub status: mneme_core::RecognitionStatus,
+    pub scores: Vec<mneme_core::RecognitionScore>,
+    pub alternatives: Vec<mneme_core::RecognitionAlternative>,
+}
+
+impl RecognitionRunView {
+    /// Parse a recognition-run envelope.
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
+        expect_kind(&record, mneme_core::RecordKind::RecognitionRun)?;
+        let status = required_symbol_text(&record, "status")?;
+        let status = mneme_core::RecognitionStatus::parse(&status).ok_or_else(|| {
+            crate::failure::EvidenceError::invalid(record.record_id, "recognition-run", "unknown recognition status")
+        })?;
+        let coverage = mneme_core::RecognitionCoverage::from_value(
+            required(&record, "coverage")?,
+            &mneme_core::Path::root().field("coverage"),
+        )
+        .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "recognition-run", diagnostic.to_string()))?;
+        let input = required_source_pin(&record, "input")?;
+        let output = required_source_pin(&record, "output")?;
+        Ok(RecognitionRunView {
+            input,
+            input_digest: required_digest(&record, "input-digest")?,
+            output,
+            output_digest: required_digest(&record, "output-digest")?,
+            model: required_text(&record, "model")?,
+            runtime: required_text(&record, "runtime")?,
+            adapter: required_text(&record, "adapter")?,
+            preprocessing: required_text(&record, "preprocessing")?,
+            configuration: required_text(&record, "configuration")?,
+            segments: required_reference_set(&record, "segments")?,
+            coverage,
+            status,
+            scores: optional_typed_sequence(&record, "scores", mneme_core::RecognitionScore::from_value)?,
+            alternatives: optional_typed_sequence(&record, "alternatives", mneme_core::RecognitionAlternative::from_value)?,
+            record,
+        })
+    }
+}
+
+/// One text byte span mapped to an exact source and typed media-native location.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecognitionSegmentView {
+    pub record: mneme_core::RecordEnvelope,
+    pub run: Option<mneme_core::RecordId>,
+    pub text_source: mneme_core::SourcePin,
+    pub text_span: mneme_core::SourceSpan,
+    pub media_source: mneme_core::SourcePin,
+    pub media_digest: mneme_core::ContentDigest,
+    pub location: mneme_core::MediaLocation,
+}
+
+impl RecognitionSegmentView {
+    /// Parse a recognition-segment envelope.
+    pub fn parse(record: mneme_core::RecordEnvelope) -> crate::failure::Result<Self> {
+        expect_kind(&record, mneme_core::RecordKind::RecognitionSegment)?;
+        let text_span = mneme_core::SourceSpan::from_value(
+            required(&record, "span")?,
+            &mneme_core::Path::root().field("span"),
+        )
+        .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "recognition-segment", diagnostic.to_string()))?;
+        let location = mneme_core::MediaLocation::from_value(
+            required(&record, "location")?,
+            &mneme_core::Path::root().field("location"),
+        )
+        .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "recognition-segment", diagnostic.to_string()))?;
+        Ok(RecognitionSegmentView {
+            run: optional_reference_target(&record, "run")?,
+            text_source: required_source_pin(&record, "text-source")?,
+            text_span,
+            media_source: required_source_pin(&record, "media-source")?,
+            media_digest: required_digest(&record, "media-digest")?,
+            location,
+            record,
+        })
+    }
+}
+
+fn required_source_pin(
+    record: &mneme_core::RecordEnvelope,
+    field: &str,
+) -> crate::failure::Result<mneme_core::SourcePin> {
+    mneme_core::SourcePin::from_value(
+        required(record, field)?,
+        &mneme_core::Path::root().field(field),
+    )
+    .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "source-pin", diagnostic.to_string()))
+}
+
+fn required_digest(
+    record: &mneme_core::RecordEnvelope,
+    field: &str,
+) -> crate::failure::Result<mneme_core::ContentDigest> {
+    mneme_core::ContentDigest::from_value(
+        required(record, field)?,
+        &mneme_core::Path::root().field(field),
+    )
+    .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, "recognition", diagnostic.to_string()))
+}
+
+fn optional_typed_sequence<T>(
+    record: &mneme_core::RecordEnvelope,
+    field: &str,
+    parse: impl Fn(&mneme_core::Value, &mneme_core::Path) -> Result<T, mneme_core::Diagnostic>,
+) -> crate::failure::Result<Vec<T>> {
+    let Some(value) = record.payload.get(field) else { return Ok(Vec::new()); };
+    let items = value.as_sequence().ok_or_else(|| crate::failure::EvidenceError::invalid(record.record_id, field, "expected a typed sequence"))?;
+    items.iter().enumerate().map(|(index, item)| {
+        parse(item, &mneme_core::Path::root().field(field).index(index))
+            .map_err(|diagnostic| crate::failure::EvidenceError::invalid(record.record_id, field, diagnostic.to_string()))
+    }).collect()
 }
 
 fn expect_kind(

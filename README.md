@@ -24,6 +24,44 @@ The source is **`OnixResearch/mneme` at commit `b77325d65aa2904f45234d1d90290819
 
 The kernel proof owner is this repository: `crates/mneme-kernel` and `proofs/kernel` are kept together. Consumers should pin one exact `mneme-core` revision and run that revision's `scripts/verify-kernel-proofs.mjs`; the verifier locates its Rust kernel, proof sources, and lockfile relative to its own checkout.
 
+## Media recognition and schema v5
+
+The production schema registry reads record schema versions 1 through 5. The
+v4 schema added `comment`; v5 (`media-recognition`) keeps the earlier
+definitions and adds typed media provenance. Existing v1-v4 envelopes keep
+their original schema versions and remain readable. The registry does not
+silently rewrite stored records: use the explicit `Migration` API when a
+payload transformation is required. A migration produces a new immutable
+revision whose predecessor is the input revision; it never invents capture,
+recognition, or correction provenance for a historical source.
+
+In v5, `SourceRevision` declares an `Acquisition` (`authored`, `imported`,
+`captured`, `machine-recognized`, or `corrected`) and may pin a parent source,
+a typed media extent, a transform, and correction provenance. Audio extents
+include a rational seconds-per-tick time base and channel count; page and ink
+extents declare addressable page counts. A `RecognitionRun` pins input and
+output source revisions and digests, model/runtime/adapter/preprocessing and
+configuration identities, coverage and status, plus optional scores and
+alternatives. Each `RecognitionSegment` pins its text source and inclusive
+`SourceSpan` byte offsets, media source revision and digest, and typed audio,
+page-region, or ink-stroke location. Text spans remain byte offsets into the
+exact UTF-8 source revision; media coordinates never change that contract.
+
+Captured media is separate from its machine-recognized text derivative. A
+human correction is another immutable text revision with a predecessor and
+edit provenance; alignments must pin that corrected revision or be explicitly
+invalidated. Reprocessing creates new recognized text and recognition-run
+records rather than replacing corrected text. These records make recognized
+text searchable as evidence, but recognition does not accept or promote an
+assertion.
+
+The shared API exposes `recognition.read` with a scoped `{scope, run}` payload.
+It returns the run's exact source pins and digests, model/runtime configuration,
+bounded recognized text, source acquisition/transform metadata, coverage/status,
+and its bounded segment mappings. The service checks caller authorization,
+source ancestry and digest identity, and the current retention eligibility
+barrier before returning the result.
+
 ## Development and verification
 
 The source can be cloned without authentication. The pinned Nix environment

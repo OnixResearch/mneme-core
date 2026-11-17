@@ -2173,6 +2173,7 @@ mod tests {
             claim_status: None,
             evidence: Vec::new(),
             ancestry_roots: std::collections::BTreeSet::new(),
+            media_locations: Vec::new(),
         };
         let original = source_binding("sha256:context-a", &document);
         assert_ne!(original, source_binding("sha256:context-b", &document));

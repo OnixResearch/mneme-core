@@ -204,6 +204,11 @@ pub enum ApiCommand {
         source_revision: mneme_core::RevisionId,
         revision: Option<mneme_core::WorkspaceRevisionId>,
     },
+    RecognitionRead {
+        request_id: String,
+        scope: mneme_core::ScopeId,
+        run: mneme_core::RecordId,
+    },
     Forget {
         request_id: String,
         scope: mneme_core::ScopeId,
@@ -246,6 +251,7 @@ impl ApiCommand {
             | ApiCommand::Revise { request_id, .. }
             | ApiCommand::Resume { request_id, .. }
             | ApiCommand::ImageRead { request_id, .. }
+            | ApiCommand::RecognitionRead { request_id, .. }
             | ApiCommand::Forget { request_id, .. }
             | ApiCommand::ProposalInspect { request_id, .. }
             | ApiCommand::ReasonQuery { request_id, .. }
@@ -263,6 +269,7 @@ impl ApiCommand {
             ApiCommand::Revise { .. } => "revise",
             ApiCommand::Resume { .. } => "resume",
             ApiCommand::ImageRead { .. } => "image.read",
+            ApiCommand::RecognitionRead { .. } => "recognition.read",
             ApiCommand::Forget { .. } => "forget",
             ApiCommand::ProposalInspect { .. } => "proposal.inspect",
             ApiCommand::ReasonQuery { .. } => "reason.query",
@@ -280,6 +287,7 @@ impl ApiCommand {
             | ApiCommand::Revise { scope, .. }
             | ApiCommand::Resume { scope, .. }
             | ApiCommand::ImageRead { scope, .. }
+            | ApiCommand::RecognitionRead { scope, .. }
             | ApiCommand::Forget { scope, .. }
             | ApiCommand::ProposalInspect { scope, .. } => Some(scope),
             ApiCommand::ReasonQuery { scope, .. } => Some(scope),
@@ -319,6 +327,7 @@ impl ApiCommand {
             "revise" => revise(request_id, payload),
             "resume" => resume(request_id, payload),
             "image.read" => image_read(request_id, payload),
+            "recognition.read" => recognition_read(request_id, payload),
             "forget" => forget(request_id, payload),
             "proposal.inspect" => proposal_inspect(request_id, payload),
             "reason.query" => reason_query(request_id, payload),
@@ -558,6 +567,18 @@ fn image_read(
         source: fields.record("source")?,
         source_revision: fields.revision_id("source-revision")?,
         revision: fields.optional_revision("revision")?,
+    })
+}
+
+fn recognition_read(
+    request_id: String,
+    payload: &mneme_core::Value,
+) -> Result<ApiCommand, crate::ApiError> {
+    let fields = Fields::checked(payload, &["scope", "run"], &payload_path())?;
+    Ok(ApiCommand::RecognitionRead {
+        request_id,
+        scope: fields.scope("scope")?,
+        run: fields.record("run")?,
     })
 }
 

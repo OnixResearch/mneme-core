@@ -23,6 +23,7 @@ struct BuildScope<'a> {
     request: &'a crate::model::Request,
     sources: &'a SourceStates,
     entities: &'a std::collections::BTreeMap<mneme_core::RecordId, String>,
+    media_locations: &'a std::collections::BTreeMap<mneme_core::SourcePin, Vec<crate::model::MediaCitation>>,
 }
 
 /// Build a fresh index for the request's temporal selection.
@@ -35,13 +36,23 @@ pub(crate) fn build_index(
 ) -> BuildResult<crate::model::CachedIndex> {
     budget.check()?;
     let entities = entity_labels(view, request, budget)?;
+    let (media_locations, skipped_locations) = recognition_media_locations(view, request, sources, budget)?;
     let scope = BuildScope {
         view,
         request,
         sources,
         entities: &entities,
+        media_locations: &media_locations,
     };
-    let mut index = IndexBuild::default();
+    let mut index = IndexBuild {
+        skipped: skipped_locations,
+        skip_reasons: if skipped_locations == 0 {
+            std::collections::BTreeSet::new()
+        } else {
+            std::collections::BTreeSet::from(["some recognition media locations were unavailable or exceeded the per-source bound".to_owned()])
+        },
+        ..IndexBuild::default()
+    };
     for record in &view.snapshot().records {
         if !record_visible(request, &record.scope) {
             continue;
@@ -54,6 +65,64 @@ pub(crate) fn build_index(
         index.add_assertion(&scope, &assertion, budget)?;
     }
     Ok(index.finish(view.revision()))
+}
+
+const MAX_MEDIA_LOCATIONS_PER_SOURCE: usize = 4096;
+
+fn recognition_media_locations(
+    view: &mneme_memory::View,
+    request: &crate::model::Request,
+    sources: &SourceStates,
+    budget: &mut crate::engine::WorkBudget,
+) -> BuildResult<(std::collections::BTreeMap<mneme_core::SourcePin, Vec<crate::model::MediaCitation>>, usize)> {
+    let mut locations = std::collections::BTreeMap::new();
+    let mut skipped = 0_usize;
+    for record in &view.snapshot().records {
+        if record.kind != mneme_core::RecordKind::RecognitionSegment {
+            continue;
+        }
+        budget.charge(1)?;
+        if !record_visible(request, &record.scope) || view.suppression_for(record).is_some() {
+            continue;
+        }
+        let Ok(segment) = mneme_memory::RecognitionSegmentView::parse(record.clone()) else {
+            skipped = skipped.saturating_add(1);
+            continue;
+        };
+        let Ok(media_record) = view.record(segment.media_source.source()) else {
+            skipped = skipped.saturating_add(1);
+            continue;
+        };
+        if !record_visible(request, &media_record.scope) {
+            continue;
+        }
+        let Ok(media) = view.source_at(segment.media_source.source(), segment.media_source.revision()) else {
+            skipped = skipped.saturating_add(1);
+            continue;
+        };
+        if media.digest().or(media.prior_digest) != Some(segment.media_digest)
+            || view.source_roots(segment.text_source).is_err()
+            || view.source_roots(segment.media_source).is_err()
+        {
+            skipped = skipped.saturating_add(1);
+            continue;
+        }
+        let items = locations.entry(segment.text_source).or_insert_with(Vec::new);
+        if items.len() >= MAX_MEDIA_LOCATIONS_PER_SOURCE {
+            skipped = skipped.saturating_add(1);
+            continue;
+        }
+        items.push(crate::model::MediaCitation {
+            segment: record.record_id,
+            segment_revision: record.revision_id,
+            text_span: segment.text_span,
+            media_source: segment.media_source,
+            media_digest: segment.media_digest,
+            availability: effective_availability(view, &media, sources),
+            location: segment.location,
+        });
+    }
+    Ok((locations, skipped))
 }
 
 /// Whether the caller's authorization and flags make records in `scope`
@@ -141,6 +210,7 @@ impl IndexBuild {
             claim_status: None,
             evidence: Vec::new(),
             ancestry_roots: std::collections::BTreeSet::new(),
+            media_locations: Vec::new(),
         }));
     }
 
@@ -158,17 +228,27 @@ impl IndexBuild {
         );
         // The memory engine treats an episode's source revision as its root, so
         // an episode and its own source never count as independent evidence.
-        let resolved = episode
-            .source
-            .and_then(|source| readable_source(scope, source));
-        let root = resolved.unwrap_or((record.record_id, record.revision_id));
+        let resolved = episode.source.and_then(|source| {
+            let key = readable_source(scope, source)?;
+            let roots = scope.view.source_roots(mneme_core::SourcePin::new(key.0, key.1)).ok()?;
+            let root = roots.iter().next().copied()?;
+            Some((key, root))
+        });
+        if episode.source.is_some() && resolved.is_none() {
+            self.skipped = self.skipped.saturating_add(1);
+            self.skip_reasons
+                .insert("episode source ancestry is unavailable".to_owned());
+            return Ok(());
+        }
+        let root = resolved.map_or((record.record_id, record.revision_id), |(_, root)| root);
+        let source = resolved.map(|(key, _)| key);
         self.documents.push(document(IndexedDocumentInput {
             id: format!("episode:{}", record.record_id),
             kind: crate::model::ContentKind::EpisodeSummary,
             text: body,
             field_path: "episode.summary".to_owned(),
-            source: resolved.map(|key| key.0),
-            source_revision: resolved.map(|key| key.1),
+            source: source.map(|key| key.0),
+            source_revision: source.map(|key| key.1),
             span: None,
             assertion: None,
             episode: Some(record.record_id),
@@ -176,6 +256,7 @@ impl IndexBuild {
             claim_status: None,
             evidence: Vec::new(),
             ancestry_roots: std::collections::BTreeSet::from([root]),
+            media_locations: Vec::new(),
         }));
         Ok(())
     }
@@ -188,6 +269,15 @@ impl IndexBuild {
     ) -> BuildResult<()> {
         let facts = source_facts(scope.view, record, scope.sources, budget)?;
         let key = (record.record_id, record.revision_id);
+        let roots = match scope.view.source_roots(mneme_core::SourcePin::new(key.0, key.1)) {
+            Ok(roots) => roots,
+            Err(_) => {
+                self.skipped = self.skipped.saturating_add(1);
+                self.skip_reasons
+                    .insert("source transformation ancestry is unavailable".to_owned());
+                return Ok(());
+            }
+        };
         if let Some(path) = &facts.view.path_hint {
             self.documents.push(document(IndexedDocumentInput {
                 id: format!("source-path:{}:{}", record.record_id, record.revision_id),
@@ -202,7 +292,8 @@ impl IndexBuild {
                 entity: facts.view.entity,
                 claim_status: None,
                 evidence: Vec::new(),
-                ancestry_roots: std::collections::BTreeSet::from([key]),
+                ancestry_roots: roots.clone(),
+                media_locations: Vec::new(),
             }));
         }
         if is_image_source(&facts.view) {
@@ -229,7 +320,12 @@ impl IndexBuild {
                         entity: facts.view.entity,
                         claim_status: None,
                         evidence: Vec::new(),
-                        ancestry_roots: std::collections::BTreeSet::from([key]),
+                        ancestry_roots: roots,
+                        media_locations: scope
+                            .media_locations
+                            .get(&mneme_core::SourcePin::new(key.0, key.1))
+                            .cloned()
+                            .unwrap_or_default(),
                     };
                     self.documents.push(document(content));
                 }
@@ -289,6 +385,7 @@ impl IndexBuild {
             // A claim's deduplicated roots come from one bounded support walk
             // over the ranked candidates, never from the whole index.
             ancestry_roots: std::collections::BTreeSet::new(),
+            media_locations: Vec::new(),
         }));
         Ok(())
     }
@@ -565,6 +662,7 @@ struct IndexedDocumentInput {
     claim_status: Option<crate::model::ClaimStatus>,
     evidence: Vec<crate::model::Evidence>,
     ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    media_locations: Vec<crate::model::MediaCitation>,
 }
 
 fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
@@ -582,6 +680,7 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
         claim_status,
         evidence,
         ancestry_roots,
+        media_locations,
     } = input;
     let normalized = text.to_lowercase();
     let (term_counts, term_total) = term_counts(&normalized);
@@ -610,6 +709,7 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
         claim_status,
         evidence,
         ancestry_roots,
+        media_locations,
     }
 }
 

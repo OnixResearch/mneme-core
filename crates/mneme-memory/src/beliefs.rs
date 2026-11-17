@@ -326,6 +326,85 @@ impl View {
         crate::model::SourceView::parse(self.envelope(record)?.clone())
     }
 
+    /// Parse one recognition-run record.
+    pub fn recognition_run(
+        &self,
+        record: mneme_core::RecordId,
+    ) -> crate::failure::Result<crate::model::RecognitionRunView> {
+        crate::model::RecognitionRunView::parse(self.envelope(record)?.clone())
+    }
+
+    /// Parse one recognition-segment record.
+    pub fn recognition_segment(
+        &self,
+        record: mneme_core::RecordId,
+    ) -> crate::failure::Result<crate::model::RecognitionSegmentView> {
+        crate::model::RecognitionSegmentView::parse(self.envelope(record)?.clone())
+    }
+
+    /// Current, unsuppressed segments aligned to one exact text revision.
+    pub fn recognition_segments_for_source(
+        &self,
+        source: mneme_core::RecordId,
+        revision: mneme_core::RevisionId,
+    ) -> Vec<crate::model::RecognitionSegmentView> {
+        self.records
+            .values()
+            .filter(|record| {
+                record.kind == mneme_core::RecordKind::RecognitionSegment
+                    && self.suppression_for(record).is_none()
+            })
+            .filter_map(|record| crate::model::RecognitionSegmentView::parse(record.clone()).ok())
+            .filter(|segment| {
+                segment.text_source == mneme_core::SourcePin::new(source, revision)
+            })
+            .collect()
+    }
+
+    /// Root source revisions for an exact source pin, following immutable
+    /// `derived-from` edges and refusing forgotten ancestors or cycles.
+    pub fn source_roots(
+        &self,
+        pin: mneme_core::SourcePin,
+    ) -> crate::failure::Result<std::collections::BTreeSet<SourceRevisionKey>> {
+        let mut pending = vec![pin];
+        let mut visited = std::collections::BTreeSet::new();
+        let mut roots = std::collections::BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if visited.contains(&current) {
+                return Err(crate::failure::EvidenceError::policy(
+                    "source transformation ancestry contains a cycle",
+                ));
+            }
+            if visited.len() as u64 >= MAX_ANCESTRY_NODES {
+                return Err(crate::failure::EvidenceError::policy(
+                    "source transformation ancestry exceeds its bound",
+                ));
+            }
+            visited.insert(current);
+            let source = self.source_at(current.source(), current.revision())?;
+            if self.suppression_for(&source.record).is_some_and(|suppression| {
+                suppression.mode == mneme_store::SuppressionMode::Forgotten
+            }) {
+                return Err(crate::failure::EvidenceError::policy(
+                    "source transformation ancestry was forgotten",
+                ));
+            }
+            match source.derived_from {
+                Some(parent) => pending.push(parent),
+                None => {
+                    roots.insert((current.source(), current.revision()));
+                }
+            }
+        }
+        if roots.is_empty() {
+            return Err(crate::failure::EvidenceError::policy(
+                "source transformation ancestry has no evidence root",
+            ));
+        }
+        Ok(roots)
+    }
+
     /// Parse the exact source revision named by evidence.
     pub fn evidence_source(
         &self,
@@ -527,6 +606,10 @@ impl View {
         &self,
         view: &crate::model::SourceView,
     ) -> crate::failure::Result<SourceStatus> {
+        let pin = mneme_core::SourcePin::new(view.record.record_id, view.record.revision_id);
+        if self.source_roots(pin).is_err() {
+            return Ok(SourceStatus::Erased);
+        }
         match &view.availability {
             crate::model::SourceAvailability::Retained => {
                 let Some(digest) = view.digest() else {
@@ -628,6 +711,11 @@ impl View {
         let source = self.evidence_source(&evidence).map_err(|_| {
             crate::failure::EvidenceError::policy("evidence source revision is unavailable")
         })?;
+        self.source_roots(mneme_core::SourcePin::new(
+            source.record.record_id,
+            source.record.revision_id,
+        ))
+        .map_err(|_| crate::failure::EvidenceError::policy("evidence source ancestry is unavailable"))?;
         if let mneme_core::Reference::Pinned { revision, .. } = evidence.source_reference
             && revision != source.record.revision_id
         {
@@ -1753,9 +1841,13 @@ impl<'v> Ancestry<'v> {
             mneme_core::RecordKind::Evidence => {
                 let view = crate::model::EvidenceView::parse(envelope.clone())?;
                 let source = self.view.evidence_source(&view)?;
-                let identity = source_identity(&source);
+                let (root, identity) = source_root_of(
+                    self.view,
+                    view.source,
+                    source.record.revision_id,
+                )?;
                 Ok(NodePlan::Evidence {
-                    source: (view.source, source.record.revision_id),
+                    source: root,
                     view: Box::new(view),
                     identity,
                     withdrawn: is_withdrawn,
@@ -1777,7 +1869,7 @@ impl<'v> Ancestry<'v> {
             }
             mneme_core::RecordKind::Episode => {
                 let view = crate::model::EpisodeView::parse(envelope.clone())?;
-                let source = self.episode_root(record, envelope, view.source);
+                let source = self.episode_root(record, envelope, view.source)?;
                 Ok(NodePlan::Leaf {
                     source: source.0,
                     identity: source.1,
@@ -1785,7 +1877,7 @@ impl<'v> Ancestry<'v> {
                 })
             }
             _ => {
-                let source = source_root_of(self.view, record, envelope.revision_id);
+                let source = source_root_of(self.view, record, envelope.revision_id)?;
                 Ok(NodePlan::Leaf {
                     source: source.0,
                     identity: source.1,
@@ -1800,7 +1892,7 @@ impl<'v> Ancestry<'v> {
         record: mneme_core::RecordId,
         envelope: &mneme_core::RecordEnvelope,
         source: Option<mneme_core::RecordId>,
-    ) -> (SourceRevisionKey, RootIdentity) {
+    ) -> crate::failure::Result<(SourceRevisionKey, RootIdentity)> {
         match source {
             Some(source) => {
                 let revision = self
@@ -1808,24 +1900,14 @@ impl<'v> Ancestry<'v> {
                     .records
                     .get(&source)
                     .map_or(envelope.revision_id, |record| record.revision_id);
-                let identity = self
-                    .view
-                    .records
-                    .get(&source)
-                    .and_then(|record| crate::model::SourceView::parse(record.clone()).ok())
-                    .and_then(|view| view.digest().or(view.prior_digest))
-                    .map_or(
-                        RootIdentity::Revision((source, revision)),
-                        RootIdentity::Digest,
-                    );
-                ((source, revision), identity)
+                source_root_of(self.view, source, revision)
             }
-            None => (
-                (record, envelope.revision_id),
-                RootIdentity::Revision((record, envelope.revision_id)),
-            ),
+            None => Ok({
+                let key = (record, envelope.revision_id);
+                let identity = RootIdentity::Revision(key);
+                (key, identity)
+            }),
         }
-    }
 
     fn finish_node(&self, record: mneme_core::RecordId) -> NodeFacts {
         let Some(plan) = self.plans.get(&record) else {
@@ -2003,7 +2085,26 @@ fn source_root_of(
     view: &View,
     record: mneme_core::RecordId,
     revision: mneme_core::RevisionId,
-) -> (SourceRevisionKey, RootIdentity) {
+) -> crate::failure::Result<(SourceRevisionKey, RootIdentity)> {
+    if let Some(envelope) = view.records.get(&record) {
+        match envelope.kind {
+            mneme_core::RecordKind::SourceRevision => {
+                return root_source_pin(
+                    view,
+                    mneme_core::SourcePin::new(record, revision),
+                );
+            }
+            mneme_core::RecordKind::RecognitionRun => {
+                let run = view.recognition_run(record)?;
+                return root_source_pin(view, run.input);
+            }
+            mneme_core::RecordKind::RecognitionSegment => {
+                let segment = view.recognition_segment(record)?;
+                return root_source_pin(view, segment.media_source);
+            }
+            _ => {}
+        }
+    }
     let key = (record, revision);
     let identity = view
         .records
@@ -2011,7 +2112,19 @@ fn source_root_of(
         .and_then(|envelope| crate::model::SourceView::parse(envelope.clone()).ok())
         .and_then(|source| source.digest().or(source.prior_digest))
         .map_or(RootIdentity::Revision(key), RootIdentity::Digest);
-    (key, identity)
+    Ok((key, identity))
+}
+
+fn root_source_pin(
+    view: &View,
+    pin: mneme_core::SourcePin,
+) -> crate::failure::Result<(SourceRevisionKey, RootIdentity)> {
+    let roots = view.source_roots(pin)?;
+    let key = roots.iter().next().copied().ok_or_else(|| {
+        crate::failure::EvidenceError::policy("source transformation ancestry has no evidence root")
+    })?;
+    let source = view.source_at(key.0, key.1)?;
+    Ok((key, source_identity(&source)))
 }
 
 /// Explicit authored-premise predicate convention for derivations.

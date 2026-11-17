@@ -189,6 +189,9 @@ impl ApiService {
             crate::command::ApiCommand::Revise { .. } => self.dispatch_revise(command),
             crate::command::ApiCommand::Resume { .. } => self.dispatch_resume(command),
             crate::command::ApiCommand::ImageRead { .. } => self.dispatch_image(command),
+            crate::command::ApiCommand::RecognitionRead { .. } => {
+                self.dispatch_recognition(command)
+            }
             crate::command::ApiCommand::Forget { .. } => self.dispatch_forget(command),
             crate::command::ApiCommand::ProposalInspect { .. } => {
                 self.dispatch_proposal_inspect(command)
@@ -839,6 +842,147 @@ impl ApiService {
             return Err(crate::error::ApiError::new(
                 crate::error::ApiErrorCode::Conflict,
                 "eligibility barrier advanced during image read",
+            ));
+        }
+        Ok(Dispatch::ok(value, Some(context)))
+    }
+
+    fn dispatch_recognition(
+        &self,
+        command: &crate::command::ApiCommand,
+    ) -> crate::error::CallResult<Dispatch> {
+        let crate::command::ApiCommand::RecognitionRead { scope, run: run_id, .. } = command else {
+            return Err(crate::error::ApiError::invalid(
+                "recognition dispatch requires a recognition read",
+            ));
+        };
+        let mut workspace = self.open()?;
+        let (view, generation) = self.pinned_view(&mut workspace)?;
+        let run_record = self.visible_record(&view, &workspace, *run_id)?;
+        if run_record.kind != mneme_core::RecordKind::RecognitionRun || run_record.scope != *scope {
+            return Err(self.absent_error(&workspace, *run_id));
+        }
+        if view
+            .suppression_for(&run_record)
+            .is_some_and(|suppression| suppression.mode == mneme_store::SuppressionMode::Forgotten)
+        {
+            return Err(self.absent_error(&workspace, *run_id));
+        }
+        let run = view
+            .recognition_run(*run_id)
+            .map_err(|_| crate::error::ApiError::missing())?;
+        if run.segments.len() > 4096 {
+            return Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Limit,
+                "recognition run exceeds the bounded segment read limit",
+            ));
+        }
+        let input_record = self.visible_record(&view, &workspace, run.input.source())?;
+        let output_record = self.visible_record(&view, &workspace, run.output.source())?;
+        if input_record.kind != mneme_core::RecordKind::SourceRevision
+            || output_record.kind != mneme_core::RecordKind::SourceRevision
+            || input_record.scope != *scope
+            || output_record.scope != *scope
+        {
+            return Err(crate::error::ApiError::missing());
+        }
+        let input = view
+            .source_at(run.input.source(), run.input.revision())
+            .map_err(|_| crate::error::ApiError::missing())?;
+        let output = view
+            .source_at(run.output.source(), run.output.revision())
+            .map_err(|_| crate::error::ApiError::missing())?;
+        let input_roots = view
+            .source_roots(run.input)
+            .map_err(|_| crate::error::ApiError::missing())?;
+        let output_roots = view
+            .source_roots(run.output)
+            .map_err(|_| crate::error::ApiError::missing())?;
+        if input.record.scope != *scope
+            || output.record.scope != *scope
+            || input.digest().or(input.prior_digest) != Some(run.input_digest)
+            || output.digest().or(output.prior_digest) != Some(run.output_digest)
+            || output.acquisition != mneme_core::Acquisition::MachineRecognized
+            || output.derived_from != Some(run.input)
+            || input_roots != output_roots
+        {
+            return Err(crate::error::ApiError::missing());
+        }
+        let output_bytes = match view.source_status_for(&output) {
+            Ok(mneme_memory::SourceStatus::Retained(bytes)) => bytes,
+            Ok(mneme_memory::SourceStatus::Erased) => {
+                return Err(self.absent_error(&workspace, run.output.source()));
+            }
+            Ok(_) | Err(_) => return Err(crate::error::ApiError::missing()),
+        };
+        if output_bytes.len() as u64 > mneme_memory::MAX_SOURCE_BYTES {
+            return Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Limit,
+                "recognition text exceeds the bounded read size",
+            ));
+        }
+        let output_text = String::from_utf8(output_bytes)
+            .map_err(|_| crate::error::ApiError::missing())?;
+        if mneme_core::ContentDigest::of_source_bytes(output_text.as_bytes()) != run.output_digest {
+            return Err(crate::error::ApiError::missing());
+        }
+        let mut segments = Vec::with_capacity(run.segments.len());
+        for segment_id in &run.segments {
+            let segment_record = self.visible_record(&view, &workspace, *segment_id)?;
+            if segment_record.kind != mneme_core::RecordKind::RecognitionSegment
+                || segment_record.scope != *scope
+                || view
+                    .suppression_for(&segment_record)
+                    .is_some_and(|suppression| suppression.mode == mneme_store::SuppressionMode::Forgotten)
+            {
+                return Err(crate::error::ApiError::missing());
+            }
+            let segment = view
+                .recognition_segment(*segment_id)
+                .map_err(|_| crate::error::ApiError::missing())?;
+            let media = view
+                .source_at(segment.media_source.source(), segment.media_source.revision())
+                .map_err(|_| crate::error::ApiError::missing())?;
+            let media_roots = view
+                .source_roots(segment.media_source)
+                .map_err(|_| crate::error::ApiError::missing())?;
+            let span_start = usize::try_from(segment.text_span.start()).ok();
+            let span_end = usize::try_from(segment.text_span.end())
+                .ok()
+                .and_then(|end| end.checked_add(1));
+            if segment.run != Some(*run_id)
+                || segment.text_source != run.output
+                || media.digest().or(media.prior_digest) != Some(segment.media_digest)
+                || media.media_extent.is_none_or(|extent| segment.location.validate_extent(extent).is_err())
+                || media_roots != input_roots
+                || span_start
+                    .zip(span_end)
+                    .is_none_or(|(start, end)| output_text.get(start..end).is_none())
+            {
+                return Err(crate::error::ApiError::missing());
+            }
+            let media_record = self.visible_record(&view, &workspace, segment.media_source.source())?;
+            if media_record.kind != mneme_core::RecordKind::SourceRevision
+                || media_record.scope != *scope
+            {
+                return Err(crate::error::ApiError::missing());
+            }
+            segments.push(recognition_segment_value(&segment));
+        }
+        let value = recognition_value(&run, &input, &output, &output_text, segments);
+        let context = Context {
+            revision: view.revision(),
+            scope: scope.clone(),
+            generation,
+        };
+        if workspace
+            .eligibility_generation()
+            .map_err(crate::error::ApiError::from_store)?
+            != context.generation
+        {
+            return Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Conflict,
+                "eligibility barrier advanced during recognition read",
             ));
         }
         Ok(Dispatch::ok(value, Some(context)))
@@ -2650,9 +2794,16 @@ fn candidate_reference_entries(
 /// The ranking and provenance of one candidate.
 fn candidate_support_entries(
     candidate: &mneme_recall::Candidate,
-) -> [(mneme_core::Symbol, mneme_core::Value); 7] {
+) -> [(mneme_core::Symbol, mneme_core::Value); 8] {
     let (origins, evidence, derivations) = candidate_provenance_values(candidate);
     let ancestry_roots = candidate_ancestry_roots_value(candidate);
+    let media_locations = mneme_core::Value::sequence(
+        candidate
+            .media_locations
+            .iter()
+            .map(media_citation_value)
+            .collect(),
+    );
     [
         (
             mneme_core::Symbol::from("independent-support"),
@@ -2670,7 +2821,20 @@ fn candidate_support_entries(
         (mneme_core::Symbol::from("evidence"), evidence),
         (mneme_core::Symbol::from("derivations"), derivations),
         (mneme_core::Symbol::from("ancestry-roots"), ancestry_roots),
+        (mneme_core::Symbol::from("media-locations"), media_locations),
     ]
+}
+
+fn media_citation_value(citation: &mneme_recall::MediaCitation) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (mneme_core::Symbol::from("segment"), citation.segment.to_value()),
+        (mneme_core::Symbol::from("segment-revision"), citation.segment_revision.to_value()),
+        (mneme_core::Symbol::from("text-span"), citation.text_span.to_value()),
+        (mneme_core::Symbol::from("media-source"), citation.media_source.to_value()),
+        (mneme_core::Symbol::from("media-digest"), citation.media_digest.to_value()),
+        (mneme_core::Symbol::from("availability"), mneme_core::Value::symbol(citation.availability.name())),
+        (mneme_core::Symbol::from("location"), citation.location.to_value()),
+    ])
 }
 
 fn claim_status_value(status: &mneme_recall::ClaimStatus) -> mneme_core::Value {
@@ -3631,6 +3795,87 @@ fn location_value(location: &mneme_store::RetentionLocationStateRecord) -> mneme
     ])
 }
 
+fn recognition_value(
+    run: &mneme_memory::RecognitionRunView,
+    input: &mneme_memory::SourceView,
+    output: &mneme_memory::SourceView,
+    text: &str,
+    segments: Vec<mneme_core::Value>,
+) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (mneme_core::Symbol::from("run"), run.record.record_id.to_value()),
+        (mneme_core::Symbol::from("run-revision"), run.record.revision_id.to_value()),
+        (mneme_core::Symbol::from("input"), run.input.to_value()),
+        (mneme_core::Symbol::from("input-digest"), run.input_digest.to_value()),
+        (mneme_core::Symbol::from("output"), run.output.to_value()),
+        (mneme_core::Symbol::from("output-digest"), run.output_digest.to_value()),
+        (mneme_core::Symbol::from("input-source"), source_metadata_value(input)),
+        (mneme_core::Symbol::from("output-source"), source_metadata_value(output)),
+        (mneme_core::Symbol::from("text"), mneme_core::Value::string(text)),
+        (mneme_core::Symbol::from("model"), mneme_core::Value::string(run.model.clone())),
+        (mneme_core::Symbol::from("runtime"), mneme_core::Value::string(run.runtime.clone())),
+        (mneme_core::Symbol::from("adapter"), mneme_core::Value::string(run.adapter.clone())),
+        (mneme_core::Symbol::from("preprocessing"), mneme_core::Value::string(run.preprocessing.clone())),
+        (mneme_core::Symbol::from("configuration"), mneme_core::Value::string(run.configuration.clone())),
+        (mneme_core::Symbol::from("coverage"), run.coverage.to_value()),
+        (mneme_core::Symbol::from("status"), mneme_core::Value::symbol(run.status.symbol())),
+        (mneme_core::Symbol::from("scores"), mneme_core::Value::sequence(run.scores.iter().map(mneme_core::RecognitionScore::to_value).collect())),
+        (mneme_core::Symbol::from("alternatives"), mneme_core::Value::sequence(run.alternatives.iter().map(mneme_core::RecognitionAlternative::to_value).collect())),
+        (mneme_core::Symbol::from("segments"), mneme_core::Value::sequence(segments)),
+    ])
+}
+
+fn source_metadata_value(source: &mneme_memory::SourceView) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("pin"),
+            mneme_core::SourcePin::new(source.record.record_id, source.record.revision_id).to_value(),
+        ),
+        (mneme_core::Symbol::from("acquisition"), source.acquisition.to_value()),
+        (
+            mneme_core::Symbol::from("availability"),
+            mneme_core::Value::symbol(source.availability.name()),
+        ),
+        (
+            mneme_core::Symbol::from("digest"),
+            source.digest().or(source.prior_digest).map_or_else(none_value, |digest| digest.to_value()),
+        ),
+        (
+            mneme_core::Symbol::from("media-type"),
+            source.media_type.as_ref().map_or_else(none_value, |media_type| mneme_core::Value::string(media_type.as_str())),
+        ),
+        (
+            mneme_core::Symbol::from("derived-from"),
+            source.derived_from.map_or_else(none_value, mneme_core::SourcePin::to_value),
+        ),
+        (
+            mneme_core::Symbol::from("media-extent"),
+            source.media_extent.map_or_else(none_value, mneme_core::MediaExtent::to_value),
+        ),
+        (
+            mneme_core::Symbol::from("media-transform"),
+            source.media_transform.map_or_else(none_value, mneme_core::MediaTransform::to_value),
+        ),
+        (
+            mneme_core::Symbol::from("correction"),
+            source.correction.as_ref().map_or_else(none_value, mneme_core::CorrectionProvenance::to_value),
+        ),
+    ])
+}
+
+fn recognition_segment_value(segment: &mneme_memory::RecognitionSegmentView) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (mneme_core::Symbol::from("id"), segment.record.record_id.to_value()),
+        (mneme_core::Symbol::from("revision"), segment.record.revision_id.to_value()),
+        (mneme_core::Symbol::from("run"), segment.run.map_or_else(none_value, mneme_core::RecordId::to_value)),
+        (mneme_core::Symbol::from("text-source"), segment.text_source.to_value()),
+        (mneme_core::Symbol::from("span"), segment.text_span.to_value()),
+        (mneme_core::Symbol::from("media-source"), segment.media_source.to_value()),
+        (mneme_core::Symbol::from("media-digest"), segment.media_digest.to_value()),
+        (mneme_core::Symbol::from("location"), segment.location.to_value()),
+    ])
+}
+
 fn image_value(image: mneme_doc::images::Loaded) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
@@ -3744,6 +3989,7 @@ fn capability_operations_value() -> mneme_core::Value {
             "revise",
             "resume",
             "image.read",
+            "recognition.read",
             "forget",
             "proposal.inspect",
             "reason.query",

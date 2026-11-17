@@ -1367,19 +1367,12 @@ fn plan_pruned_source(
             );
         }
     }
-    let mut replacement = mneme_memory::build_unavailable_source_with_digest(
-        source,
+    let replacement = mneme_memory::build_unavailable_source_preserving(
+        &source_view,
         fresh_revision()?,
-        &source_view.record.scope,
-        mneme_memory::UnavailableSourceWithDigestOptions {
-            reason: "source bytes pruned under retention policy",
-            availability: "pruned",
-            prior_digest: Some(current_digest),
-            entity: source_view.entity,
-            path_hint: source_view.path_hint.as_deref(),
-        },
+        "source bytes pruned under retention policy",
+        "pruned",
     );
-    replacement.predecessor = Some(source_view.record.revision_id);
     plan.records.push(replacement);
     plan.source_targets.push(source);
     if let Some(path) = &source_view.path_hint {
@@ -1415,7 +1408,11 @@ fn plan_forget(
     let sources = resolve_sources(workspace, context.view, request)?;
     let deps = dependencies_for_sources(context, &sources, &request.scope)?;
     let withdrawn = compute_withdrawal(context, &sources, &deps, &request.scope)?;
-    let history = source_history(workspace, context.view, &sources)?;
+    let mut forgotten_sources = sources.clone();
+    forgotten_sources.extend(deps.derived_sources.iter().copied());
+    forgotten_sources.sort_unstable();
+    forgotten_sources.dedup();
+    let history = source_history(workspace, context.view, &forgotten_sources)?;
     let mut state = ForgetState {
         withdrawn: deps
             .evidence
@@ -1435,7 +1432,9 @@ fn plan_forget(
         state: &mut state,
         plan: &mut *plan,
     };
-    collect_source_targets(context, &sources, &history, &mut collection)?;
+    collect_source_targets(context, &forgotten_sources, &history, &mut collection)?;
+    state.forgotten_records.extend(deps.recognition_runs.iter().copied());
+    state.forgotten_records.extend(deps.recognition_segments.iter().copied());
     mark_withdrawn_dependents(context, &deps, &withdrawn, &request.scope, &mut state)?;
     state
         .forgotten_records
@@ -2103,6 +2102,9 @@ struct Dependencies {
     evidence: std::collections::BTreeSet<mneme_core::RecordId>,
     assertions: std::collections::BTreeSet<mneme_core::RecordId>,
     derivations: std::collections::BTreeSet<mneme_core::RecordId>,
+    derived_sources: std::collections::BTreeSet<mneme_core::RecordId>,
+    recognition_runs: std::collections::BTreeSet<mneme_core::RecordId>,
+    recognition_segments: std::collections::BTreeSet<mneme_core::RecordId>,
 }
 
 fn dependencies_for_sources(
@@ -2119,6 +2121,33 @@ fn dependencies_for_sources(
                 continue;
             }
             match record.kind {
+                mneme_core::RecordKind::SourceRevision => {
+                    let source = context.view.source(record.record_id)?;
+                    if source
+                        .derived_from
+                        .is_some_and(|parent| closure.contains(&parent.source()))
+                    {
+                        deps.derived_sources.insert(record.record_id);
+                        is_changed = true;
+                    }
+                }
+                mneme_core::RecordKind::RecognitionRun => {
+                    let run = context.view.recognition_run(record.record_id)?;
+                    if closure.contains(&run.input.source()) || closure.contains(&run.output.source()) {
+                        deps.recognition_runs.insert(record.record_id);
+                        is_changed = true;
+                    }
+                }
+                mneme_core::RecordKind::RecognitionSegment => {
+                    let segment = context.view.recognition_segment(record.record_id)?;
+                    if closure.contains(&segment.text_source.source())
+                        || closure.contains(&segment.media_source.source())
+                        || segment.run.is_some_and(|run| closure.contains(&run))
+                    {
+                        deps.recognition_segments.insert(record.record_id);
+                        is_changed = true;
+                    }
+                }
                 mneme_core::RecordKind::Episode => {
                     let episode = context.view.episode(record.record_id)?;
                     let is_linked = episode
@@ -2191,6 +2220,9 @@ fn dependency_closure(
     closure.extend(deps.evidence.iter().copied());
     closure.extend(deps.assertions.iter().copied());
     closure.extend(deps.derivations.iter().copied());
+    closure.extend(deps.derived_sources.iter().copied());
+    closure.extend(deps.recognition_runs.iter().copied());
+    closure.extend(deps.recognition_segments.iter().copied());
     closure
 }
 
@@ -2208,6 +2240,9 @@ fn dependency_is_known(
         || deps.evidence.contains(&record.record_id)
         || deps.assertions.contains(&record.record_id)
         || deps.derivations.contains(&record.record_id)
+        || deps.derived_sources.contains(&record.record_id)
+        || deps.recognition_runs.contains(&record.record_id)
+        || deps.recognition_segments.contains(&record.record_id)
 }
 
 /// The records whose support no longer survives the selection.

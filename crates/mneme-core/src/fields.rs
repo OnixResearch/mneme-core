@@ -25,11 +25,13 @@ pub enum RecordKind {
     DocumentBinding,
     DocumentAnchor,
     Comment,
+    RecognitionRun,
+    RecognitionSegment,
 }
 
 impl RecordKind {
     /// Every declared kind.
-    pub const ALL: [RecordKind; 15] = [
+    pub const ALL: [RecordKind; 17] = [
         RecordKind::Entity,
         RecordKind::Relation,
         RecordKind::Document,
@@ -45,6 +47,8 @@ impl RecordKind {
         RecordKind::DocumentBinding,
         RecordKind::DocumentAnchor,
         RecordKind::Comment,
+        RecordKind::RecognitionRun,
+        RecordKind::RecognitionSegment,
     ];
 
     /// The schema symbol for this kind.
@@ -65,6 +69,8 @@ impl RecordKind {
             RecordKind::DocumentBinding => "document-binding",
             RecordKind::DocumentAnchor => "document-anchor",
             RecordKind::Comment => "comment",
+            RecordKind::RecognitionRun => "recognition-run",
+            RecordKind::RecognitionSegment => "recognition-segment",
         }
     }
 
@@ -243,6 +249,22 @@ pub enum FieldType {
     Extraction,
     /// A document include closure: text paths to pinned source revisions.
     IncludeMap,
+    /// Acquisition provenance on a source revision.
+    Acquisition,
+    /// Declared media bounds for a source revision.
+    MediaExtent,
+    /// Typed source transform mapping.
+    MediaTransform,
+    /// Audio, page, or ink location.
+    MediaLocation,
+    /// Recognition unit coverage.
+    RecognitionCoverage,
+    /// Bounded provider score sequence.
+    RecognitionScores,
+    /// Bounded provider alternative sequence.
+    RecognitionAlternatives,
+    /// Human correction provenance and alignment disposition.
+    CorrectionProvenance,
 }
 
 /// One declared payload field.
@@ -513,6 +535,62 @@ impl RecordSchema {
         schema
     }
 
+    /// The production version 5 schema introduced by `media-recognition`.
+    ///
+    /// It preserves versions 1-4, strengthens source acquisition typing, and
+    /// adds explicit media extents, source transforms, recognition runs and
+    /// segment-to-media mappings.
+    pub fn media_v5() -> Self {
+        let mut schema = RecordSchema::comments_v4();
+        schema.version = 5;
+        for kind in &mut schema.kinds {
+            if kind.kind == RecordKind::SourceRevision {
+                if let Some(acquisition) = kind.fields.iter_mut().find(|field| field.name == "acquisition") {
+                    acquisition.ty = FieldType::Acquisition;
+                }
+                kind.fields.extend([
+                    optional("derived-from", reference(Some(RecordKind::SourceRevision))),
+                    optional("media-extent", FieldType::MediaExtent),
+                    optional("media-transform", FieldType::MediaTransform),
+                    optional("correction", FieldType::CorrectionProvenance),
+                ]);
+            }
+        }
+        schema.kinds.push(KindSchema::new(
+            RecordKind::RecognitionRun,
+            vec![
+                required("input", reference(Some(RecordKind::SourceRevision))),
+                required("input-digest", FieldType::Digest),
+                required("output", reference(Some(RecordKind::SourceRevision))),
+                required("output-digest", FieldType::Digest),
+                required("model", FieldType::Text),
+                required("runtime", FieldType::Text),
+                required("adapter", FieldType::Text),
+                required("preprocessing", FieldType::Text),
+                required("configuration", FieldType::Text),
+                required("segments", reference_set(Some(RecordKind::RecognitionSegment))),
+                required("coverage", FieldType::RecognitionCoverage),
+                required("status", FieldType::Symbol),
+                optional("scores", FieldType::RecognitionScores),
+                optional("alternatives", FieldType::RecognitionAlternatives),
+            ],
+            ExtensionPolicy::Retain,
+        ));
+        schema.kinds.push(KindSchema::new(
+            RecordKind::RecognitionSegment,
+            vec![
+                optional("run", reference(Some(RecordKind::RecognitionRun))),
+                required("text-source", reference(Some(RecordKind::SourceRevision))),
+                required("span", FieldType::Span),
+                required("media-source", reference(Some(RecordKind::SourceRevision))),
+                required("media-digest", FieldType::Digest),
+                required("location", FieldType::MediaLocation),
+            ],
+            ExtensionPolicy::Retain,
+        ));
+        schema
+    }
+
     /// A synthetic version 2 schema used only by migration fixtures.
     ///
     /// It adds one required `extraction` field to assertions. It is not a
@@ -703,12 +781,13 @@ impl SchemaRegistry {
         registry
     }
 
-    /// The production registry: version 1 plus the evidence version 2 kinds.
+    /// The production registry through media-recognition schema version 5.
     pub fn production() -> Self {
         let mut registry = SchemaRegistry::v1();
         registry.register(RecordSchema::evidence_v2());
         registry.register(RecordSchema::documents_v3());
         registry.register(RecordSchema::comments_v4());
+        registry.register(RecordSchema::media_v5());
         registry
     }
 
@@ -819,6 +898,20 @@ pub fn validate_field(
         }
         FieldType::Extraction => validate_extraction_field(value, path),
         FieldType::IncludeMap => validate_include_map_field(value, path, index),
+        FieldType::Acquisition => validate_parsed_field(crate::media::Acquisition::from_value(value, path)),
+        FieldType::MediaExtent => validate_parsed_field(crate::media::MediaExtent::from_value(value, path)),
+        FieldType::MediaTransform => validate_parsed_field(crate::media::MediaTransform::from_value(value, path)),
+        FieldType::MediaLocation => validate_parsed_field(crate::media::MediaLocation::from_value(value, path)),
+        FieldType::RecognitionCoverage => validate_parsed_field(crate::media::RecognitionCoverage::from_value(value, path)),
+        FieldType::RecognitionScores => match crate::media::validate_scores(value, path) {
+            Ok(()) => Vec::new(),
+            Err(diagnostic) => vec![diagnostic],
+        },
+        FieldType::RecognitionAlternatives => match crate::media::validate_alternatives(value, path) {
+            Ok(()) => Vec::new(),
+            Err(diagnostic) => vec![diagnostic],
+        },
+        FieldType::CorrectionProvenance => validate_parsed_field(crate::media::CorrectionProvenance::from_value(value, path)),
     }
 }
 
@@ -1068,6 +1161,9 @@ pub fn validate_domain(
         RecordKind::Assertion => validate_assertion_domain(payload, path),
         RecordKind::Evidence => validate_evidence_domain(payload, path),
         RecordKind::Comment => validate_comment_domain(payload, path),
+        RecordKind::SourceRevision => validate_source_domain(payload, path),
+        RecordKind::RecognitionRun => validate_recognition_run_domain(payload, path),
+        RecordKind::RecognitionSegment => validate_recognition_segment_domain(payload, path),
         _ => Vec::new(),
     }
 }
@@ -1188,6 +1284,135 @@ fn validate_comment_domain(
     diagnostics
 }
 
+fn validate_source_domain(
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let acquisition = payload
+        .get(&crate::typed::Symbol::from("acquisition"))
+        .map(|value| crate::media::Acquisition::from_value(value, &path.field("acquisition")));
+    let acquisition = match acquisition {
+        Some(Ok(acquisition)) => Some(acquisition),
+        Some(Err(diagnostic)) => {
+            diagnostics.push(diagnostic);
+            None
+        }
+        None => None,
+    };
+    let correction = payload.get(&crate::typed::Symbol::from("correction"));
+    let has_correction = correction.is_some();
+    if let Some(correction) = correction
+        && let Err(diagnostic) = crate::media::CorrectionProvenance::from_value(correction, &path.field("correction"))
+    {
+        diagnostics.push(diagnostic);
+    }
+    if acquisition.is_some_and(|value| (value == crate::media::Acquisition::Corrected) != has_correction) {
+        diagnostics.push(domain_error(
+            &path.field("correction"),
+            "corrected acquisition requires correction provenance; other acquisitions must not carry it",
+        ));
+    }
+    if let Some(reference) = payload.get(&crate::typed::Symbol::from("derived-from"))
+        && crate::media::SourcePin::from_value(reference, &path.field("derived-from")).is_err()
+    {
+        diagnostics.push(domain_error(
+            &path.field("derived-from"),
+            "a source transformation must pin its exact parent source revision",
+        ));
+    }
+    if payload.contains_key(&crate::typed::Symbol::from("media-transform"))
+        && !payload.contains_key(&crate::typed::Symbol::from("derived-from"))
+    {
+        diagnostics.push(domain_error(
+            &path.field("media-transform"),
+            "a media transform requires an exact derived-from source pin",
+        ));
+    }
+    diagnostics
+}
+
+fn validate_recognition_run_domain(
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for name in ["model", "runtime", "adapter", "preprocessing", "configuration"] {
+        if let Some(value) = payload.get(&crate::typed::Symbol::from(name))
+            && value.as_string().is_none_or(|text| text.trim().is_empty() || text.len() > 4096)
+        {
+            diagnostics.push(domain_error(
+                &path.field(name),
+                "recognition identity must be non-empty text of at most 4096 bytes",
+            ));
+        }
+    }
+    if let (Some(status), Some(coverage)) = (
+        payload.get(&crate::typed::Symbol::from("status")),
+        payload.get(&crate::typed::Symbol::from("coverage")),
+    ) {
+        let parsed_status = status
+            .as_symbol()
+            .and_then(|symbol| crate::media::RecognitionStatus::parse(symbol.as_str()));
+        let parsed_coverage = crate::media::RecognitionCoverage::from_value(coverage, &path.field("coverage"));
+        match (parsed_status, parsed_coverage) {
+            (Some(status), Ok(coverage)) => {
+                if let Err(message) = status.validate_coverage(coverage) {
+                    diagnostics.push(domain_error(&path.field("status"), message));
+                }
+            }
+            (None, _) => diagnostics.push(domain_error(
+                &path.field("status"),
+                "recognition status must be complete, partial, failed, unsupported, or cancelled",
+            )),
+            (_, Err(diagnostic)) => diagnostics.push(diagnostic),
+        }
+    }
+    for name in ["input", "output"] {
+        if let Some(value) = payload.get(&crate::typed::Symbol::from(name))
+            && crate::media::SourcePin::from_value(value, &path.field(name)).is_err()
+        {
+            diagnostics.push(domain_error(
+                &path.field(name),
+                "recognition run must pin the exact source revision",
+            ));
+        }
+    }
+    diagnostics
+}
+
+fn validate_recognition_segment_domain(
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for name in ["text-source", "media-source"] {
+        if let Some(value) = payload.get(&crate::typed::Symbol::from(name))
+            && crate::media::SourcePin::from_value(value, &path.field(name)).is_err()
+        {
+            diagnostics.push(domain_error(
+                &path.field(name),
+                "recognition segment must pin the exact source revision",
+            ));
+        }
+    }
+    if let Some(value) = payload.get(&crate::typed::Symbol::from("location"))
+        && let Err(diagnostic) = crate::media::MediaLocation::from_value(value, &path.field("location"))
+    {
+        diagnostics.push(diagnostic);
+    }
+    diagnostics
+}
+
+fn domain_error(path: &crate::problem::Path, message: &str) -> crate::problem::Diagnostic {
+    crate::problem::Diagnostic::new(
+        crate::problem::Stage::Domain,
+        crate::problem::ErrorCode::TypeMismatch,
+        path.clone(),
+        message,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1201,6 +1426,8 @@ mod tests {
             RecordKind::DocumentBinding,
             RecordKind::DocumentAnchor,
             RecordKind::Comment,
+            RecordKind::RecognitionRun,
+            RecordKind::RecognitionSegment,
         ];
         for kind in RecordKind::ALL
             .into_iter()
@@ -1242,9 +1469,9 @@ mod tests {
     }
 
     #[test]
-    fn production_registry_adds_decision_and_document_kinds() {
+    fn production_registry_preserves_prior_versions_and_adds_media_v5() {
         let registry = SchemaRegistry::production();
-        assert_eq!(registry.supported_versions(), vec![1, 2, 3, 4]);
+        assert_eq!(registry.supported_versions(), vec![1, 2, 3, 4, 5]);
         assert!(
             registry
                 .schema(1)
@@ -1280,12 +1507,46 @@ mod tests {
                 .and_then(|schema| schema.kind(RecordKind::DocumentBinding))
                 .is_some()
         );
+        let source = registry
+            .schema(5)
+            .and_then(|schema| schema.kind(RecordKind::SourceRevision))
+            .expect("source v5");
+        assert_eq!(source.field("acquisition").expect("acquisition").ty, FieldType::Acquisition);
+        assert_eq!(source.field("derived-from").expect("parent").ty, FieldType::Reference {
+            kind: Some(RecordKind::SourceRevision),
+            allow_external: false,
+            allow_unresolved: false,
+        });
+        assert!(registry.schema(4).and_then(|schema| schema.kind(RecordKind::RecognitionRun)).is_none());
+        assert!(registry.schema(5).and_then(|schema| schema.kind(RecordKind::RecognitionRun)).is_some());
+        let legacy_source = registry
+            .schema(4)
+            .and_then(|schema| schema.kind(RecordKind::SourceRevision))
+            .expect("source v4");
+        assert_eq!(legacy_source.field("acquisition").expect("legacy acquisition").ty, FieldType::Symbol);
+        assert!(registry.schema(4).and_then(|schema| schema.kind(RecordKind::Comment)).is_some());
         assert!(
             registry
                 .schema(3)
                 .and_then(|schema| schema.kind(RecordKind::DocumentAnchor))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn production_registry_roundtrips_legacy_source_revisions() {
+        let registry = SchemaRegistry::production();
+        let source = crate::fixtures::source_revision();
+        crate::wire::validate_record_value(&source.to_value(), &registry, None)
+            .expect("legacy source validates under the production registry");
+        let decoded = crate::wire::RecordEnvelope::from_value_with_registry(
+            &source.to_value(),
+            &registry,
+        )
+        .expect("legacy source decodes");
+        assert_eq!(decoded, source);
+        assert_eq!(decoded.schema_version, 1);
+        assert_eq!(decoded.payload, source.payload);
     }
 
     #[test]

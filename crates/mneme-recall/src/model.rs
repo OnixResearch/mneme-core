@@ -380,6 +380,18 @@ pub struct Evidence {
     pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
 }
 
+/// One bounded typed media location overlapping a text excerpt.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaCitation {
+    pub segment: mneme_core::RecordId,
+    pub segment_revision: mneme_core::RevisionId,
+    pub text_span: mneme_core::SourceSpan,
+    pub media_source: mneme_core::SourcePin,
+    pub media_digest: mneme_core::ContentDigest,
+    pub availability: mneme_memory::SourceAvailability,
+    pub location: mneme_core::MediaLocation,
+}
+
 /// One ranked item before or after context packing.
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -397,6 +409,8 @@ pub struct Candidate {
     pub claim_status: Option<ClaimStatus>,
     /// Exact attribution for a source excerpt; claims and summaries are not quotes.
     pub quote: bool,
+    /// Exact media locations whose transcript spans overlap this quote.
+    pub media_locations: Vec<MediaCitation>,
     pub evidence: Vec<Evidence>,
     pub derivations: Vec<mneme_datalog::Derivation>,
     pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
@@ -635,6 +649,7 @@ pub(crate) struct IndexedDocument {
     pub claim_status: Option<ClaimStatus>,
     pub evidence: Vec<Evidence>,
     pub ancestry_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    pub media_locations: Vec<MediaCitation>,
 }
 
 /// Constants exported for evaluation and cache identity.

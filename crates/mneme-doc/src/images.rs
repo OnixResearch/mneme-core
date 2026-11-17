@@ -296,7 +296,7 @@ pub fn import(
     let decoded = decode(bytes)?;
     let source_id = mneme_core::RecordId::from_bytes(mneme_store::payload::random_bytes()?);
     let source_revision = mneme_core::RevisionId::from_bytes(mneme_store::payload::random_bytes()?);
-    let (source, source_blob) = mneme_memory::build_source(
+    let (source, source_blob) = mneme_memory::build_source_with_provenance(
         source_id,
         source_revision,
         &request.scope,
@@ -305,6 +305,13 @@ pub fn import(
             media_type: decoded.media_type,
             entity: None,
             path_hint: None,
+        },
+        mneme_memory::SourceProvenance {
+            acquisition: mneme_core::Acquisition::Imported,
+            derived_from: None,
+            media_extent: Some(mneme_core::MediaExtent::Pages { page_count: 1 }),
+            media_transform: None,
+            correction: None,
         },
     )?;
     let outcome = workspace.commit_bound(

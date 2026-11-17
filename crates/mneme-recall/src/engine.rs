@@ -1235,6 +1235,7 @@ fn structured_candidate(
         entity: None,
         claim_status: None,
         quote: false,
+        media_locations: Vec::new(),
         evidence: Vec::new(),
         derivations: row.supports.clone(),
         ancestry_roots: roots,
@@ -1659,6 +1660,7 @@ fn candidate_from_document(document: &crate::model::IndexedDocument) -> crate::m
         entity: document.entity,
         claim_status: document.claim_status.clone(),
         quote: is_quote,
+        media_locations: Vec::new(),
         evidence: document.evidence.clone(),
         derivations: Vec::new(),
         ancestry_roots: document.ancestry_roots.clone(),
@@ -1999,6 +2001,15 @@ fn fill_quote(
     filled.text = excerpt.text;
     filled.span = Some(excerpt.span);
     filled.text_truncated = excerpt.truncated;
+    filled.media_locations = document
+        .media_locations
+        .iter()
+        .filter(|location| {
+            location.text_span.start() <= excerpt.span.end()
+                && excerpt.span.start() <= location.text_span.end()
+        })
+        .cloned()
+        .collect();
     if excerpt.truncated {
         context.packed.is_truncated = true;
     }
@@ -2103,6 +2114,7 @@ mod tests {
             entity: None,
             claim_status: None,
             quote: false,
+            media_locations: Vec::new(),
             evidence: Vec::new(),
             derivations: Vec::new(),
             ancestry_roots: std::collections::BTreeSet::new(),

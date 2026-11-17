@@ -1769,6 +1769,140 @@ fn scope_is_authorized_before_content_or_receipt_lookup() {
 }
 
 #[test]
+fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
+    let harness = Harness::new();
+    let audio = b"fixed audio bytes";
+    let text = b"hello world";
+    let input_pin = mneme_core::SourcePin::new(rid(0xa1), rev(0xb1));
+    let output_pin = mneme_core::SourcePin::new(rid(0xa2), rev(0xb2));
+    let input_digest = mneme_core::ContentDigest::of_source_bytes(audio);
+    let output_digest = mneme_core::ContentDigest::of_source_bytes(text);
+    let time_base = mneme_core::TimeBase::new(1, 100).expect("audio time base");
+    let location = mneme_core::MediaLocation::Audio {
+        start_tick: 20,
+        end_tick: 40,
+        time_base,
+        channel: 0,
+    };
+    let (input, input_blob) = mneme_memory::build_captured_source(
+        input_pin.source(),
+        input_pin.revision(),
+        &cedar(),
+        mneme_memory::SourceOptions {
+            bytes: audio,
+            media_type: "audio/wav",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_core::MediaExtent::Audio {
+            duration_ticks: 100,
+            time_base,
+            channels: 1,
+        },
+    )
+    .expect("captured audio");
+    let (output, output_blob) = mneme_memory::build_recognized_source(
+        output_pin.source(),
+        output_pin.revision(),
+        &cedar(),
+        text,
+        input_pin,
+        None,
+    )
+    .expect("recognized text");
+    let run_id = rid(0xa3);
+    let segment_id = rid(0xa4);
+    let run = mneme_memory::build_recognition_run(
+        run_id,
+        rev(0xb3),
+        &cedar(),
+        mneme_memory::RecognitionRunOptions {
+            input: input_pin,
+            input_digest,
+            output: output_pin,
+            output_digest,
+            model: "fixture-model@sha256:01",
+            runtime: "fixture-runtime@sha256:02",
+            adapter: "fixture-adapter@sha256:03",
+            preprocessing: "fixture-preprocessing@sha256:04",
+            configuration: "fixture-config@sha256:05",
+            segments: &[segment_id],
+            coverage: mneme_core::RecognitionCoverage::new(1, 1).expect("complete coverage"),
+            status: mneme_core::RecognitionStatus::Complete,
+            scores: &[],
+            alternatives: &[],
+        },
+    )
+    .expect("recognition run");
+    let segment = mneme_memory::build_recognition_segment(
+        segment_id,
+        rev(0xb4),
+        &cedar(),
+        mneme_memory::RecognitionSegmentOptions {
+            run: Some(run_id),
+            text_source: output_pin,
+            span: mneme_core::SourceSpan::new(0, 4).expect("text byte span"),
+            media_source: input_pin,
+            media_digest: input_digest,
+            location: &location,
+        },
+    )
+    .expect("recognition segment");
+    harness.operator_commit(
+        &cedar(),
+        "recognition-read-fixture",
+        vec![input, output, run, segment],
+        vec![input_blob, output_blob],
+    );
+
+    let decoded = mneme_api::decode(&command_document(
+        "recognition.read",
+        mneme_core::Value::symbol_dictionary([
+            (mneme_core::Symbol::from("scope"), mneme_core::Value::string("project:cedar")),
+            (mneme_core::Symbol::from("run"), run_id.to_value()),
+        ]),
+    ))
+    .expect("recognition read command");
+    assert!(matches!(decoded, mneme_api::ApiCommand::RecognitionRead { run, .. } if run == run_id));
+
+    let response = harness.cedar_service().execute(&mneme_api::ApiCommand::RecognitionRead {
+        request_id: "recognition".to_owned(),
+        scope: cedar(),
+        run: run_id,
+    });
+    assert!(response.ok, "{:?}", response.value);
+    assert_eq!(text(field(data(&response), "text")), "hello world");
+    assert_eq!(
+        field(field(data(&response), "input-source"), "acquisition"),
+        &mneme_core::Acquisition::Captured.to_value()
+    );
+    assert_eq!(
+        field(field(data(&response), "output-source"), "acquisition"),
+        &mneme_core::Acquisition::MachineRecognized.to_value()
+    );
+    assert_eq!(field(data(&response), "input-digest"), &input_digest.to_value());
+    assert_eq!(field(data(&response), "output-digest"), &output_digest.to_value());
+    let segments = sequence(data(&response), "segments");
+    assert_eq!(segments.len(), 1);
+    assert_eq!(field(&segments[0], "span"), &mneme_core::SourceSpan::new(0, 4).expect("span").to_value());
+    assert_eq!(field(&segments[0], "location"), &location.to_value());
+}
+
+#[test]
+fn recognition_read_is_denied_before_an_unauthorized_scope_lookup() {
+    let harness = Harness::new();
+    let run_id = rid(0xc1);
+    let response = harness.cedar_service().execute(&mneme_api::ApiCommand::RecognitionRead {
+        request_id: "recognition".to_owned(),
+        scope: birch(),
+        run: run_id,
+    });
+    assert!(!response.ok);
+    assert_eq!(error_of(&response).0, "denied");
+    assert_no_context(&response);
+}
+
+#[test]
 fn refusal_documents_carry_a_field_address() {
     let harness = Harness::new();
     let service = harness.cedar_service();

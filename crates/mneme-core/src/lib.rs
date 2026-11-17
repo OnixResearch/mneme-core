@@ -21,6 +21,7 @@ pub mod fields;
 pub mod fixtures;
 pub mod hashing;
 pub mod ids;
+pub mod media;
 pub mod payload;
 pub mod pointer;
 pub mod problem;
@@ -43,6 +44,11 @@ pub use fields::{
 pub use hashing::{ContentDigest, EncodingProfile, HashAlgorithm, ValueBoundary};
 pub use hashing::{kernel_digest, request_fingerprint};
 pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
+pub use media::{
+    Acquisition, CoordinateFrame, CorrectionProvenance, MediaExtent, MediaLocation,
+    MediaTransform, RecognitionAlternative, RecognitionCoverage, RecognitionScore,
+    RecognitionStatus, SourcePin, TimeBase,
+};
 pub use payload::{RetainedSource, SourceContent, SourceSpan};
 pub use pointer::{Reference, RevisionEntry, SnapshotIndex};
 pub use problem::{Diagnostic, ErrorCode, Path, Stage, render_diagnostics};
