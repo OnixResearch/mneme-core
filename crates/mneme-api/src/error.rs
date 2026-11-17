@@ -160,6 +160,13 @@ impl ApiError {
             mneme_store::Failure::BindingConflict(_) => {
                 Self::new(ApiErrorCode::Conflict, "source binding conflict")
             }
+            mneme_store::Failure::JobBusy => {
+                Self::new(ApiErrorCode::Conflict, "another runner owns this job")
+            }
+            mneme_store::Failure::JobBound => Self::new(
+                ApiErrorCode::Conflict,
+                "this job's progress is bound to another destination",
+            ),
             mneme_store::Failure::RetentionSuppressed { .. }
             | mneme_store::Failure::MissingRetentionState { .. }
             | mneme_store::Failure::MissingRetentionParticipant { .. } => Self::new(

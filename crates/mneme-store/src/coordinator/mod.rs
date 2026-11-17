@@ -50,11 +50,14 @@ use crate::injectors::FaultInjector;
 
 mod commit;
 mod history;
+mod jobs;
 mod publishing;
 mod recovery;
 mod sweep;
 #[cfg(test)]
 mod tests;
+
+pub use jobs::JobClaim;
 mod validation;
 
 /// The ledger file name inside a workspace root.
@@ -3491,6 +3494,7 @@ fn is_workspace_directory(name: &std::ffi::OsStr) -> bool {
             name == crate::payload::BLOB_DIRECTORY
                 || name == crate::payload::STAGING_DIRECTORY
                 || name == crate::payload::WORKING_DIRECTORY
+                || name == crate::payload::JOB_DIRECTORY
         }
         None => false,
     }

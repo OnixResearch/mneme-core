@@ -3942,3 +3942,43 @@ fn a_commit_admits_only_integers_a_fresh_handle_can_read() {
         mneme_core::ErrorCode::LimitExceeded,
     );
 }
+
+#[test]
+fn a_job_claim_excludes_only_its_job_and_binds_one_destination() {
+    let temp = tempfile::tempdir().expect("temp");
+    let workspace = mneme_store::Workspace::create(temp.path(), config(1_000)).expect("create");
+    let other = open(temp.path(), 2_000);
+    let claim = workspace
+        .claim_job(b"job-a", b"progress-a")
+        .expect("first claim");
+    for destination in [b"progress-a".as_slice(), b"progress-b".as_slice()] {
+        assert!(matches!(
+            other.claim_job(b"job-a", destination),
+            Err(mneme_store::Failure::JobBusy)
+        ));
+    }
+    let unrelated = other
+        .claim_job(b"job-b", b"progress-b")
+        .expect("an unrelated job is independent");
+    drop(claim);
+    drop(
+        other
+            .claim_job(b"job-a", b"progress-a")
+            .expect("a dropped claim is released"),
+    );
+    assert!(
+        matches!(
+            workspace.claim_job(b"job-a", b"progress-c"),
+            Err(mneme_store::Failure::JobBound)
+        ),
+        "a second destination cannot evade the claim"
+    );
+    drop(unrelated);
+    assert!(
+        workspace
+            .unregistered_payload_entries()
+            .expect("inventory")
+            .is_empty(),
+        "claims are store-owned state"
+    );
+}

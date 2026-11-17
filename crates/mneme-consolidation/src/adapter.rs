@@ -225,6 +225,9 @@ pub enum Failure {
     Memory(String),
     /// A workspace read failed.
     Store(String),
+    /// Another runner owns this job, or the job's progress is bound to a
+    /// different destination; nothing was loaded or dispatched.
+    Busy(String),
 }
 
 impl Failure {
@@ -234,7 +237,8 @@ impl Failure {
             Failure::Invalid(detail)
             | Failure::Recall(detail)
             | Failure::Memory(detail)
-            | Failure::Store(detail) => detail,
+            | Failure::Store(detail)
+            | Failure::Busy(detail) => detail,
             Failure::StaleBase => "the pinned base revision is no longer current",
         }
     }
@@ -981,6 +985,9 @@ pub fn consolidate_workspace_with_model(
     control: &mneme_recall::inference::InvocationControl,
 ) -> Result<WorkspaceReceipt, Failure> {
     validate_model_extractor(request, extractor)?;
+    // Held until this call returns: a second runner of the same job cannot
+    // load, reserve, dispatch or save while this one may.
+    let _claim = claim_model_job(workspace, request, progress_store)?;
     let prepared = prepare_workspace_job(workspace, request)?;
     validate_model_input_extent(request, &prepared)?;
 
@@ -1018,6 +1025,26 @@ pub fn consolidate_workspace_with_model(
         executor,
     }
     .execute()
+}
+
+/// Claim one model-consolidation job: its identity is its scope and job id,
+/// and its progress is bound to the store's destination.
+fn claim_model_job(
+    workspace: &mneme_store::Workspace,
+    request: &WorkspaceJob,
+    progress_store: &crate::runner::ProgressStore,
+) -> Result<mneme_store::JobClaim, Failure> {
+    let job = format!("model-consolidation\0{}\0{}", request.scope, request.job_id);
+    let destination = std::path::absolute(progress_store.path())
+        .map_err(|error| Failure::Store(error.to_string()))?;
+    workspace
+        .claim_job(job.as_bytes(), destination.as_os_str().as_encoded_bytes())
+        .map_err(|error| match error {
+            mneme_store::Failure::JobBusy | mneme_store::Failure::JobBound => {
+                Failure::Busy(error.to_string())
+            }
+            other => Failure::Store(other.to_string()),
+        })
 }
 
 fn source_entity_handle(
@@ -2154,6 +2181,126 @@ mod tests {
         request.limits.max_model_calls = 2;
         request.limits.max_time_ms = 1_000;
         request
+    }
+
+    /// A model worker that records its start in `log` and answers only once
+    /// `release` exists. Shell builtins only: the worker's environment is
+    /// cleared, so external commands may not be found.
+    fn blocking_extractor(
+        log: &std::path::Path,
+        release: &std::path::Path,
+    ) -> crate::model_extractor::ModelExtractor {
+        let (_, mut config, limits) = model_extractor();
+        config.worker = mneme_recall::inference::WorkerCommand {
+            executable: std::path::PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".into(),
+                "while IFS= read -r line || [ -n \"$line\" ]; do :; done; \
+                 printf 'start\\n' >> \"$1\"; \
+                 while [ ! -e \"$2\" ]; do :; done; printf '{}'"
+                    .into(),
+                "worker".into(),
+                log.as_os_str().to_owned(),
+                release.as_os_str().to_owned(),
+            ],
+        };
+        let limits = mneme_recall::inference::InvocationLimits {
+            max_wall_time: std::time::Duration::from_secs(60),
+            ..limits
+        };
+        crate::model_extractor::ModelExtractor::new(config, limits).expect("blocking worker")
+    }
+
+    #[test]
+    fn two_runners_of_one_job_dispatch_each_input_once() {
+        let (temp, mut workspace, scope) = workspace_with_two_sources();
+        let log = temp.path().join("worker-starts.log");
+        let release = temp.path().join("release");
+        let extractor = blocking_extractor(&log, &release);
+        let mut request = workspace_job(scope.clone(), &extractor, "shared-job", "shared-key");
+        request.limits.max_time_ms = 60_000;
+        let progress = crate::runner::ProgressStore::new(temp.path().join("progress.json"));
+        let elsewhere = crate::runner::ProgressStore::new(temp.path().join("elsewhere.json"));
+        let control = mneme_recall::inference::InvocationControl::default();
+        let fresh = || {
+            mneme_store::Workspace::open(
+                temp.path(),
+                mneme_store::WorkspaceConfig {
+                    clock: Box::new(mneme_store::FixedClock::new(at())),
+                    faults: Box::new(mneme_store::NoFaults),
+                },
+            )
+            .expect("fresh handle")
+        };
+        let starts = || std::fs::read_to_string(&log).map_or(0, |text| text.lines().count());
+        std::thread::scope(|threads| {
+            let first = threads.spawn(|| {
+                consolidate_workspace_with_model(
+                    &mut workspace,
+                    &request,
+                    &extractor,
+                    &progress,
+                    &control,
+                )
+            });
+            // Observed, not timed: wait until the first runner's worker has
+            // started, while it still holds the job.
+            while starts() == 0 && !first.is_finished() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert_eq!(starts(), 1, "the first runner dispatched one input");
+            let mut second = fresh();
+            for store in [&progress, &elsewhere] {
+                assert!(matches!(
+                    consolidate_workspace_with_model(
+                        &mut second,
+                        &request,
+                        &extractor,
+                        store,
+                        &control
+                    ),
+                    Err(Failure::Busy(_))
+                ));
+            }
+            let (source, blob) = mneme_memory::build_source(
+                mneme_core::RecordId::from_bytes([0x30; 16]),
+                mneme_core::RevisionId::from_bytes([0x50; 16]),
+                &scope,
+                mneme_memory::SourceOptions {
+                    bytes: b"Committed while the job's worker runs.",
+                    media_type: "text/plain",
+                    entity: None,
+                    path_hint: None,
+                },
+            )
+            .expect("source");
+            commit(
+                &mut second,
+                &scope,
+                "during-inference",
+                vec![source],
+                vec![blob],
+            );
+            std::fs::write(&release, b"").expect("release the worker");
+            first
+                .join()
+                .expect("first runner thread")
+                .expect("first runner finishes");
+        });
+        let dispatched = starts();
+        let mut later = fresh();
+        consolidate_workspace_with_model(&mut later, &request, &extractor, &progress, &control)
+            .expect("a later runner resumes the finished job");
+        assert_eq!(starts(), dispatched, "no input is dispatched twice");
+        assert!(
+            matches!(
+                consolidate_workspace_with_model(
+                    &mut later, &request, &extractor, &elsewhere, &control
+                ),
+                Err(Failure::Busy(_))
+            ),
+            "a second progress destination cannot evade the claim"
+        );
     }
 
     #[test]

@@ -1437,6 +1437,11 @@ impl ProgressStore {
         ProgressStore { path: path.into() }
     }
 
+    /// Where this store keeps its snapshot.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Persist progress durably at the configured path.
     ///
     /// The snapshot is written to a uniquely named temporary file in the target

@@ -23,6 +23,8 @@ pub const BLOB_DIRECTORY: &str = "blobs";
 pub const STAGING_DIRECTORY: &str = "staging";
 /// Directory holding published working files.
 pub const WORKING_DIRECTORY: &str = "working";
+/// Store-owned directory holding one ownership lock file per logical job.
+pub const JOB_DIRECTORY: &str = "jobs";
 /// Workspace-root file naming a working tree other than `working/`: `..` for
 /// the directory containing the workspace root, or the absolute path of a
 /// folder elsewhere.

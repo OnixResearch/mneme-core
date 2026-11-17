@@ -34,6 +34,14 @@ pub enum Failure {
     #[error("idempotency key {key:?} was reused with different command content")]
     IdempotencyConflict { key: String },
 
+    /// Another runner holds the claim on this job.
+    #[error("another runner owns this job")]
+    JobBusy,
+
+    /// The job was claimed for a different progress destination.
+    #[error("this job's progress is bound to another destination")]
+    JobBound,
+
     #[error("record validation failed")]
     Validation(Vec<mneme_core::Diagnostic>),
 
