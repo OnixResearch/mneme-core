@@ -434,6 +434,125 @@ fn stale_candidate_conflicts_and_preserves_newer_document() {
     let _ = second;
 }
 
+impl Harness {
+    fn commit_drafts(
+        &mut self,
+        key: &str,
+        records: Vec<mneme_store::RecordDraft>,
+        source_blobs: Vec<mneme_store::SourceBlobDraft>,
+    ) {
+        let base = self.workspace.current_revision().expect("base");
+        self.workspace
+            .commit(mneme_store::CommitCommand {
+                base,
+                actor: "doc-test".to_owned(),
+                scope: scope(),
+                idempotency_key: key.to_owned(),
+                records,
+                source_blobs,
+                publications: Vec::new(),
+                import_candidates: Vec::new(),
+                retention: None,
+            })
+            .expect("commit");
+    }
+}
+
+fn text_options(bytes: &[u8]) -> mneme_memory::SourceOptions<'_> {
+    mneme_memory::SourceOptions {
+        bytes,
+        media_type: "text/plain; charset=utf-8",
+        entity: None,
+        path_hint: None,
+    }
+}
+
+#[test]
+fn a_document_pinning_a_corrected_transcript_reads_its_bytes() {
+    let mut harness = Harness::new();
+    let rid = |byte: u8| mneme_core::RecordId::from_bytes([byte; 16]);
+    let original = mneme_core::SourcePin::new(rid(0x61), rev(0x62));
+    let transcript = mneme_core::SourcePin::new(rid(0x63), rev(0x64));
+    let (audio, audio_blob) = mneme_memory::build_captured_source(
+        original.source(),
+        original.revision(),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"recorded audio",
+            media_type: "audio/wav",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_core::MediaExtent::Audio {
+            duration_ticks: 100,
+            time_base: mneme_core::TimeBase::new(1, 100).expect("time base"),
+            channels: 1,
+        },
+    )
+    .expect("captured audio");
+    let (text, text_blob) = mneme_memory::build_recognized_source(
+        transcript.source(),
+        transcript.revision(),
+        &scope(),
+        text_options(b"hello world"),
+        original,
+    )
+    .expect("recognized text");
+    harness.commit_drafts("recognized", vec![audio, text], vec![audio_blob, text_blob]);
+    let correction = mneme_core::CorrectionProvenance::new(
+        "human-reviewer",
+        "inserted a word",
+        mneme_core::AlignmentDisposition::Updated,
+    )
+    .expect("correction");
+    let corrected = mneme_core::SourcePin::new(transcript.source(), rev(0x65));
+    let (corrected_record, corrected_blob) = mneme_memory::build_corrected_source(
+        transcript,
+        corrected.revision(),
+        &scope(),
+        text_options(b"well hello world"),
+        &correction,
+    )
+    .expect("corrected text");
+    let document = mneme_store::RecordDraft {
+        schema_version: mneme_doc::DOCUMENT_SCHEMA_VERSION,
+        kind: mneme_core::RecordKind::Document,
+        record_id: rid(0x66),
+        revision_id: rev(0x67),
+        predecessor: None,
+        scope: scope(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("title"),
+                mneme_core::Value::string("Transcript"),
+            ),
+            (
+                mneme_core::Symbol::from("source-revision"),
+                mneme_core::Reference::pinned(
+                    corrected.source(),
+                    corrected.revision(),
+                    mneme_core::RecordKind::SourceRevision,
+                )
+                .to_value(),
+            ),
+        ]),
+    };
+    harness.commit_drafts(
+        "corrected-document",
+        vec![corrected_record, document],
+        vec![corrected_blob],
+    );
+    let reads = mneme_doc::Documents::new(&mut harness.workspace)
+        .current_reads()
+        .expect("document reads");
+    assert_eq!(
+        reads
+            .source_bytes(rid(0x66))
+            .expect("the corrected transcript is readable"),
+        b"well hello world"
+    );
+}
+
 #[test]
 fn includes_pin_dependencies_and_historical_preview_uses_the_old_closure() {
     let mut harness = Harness::new();

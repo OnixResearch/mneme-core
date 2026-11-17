@@ -662,12 +662,7 @@ impl DocumentContext {
             ));
         }
         let (documents, paths, entities) = index_documents(&snapshot, max_context_records)?;
-        let history = workspace
-            .record_histories_of(&snapshot, &historical_source_pins(&snapshot, &documents))?
-            .into_values()
-            .flatten()
-            .map(|record| ((record.record_id, record.revision_id), record))
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let history = document_history(workspace, &snapshot, &documents, max_context_records)?;
         if history.len() > max_context_records {
             return Err(DocumentError::Invalid(
                 "document history exceeds the 1M revision bound",
@@ -3691,36 +3686,76 @@ type DocumentIndexes = (
     std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
 );
 
-/// Source records a document or include pins at a revision other than the
-/// snapshot's current one.
-///
-/// Only these pins are resolved from retained history; a pin of the current
-/// revision is served by the snapshot record itself. A source record absent
-/// from the snapshot is not requested, exactly as the full history read holds
-/// entries only for snapshot records.
-fn historical_source_pins(
+/// The retained history a document context needs: the earlier revisions its
+/// pins name, and every revision along each pinned source's `derived-from`
+/// ancestry, so a corrected or derived source's roots resolve instead of
+/// reading as erased. A record's history is read only when one of these pins
+/// names a revision other than its current one; a source absent from the
+/// snapshot is not requested.
+fn document_history(
+    workspace: &mneme_store::Workspace,
     snapshot: &mneme_store::Snapshot,
     documents: &std::collections::BTreeMap<mneme_core::RecordId, DocumentView>,
-) -> std::collections::BTreeSet<mneme_core::RecordId> {
-    let current: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RevisionId> =
+    max_records: usize,
+) -> Result<
+    std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+> {
+    let current: std::collections::BTreeMap<mneme_core::RecordId, &mneme_core::RecordEnvelope> =
         snapshot
             .records
             .iter()
             .filter(|record| record.kind == mneme_core::RecordKind::SourceRevision)
-            .map(|record| (record.record_id, record.revision_id))
+            .map(|record| (record.record_id, record))
             .collect();
-    documents
+    let mut history = std::collections::BTreeMap::new();
+    let mut loaded = std::collections::BTreeSet::new();
+    let mut visited = std::collections::BTreeSet::new();
+    let mut pending: Vec<SourcePin> = documents
         .values()
         .flat_map(|document| {
             std::iter::once(document.source).chain(document.includes.values().copied())
         })
-        .filter(|pin| {
-            current
-                .get(&pin.source)
-                .is_some_and(|revision| *revision != pin.revision)
-        })
-        .map(|pin| pin.source)
-        .collect()
+        .collect();
+    while let Some(pin) = pending.pop() {
+        if !visited.insert((pin.source, pin.revision)) {
+            continue;
+        }
+        if visited.len() > max_records {
+            return Err(DocumentError::Invalid(
+                "document source ancestry exceeds the 1M revision bound",
+            ));
+        }
+        let Some(record) = current.get(&pin.source) else {
+            continue;
+        };
+        if record.revision_id != pin.revision && loaded.insert(pin.source) {
+            history.extend(
+                workspace
+                    .record_histories_of(snapshot, &std::collections::BTreeSet::from([pin.source]))?
+                    .into_values()
+                    .flatten()
+                    .map(|record| ((record.record_id, record.revision_id), record)),
+            );
+        }
+        let pinned = if record.revision_id == pin.revision {
+            Some(*record)
+        } else {
+            history.get(&(pin.source, pin.revision))
+        };
+        let parent = pinned
+            .and_then(|record| mneme_memory::SourceView::parse(record.clone()).ok())
+            .and_then(|source| source.derived_from);
+        if let Some(parent) = parent {
+            pending.push(SourcePin {
+                source: parent.source(),
+                revision: parent.revision(),
+            });
+        }
+    }
+    Ok(history)
 }
 
 fn index_documents(
