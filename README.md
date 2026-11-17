@@ -114,13 +114,19 @@ restarts, within 1 GiB for all pending transfers. Until every chunk is here and
 the whole asset hashes to its digest, `import_records` defers the source and
 everything that depends on it, including text recognized from it, and reports
 them; a later import of the same bundle publishes them, up to 512 MiB of
-assets per import. `pending_assets`, `transfer_usage` and `media_arrival`
-report what is arriving; a pending source is never in the ledger. A chunk of a
-forgotten source, or of bytes whose replay a forget blocks, is refused and its
-transfer removed, an import refuses the asset, and a forget searches pending
+assets per import; a source waiting for one still arriving keeps its own
+chunks. Bytes already held for another source are used without chunks.
+`wanted_chunks` names the chunks a transport still needs to send,
+`pending_assets`, `transfer_usage` and `media_arrival` report what is
+arriving, and a pending source is never in the ledger.
+`release_untrusted` removes transfers from keys no longer trusted. A
+chunk of a forgotten source, or of bytes whose replay a forget blocks, is
+refused and its transfer removed; applying a barrier removes what arrived of
+its source, an import refuses the asset, and a local forget searches pending
 transfers as one of its cleanup locations. A small export is still a version
-1 bundle. A reader of version 1 refuses version 2 as an unsupported profile,
-and later versions are refused the same way.
+1 bundle. A reader that knows only version 1 refuses a version 2 bundle as
+malformed, so every device exchanging larger originals must be upgraded; this
+reader refuses later versions as an unsupported profile.
 
 The shared API exposes `recognition.read` with a scoped `{scope, run}` payload.
 It returns the run's exact source pins and digests, model/runtime configuration,

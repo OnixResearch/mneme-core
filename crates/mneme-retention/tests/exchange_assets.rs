@@ -224,7 +224,7 @@ fn deliver(
     mneme_memory::exchange::receive_chunk(
         receiver,
         &authenticate(&export.bundle),
-        asset.digest,
+        asset.digest(),
         index,
         &chunk,
     )
@@ -275,7 +275,7 @@ fn forgetting_during_a_transfer_and_a_delayed_replay_suppress_the_media_and_its_
         mneme_memory::exchange::receive_chunk(
             &receiver,
             &authenticate(&old.bundle),
-            old.assets[0].digest,
+            old.assets[0].digest(),
             1,
             &in_flight
         ),
@@ -326,14 +326,6 @@ fn forgetting_local_bytes_removes_a_pending_transfer_of_them() {
         .expect("export");
     let receiver_temp = tempfile::tempdir().expect("receiver");
     let mut receiver = workspace(receiver_temp.path());
-    let local = mneme_core::SourcePin::new(rid(0x60), rev(0x61));
-    let (local_record, local_blob) = captured(local, &recording.bytes);
-    commit(
-        &mut receiver,
-        "same-bytes",
-        vec![local_record],
-        vec![local_blob],
-    );
     import(&mut receiver, &export.bundle);
     deliver(&origin, &receiver, &export, 1).expect("one chunk");
     assert_eq!(
@@ -341,6 +333,15 @@ fn forgetting_local_bytes_removes_a_pending_transfer_of_them() {
             .expect("usage")
             .chunks,
         1
+    );
+    // The same bytes reach this device another way while the transfer waits.
+    let local = mneme_core::SourcePin::new(rid(0x60), rev(0x61));
+    let (local_record, local_blob) = captured(local, &recording.bytes);
+    commit(
+        &mut receiver,
+        "same-bytes",
+        vec![local_record],
+        vec![local_blob],
     );
 
     let outcome = forget(&mut receiver, local.source());
@@ -358,4 +359,48 @@ fn forgetting_local_bytes_removes_a_pending_transfer_of_them() {
     let refused = import(&mut receiver, &export.bundle);
     assert_eq!(refused.refused.len(), 1, "the forgotten bytes stay refused");
     assert_media_and_text_absent(&mut receiver, &recording);
+}
+
+#[test]
+fn a_barrier_removes_what_arrived_of_its_source_without_the_old_bundle() {
+    let origin_temp = tempfile::tempdir().expect("origin");
+    let mut origin = workspace(origin_temp.path());
+    let recording = record(&mut origin);
+    let old = mneme_memory::exchange::export_workspace(&origin, ISSUER, &SECRET, &shared())
+        .expect("export before forgetting");
+    let receiver_temp = tempfile::tempdir().expect("receiver");
+    let mut receiver = workspace(receiver_temp.path());
+    import(&mut receiver, &old.bundle);
+    deliver(&origin, &receiver, &old, 0).expect("first chunk");
+    forget(&mut origin, recording.audio.source());
+    let current = mneme_memory::exchange::export_workspace(&origin, ISSUER, &SECRET, &shared())
+        .expect("export with the barrier");
+    assert!(
+        current.forgotten.contains(&old.assets[0].digest()),
+        "the sender learns which chunks to stop offering"
+    );
+    // Only the barriers are applied: the old bundle is gone from the folder.
+    for barrier in authenticate(&current.bundle).barriers() {
+        mneme_retention::Engine::new(&mut receiver)
+            .apply_exchange_barrier(ISSUER, barrier)
+            .expect("barrier");
+    }
+    assert_eq!(
+        mneme_memory::exchange::transfer_usage(&receiver).expect("usage"),
+        mneme_memory::exchange::TransferUsage::default()
+    );
+    assert!(
+        mneme_memory::exchange::pending_assets(&receiver)
+            .expect("pending")
+            .is_empty()
+    );
+    assert_eq!(
+        mneme_memory::exchange::media_arrival(
+            &receiver,
+            recording.audio.source(),
+            recording.audio.revision()
+        )
+        .expect("arrival"),
+        mneme_memory::exchange::MediaArrival::Forgotten
+    );
 }

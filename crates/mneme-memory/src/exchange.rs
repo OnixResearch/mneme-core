@@ -20,7 +20,8 @@ mod transfers;
 pub use transfers::{
     ASSET_CHUNK_BYTES, Asset, ChunkReceipt, MAX_EXCHANGE_ASSET_BYTES, MAX_TRANSFER_BYTES,
     MediaArrival, PendingAsset, TransferUsage, asset_chunk, grant_asset, media_arrival,
-    pending_assets, receive_chunk, transfer_usage,
+    pending_assets, receive_chunk, release_pending_source, release_untrusted, transfer_usage,
+    wanted_chunks,
 };
 
 const BUNDLE_LABEL: &str = "mneme-record-exchange-v1";
@@ -197,6 +198,9 @@ pub struct Export {
     /// The sources the bundle names but does not carry; their chunks are read
     /// with [`asset_chunk`].
     pub assets: Vec<Asset>,
+    /// The bytes the bundle's barriers forget and it no longer names; a
+    /// transport removes whatever chunks of them it still offers.
+    pub forgotten: Vec<mneme_core::ContentDigest>,
 }
 
 /// Record import result for one authenticated bundle.
@@ -315,6 +319,12 @@ pub fn export_workspace(
     let notes = shared_notes(notes, &snapshot, scopes);
     let mut barriers = export_barriers(workspace, &workspace.active_suppressions()?)?;
     barriers.retain(|barrier| scopes.contains(&barrier.scope));
+    let mut forgotten = barriers
+        .iter()
+        .filter_map(|barrier| barrier.content_digest)
+        .collect::<Vec<_>>();
+    forgotten.sort();
+    forgotten.dedup();
     let signing_key = ed25519_dalek::SigningKey::from_bytes(secret);
     let mut bundle = SignedBundle {
         version: Version::One,
@@ -338,6 +348,7 @@ pub fn export_workspace(
                 return Ok(Export {
                     bundle: document,
                     assets: Vec::new(),
+                    forgotten,
                 });
             }
             Err(Error::InputTooLarge) => {}
@@ -348,9 +359,11 @@ pub fn export_workspace(
     bundle.sources = source_items(workspace, &bundle.records, transfers::INLINE_SOURCE_BYTES)?;
     bundle.assets = asset_items(workspace, &bundle.records)?;
     bundle.sign(&signing_key);
+    forgotten.retain(|digest| !bundle.assets.iter().any(|asset| asset.digest() == *digest));
     Ok(Export {
         bundle: bundle.to_json_document()?,
         assets: bundle.assets,
+        forgotten,
     })
 }
 
@@ -490,7 +503,7 @@ fn unaccepted_scope(
         .iter()
         .map(|record| &record.scope)
         .chain(bundle.barriers.iter().map(|barrier| &barrier.scope))
-        .chain(bundle.assets.iter().map(|asset| &asset.scope))
+        .chain(bundle.assets.iter().map(Asset::scope))
         .find(|scope| !accepted.contains(*scope))
         .cloned()
 }
@@ -552,8 +565,8 @@ pub fn import_records(
         .bundle
         .assets
         .iter()
-        .filter(|asset| arrivals.ready.contains_key(&asset.source))
-        .map(|asset| asset.digest)
+        .filter(|asset| arrivals.ready.contains_key(&asset.source()))
+        .map(|asset| asset.digest())
         .collect::<Vec<_>>();
     let mut held_back = blocked;
     held_back.extend(arrivals.deferred.iter().copied());

@@ -352,6 +352,9 @@ impl<'w> Engine<'w> {
         if issuer.trim().is_empty() || barrier.operation_kind != "forget" {
             return Err(PolicyError::Invalid("invalid exchange barrier"));
         }
+        // Whatever arrived of the forgotten source goes, also when the barrier
+        // was applied before: its chunks may have arrived since.
+        self.release_barrier_transfers(barrier)?;
         // A barrier applied before, as a forget or as a tombstone, is applied:
         // an importer applies every bundle's barriers on every import, and the
         // workspace has usually moved on since.
@@ -383,6 +386,27 @@ impl<'w> Engine<'w> {
             }
         }
         commit_exchange_tombstone(self.workspace, issuer, barrier)
+    }
+
+    /// Remove pending transfers of a barrier's source or bytes, whichever
+    /// device sent them.
+    fn release_barrier_transfers(
+        &mut self,
+        barrier: &mneme_memory::exchange::Barrier,
+    ) -> Result<()> {
+        if let Some(digest) = barrier.content_digest {
+            mneme_store::payload::purge_targeted_transfers(
+                self.workspace.root(),
+                &std::collections::BTreeSet::from([*digest.as_bytes()]),
+            )?;
+        }
+        mneme_memory::exchange::release_pending_source(self.workspace, barrier.target).map_err(
+            |error| match error {
+                mneme_memory::exchange::Error::Store(failure) => PolicyError::Store(failure),
+                _ => PolicyError::Conflict("pending transfers could not be read"),
+            },
+        )?;
+        Ok(())
     }
 
     /// Resume cleanup for an existing operation.

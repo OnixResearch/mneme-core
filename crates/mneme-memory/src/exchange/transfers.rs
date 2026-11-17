@@ -32,31 +32,64 @@ const MANIFEST_FILE: &str = "manifest";
 const CHUNK_SUFFIX: &str = ".chunk";
 
 /// One large source of a bundle, as the bundle's manifest signs it.
+///
+/// An asset is only ever made by an export, a grant or an authenticated
+/// bundle, so it always names bytes its maker was entitled to.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Asset {
-    /// The source record the bytes belong to.
-    pub source: mneme_core::RecordId,
-    /// The exact source revision.
-    pub revision: mneme_core::RevisionId,
-    /// The scope the source lives in.
-    pub scope: mneme_core::ScopeId,
-    /// The digest of the whole asset.
-    pub digest: mneme_core::ContentDigest,
-    /// The asset's length.
-    pub byte_length: u64,
-    /// The asset's media type.
-    pub media_type: mneme_core::Symbol,
-    /// The length of every chunk but the last.
-    pub chunk_bytes: u32,
-    /// The digest of each chunk, in order.
-    pub chunks: Vec<mneme_core::ContentDigest>,
-    /// The bundle records that need the source, directly or through others.
-    pub dependents: Vec<mneme_core::RecordId>,
-    /// How many chunks there are; set where an asset is built or read.
+    source: mneme_core::RecordId,
+    revision: mneme_core::RevisionId,
+    scope: mneme_core::ScopeId,
+    digest: mneme_core::ContentDigest,
+    byte_length: u64,
+    media_type: mneme_core::Symbol,
+    chunk_bytes: u32,
+    chunks: Vec<mneme_core::ContentDigest>,
+    dependents: Vec<mneme_core::RecordId>,
     count: u32,
 }
 
 impl Asset {
+    /// The source record the bytes belong to.
+    pub fn source(&self) -> mneme_core::RecordId {
+        self.source
+    }
+
+    /// The exact source revision.
+    pub fn revision(&self) -> mneme_core::RevisionId {
+        self.revision
+    }
+
+    /// The scope the source lives in.
+    pub fn scope(&self) -> &mneme_core::ScopeId {
+        &self.scope
+    }
+
+    /// The digest of the whole asset.
+    pub fn digest(&self) -> mneme_core::ContentDigest {
+        self.digest
+    }
+
+    /// The asset's length.
+    pub fn byte_length(&self) -> u64 {
+        self.byte_length
+    }
+
+    /// The asset's media type.
+    pub fn media_type(&self) -> &mneme_core::Symbol {
+        &self.media_type
+    }
+
+    /// The length of every chunk but the last.
+    pub fn chunk_bytes(&self) -> u32 {
+        self.chunk_bytes
+    }
+
+    /// The bundle records that need the source, directly or through others.
+    pub fn dependents(&self) -> &[mneme_core::RecordId] {
+        &self.dependents
+    }
+
     /// How many chunks the asset is cut into.
     pub fn chunk_count(&self) -> u32 {
         self.count
@@ -252,7 +285,14 @@ pub(super) fn check_assets(
     assets: &[Asset],
 ) -> Result<(), super::Error> {
     let mut seen = std::collections::BTreeSet::new();
+    let mut layouts = std::collections::BTreeMap::new();
     for asset in assets {
+        // A digest is one transfer, so every source that shares bytes shares
+        // their chunks.
+        let layout = (asset.chunk_bytes, &asset.chunks);
+        if *layouts.entry(asset.digest).or_insert(layout) != layout {
+            return Err(super::Error::MalformedBundle);
+        }
         let Some(record) = records
             .iter()
             .find(|record| record.record_id == asset.source)
@@ -428,18 +468,20 @@ pub fn receive_chunk(
     }
     let root = workspace.root();
     let directory = mneme_store::payload::transfer_path(root, &bundle.bundle.key_id, digest)?;
-    let suppressions = workspace.active_suppressions()?;
-    if super::blocked_records(&bundle.bundle.records, &suppressions)?.contains(&asset.source) {
-        remove_transfer(&directory)?;
-        return Err(super::Error::AssetForgotten);
-    }
     let total = asset.chunk_count();
-    if is_published(workspace, asset)? {
-        return Ok(ChunkReceipt {
-            received: total,
-            total,
-            is_new: false,
-        });
+    match need(workspace, &bundle.bundle, digest)? {
+        Need::Forgotten => {
+            remove_transfer(&directory)?;
+            return Err(super::Error::AssetForgotten);
+        }
+        Need::Held => {
+            return Ok(ChunkReceipt {
+                received: total,
+                total,
+                is_new: false,
+            });
+        }
+        Need::Chunks => {}
     }
     open_transfer(&directory, &bundle.bundle.issuer, asset)?;
     let path = directory.join(chunk_name(index));
@@ -484,6 +526,10 @@ pub(super) fn arrivals(
         }
         let assembly = if published.saturating_add(asset.byte_length) > MAX_PUBLISHED_BYTES {
             Assembly::Incomplete
+        } else if mneme_store::payload::blob_is_present(root, asset.digest, asset.byte_length)? {
+            // Another source already brought these bytes; they are verified
+            // as they are read.
+            Assembly::Complete(mneme_store::payload::read(root, asset.digest)?)
         } else {
             assemble(&directory, asset)?
         };
@@ -505,7 +551,154 @@ pub(super) fn arrivals(
         }
     }
     super::add_dependents(&bundle.records, &mut arrivals.deferred);
+    // A source whose bytes are here but which needs a source still arriving
+    // waits with it; its chunks stay, and it is reported pending.
+    let waiting = arrivals
+        .ready
+        .keys()
+        .filter(|source| arrivals.deferred.contains(*source))
+        .copied()
+        .collect::<Vec<_>>();
+    for source in waiting {
+        arrivals.ready.remove(&source);
+        if let Some(asset) = bundle.assets.iter().find(|asset| asset.source == source) {
+            arrivals.pending.push(asset.digest);
+        }
+    }
     Ok(arrivals)
+}
+
+/// What a bundle's sources of one digest still need here.
+enum Need {
+    /// Every source of the digest was forgotten here.
+    Forgotten,
+    /// Every source of the digest is held, or its bytes are.
+    Held,
+    /// Chunks: a source of the digest is neither held nor forgotten.
+    Chunks,
+}
+
+fn need(
+    workspace: &mneme_store::Workspace,
+    bundle: &super::SignedBundle,
+    digest: mneme_core::ContentDigest,
+) -> Result<Need, super::Error> {
+    let blocked = super::blocked_records(&bundle.records, &workspace.active_suppressions()?)?;
+    let open = bundle
+        .assets
+        .iter()
+        .filter(|asset| asset.digest == digest && !blocked.contains(&asset.source))
+        .collect::<Vec<_>>();
+    let Some(first) = open.first() else {
+        return Ok(Need::Forgotten);
+    };
+    if mneme_store::payload::blob_is_present(workspace.root(), digest, first.byte_length)? {
+        return Ok(Need::Held);
+    }
+    let snapshot = workspace.snapshot()?;
+    let local = snapshot
+        .records
+        .iter()
+        .map(|record| (record.record_id, record))
+        .collect();
+    for asset in open {
+        if !holds_digest(&local, asset)? {
+            return Ok(Need::Chunks);
+        }
+    }
+    Ok(Need::Held)
+}
+
+/// The chunks of a bundle's assets this workspace still wants, by digest; an
+/// asset held, forgotten or with every chunk here is not listed. A transport
+/// sends or reads only these.
+pub fn wanted_chunks(
+    workspace: &mneme_store::Workspace,
+    bundle: &super::AuthenticatedBundle,
+) -> Result<Vec<(mneme_core::ContentDigest, Vec<u32>)>, super::Error> {
+    let mut digests = bundle
+        .bundle
+        .assets
+        .iter()
+        .map(|asset| asset.digest)
+        .collect::<Vec<_>>();
+    digests.sort();
+    digests.dedup();
+    let mut wanted = Vec::with_capacity(digests.len());
+    for digest in digests {
+        let Need::Chunks = need(workspace, &bundle.bundle, digest)? else {
+            continue;
+        };
+        let Some(asset) = bundle
+            .bundle
+            .assets
+            .iter()
+            .find(|asset| asset.digest == digest)
+        else {
+            continue;
+        };
+        let directory =
+            mneme_store::payload::transfer_path(workspace.root(), &bundle.bundle.key_id, digest)?;
+        let mut missing = Vec::with_capacity(asset.chunks.len());
+        for index in 0..asset.chunk_count() {
+            let Some((_, length)) = asset.chunk_span(index) else {
+                continue;
+            };
+            if !is_file_of_length(&directory.join(chunk_name(index)), length)? {
+                missing.push(index);
+            }
+        }
+        if !missing.is_empty() {
+            wanted.push((digest, missing));
+        }
+    }
+    Ok(wanted)
+}
+
+/// Remove every transfer of one source's bytes, whichever device sent it,
+/// and return how many were removed.
+pub fn release_pending_source(
+    workspace: &mneme_store::Workspace,
+    source: mneme_core::RecordId,
+) -> Result<u64, super::Error> {
+    let mut released = 0_u64;
+    for directory in transfer_directories(workspace.root())? {
+        let is_named = read_manifest(&directory)?.is_some_and(|(_, asset)| asset.source == source);
+        if is_named {
+            remove_transfer(&directory)?;
+            released = released.saturating_add(1);
+        }
+    }
+    Ok(released)
+}
+
+/// Remove the transfers of devices the policy no longer trusts: their chunks
+/// can never be published.
+pub fn release_untrusted(
+    workspace: &mneme_store::Workspace,
+    policy: &super::Policy,
+) -> Result<u64, super::Error> {
+    let trusted = policy
+        .peers
+        .values()
+        .map(|peer| peer.key_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut released = 0_u64;
+    for owner in read_directories(
+        &workspace
+            .root()
+            .join(mneme_store::payload::TRANSFER_DIRECTORY),
+    )? {
+        let is_trusted = owner
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|name| trusted.contains(name));
+        if !is_trusted {
+            remove_transfer(&owner)?;
+            released = released.saturating_add(1);
+        }
+    }
+    Ok(released)
 }
 
 /// Remove the transfers of assets an import published.
@@ -525,11 +718,22 @@ pub fn pending_assets(
     workspace: &mneme_store::Workspace,
 ) -> Result<Vec<PendingAsset>, super::Error> {
     let directories = transfer_directories(workspace.root())?;
+    let suppressions = workspace.active_suppressions()?;
+    let is_forgotten = |asset: &Asset| {
+        suppressions.iter().any(|suppression| {
+            suppression.mode == mneme_store::SuppressionMode::Forgotten
+                && (suppression.target == asset.source
+                    || suppression.content_digest == Some(asset.digest))
+        })
+    };
     let mut pending = Vec::with_capacity(directories.len());
     for directory in directories {
         let Some((issuer, asset)) = read_manifest(&directory)? else {
             continue;
         };
+        if is_forgotten(&asset) {
+            continue;
+        }
         pending.push(PendingAsset {
             issuer,
             source: asset.source,
@@ -591,17 +795,6 @@ pub fn media_arrival(
             received: pending.received,
             total: pending.total,
         }))
-}
-
-/// Whether the workspace already holds the asset's source with its bytes.
-fn is_published(workspace: &mneme_store::Workspace, asset: &Asset) -> Result<bool, super::Error> {
-    let snapshot = workspace.snapshot()?;
-    let local = snapshot
-        .records
-        .iter()
-        .map(|record| (record.record_id, record))
-        .collect();
-    holds_digest(&local, asset)
 }
 
 fn holds_digest(
@@ -750,13 +943,18 @@ fn transfer_usage_in(root: &std::path::Path) -> Result<TransferUsage, super::Err
         usage.transfers = usage.transfers.saturating_add(1);
         for entry in std::fs::read_dir(&directory).map_err(|error| io_error(&directory, error))? {
             let entry = entry.map_err(|error| io_error(&directory, error))?;
-            let is_chunk = entry.file_name().to_string_lossy().ends_with(CHUNK_SUFFIX);
+            let name = entry.file_name();
+            let is_chunk = name.to_string_lossy().ends_with(CHUNK_SUFFIX);
             let metadata = entry
                 .metadata()
                 .map_err(|error| io_error(&entry.path(), error))?;
-            if is_chunk && metadata.is_file() {
-                usage.chunks = usage.chunks.saturating_add(1);
+            // Everything a transfer holds counts against the bound, including
+            // a write a crash interrupted.
+            if metadata.is_file() && name != MANIFEST_FILE {
                 usage.bytes = usage.bytes.saturating_add(metadata.len());
+                if is_chunk {
+                    usage.chunks = usage.chunks.saturating_add(1);
+                }
             }
         }
     }
