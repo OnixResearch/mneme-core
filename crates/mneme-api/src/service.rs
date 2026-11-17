@@ -880,8 +880,12 @@ impl ApiService {
                 "recognition run exceeds the bounded segment read limit",
             ));
         }
-        let (input, output, input_roots, output_text) =
-            self.read_recognition_sources(&workspace, &view, scope, &run)?;
+        let RecognitionSources {
+            input,
+            output,
+            input_roots,
+            output_text,
+        } = self.read_recognition_sources(&workspace, &view, scope, &run)?;
         let segments = self.read_recognition_segments(RecognitionReadContext {
             workspace: &workspace,
             view: &view,
@@ -915,12 +919,7 @@ impl ApiService {
         view: &mneme_memory::View,
         scope: &mneme_core::ScopeId,
         run: &mneme_memory::RecognitionRunView,
-    ) -> crate::error::CallResult<(
-        mneme_memory::SourceView,
-        mneme_memory::SourceView,
-        std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
-        String,
-    )> {
+    ) -> crate::error::CallResult<RecognitionSources> {
         let input_record = self.visible_record(view, workspace, run.input.source())?;
         let output_record = self.visible_record(view, workspace, run.output.source())?;
         if input_record.kind != mneme_core::RecordKind::SourceRevision
@@ -970,7 +969,12 @@ impl ApiService {
         if mneme_core::ContentDigest::of_source_bytes(output_text.as_bytes()) != run.output_digest {
             return Err(crate::error::ApiError::missing());
         }
-        Ok((input, output, input_roots, output_text))
+        Ok(RecognitionSources {
+            input,
+            output,
+            input_roots,
+            output_text,
+        })
     }
 
     fn read_recognition_segments(
@@ -1515,6 +1519,15 @@ struct Context {
     revision: mneme_core::WorkspaceRevisionId,
     scope: mneme_core::ScopeId,
     generation: u64,
+}
+
+/// A recognition run's checked input and output sources, their shared
+/// ancestry roots and the output's retained text.
+struct RecognitionSources {
+    input: mneme_memory::SourceView,
+    output: mneme_memory::SourceView,
+    input_roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    output_text: String,
 }
 
 struct RecognitionReadContext<'a> {
