@@ -2301,3 +2301,666 @@ fn semantic_ranking_embeds_and_returns_only_authorized_current_text() {
             .all(|candidate| !candidate.text.contains(BASE_ONLY))
     );
 }
+
+/// The base fixture's seed entity.
+const CEDAR: u8 = 0x10;
+/// Entity record and revision bytes for the expansion graph.
+const ALDER: (u8, u8) = (0xb0, 0xb8);
+const BEECH: (u8, u8) = (0xb1, 0xb9);
+const CYPRESS: (u8, u8) = (0xb2, 0xba);
+const DOGWOOD: (u8, u8) = (0xb3, 0xbb);
+const ELM: (u8, u8) = (0xb4, 0xbc);
+/// Claim bytes: source, source revision, evidence, evidence revision,
+/// assertion, assertion revision, decision, decision revision, and accepted
+/// revision. Beech's assertion sorts before Cedar's base claim, so record order
+/// and distance order differ.
+const BEECH_CLAIM: [u8; 9] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
+const CYPRESS_CLAIM: [u8; 9] = [0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a];
+const ALDER_CLAIM: [u8; 9] = [0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa];
+const BEECH_TEXT: &str = "Beech stores its events in Postgres.";
+
+fn relation_payload(
+    relation_type: &str,
+    from: mneme_core::RecordId,
+    to: mneme_core::RecordId,
+) -> mneme_core::Payload {
+    mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("relation-type"),
+            mneme_core::Value::symbol(relation_type),
+        ),
+        (
+            mneme_core::Symbol::from("from"),
+            mneme_core::Reference::local(from, mneme_core::RecordKind::Entity).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("to"),
+            mneme_core::Reference::local(to, mneme_core::RecordKind::Entity).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::dictionary([]),
+        ),
+    ])
+}
+
+impl Harness {
+    fn add_entity(
+        &mut self,
+        (record, revision): (u8, u8),
+        label: &str,
+        scope: mneme_core::ScopeId,
+    ) {
+        self.commit(
+            scope.clone(),
+            &format!("entity-{record}"),
+            vec![mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Entity,
+                record_id: rid(record),
+                revision_id: rev(revision),
+                predecessor: None,
+                scope: scope.clone(),
+                payload: entity_payload(label),
+            }],
+            Vec::new(),
+        );
+    }
+
+    fn add_relation(
+        &mut self,
+        (record, revision): (u8, u8),
+        relation_type: &str,
+        (from, to): (u8, u8),
+        scope: mneme_core::ScopeId,
+    ) {
+        self.commit(
+            scope.clone(),
+            &format!("relation-{record}"),
+            vec![mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Relation,
+                record_id: rid(record),
+                revision_id: rev(revision),
+                predecessor: None,
+                scope: scope.clone(),
+                payload: relation_payload(relation_type, rid(from), rid(to)),
+            }],
+            Vec::new(),
+        );
+    }
+
+    /// A sourced claim about `subject`, accepted when `is_accepted`.
+    fn add_claim(&mut self, bytes: [u8; 9], subject: u8, text: &'static str, is_accepted: bool) {
+        let [
+            source,
+            source_revision,
+            _,
+            _,
+            assertion,
+            _,
+            decision,
+            decision_revision,
+            accepted_revision,
+        ] = bytes;
+        let path = format!("docs/claim-{source}.txt");
+        let (source_record, source_blob) = mneme_memory::build_source(
+            rid(source),
+            rev(source_revision),
+            &scope(),
+            mneme_memory::SourceOptions {
+                bytes: text.as_bytes(),
+                media_type: "text/plain",
+                entity: Some(rid(subject)),
+                path_hint: Some(&path),
+            },
+        )
+        .expect("source");
+        self.commit(
+            scope(),
+            &format!("source-{source}"),
+            vec![source_record],
+            vec![source_blob],
+        );
+        self.commit(
+            scope(),
+            &format!("claim-{assertion}"),
+            claim_records(bytes, subject, text).to_vec(),
+            Vec::new(),
+        );
+        if is_accepted {
+            self.accept(
+                rid(assertion),
+                decision,
+                decision_revision,
+                accepted_revision,
+            );
+        }
+    }
+}
+
+/// The evidence and proposed assertion of a sourced claim built by
+/// `Harness::add_claim`.
+fn claim_records(bytes: [u8; 9], subject: u8, text: &str) -> [mneme_store::RecordDraft; 2] {
+    let [
+        source,
+        source_revision,
+        evidence,
+        evidence_revision,
+        assertion,
+        assertion_revision,
+        ..,
+    ] = bytes;
+    let evidence_record = mneme_memory::build_evidence(
+        rid(evidence),
+        rev(evidence_revision),
+        &scope(),
+        mneme_memory::EvidenceOptions {
+            assertion: rid(assertion),
+            source: rid(source),
+            source_revision: rev(source_revision),
+            span: Some(mneme_core::SourceSpan::new(0, text.len() as u64 - 1).expect("span")),
+            anchor: Some("fact"),
+            relation: mneme_memory::SupportRelation::Supports,
+            origin: mneme_core::Origin::AuthoredStatement,
+            ancestry: &[],
+        },
+    );
+    let proposed = mneme_memory::build_proposed_assertion(
+        rid(assertion),
+        rev(assertion_revision),
+        &scope(),
+        mneme_memory::ProposedAssertionOptions {
+            subject: rid(subject),
+            predicate: "fact",
+            value: mneme_core::Value::string(text),
+            stance: mneme_memory::Stance::Affirm,
+            origin: mneme_core::Origin::AuthoredStatement,
+            asserted_by: "author",
+            valid_time: mneme_core::ValidTime::always(),
+            evidence: &[mneme_core::Reference::local(
+                rid(evidence),
+                mneme_core::RecordKind::Evidence,
+            )],
+            extraction: None,
+            superseded_by: None,
+        },
+    );
+    [evidence_record, proposed]
+}
+
+/// Cedar → Alder → Beech → Cypress over `depends`, with accepted claims about
+/// Beech and Cypress and a proposed, unaccepted claim about Alder.
+fn add_chain(harness: &mut Harness) {
+    harness.add_entity(ALDER, "Alder", scope());
+    harness.add_entity(BEECH, "Beech", scope());
+    harness.add_entity(CYPRESS, "Cypress", scope());
+    harness.add_relation((0xd0, 0xd8), "depends", (CEDAR, ALDER.0), scope());
+    harness.add_relation((0xd1, 0xd9), "depends", (ALDER.0, BEECH.0), scope());
+    harness.add_relation((0xd2, 0xda), "depends", (BEECH.0, CYPRESS.0), scope());
+    harness.add_claim(BEECH_CLAIM, BEECH.0, BEECH_TEXT, true);
+    harness.add_claim(
+        CYPRESS_CLAIM,
+        CYPRESS.0,
+        "Cypress caches pages in Redis.",
+        true,
+    );
+    harness.add_claim(ALDER_CLAIM, ALDER.0, "Alder may move to DuckDB.", false);
+}
+
+fn expansion_profile(
+    seeds: &[u8],
+    hops: u8,
+    output: mneme_recall::expansion::Output,
+    order: mneme_recall::expansion::Order,
+) -> mneme_recall::expansion::Profile {
+    mneme_recall::expansion::Profile {
+        seeds: seeds.iter().map(|seed| rid(*seed)).collect(),
+        relation_types: std::collections::BTreeSet::from(["depends".to_owned()]),
+        hops,
+        is_undirected: false,
+        output,
+        order,
+        max_rows: 32,
+        limits: mneme_datalog::Limits::default(),
+    }
+}
+
+fn entity_profile(seeds: &[u8], hops: u8) -> mneme_recall::expansion::Profile {
+    expansion_profile(
+        seeds,
+        hops,
+        mneme_recall::expansion::Output::Entities,
+        mneme_recall::expansion::Order::Distance,
+    )
+}
+
+fn claim_profile(seeds: &[u8], hops: u8) -> mneme_recall::expansion::Profile {
+    expansion_profile(
+        seeds,
+        hops,
+        mneme_recall::expansion::Output::Claims,
+        mneme_recall::expansion::Order::Distance,
+    )
+}
+
+/// Evaluate a profile's bundle directly, for its exact row values.
+fn expansion_rows(
+    harness: &mut Harness,
+    profile: &mneme_recall::expansion::Profile,
+) -> mneme_datalog::QueryResult {
+    let request = profile.structured_request().expect("valid profile");
+    let revision = harness.workspace.current_revision().expect("revision");
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+    let build = service
+        .build(mneme_datalog::BuildRequest {
+            actor: "recall-test".to_owned(),
+            scope: scope(),
+            revision,
+            bundle: request.bundle,
+            limits: request.limits,
+            publish: false,
+            incomplete_extents: request.incomplete_extents,
+            cancellation: None,
+            access: mneme_memory::Access::Operator,
+            at: None,
+        })
+        .expect("build");
+    service.query_build(&build, request.query).expect("query")
+}
+
+/// `(distance, entity)` pairs of an entity profile's rows.
+fn reached(rows: &mneme_datalog::QueryResult) -> Vec<(mneme_core::Value, mneme_core::Value)> {
+    rows.rows
+        .iter()
+        .map(|row| (row.values[0].clone(), row.values[1].clone()))
+        .collect()
+}
+
+fn at(distance: u8, entity: u8) -> (mneme_core::Value, mneme_core::Value) {
+    (mneme_core::Value::integer(distance), rid(entity).to_value())
+}
+
+fn recall_expansion(
+    harness: &mut Harness,
+    profile: &mneme_recall::expansion::Profile,
+    query: &str,
+    modes: &[mneme_recall::Mode],
+) -> mneme_recall::Response {
+    let mut request = harness.request(query);
+    request.modes = modes.iter().copied().collect();
+    request.structured = Some(profile.structured_request().expect("valid profile"));
+    mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("recall")
+}
+
+fn structured_mode(response: &mneme_recall::Response) -> &mneme_recall::ModeReport {
+    response
+        .modes
+        .iter()
+        .find(|mode| mode.mode == mneme_recall::Mode::Structured)
+        .expect("structured mode")
+}
+
+#[test]
+fn seeded_expansion_returns_admitted_claims_within_its_hop_bound() {
+    let mut harness = Harness::new();
+    add_chain(&mut harness);
+    let profile = claim_profile(&[CEDAR], 2);
+    let rows = expansion_rows(&mut harness, &profile);
+    assert_eq!(rows.status, mneme_datalog::ExecutionStatus::Complete);
+    assert!(rows.exhaustive);
+    // Cedar's own claim at distance zero and Beech's at two. Alder's claim was
+    // never accepted and Cypress is three hops away.
+    let claims = rows
+        .rows
+        .iter()
+        .map(|row| (row.values[0].clone(), row.values[4].clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(claims, vec![at(0, 0x40), at(2, BEECH_CLAIM[4])]);
+
+    let response = recall_expansion(
+        &mut harness,
+        &profile,
+        "Postgres",
+        &[mneme_recall::Mode::Structured],
+    );
+    let mode = structured_mode(&response);
+    assert_eq!(mode.status, mneme_recall::ModeStatus::Used);
+    assert_eq!(mode.relation_exhaustive, Some(true));
+    assert_eq!(mode.candidates, 2);
+    assert!(
+        mode.structured_work.is_some_and(|work| work > 0),
+        "{mode:?}"
+    );
+    let profile_identity = format!(
+        "datalog:{}:{}:",
+        mneme_recall::expansion::PROFILE_ID,
+        mneme_recall::expansion::PROFILE_VERSION
+    );
+    assert!(
+        mode.index_version
+            .as_deref()
+            .is_some_and(|version| version.starts_with(&profile_identity)),
+        "{mode:?}"
+    );
+    let roots = response
+        .candidates
+        .iter()
+        .flat_map(|candidate| candidate.ancestry_roots.iter().copied())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        roots,
+        std::collections::BTreeSet::from([
+            (rid(0x20), rev(0x21)),
+            (rid(BEECH_CLAIM[0]), rev(BEECH_CLAIM[1])),
+        ])
+    );
+}
+
+#[test]
+fn expansion_reaches_each_entity_once_at_its_shortest_distance_despite_cycles() {
+    let mut harness = Harness::new();
+    add_chain(&mut harness);
+    // A cycle back to the seed and a shortcut to Beech.
+    harness.add_relation((0xd3, 0xdb), "depends", (BEECH.0, CEDAR), scope());
+    harness.add_relation((0xd4, 0xdc), "depends", (CEDAR, BEECH.0), scope());
+    let rows = expansion_rows(&mut harness, &entity_profile(&[CEDAR], 4));
+    assert_eq!(rows.status, mneme_datalog::ExecutionStatus::Complete);
+    assert!(rows.exhaustive);
+    assert_eq!(
+        reached(&rows),
+        vec![
+            at(0, CEDAR),
+            at(1, ALDER.0),
+            at(1, BEECH.0),
+            at(2, CYPRESS.0)
+        ]
+    );
+}
+
+#[test]
+fn expansion_follows_only_allowed_relations_between_visible_entities() {
+    let mut harness = Harness::new();
+    add_chain(&mut harness);
+    harness.add_entity(DOGWOOD, "Dogwood", scope());
+    harness.add_entity(ELM, "Elm", scope());
+    harness.add_relation((0xd3, 0xdb), "mentions", (ALDER.0, DOGWOOD.0), scope());
+    harness.add_relation((0xd4, 0xdc), "depends", (ELM.0, CEDAR), scope());
+    // Birch is in another scope; this view never reaches it.
+    harness.add_relation((0xd5, 0xdd), "depends", (ALDER.0, 0x70), other_scope());
+    let chain = vec![
+        at(0, CEDAR),
+        at(1, ALDER.0),
+        at(2, BEECH.0),
+        at(3, CYPRESS.0),
+    ];
+
+    let directed = expansion_rows(&mut harness, &entity_profile(&[CEDAR], 4));
+    assert_eq!(reached(&directed), chain);
+
+    let mut undirected = entity_profile(&[CEDAR], 4);
+    undirected.is_undirected = true;
+    let rows = expansion_rows(&mut harness, &undirected);
+    assert_eq!(
+        reached(&rows),
+        vec![
+            at(0, CEDAR),
+            at(1, ALDER.0),
+            at(1, ELM.0),
+            at(2, BEECH.0),
+            at(3, CYPRESS.0)
+        ]
+    );
+
+    let mut mentions = entity_profile(&[CEDAR], 4);
+    mentions.relation_types.insert("mentions".to_owned());
+    let rows = expansion_rows(&mut harness, &mentions);
+    assert_eq!(
+        reached(&rows),
+        vec![
+            at(0, CEDAR),
+            at(1, ALDER.0),
+            at(2, BEECH.0),
+            at(2, DOGWOOD.0),
+            at(3, CYPRESS.0)
+        ]
+    );
+}
+
+#[test]
+fn missing_and_unreadable_seeds_expand_identically_to_nothing() {
+    let mut harness = Harness::new();
+    add_chain(&mut harness);
+    // 0xef names no record; 0x70 is an entity in a scope this view cannot read.
+    let missing = expansion_rows(&mut harness, &entity_profile(&[0xef], 2));
+    let unreadable = expansion_rows(&mut harness, &entity_profile(&[0x70], 2));
+    for rows in [&missing, &unreadable] {
+        assert_eq!(rows.status, mneme_datalog::ExecutionStatus::Complete);
+        assert!(rows.rows.is_empty());
+    }
+    let missing = recall_expansion(
+        &mut harness,
+        &entity_profile(&[0xef], 2),
+        "Birch",
+        &[mneme_recall::Mode::Structured],
+    );
+    let unreadable = recall_expansion(
+        &mut harness,
+        &entity_profile(&[0x70], 2),
+        "Birch",
+        &[mneme_recall::Mode::Structured],
+    );
+    assert!(missing.candidates.is_empty());
+    assert!(unreadable.candidates.is_empty());
+    assert_eq!(
+        structured_mode(&missing).status,
+        structured_mode(&unreadable).status
+    );
+    assert_eq!(
+        structured_mode(&missing).candidates,
+        structured_mode(&unreadable).candidates
+    );
+    // An unreadable seed beside a readable one adds nothing.
+    let mixed = expansion_rows(&mut harness, &entity_profile(&[0x70, CEDAR], 2));
+    assert_eq!(
+        reached(&mixed),
+        vec![at(0, CEDAR), at(1, ALDER.0), at(2, BEECH.0)]
+    );
+}
+
+#[test]
+fn a_hub_beyond_the_row_limit_is_partial_and_never_exhaustive() {
+    let mut harness = Harness::new();
+    harness.add_entity(ALDER, "Alder", scope());
+    for (((entity, entity_revision), relation), relation_revision) in (0xe9_u8..0xef)
+        .zip(0xd0_u8..0xd6)
+        .zip(0xf0_u8..0xf6)
+        .zip(0x92_u8..0x98)
+    {
+        harness.add_entity((entity, entity_revision), "Leaf", scope());
+        harness.add_relation(
+            (relation, relation_revision),
+            "depends",
+            (ALDER.0, entity),
+            scope(),
+        );
+    }
+    let mut profile = entity_profile(&[ALDER.0], 1);
+    profile.limits.max_result_rows = 4;
+    profile.max_rows = 4;
+    let rows = expansion_rows(&mut harness, &profile);
+    assert_eq!(rows.status, mneme_datalog::ExecutionStatus::Partial);
+    assert!(!rows.exhaustive);
+    assert!(!rows.absence_established);
+
+    let response = recall_expansion(
+        &mut harness,
+        &profile,
+        "Leaf",
+        &[mneme_recall::Mode::Structured],
+    );
+    let mode = structured_mode(&response);
+    assert_eq!(mode.status, mneme_recall::ModeStatus::Partial);
+    assert_eq!(mode.relation_exhaustive, Some(false));
+    assert!(!response.exhaustive);
+    assert!(!response.absence_established);
+
+    let mut request = harness.request("Leaf");
+    request.modes = std::collections::BTreeSet::from([mneme_recall::Mode::Structured]);
+    request.structured = Some(profile.structured_request().expect("valid profile"));
+    request.allow_partial = false;
+    let refused = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("recall");
+    assert!(
+        refused.candidates.is_empty(),
+        "a partial expansion is withheld"
+    );
+    assert!(!refused.exhaustive);
+    assert!(!refused.absence_established);
+}
+
+#[test]
+fn a_second_path_to_a_claim_adds_no_row_and_no_independent_support() {
+    let mut harness = Harness::new();
+    add_chain(&mut harness);
+    harness.add_entity(ELM, "Elm", scope());
+    harness.add_relation((0xd3, 0xdb), "depends", (CEDAR, ELM.0), scope());
+    harness.add_relation((0xd4, 0xdc), "depends", (ELM.0, BEECH.0), scope());
+    let profile = claim_profile(&[CEDAR], 2);
+    let rows = expansion_rows(&mut harness, &profile);
+    let beech = rows
+        .rows
+        .iter()
+        .filter(|row| row.values[4] == rid(BEECH_CLAIM[4]).to_value())
+        .collect::<Vec<_>>();
+    assert_eq!(beech.len(), 1, "two paths, one row");
+    assert!(!beech[0].supports.is_empty());
+    assert!(beech[0].supports.len() <= profile.limits.max_supports_per_fact);
+
+    // The expansion row rests on the same evidence as Beech's lexical claim and
+    // excerpt, so only one of them counts as independent support.
+    let response = recall_expansion(
+        &mut harness,
+        &profile,
+        "Postgres",
+        &[mneme_recall::Mode::Lexical, mneme_recall::Mode::Structured],
+    );
+    let root = (rid(BEECH_CLAIM[0]), rev(BEECH_CLAIM[1]));
+    let sharing = response
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.ancestry_roots.contains(&root))
+        .collect::<Vec<_>>();
+    assert!(
+        sharing
+            .iter()
+            .any(|candidate| candidate.content_kind == mneme_recall::ContentKind::StructuredRow)
+    );
+    assert_eq!(
+        sharing
+            .iter()
+            .filter(|candidate| candidate.independent_support)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn the_profile_order_decides_whether_nearer_claims_rank_first() {
+    let mut harness = Harness::new();
+    add_chain(&mut harness);
+    let roots = |harness: &mut Harness, order| {
+        let profile =
+            expansion_profile(&[CEDAR], 2, mneme_recall::expansion::Output::Claims, order);
+        recall_expansion(
+            harness,
+            &profile,
+            "Postgres",
+            &[mneme_recall::Mode::Structured],
+        )
+        .candidates
+        .iter()
+        .flat_map(|candidate| candidate.ancestry_roots.iter().copied())
+        .collect::<Vec<_>>()
+    };
+    let cedar = (rid(0x20), rev(0x21));
+    let beech = (rid(BEECH_CLAIM[0]), rev(BEECH_CLAIM[1]));
+    assert_eq!(
+        roots(&mut harness, mneme_recall::expansion::Order::Distance),
+        vec![cedar, beech]
+    );
+    assert_eq!(
+        roots(&mut harness, mneme_recall::expansion::Order::Record),
+        vec![beech, cedar]
+    );
+}
+
+#[test]
+fn expansion_bounds_are_refused_before_any_rule_is_built() {
+    let valid = entity_profile(&[CEDAR], 2);
+    assert!(valid.validate().is_ok());
+    let refused = |change: &dyn Fn(&mut mneme_recall::expansion::Profile)| {
+        let mut profile = valid.clone();
+        change(&mut profile);
+        assert!(profile.bundle().is_err());
+        assert!(profile.structured_request().is_err());
+        profile.validate()
+    };
+    assert!(matches!(
+        refused(&|profile| profile.seeds.clear()),
+        Err(mneme_recall::expansion::Refusal::NoSeeds)
+    ));
+    assert!(matches!(
+        refused(&|profile| profile.seeds = (0_u8..17).map(rid).collect()),
+        Err(mneme_recall::expansion::Refusal::TooManySeeds(17))
+    ));
+    assert!(matches!(
+        refused(&|profile| profile.relation_types.clear()),
+        Err(mneme_recall::expansion::Refusal::NoRelationTypes)
+    ));
+    assert!(matches!(
+        refused(&|profile| profile.relation_types =
+            (0..9).map(|index| format!("type-{index}")).collect()),
+        Err(mneme_recall::expansion::Refusal::TooManyRelationTypes(9))
+    ));
+    for invalid in [String::new(), "a\nb".to_owned(), "x".repeat(129)] {
+        assert!(matches!(
+            refused(&|profile| {
+                profile.relation_types.insert(invalid.clone());
+            }),
+            Err(mneme_recall::expansion::Refusal::InvalidRelationType(_))
+        ));
+    }
+    assert!(matches!(
+        refused(&|profile| profile.hops = 0),
+        Err(mneme_recall::expansion::Refusal::HopsOutOfRange(0))
+    ));
+    assert!(matches!(
+        refused(&|profile| profile.hops = 5),
+        Err(mneme_recall::expansion::Refusal::HopsOutOfRange(5))
+    ));
+    assert!(matches!(
+        refused(&|profile| profile.max_rows = 0),
+        Err(mneme_recall::expansion::Refusal::RowsOutOfRange { rows: 0, .. })
+    ));
+    assert!(matches!(
+        refused(&|profile| profile.max_rows = profile.limits.max_result_rows + 1),
+        Err(mneme_recall::expansion::Refusal::RowsOutOfRange { .. })
+    ));
+    assert!(matches!(
+        refused(&|profile| profile.limits.max_recursion_depth = 3),
+        Err(mneme_recall::expansion::Refusal::RecursionBelowHops {
+            depth: 3,
+            hops: 2,
+            required: 4
+        })
+    ));
+    let mut deepest = valid.clone();
+    deepest.hops = mneme_recall::expansion::MAX_HOPS;
+    deepest.limits.max_recursion_depth =
+        usize::from(deepest.hops) + mneme_recall::expansion::ROUNDS_BEYOND_HOPS;
+    assert!(deepest.validate().is_ok());
+}

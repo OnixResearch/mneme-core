@@ -10,6 +10,7 @@
 #![allow(unknown_lints)] // Octet custom lint names are unknown to rustc
 
 pub mod engine;
+pub mod expansion;
 pub mod failure;
 pub mod inference;
 pub mod lookup;

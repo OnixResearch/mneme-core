@@ -684,6 +684,7 @@ impl<'w> Service<'w> {
                     candidates: 0,
                     relation_exhaustive: None,
                     reason: Some("structured mode was not configured".to_owned()),
+                    structured_work: None,
                     semantic_observation: None,
                 });
                 progress.limit(
@@ -929,6 +930,7 @@ impl Progress {
             } else {
                 None
             },
+            structured_work: None,
             semantic_observation: None,
         });
         Ok(())
@@ -976,6 +978,7 @@ impl Progress {
                 "local character-trigram vector projection; not a learned semantic model"
                     .to_owned(),
             ),
+            structured_work: None,
             semantic_observation: None,
         });
         Ok(())
@@ -1072,6 +1075,7 @@ impl Progress {
             candidates: candidate_count,
             relation_exhaustive: None,
             reason: run.reason,
+            structured_work: None,
             semantic_observation: run.observation,
         });
         Ok(needs_lexical_fallback)
@@ -1092,6 +1096,7 @@ impl Progress {
             candidates: 0,
             relation_exhaustive: None,
             reason: Some(reason.to_owned()),
+            structured_work: None,
             semantic_observation: None,
         });
         self.limit(crate::model::Execution::Partial, reason);
@@ -1114,6 +1119,7 @@ impl Progress {
             candidates: 0,
             relation_exhaustive: None,
             reason: Some(reason),
+            structured_work: None,
             semantic_observation: None,
         });
         self.limit(
@@ -1139,6 +1145,7 @@ impl Progress {
             candidates: 0,
             relation_exhaustive: None,
             reason: Some(reason),
+            structured_work: Some(build.work()),
             semantic_observation: None,
         });
         self.limit(
@@ -1203,6 +1210,7 @@ impl Progress {
             candidates: rows.rows.len(),
             relation_exhaustive: Some(rows.exhaustive),
             reason: rows.reason.clone(),
+            structured_work: Some(build.work().saturating_add(rows.work)),
             semantic_observation: None,
         });
     }
@@ -1522,6 +1530,7 @@ fn stopped_mode(mode: crate::model::Mode, stop: Stop) -> crate::model::ModeRepor
         candidates: 0,
         relation_exhaustive: None,
         reason: Some(stop.reason().to_owned()),
+        structured_work: None,
         semantic_observation: None,
     }
 }

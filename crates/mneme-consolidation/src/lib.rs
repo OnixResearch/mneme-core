@@ -1504,6 +1504,7 @@ mod tests {
                 candidates: 0,
                 relation_exhaustive: None,
                 reason: None,
+                structured_work: None,
                 semantic_observation: None,
             }],
             candidates: Vec::new(),

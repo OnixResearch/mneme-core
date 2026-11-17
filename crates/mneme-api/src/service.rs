@@ -2696,6 +2696,12 @@ fn mode_value(mode: &mneme_recall::ModeReport) -> mneme_core::Value {
             semantic_observation_value(observation),
         ));
     }
+    if let Some(work) = mode.structured_work {
+        fields.push((
+            mneme_core::Symbol::from("structured-work"),
+            mneme_core::Value::integer(work),
+        ));
+    }
     mneme_core::Value::symbol_dictionary(fields)
 }
 
@@ -4434,6 +4440,7 @@ mod semantic_api_tests {
             candidates: 1,
             relation_exhaustive: None,
             reason: None,
+            structured_work: None,
             semantic_observation: Some(mneme_recall::SemanticObservation {
                 model_id: "fixture-model".to_owned(),
                 configuration_digest: "sha256:fixture".to_owned(),

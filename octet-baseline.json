@@ -10,7 +10,7 @@
     "profile_hash": "b3:3fd67a2616779e6ed6b3c51e744e34d94a9ea0a3ce50f85d532eced949838822",
     "config_hash": "b3:b065a7ffe479551539355f2da753fdc11a7e39910ebdaa1a65a02093ce66d2b1"
   },
-  "baseline_hash": "b3:4f753aeadbf235598baa93f4ba047a10af853a20593a69249d869a2a16d7971d",
+  "baseline_hash": "b3:1ae154d4fae0d3956c43f001a92dc22b87eaa3ef32ef9b0d5da91ee8c493b20a",
   "findings": [
     {
       "stable_id": "b3:002cd10692d692b9",
@@ -917,7 +917,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3511,
+      "line": 3517,
       "column": 13,
       "message": "foreign enum `mneme_memory::EpisodeType` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_api"
@@ -1272,6 +1272,19 @@
       "column": 38,
       "message": "function `header` has 0 assertion(s) in 33 lines (need 2+)",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:0dcd13846ab3dbe9",
+      "semantic_id": "b3:0dcd13846ab3dbe9",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/expansion/mod.rs",
+      "line": 307,
+      "column": 69,
+      "message": "function `output_rule` has 0 assertion(s) in 42 lines (need 2+)",
+      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:0ded7f4a4d617266",
@@ -1638,19 +1651,6 @@
       "crate_name": "mneme_memory"
     },
     {
-      "stable_id": "b3:111d462c0573ba4a",
-      "semantic_id": "b3:111d462c0573ba4a",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-api/src/service.rs",
-      "line": 2648,
-      "column": 69,
-      "message": "function `mode_value` has 0 assertion(s) in 53 lines (need 2+)",
-      "crate_name": "mneme_api"
-    },
-    {
       "stable_id": "b3:117679a3e164ae73",
       "semantic_id": "b3:117679a3e164ae73",
       "identity_status": "computed",
@@ -1658,7 +1658,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 791,
+      "line": 792,
       "column": 21,
       "message": "foreign enum `std::result::Result` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_recall"
@@ -2873,6 +2873,19 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:1e0571f511cb4e78",
+      "semantic_id": "b3:1e0571f511cb4e78",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/expansion/mod.rs",
+      "line": 119,
+      "column": 51,
+      "message": "function `validate` has 0 assertion(s) in 39 lines (need 2+)",
+      "crate_name": "mneme_recall"
+    },
+    {
       "stable_id": "b3:1e352df93fae3da2",
       "semantic_id": "b3:1e352df93fae3da2",
       "identity_status": "computed",
@@ -2897,6 +2910,19 @@
       "column": 13,
       "message": "same-crate enum `problem::Segment` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:1e4ac81a35b9558c",
+      "semantic_id": "b3:1e4ac81a35b9558c",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 67,
+      "column": 1,
+      "message": "2 `u8` parameters are easy to swap by accident",
+      "crate_name": "entity_seeded_comparison"
     },
     {
       "stable_id": "b3:1e50fe5da7eb7654",
@@ -3053,6 +3079,19 @@
       "column": 51,
       "message": "function `from_value` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:1faf63221a67002f",
+      "semantic_id": "b3:1faf63221a67002f",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/engine.rs",
+      "line": 944,
+      "column": 28,
+      "message": "function `add_vector` has 0 assertion(s) in 42 lines (need 2+)",
+      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:1fe10cf9a03e5a31",
@@ -3614,6 +3653,19 @@
       "crate_name": "datalog"
     },
     {
+      "stable_id": "b3:2773b92e2a99b3b6",
+      "semantic_id": "b3:2773b92e2a99b3b6",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/lib.rs",
+      "line": 13,
+      "column": 1,
+      "message": "module exposes 13 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_recall"
+    },
+    {
       "stable_id": "b3:278347ab147a5442",
       "semantic_id": "b3:278347ab147a5442",
       "identity_status": "computed",
@@ -3855,7 +3907,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 4324,
+      "line": 4330,
       "column": 1,
       "message": "3 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_api"
@@ -3920,7 +3972,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1215,
+      "line": 1223,
       "column": 30,
       "message": "function `structured_candidate` has 0 assertion(s) in 40 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -3972,7 +4024,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-recall/src/lib.rs",
-      "line": 14,
+      "line": 15,
       "column": 1,
       "message": "module exposes 21 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_recall"
@@ -4765,7 +4817,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1418,
+      "line": 1426,
       "column": 76,
       "message": "function `validate` has 0 assertion(s) in 38 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -4778,7 +4830,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1599,
+      "line": 1608,
       "column": 40,
       "message": "function `vector_rank` has 0 assertion(s) in 37 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -5057,6 +5109,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:369e1a7c36a8798d",
+      "semantic_id": "b3:369e1a7c36a8798d",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 42 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_recall"
+    },
+    {
       "stable_id": "b3:36c467b2a57bada6",
       "semantic_id": "b3:36c467b2a57bada6",
       "identity_status": "computed",
@@ -5278,6 +5343,19 @@
       "crate_name": "mneme_doc"
     },
     {
+      "stable_id": "b3:3902ef4a7b4a15d5",
+      "semantic_id": "b3:3902ef4a7b4a15d5",
+      "identity_status": "computed",
+      "lint": "ambient_clock",
+      "group": "tigerstyle::purity",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 491,
+      "column": 62,
+      "message": "direct system clock read in production code",
+      "crate_name": "entity_seeded_comparison"
+    },
+    {
       "stable_id": "b3:390f39cb0c0e1519",
       "semantic_id": "b3:390f39cb0c0e1519",
       "identity_status": "computed",
@@ -5393,6 +5471,19 @@
       "column": 54,
       "message": "function `create_commit_manifest` has 0 assertion(s) in 49 lines (need 2+)",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:3a821880442c6ec8",
+      "semantic_id": "b3:3a821880442c6ec8",
+      "identity_status": "computed",
+      "lint": "numeric_units",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/expansion/mod.rs",
+      "line": 106,
+      "column": 35,
+      "message": "`limit_rows` looks like a raw numeric quantity but has no unit suffix",
+      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:3ab8e360004d4a56",
@@ -5545,7 +5636,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3783,
+      "line": 3789,
       "column": 24,
       "message": "function `forget_value` has 0 assertion(s) in 60 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -6143,7 +6234,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3478,
+      "line": 3484,
       "column": 50,
       "message": "function `resume_collections` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -6234,7 +6325,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 2027,
+      "line": 2036,
       "column": 9,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_recall"
@@ -6260,7 +6351,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-recall/src/lib.rs",
-      "line": 16,
+      "line": 17,
       "column": 1,
       "message": "module exposes 21 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_recall"
@@ -6513,6 +6604,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:466bcc35b07114b8",
+      "semantic_id": "b3:466bcc35b07114b8",
+      "identity_status": "computed",
+      "lint": "compound_assertion",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2805,
+      "column": 5,
+      "message": "compound assertion should be split into separate assertions",
+      "crate_name": "recall"
+    },
+    {
       "stable_id": "b3:467ba673acd7e755",
       "semantic_id": "b3:467ba673acd7e755",
       "identity_status": "computed",
@@ -6650,7 +6754,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 809,
+      "line": 810,
       "column": 36,
       "message": "function `modes` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -6702,7 +6806,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 987,
+      "line": 990,
       "column": 5,
       "message": "function `add_semantic` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -7118,7 +7222,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3625,
+      "line": 3631,
       "column": 74,
       "message": "function `resume_payload_value` has 0 assertion(s) in 49 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -7174,19 +7278,6 @@
       "column": 88,
       "message": "function `render_source_lines` has 0 assertion(s) in 29 lines (need 2+)",
       "crate_name": "mneme_doc"
-    },
-    {
-      "stable_id": "b3:504e078730d73170",
-      "semantic_id": "b3:504e078730d73170",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/engine.rs",
-      "line": 942,
-      "column": 28,
-      "message": "function `add_vector` has 0 assertion(s) in 41 lines (need 2+)",
-      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:508347fb8ebd0c63",
@@ -7408,6 +7499,19 @@
       "column": 5,
       "message": "same-crate enum `process::WorkerStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
+    },
+    {
+      "stable_id": "b3:527203493d87689e",
+      "semantic_id": "b3:527203493d87689e",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/expansion/mod.rs",
+      "line": 309,
+      "column": 24,
+      "message": "same-crate enum `expansion::Output` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:52c05692d8272e24",
@@ -7670,6 +7774,19 @@
       "crate_name": "comments"
     },
     {
+      "stable_id": "b3:567e6da834975c11",
+      "semantic_id": "b3:567e6da834975c11",
+      "identity_status": "computed",
+      "lint": "explicit_defaults",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2525,
+      "column": 17,
+      "message": "implicit default on external type — construct with explicit values",
+      "crate_name": "recall"
+    },
+    {
       "stable_id": "b3:56befa8b724d23e4",
       "semantic_id": "b3:56befa8b724d23e4",
       "identity_status": "computed",
@@ -7732,6 +7849,19 @@
       "line": 858,
       "column": 98,
       "message": "function `source_excerpt` has 0 assertion(s) in 30 lines (need 2+)",
+      "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:581e5f383d637efd",
+      "semantic_id": "b3:581e5f383d637efd",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/expansion/mod.rs",
+      "line": 311,
+      "column": 13,
+      "message": "same-crate enum `expansion::Order` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_recall"
     },
     {
@@ -7820,7 +7950,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1361,
+      "line": 1369,
       "column": 46,
       "message": "function `answer_facts` has 0 assertion(s) in 48 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -7976,7 +8106,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 709,
+      "line": 710,
       "column": 29,
       "message": "same-crate enum `model::TemporalMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_recall"
@@ -8073,6 +8203,19 @@
       "crate_name": "mneme_recall"
     },
     {
+      "stable_id": "b3:5bdcc77dd11266df",
+      "semantic_id": "b3:5bdcc77dd11266df",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/expansion/mod.rs",
+      "line": 160,
+      "column": 72,
+      "message": "function `bundle` has 0 assertion(s) in 36 lines (need 2+)",
+      "crate_name": "mneme_recall"
+    },
+    {
       "stable_id": "b3:5bed7542a5b8687d",
       "semantic_id": "b3:5bed7542a5b8687d",
       "identity_status": "computed",
@@ -8132,7 +8275,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1754,
+      "line": 1763,
       "column": 24,
       "message": "function `enrich_claims` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -8353,7 +8496,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1709,
+      "line": 1718,
       "column": 35,
       "message": "function `fuse` has 0 assertion(s) in 32 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -8574,7 +8717,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1533,
+      "line": 1542,
       "column": 40,
       "message": "function `lexical_rank` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -8775,6 +8918,19 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:62d5f95c816eced7",
+      "semantic_id": "b3:62d5f95c816eced7",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2580,
+      "column": 1,
+      "message": "2 `u8` parameters are easy to swap by accident",
+      "crate_name": "recall"
+    },
+    {
       "stable_id": "b3:62f36fc6030c7780",
       "semantic_id": "b3:62f36fc6030c7780",
       "identity_status": "computed",
@@ -8879,6 +9035,19 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:640cea161b712ce3",
+      "semantic_id": "b3:640cea161b712ce3",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 207,
+      "column": 24,
+      "message": "function `commit_claims` has 0 assertion(s) in 27 lines (need 2+)",
+      "crate_name": "entity_seeded_comparison"
+    },
+    {
       "stable_id": "b3:6416c07967502433",
       "semantic_id": "b3:6416c07967502433",
       "identity_status": "computed",
@@ -8912,7 +9081,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 2861,
+      "line": 2867,
       "column": 51,
       "message": "function `candidate_reference_entries` has 0 assertion(s) in 41 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -9204,19 +9373,6 @@
       "crate_name": "retention"
     },
     {
-      "stable_id": "b3:672aa9f55d249c21",
-      "semantic_id": "b3:672aa9f55d249c21",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1156,
-      "column": 7,
-      "message": "function `add_structured_rows` has 0 assertion(s) in 53 lines (need 2+)",
-      "crate_name": "mneme_recall"
-    },
-    {
       "stable_id": "b3:672e57d6f33754e6",
       "semantic_id": "b3:672e57d6f33754e6",
       "identity_status": "computed",
@@ -9380,7 +9536,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 2766,
+      "line": 2772,
       "column": 96,
       "message": "function `usage_telemetry_value` has 0 assertion(s) in 29 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -9445,7 +9601,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1982,
+      "line": 1991,
       "column": 38,
       "message": "function `fill_quote` has 0 assertion(s) in 49 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -10329,7 +10485,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 824,
+      "line": 825,
       "column": 8,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_recall"
@@ -10758,7 +10914,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3174,
+      "line": 3180,
       "column": 80,
       "message": "function `explain_value` has 0 assertion(s) in 45 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -10953,7 +11109,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/model.rs",
-      "line": 318,
+      "line": 321,
       "column": 9,
       "message": "same-crate enum `model::ContentKind` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_recall"
@@ -10992,7 +11148,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3679,
+      "line": 3685,
       "column": 1,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_api"
@@ -11063,6 +11219,19 @@
       "crate_name": "mneme_doc"
     },
     {
+      "stable_id": "b3:7a9c105b03cdeae0",
+      "semantic_id": "b3:7a9c105b03cdeae0",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 409,
+      "column": 74,
+      "message": "function `score` has 0 assertion(s) in 40 lines (need 2+)",
+      "crate_name": "entity_seeded_comparison"
+    },
+    {
       "stable_id": "b3:7aba73149fcbb60a",
       "semantic_id": "b3:7aba73149fcbb60a",
       "identity_status": "computed",
@@ -11096,7 +11265,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3269,
+      "line": 3275,
       "column": 98,
       "message": "function `explanation_evidence_entry` has 0 assertion(s) in 69 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -11395,7 +11564,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-recall/src/model.rs",
-      "line": 594,
+      "line": 597,
       "column": 13,
       "message": "`average_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_recall"
@@ -11460,7 +11629,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 4209,
+      "line": 4215,
       "column": 82,
       "message": "function `capabilities_value` has 0 assertion(s) in 63 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -11711,6 +11880,19 @@
       "column": 5,
       "message": "`#[allow(...)]` without justification comment",
       "crate_name": "api"
+    },
+    {
+      "stable_id": "b3:80a9542d299f3f43",
+      "semantic_id": "b3:80a9542d299f3f43",
+      "identity_status": "computed",
+      "lint": "compound_assertion",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2818,
+      "column": 5,
+      "message": "compound assertion should be split into separate assertions",
+      "crate_name": "recall"
     },
     {
       "stable_id": "b3:80d91bf32f983882",
@@ -11971,6 +12153,19 @@
       "column": 33,
       "message": "function `validate_machine_recognized_source` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_memory"
+    },
+    {
+      "stable_id": "b3:83fa95d82ebbe64c",
+      "semantic_id": "b3:83fa95d82ebbe64c",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 282,
+      "column": 24,
+      "message": "function `accept_claims` has 0 assertion(s) in 35 lines (need 2+)",
+      "crate_name": "entity_seeded_comparison"
     },
     {
       "stable_id": "b3:840bcf0fd79b3638",
@@ -12318,7 +12513,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1715,
+      "line": 1724,
       "column": 22,
       "message": "same-crate enum `model::Mode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_recall"
@@ -12558,19 +12753,6 @@
       "crate_name": "mneme_prolog"
     },
     {
-      "stable_id": "b3:8a5ee0c1e33d33e4",
-      "semantic_id": "b3:8a5ee0c1e33d33e4",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 41 public items (limit: 12) — split unrelated public surface into focused modules",
-      "crate_name": "mneme_recall"
-    },
-    {
       "stable_id": "b3:8a983f2dd5fb67f4",
       "semantic_id": "b3:8a983f2dd5fb67f4",
       "identity_status": "computed",
@@ -12792,6 +12974,19 @@
       "crate_name": "mneme_datalog"
     },
     {
+      "stable_id": "b3:8c08e1ea0b46936f",
+      "semantic_id": "b3:8c08e1ea0b46936f",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 379,
+      "column": 44,
+      "message": "function `recall` has 0 assertion(s) in 29 lines (need 2+)",
+      "crate_name": "entity_seeded_comparison"
+    },
+    {
       "stable_id": "b3:8c1f252cf1886003",
       "semantic_id": "b3:8c1f252cf1886003",
       "identity_status": "computed",
@@ -12994,10 +13189,23 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3430,
+      "line": 3436,
       "column": 50,
       "message": "function `resume_value` has 0 assertion(s) in 39 lines (need 2+)",
       "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:8f390636c4ffd9b8",
+      "semantic_id": "b3:8f390636c4ffd9b8",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/expansion/mod.rs",
+      "line": 217,
+      "column": 5,
+      "message": "same-crate enum `expansion::Output` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:8f5d372eaf54bff3",
@@ -13228,7 +13436,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1649,
+      "line": 1658,
       "column": 97,
       "message": "function `candidate_from_document` has 0 assertion(s) in 31 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -13286,6 +13494,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:919cd0beac96e1c9",
+      "semantic_id": "b3:919cd0beac96e1c9",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 450,
+      "column": 1,
+      "message": "2 `usize` parameters are easy to swap by accident",
+      "crate_name": "entity_seeded_comparison"
+    },
+    {
       "stable_id": "b3:91c3e242b0e314f8",
       "semantic_id": "b3:91c3e242b0e314f8",
       "identity_status": "computed",
@@ -13297,6 +13518,19 @@
       "column": 36,
       "message": "function `commit` has 0 assertion(s) in 61 lines (need 2+)",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:91d4d20e94ca361c",
+      "semantic_id": "b3:91d4d20e94ca361c",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 239,
+      "column": 51,
+      "message": "function `claim_records` has 0 assertion(s) in 39 lines (need 2+)",
+      "crate_name": "entity_seeded_comparison"
     },
     {
       "stable_id": "b3:91d6f2a184858d67",
@@ -13696,7 +13930,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3951,
+      "line": 3957,
       "column": 3,
       "message": "function `append_recognition_source_fields` has 0 assertion(s) in 32 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -13960,6 +14194,19 @@
       "column": 83,
       "message": "function `prepare_chunks` has 0 assertion(s) in 67 lines (need 2+)",
       "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:9884416c7aa03b3b",
+      "semantic_id": "b3:9884416c7aa03b3b",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2394,
+      "column": 97,
+      "message": "function `add_claim` has 0 assertion(s) in 46 lines (need 2+)",
+      "crate_name": "recall"
     },
     {
       "stable_id": "b3:988aaf653a4db6fb",
@@ -14567,7 +14814,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 2906,
+      "line": 2912,
       "column": 51,
       "message": "function `candidate_support_entries` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -15015,6 +15262,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:a4dc231e6df7b6c0",
+      "semantic_id": "b3:a4dc231e6df7b6c0",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 116,
+      "column": 1,
+      "message": "2 `u8` parameters are easy to swap by accident",
+      "crate_name": "entity_seeded_comparison"
+    },
+    {
       "stable_id": "b3:a502428395b8d691",
       "semantic_id": "b3:a502428395b8d691",
       "identity_status": "computed",
@@ -15312,6 +15572,19 @@
       "column": 99,
       "message": "function `collect_document_sessions` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:a87aafe5c58bfb4d",
+      "semantic_id": "b3:a87aafe5c58bfb4d",
+      "identity_status": "computed",
+      "lint": "explicit_defaults",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 401,
+      "column": 21,
+      "message": "implicit default on external type — construct with explicit values",
+      "crate_name": "entity_seeded_comparison"
     },
     {
       "stable_id": "b3:a8f07c6119162bc1",
@@ -15925,6 +16198,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:b0bb9077c509a526",
+      "semantic_id": "b3:b0bb9077c509a526",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2444,
+      "column": 92,
+      "message": "function `claim_records` has 0 assertion(s) in 47 lines (need 2+)",
+      "crate_name": "recall"
+    },
+    {
       "stable_id": "b3:b0fd4a7bc1e59f93",
       "semantic_id": "b3:b0fd4a7bc1e59f93",
       "identity_status": "computed",
@@ -16140,7 +16426,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1882,
+      "line": 1891,
       "column": 96,
       "message": "function `order_by_independence` has 0 assertion(s) in 27 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -16504,7 +16790,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1923,
+      "line": 1932,
       "column": 98,
       "message": "function `pack_candidate` has 0 assertion(s) in 53 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -16755,6 +17041,19 @@
       "column": 51,
       "message": "function `from_value` has 0 assertion(s) in 37 lines (need 2+)",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:b9d2265db24f3d88",
+      "semantic_id": "b3:b9d2265db24f3d88",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/service.rs",
+      "line": 2648,
+      "column": 69,
+      "message": "function `mode_value` has 0 assertion(s) in 59 lines (need 2+)",
+      "crate_name": "mneme_api"
     },
     {
       "stable_id": "b3:b9fb76f6dac1bf39",
@@ -17115,7 +17414,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 2022,
+      "line": 2031,
       "column": 13,
       "message": "`size` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_recall"
@@ -17197,19 +17496,6 @@
       "column": 9,
       "message": "same-crate enum `typed::Value` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
-    },
-    {
-      "stable_id": "b3:bf0927070f870342",
-      "semantic_id": "b3:bf0927070f870342",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-consolidation/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 42 public items (limit: 12) — split unrelated public surface into focused modules",
-      "crate_name": "mneme_consolidation"
     },
     {
       "stable_id": "b3:bf1b04d86472b787",
@@ -17414,7 +17700,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3563,
+      "line": 3569,
       "column": 12,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_api"
@@ -17648,7 +17934,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3987,
+      "line": 3993,
       "column": 3,
       "message": "function `append_recognition_run_fields` has 0 assertion(s) in 48 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -18057,6 +18343,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:ca456088b7ab0969",
+      "semantic_id": "b3:ca456088b7ab0969",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/engine.rs",
+      "line": 895,
+      "column": 28,
+      "message": "function `add_lexical` has 0 assertion(s) in 43 lines (need 2+)",
+      "crate_name": "mneme_recall"
+    },
+    {
       "stable_id": "b3:ca5c4e716f36e3fb",
       "semantic_id": "b3:ca5c4e716f36e3fb",
       "identity_status": "computed",
@@ -18291,6 +18590,19 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:ccc87aedeb59f5ff",
+      "semantic_id": "b3:ccc87aedeb59f5ff",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 344,
+      "column": 9,
+      "message": "same-crate enum `Condition` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "entity_seeded_comparison"
+    },
+    {
       "stable_id": "b3:ccd561ef3042eb95",
       "semantic_id": "b3:ccd561ef3042eb95",
       "identity_status": "computed",
@@ -18330,6 +18642,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:cd23ce2317ce7bc1",
+      "semantic_id": "b3:cd23ce2317ce7bc1",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/engine.rs",
+      "line": 1163,
+      "column": 7,
+      "message": "function `add_structured_rows` has 0 assertion(s) in 54 lines (need 2+)",
+      "crate_name": "mneme_recall"
+    },
+    {
       "stable_id": "b3:cd3a364f90020e03",
       "semantic_id": "b3:cd3a364f90020e03",
       "identity_status": "computed",
@@ -18337,7 +18662,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3557,
+      "line": 3563,
       "column": 63,
       "message": "function `newer_observations` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_api"
@@ -18675,7 +19000,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1286,
+      "line": 1294,
       "column": 29,
       "message": "function `finish_response` has 0 assertion(s) in 69 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -18772,19 +19097,6 @@
       "crate_name": "mneme_api"
     },
     {
-      "stable_id": "b3:d244994b1c560c5c",
-      "semantic_id": "b3:d244994b1c560c5c",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1029,
-      "column": 30,
-      "message": "function `record_semantic_run` has 0 assertion(s) in 50 lines (need 2+)",
-      "crate_name": "mneme_recall"
-    },
-    {
       "stable_id": "b3:d28b274863a3015c",
       "semantic_id": "b3:d28b274863a3015c",
       "identity_status": "computed",
@@ -18796,6 +19108,19 @@
       "column": 50,
       "message": "function `validate` has 0 assertion(s) in 21 lines (need 2+)",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:d2bf83d817048e6f",
+      "semantic_id": "b3:d2bf83d817048e6f",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2551,
+      "column": 33,
+      "message": "function `expansion_rows` has 0 assertion(s) in 20 lines (need 2+)",
+      "crate_name": "recall"
     },
     {
       "stable_id": "b3:d30b08f3e726d637",
@@ -18987,7 +19312,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3479,
+      "line": 3485,
       "column": 9,
       "message": "`capacity` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_api"
@@ -19238,6 +19563,19 @@
       "column": 13,
       "message": "`markup_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:d75b39d4328bf71b",
+      "semantic_id": "b3:d75b39d4328bf71b",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 61,
+      "column": 1,
+      "message": "2 `u8` parameters are easy to swap by accident",
+      "crate_name": "entity_seeded_comparison"
     },
     {
       "stable_id": "b3:d7668a88cb4a0f20",
@@ -19858,9 +20196,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1174,
+      "line": 1181,
       "column": 9,
       "message": "same-crate enum `model::ModeStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:de57b3d7a2b2dee9",
+      "semantic_id": "b3:de57b3d7a2b2dee9",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/engine.rs",
+      "line": 1032,
+      "column": 30,
+      "message": "function `record_semantic_run` has 0 assertion(s) in 51 lines (need 2+)",
       "crate_name": "mneme_recall"
     },
     {
@@ -19966,6 +20317,19 @@
       "column": 5,
       "message": "2 `u32` parameters are easy to swap by accident",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:df613a49eb9459b8",
+      "semantic_id": "b3:df613a49eb9459b8",
+      "identity_status": "computed",
+      "lint": "compound_assertion",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2794,
+      "column": 5,
+      "message": "compound assertion should be split into separate assertions",
+      "crate_name": "recall"
     },
     {
       "stable_id": "b3:df819610db5a14dc",
@@ -20228,6 +20592,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:e2baf90b7a3bebcc",
+      "semantic_id": "b3:e2baf90b7a3bebcc",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 457,
+      "column": 32,
+      "message": "function `main` has 0 assertion(s) in 57 lines (need 2+)",
+      "crate_name": "entity_seeded_comparison"
+    },
+    {
       "stable_id": "b3:e2e0eecff3e9c339",
       "semantic_id": "b3:e2e0eecff3e9c339",
       "identity_status": "computed",
@@ -20397,19 +20774,6 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:e46b023e7ffeeb72",
-      "semantic_id": "b3:e46b023e7ffeeb72",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-recall/src/engine.rs",
-      "line": 894,
-      "column": 28,
-      "message": "function `add_lexical` has 0 assertion(s) in 42 lines (need 2+)",
-      "crate_name": "mneme_recall"
-    },
-    {
       "stable_id": "b3:e4d931f1dd26bc4a",
       "semantic_id": "b3:e4d931f1dd26bc4a",
       "identity_status": "computed",
@@ -20508,7 +20872,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-recall/src/model.rs",
-      "line": 591,
+      "line": 594,
       "column": 13,
       "message": "`total_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_recall"
@@ -20534,7 +20898,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1839,
+      "line": 1848,
       "column": 43,
       "message": "function `pack` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -20655,6 +21019,19 @@
       "column": 59,
       "message": "function `validate` has 0 assertion(s) in 72 lines (need 2+)",
       "crate_name": "mneme_prolog"
+    },
+    {
+      "stable_id": "b3:e7e3064a934344da",
+      "semantic_id": "b3:e7e3064a934344da",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/src/expansion/mod.rs",
+      "line": 318,
+      "column": 13,
+      "message": "same-crate enum `expansion::Order` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_recall"
     },
     {
       "stable_id": "b3:e7fb5eb76939a6cc",
@@ -21216,6 +21593,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:edf9dbd7f5d0edf6",
+      "semantic_id": "b3:edf9dbd7f5d0edf6",
+      "identity_status": "computed",
+      "lint": "compound_assertion",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2904,
+      "column": 9,
+      "message": "compound assertion should be split into separate assertions",
+      "crate_name": "recall"
+    },
+    {
       "stable_id": "b3:edfe7bb398e222e8",
       "semantic_id": "b3:edfe7bb398e222e8",
       "identity_status": "computed",
@@ -21288,10 +21678,23 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 1466,
+      "line": 1474,
       "column": 88,
       "message": "function `stopped_response` has 0 assertion(s) in 43 lines (need 2+)",
       "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:ef503ca1ab0e0829",
+      "semantic_id": "b3:ef503ca1ab0e0829",
+      "identity_status": "computed",
+      "lint": "compound_assertion",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/tests/recall.rs",
+      "line": 2755,
+      "column": 5,
+      "message": "compound assertion should be split into separate assertions",
+      "crate_name": "recall"
     },
     {
       "stable_id": "b3:ef7a47b0a8b31ee5",
@@ -21396,6 +21799,19 @@
       "column": 79,
       "message": "function `inspect_format` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:f13cbb3e19c1c1a3",
+      "semantic_id": "b3:f13cbb3e19c1c1a3",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 180,
+      "column": 24,
+      "message": "function `commit_graph` has 0 assertion(s) in 22 lines (need 2+)",
+      "crate_name": "entity_seeded_comparison"
     },
     {
       "stable_id": "b3:f1cfc06191a49690",
@@ -21652,7 +22068,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/engine.rs",
-      "line": 2084,
+      "line": 2093,
       "column": 34,
       "message": "function `structured_coverage` has 0 assertion(s) in 31 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -21691,7 +22107,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-recall/src/model.rs",
-      "line": 579,
+      "line": 582,
       "column": 50,
       "message": "function `of` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme_recall"
@@ -22211,10 +22627,23 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-recall/src/model.rs",
-      "line": 575,
+      "line": 578,
       "column": 5,
       "message": "`average_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:fab89c580a7b8755",
+      "semantic_id": "b3:fab89c580a7b8755",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-consolidation/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 42 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_consolidation"
     },
     {
       "stable_id": "b3:fabdcf7ea1277c4d",
@@ -22514,6 +22943,19 @@
       "column": 56,
       "message": "function `seed_source` has 0 assertion(s) in 23 lines (need 2+)",
       "crate_name": "consolidation"
+    },
+    {
+      "stable_id": "b3:fef1cd8acc9b1c5c",
+      "semantic_id": "b3:fef1cd8acc9b1c5c",
+      "identity_status": "computed",
+      "lint": "ambient_clock",
+      "group": "tigerstyle::purity",
+      "severity": "warning",
+      "file": "crates/mneme-recall/examples/entity_seeded_comparison.rs",
+      "line": 489,
+      "column": 31,
+      "message": "direct system clock read in production code",
+      "crate_name": "entity_seeded_comparison"
     },
     {
       "stable_id": "b3:fef84771cde6efe2",

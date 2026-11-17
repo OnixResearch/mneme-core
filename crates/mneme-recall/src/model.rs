@@ -253,6 +253,9 @@ pub struct ModeReport {
     /// Content-free embedding invocation evidence, present only for semantic
     /// requests that reached adapter execution.
     pub semantic_observation: Option<SemanticObservation>,
+    /// Datalog work units the structured build and query spent: present only
+    /// for a structured mode whose build ran.
+    pub structured_work: Option<u64>,
 }
 
 /// Host-measured, content-free evidence for one or more model invocations.
