@@ -2324,6 +2324,18 @@ fn relation_payload(
     from: mneme_core::RecordId,
     to: mneme_core::RecordId,
 ) -> mneme_core::Payload {
+    relation_payload_between(
+        relation_type,
+        (from, mneme_core::RecordKind::Entity),
+        (to, mneme_core::RecordKind::Entity),
+    )
+}
+
+fn relation_payload_between(
+    relation_type: &str,
+    (from, from_kind): (mneme_core::RecordId, mneme_core::RecordKind),
+    (to, to_kind): (mneme_core::RecordId, mneme_core::RecordKind),
+) -> mneme_core::Payload {
     mneme_core::Payload::new([
         (
             mneme_core::Symbol::from("relation-type"),
@@ -2331,11 +2343,11 @@ fn relation_payload(
         ),
         (
             mneme_core::Symbol::from("from"),
-            mneme_core::Reference::local(from, mneme_core::RecordKind::Entity).to_value(),
+            mneme_core::Reference::local(from, from_kind).to_value(),
         ),
         (
             mneme_core::Symbol::from("to"),
-            mneme_core::Reference::local(to, mneme_core::RecordKind::Entity).to_value(),
+            mneme_core::Reference::local(to, to_kind).to_value(),
         ),
         (
             mneme_core::Symbol::from("properties"),
@@ -2345,6 +2357,33 @@ fn relation_payload(
 }
 
 impl Harness {
+    /// A `depends` relation between records of any kinds.
+    fn add_relation_between(
+        &mut self,
+        (record, revision): (u8, u8),
+        (from, from_kind): (u8, mneme_core::RecordKind),
+        (to, to_kind): (u8, mneme_core::RecordKind),
+    ) {
+        self.commit(
+            scope(),
+            &format!("relation-{record}"),
+            vec![mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Relation,
+                record_id: rid(record),
+                revision_id: rev(revision),
+                predecessor: None,
+                scope: scope(),
+                payload: relation_payload_between(
+                    "depends",
+                    (rid(from), from_kind),
+                    (rid(to), to_kind),
+                ),
+            }],
+            Vec::new(),
+        );
+    }
+
     fn add_entity(
         &mut self,
         (record, revision): (u8, u8),
@@ -2688,8 +2727,9 @@ fn expansion_follows_only_allowed_relations_between_visible_entities() {
     harness.add_entity(ELM, "Elm", scope());
     harness.add_relation((0xd3, 0xdb), "mentions", (ALDER.0, DOGWOOD.0), scope());
     harness.add_relation((0xd4, 0xdc), "depends", (ELM.0, CEDAR), scope());
-    // Birch is in another scope; this view never reaches it.
-    harness.add_relation((0xd5, 0xdd), "depends", (ALDER.0, 0x70), other_scope());
+    // Birch is in another scope. The relation naming it is in this scope, so
+    // only the endpoint check keeps the walk from reaching it.
+    harness.add_relation((0xd5, 0xdd), "depends", (ALDER.0, 0x70), scope());
     let chain = vec![
         at(0, CEDAR),
         at(1, ALDER.0),
@@ -2771,7 +2811,7 @@ fn missing_and_unreadable_seeds_expand_identically_to_nothing() {
 }
 
 #[test]
-fn a_hub_beyond_the_row_limit_is_partial_and_never_exhaustive() {
+fn a_hub_beyond_the_row_bounds_is_never_exhaustive() {
     let mut harness = Harness::new();
     harness.add_entity(ALDER, "Alder", scope());
     for (((entity, entity_revision), relation), relation_revision) in (0xe9_u8..0xef)
@@ -2787,26 +2827,44 @@ fn a_hub_beyond_the_row_limit_is_partial_and_never_exhaustive() {
             scope(),
         );
     }
+    // The query's row bound: the walk completes, but its answer is cut at four
+    // of the hub's seven rows, so it is not exhaustive and establishes no
+    // absence.
     let mut profile = entity_profile(&[ALDER.0], 1);
-    profile.limits.max_result_rows = 4;
     profile.max_rows = 4;
     let rows = expansion_rows(&mut harness, &profile);
-    assert_eq!(rows.status, mneme_datalog::ExecutionStatus::Partial);
+    assert_eq!(rows.status, mneme_datalog::ExecutionStatus::Complete);
+    assert_eq!(rows.rows.len(), 4);
+    assert!(rows.truncated);
     assert!(!rows.exhaustive);
     assert!(!rows.absence_established);
-
     let response = recall_expansion(
         &mut harness,
         &profile,
         "Leaf",
         &[mneme_recall::Mode::Structured],
     );
-    let mode = structured_mode(&response);
-    assert_eq!(mode.status, mneme_recall::ModeStatus::Partial);
-    assert_eq!(mode.relation_exhaustive, Some(false));
+    assert_eq!(structured_mode(&response).relation_exhaustive, Some(false));
     assert!(!response.exhaustive);
     assert!(!response.absence_established);
 
+    // The build's fact bound counts the facts it loads as well as those it
+    // derives. Below what the view holds the build stops partial, and a
+    // request that refuses partial results gets none.
+    profile.limits.max_result_rows = 4;
+    let rows = expansion_rows(&mut harness, &profile);
+    assert_eq!(rows.status, mneme_datalog::ExecutionStatus::Partial);
+    assert!(!rows.exhaustive);
+    let response = recall_expansion(
+        &mut harness,
+        &profile,
+        "Leaf",
+        &[mneme_recall::Mode::Structured],
+    );
+    assert_eq!(
+        structured_mode(&response).status,
+        mneme_recall::ModeStatus::Partial
+    );
     let mut request = harness.request("Leaf");
     request.modes = std::collections::BTreeSet::from([mneme_recall::Mode::Structured]);
     request.structured = Some(profile.structured_request().expect("valid profile"));
@@ -2818,8 +2876,33 @@ fn a_hub_beyond_the_row_limit_is_partial_and_never_exhaustive() {
         refused.candidates.is_empty(),
         "a partial expansion is withheld"
     );
-    assert!(!refused.exhaustive);
     assert!(!refused.absence_established);
+}
+
+#[test]
+fn expansion_never_walks_through_a_record_that_is_not_an_entity() {
+    let mut harness = Harness::new();
+    add_chain(&mut harness);
+    harness.add_entity(DOGWOOD, "Dogwood", scope());
+    // Cedar depends on Alder's proposed claim, which depends on Dogwood.
+    let claim = (ALDER_CLAIM[4], mneme_core::RecordKind::Assertion);
+    harness.add_relation_between((0xd3, 0xdb), (CEDAR, mneme_core::RecordKind::Entity), claim);
+    harness.add_relation_between(
+        (0xd4, 0xdc),
+        claim,
+        (DOGWOOD.0, mneme_core::RecordKind::Entity),
+    );
+    let mut profile = entity_profile(&[CEDAR], 4);
+    profile.is_undirected = true;
+    assert_eq!(
+        reached(&expansion_rows(&mut harness, &profile)),
+        vec![
+            at(0, CEDAR),
+            at(1, ALDER.0),
+            at(2, BEECH.0),
+            at(3, CYPRESS.0)
+        ]
+    );
 }
 
 #[test]

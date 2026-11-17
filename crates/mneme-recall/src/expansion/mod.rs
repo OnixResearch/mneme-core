@@ -8,8 +8,8 @@
 //!
 //! - A seed contributes only if it is a visible entity in the view, so a
 //!   missing seed and an unreadable one expand identically, to nothing.
-//! - Relations load only between visible endpoints, and only allowlisted
-//!   relation types become edges.
+//! - Only allowlisted relation types between two visible entities become
+//!   edges; a relation to any other record is not walked.
 //! - Claims are the accepted, decision-backed, currently based claims the
 //!   structured extent admits; proposed, disputed and superseded claims never
 //!   become expansion rows.
@@ -39,8 +39,10 @@ pub const MAX_RELATION_TYPES: usize = 8;
 pub const MAX_RELATION_TYPE_BYTES: usize = 128;
 /// Most hops one profile may follow.
 pub const MAX_HOPS: u8 = 4;
-/// Evaluation rounds a profile needs beyond its hops: one for seeds and edges
-/// and one for the seeds' own distance.
+/// Evaluation rounds a profile reserves beyond its hops. The engine usually
+/// derives every hop in one round; reserving a round per step keeps the
+/// profile complete even if evaluation stops seeing facts derived earlier in
+/// the same round.
 pub const ROUNDS_BEYOND_HOPS: usize = 2;
 
 /// What an expansion row describes.
@@ -105,7 +107,7 @@ pub enum Refusal {
     #[error("an expansion profile must return between 1 and {limit_rows} rows, not {rows}")]
     RowsOutOfRange { rows: usize, limit_rows: usize },
     #[error(
-        "a recursion depth of {depth} cannot reach {hops} hops; it must be at least {required}"
+        "a recursion depth of {depth} is below the {required} rounds an expansion of {hops} hops reserves"
     )]
     RecursionBelowHops {
         depth: usize,
@@ -254,7 +256,9 @@ fn start_rule() -> mneme_datalog::Rule {
     )
 }
 
-/// `edge(x, y) :- relation(type, x, y)`, or `relation(type, y, x)` reversed.
+/// `edge(x, y) :- relation(type, x, y), entity(x, ..), entity(y, ..)`, or
+/// `relation(type, y, x)` reversed. A relation may join any records; only one
+/// between two visible entities is walked.
 fn edge_rule(index: usize, relation_type: &str, is_reversed: bool) -> mneme_datalog::Rule {
     let (id, from, to) = if is_reversed {
         (format!("edge-{index}-reversed"), var("y"), var("x"))
@@ -264,14 +268,18 @@ fn edge_rule(index: usize, relation_type: &str, is_reversed: bool) -> mneme_data
     mneme_datalog::Rule::new(
         id,
         mneme_datalog::Atom::new("edge", vec![var("x"), var("y")]),
-        vec![positive(
-            "relation",
-            vec![
-                mneme_datalog::Term::constant(mneme_core::Value::symbol(relation_type)),
-                from,
-                to,
-            ],
-        )],
+        vec![
+            positive(
+                "relation",
+                vec![
+                    mneme_datalog::Term::constant(mneme_core::Value::symbol(relation_type)),
+                    from,
+                    to,
+                ],
+            ),
+            positive("entity", vec![var("x"), var("x-type"), var("x-label")]),
+            positive("entity", vec![var("y"), var("y-type"), var("y-label")]),
+        ],
     )
 }
 

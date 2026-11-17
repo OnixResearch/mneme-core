@@ -1210,7 +1210,7 @@ impl Progress {
             candidates: rows.rows.len(),
             relation_exhaustive: Some(rows.exhaustive),
             reason: rows.reason.clone(),
-            structured_work: Some(build.work().saturating_add(rows.work)),
+            structured_work: Some(build.work()),
             semantic_observation: None,
         });
     }
