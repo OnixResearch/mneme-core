@@ -2134,3 +2134,74 @@ fn utf8_image_markup_is_not_quoted_as_text_evidence() {
     assert!(!lexical.coverage.complete);
     assert_eq!(lexical.coverage.documents_skipped, 1);
 }
+
+#[test]
+fn a_long_transcript_keeps_the_media_citation_its_excerpt_overlaps() {
+    let mut harness = Harness::new();
+    let audio = b"bounded audio fixture";
+    let mut text = b"The transcript says cedar project.".to_vec();
+    for _ in 0..300 {
+        text.extend_from_slice(b" more words");
+    }
+    let input = mneme_core::SourcePin::new(rid(0xe0), rev(0xe1));
+    let output = mneme_core::SourcePin::new(rid(0xe2), rev(0xe3));
+    let input_digest = mneme_core::ContentDigest::of_source_bytes(audio);
+    let time_base = mneme_core::TimeBase::new(1, 100).expect("time base");
+    let location = mneme_core::MediaLocation::Audio {
+        start_tick: 30,
+        end_tick: 60,
+        time_base,
+        channel: 0,
+    };
+    let (input_record, input_blob) = mneme_memory::build_captured_source(
+        input.source(),
+        input.revision(),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: audio,
+            media_type: "audio/wav",
+            entity: None,
+            path_hint: None,
+        },
+        mneme_core::MediaExtent::Audio {
+            duration_ticks: 100,
+            time_base,
+            channels: 1,
+        },
+    )
+    .expect("captured audio");
+    let (output_record, output_blob) = mneme_memory::build_recognized_source(
+        output.source(),
+        output.revision(),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: &text,
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        input,
+    )
+    .expect("recognized text");
+    let (run, segment) = recognition_records(input, input_digest, output, &text, &location);
+    harness.commit(
+        scope(),
+        "recognized-media",
+        vec![input_record, output_record, run, segment],
+        vec![input_blob, output_blob],
+    );
+    let request = harness.request("transcript");
+    let response = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("scoped recall");
+    let candidate = response
+        .candidates
+        .iter()
+        .find(|candidate| candidate.content_kind == mneme_recall::ContentKind::SourceExcerpt)
+        .expect("recognized text is searchable");
+    assert_eq!(
+        candidate.media_locations.len(),
+        1,
+        "the segment spanning the whole transcript overlaps the excerpt"
+    );
+}

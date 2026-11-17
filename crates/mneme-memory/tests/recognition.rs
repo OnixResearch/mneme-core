@@ -384,6 +384,15 @@ fn image_source(
     frame: mneme_core::CoordinateFrame,
     derived: Option<(mneme_core::SourcePin, mneme_core::MediaTransform)>,
 ) -> (mneme_store::RecordDraft, mneme_store::SourceBlobDraft) {
+    paged_image_source(pin, (bytes, 1), frame, derived)
+}
+
+fn paged_image_source(
+    pin: mneme_core::SourcePin,
+    (bytes, page_count): (&[u8], u32),
+    frame: mneme_core::CoordinateFrame,
+    derived: Option<(mneme_core::SourcePin, mneme_core::MediaTransform)>,
+) -> (mneme_store::RecordDraft, mneme_store::SourceBlobDraft) {
     mneme_memory::build_source_with_provenance(
         pin.source(),
         pin.revision(),
@@ -397,7 +406,7 @@ fn image_source(
         mneme_memory::SourceProvenance {
             acquisition: mneme_core::Acquisition::Captured,
             derived_from: derived.map(|(parent, _)| parent),
-            media_extent: Some(mneme_core::MediaExtent::Pages { page_count: 1 }),
+            media_extent: Some(mneme_core::MediaExtent::Pages { page_count }),
             media_transform: derived.map(|(_, transform)| transform),
             media_frame: Some(frame),
             ink_inventory: None,
@@ -556,4 +565,82 @@ fn page_regions_are_checked_against_the_image_and_its_crop() {
             .is_err(),
         "a transform must start from the derivative's own frame"
     );
+}
+
+#[test]
+fn a_transform_must_land_on_its_parents_frame_and_pages() {
+    let (_temp, mut workspace) = common::setup();
+    let image = mneme_core::CoordinateFrame::Pixels {
+        width: 400,
+        height: 300,
+    };
+    let half = mneme_core::CoordinateFrame::Pixels {
+        width: 200,
+        height: 150,
+    };
+    let original = mneme_core::SourcePin::new(common::rid(0xf0), common::rev(0xf0));
+    let (original_record, original_blob) = image_source(original, b"original image", image, None);
+    mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .commit(common::batch(
+            "original",
+            vec![original_record],
+            vec![original_blob],
+        ))
+        .expect("original image");
+    let commit =
+        |workspace: &mut mneme_store::Workspace,
+         (record, blob): (mneme_store::RecordDraft, mneme_store::SourceBlobDraft),
+         key: &str| {
+            mneme_memory::Engine::new(workspace, mneme_memory::Access::Operator)
+                .commit(common::batch(key, vec![record], vec![blob]))
+        };
+    // Maps the half-size image onto an 800x600 plane the parent never declared.
+    let elsewhere = mneme_core::MediaTransform::new(
+        half,
+        mneme_core::CoordinateFrame::Pixels {
+            width: 800,
+            height: 600,
+        },
+        [4.0, 0.0, 0.0, 0.0, 4.0, 0.0],
+    )
+    .expect("4x transform");
+    let wrong_target = mneme_core::SourcePin::new(common::rid(0xf1), common::rev(0xf1));
+    assert!(
+        commit(
+            &mut workspace,
+            image_source(
+                wrong_target,
+                b"misplaced scale",
+                half,
+                Some((original, elsewhere))
+            ),
+            "wrong-target",
+        )
+        .is_err(),
+        "a transform must land on the parent's declared frame"
+    );
+    let onto_parent =
+        mneme_core::MediaTransform::new(half, image, [2.0, 0.0, 0.0, 0.0, 2.0, 0.0]).expect("2x");
+    let extra_page = mneme_core::SourcePin::new(common::rid(0xf2), common::rev(0xf2));
+    assert!(
+        commit(
+            &mut workspace,
+            paged_image_source(
+                extra_page,
+                (b"two processed pages", 2),
+                half,
+                Some((original, onto_parent)),
+            ),
+            "extra-page",
+        )
+        .is_err(),
+        "a transform carries no page offset, so the pages must match"
+    );
+    let resampled = mneme_core::SourcePin::new(common::rid(0xf3), common::rev(0xf3));
+    commit(
+        &mut workspace,
+        image_source(resampled, b"half size", half, Some((original, onto_parent))),
+        "resampled",
+    )
+    .expect("a transform onto the parent's frame and pages");
 }

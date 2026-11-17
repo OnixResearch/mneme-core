@@ -563,9 +563,8 @@ struct BatchValidation<'a> {
     view: crate::beliefs::View,
     /// Text already read and checked as UTF-8 in this batch, by digest, so
     /// many segments over one text read it once.
-    validated_texts: std::cell::RefCell<
-        std::collections::BTreeMap<mneme_core::ContentDigest, std::rc::Rc<Vec<u8>>>,
-    >,
+    validated_texts:
+        std::cell::RefCell<std::collections::BTreeMap<mneme_core::ContentDigest, std::rc::Rc<str>>>,
 }
 
 /// Refusal text for a reference that is missing or outside the caller's
@@ -1266,7 +1265,8 @@ fn validate_source_parent(
             "a transformed media source must declare its coordinate extent",
         ));
     }
-    // A transform maps the derivative's own frame onto its parent's.
+    // A transform maps the derivative's own frame onto its parent's, page for
+    // page: it carries no page offset, so the page extents must agree.
     if let Some(transform) = source.media_transform
         && (source.media_frame != Some(transform.from_frame())
             || parent_view.media_frame != Some(transform.to_frame()))
@@ -1275,13 +1275,18 @@ fn validate_source_parent(
             "a media transform must map the derivative's declared frame onto its parent's",
         ));
     }
+    if source.media_transform.is_some() && source.media_extent != parent_view.media_extent {
+        return Err(crate::failure::EvidenceError::policy(
+            "a transformed media source must keep its parent's pages",
+        ));
+    }
     Ok(())
 }
 
 fn validate_utf8_text_source(
     source: &crate::model::SourceView,
     context: &BatchValidation<'_>,
-) -> crate::failure::Result<std::rc::Rc<Vec<u8>>> {
+) -> crate::failure::Result<std::rc::Rc<str>> {
     if !source
         .media_type
         .as_ref()
@@ -1292,24 +1297,25 @@ fn validate_utf8_text_source(
         ));
     }
     if let Some(digest) = source.digest()
-        && let Some(bytes) = context.validated_texts.borrow().get(&digest)
+        && let Some(text) = context.validated_texts.borrow().get(&digest)
     {
-        return Ok(std::rc::Rc::clone(bytes));
+        return Ok(std::rc::Rc::clone(text));
     }
     let bytes = source_bytes(source, &context.supplied_sources, context.root)?;
-    if std::str::from_utf8(&bytes).is_err() {
-        return Err(crate::failure::EvidenceError::policy(
-            "recognized and corrected text must be valid UTF-8",
-        ));
-    }
-    let bytes = std::rc::Rc::new(bytes);
+    let text: std::rc::Rc<str> = String::from_utf8(bytes)
+        .map_err(|_| {
+            crate::failure::EvidenceError::policy(
+                "recognized and corrected text must be valid UTF-8",
+            )
+        })?
+        .into();
     if let Some(digest) = source.digest() {
         context
             .validated_texts
             .borrow_mut()
-            .insert(digest, std::rc::Rc::clone(&bytes));
+            .insert(digest, std::rc::Rc::clone(&text));
     }
-    Ok(bytes)
+    Ok(text)
 }
 
 fn validate_correction_alignment(
@@ -1401,8 +1407,8 @@ fn validate_recognition_run(
             "recognition input must declare a typed media extent",
         ));
     }
-    let output_bytes = validate_utf8_text_source(&output, context)?;
-    if mneme_core::ContentDigest::of_source_bytes(&output_bytes) != run.output_digest {
+    let output_text = validate_utf8_text_source(&output, context)?;
+    if mneme_core::ContentDigest::of_source_bytes(output_text.as_bytes()) != run.output_digest {
         return Err(crate::failure::EvidenceError::policy(
             "recognition output digest does not match its exact text bytes",
         ));
@@ -1451,8 +1457,8 @@ fn validate_recognition_segment(
             )
         })?;
     validate_segment_media_location(&segment, &media)?;
-    let text_bytes = validate_utf8_text_source(&text, context)?;
-    validate_utf8_span(segment.text_span, &text_bytes)?;
+    let content = validate_utf8_text_source(&text, context)?;
+    validate_utf8_span(segment.text_span, &content)?;
     validate_segment_lineage(envelope, &segment, &text, context)
 }
 
@@ -1550,15 +1556,17 @@ fn source_digest(source: &crate::model::SourceView) -> Option<mneme_core::Conten
     source.digest().or(source.prior_digest)
 }
 
-fn validate_utf8_span(span: mneme_core::SourceSpan, bytes: &[u8]) -> crate::failure::Result<()> {
+/// Whether `span` lies on character boundaries of `text`, which was checked
+/// as UTF-8 once when it was read.
+fn validate_utf8_span(span: mneme_core::SourceSpan, text: &str) -> crate::failure::Result<()> {
     let start = usize::try_from(span.start()).ok();
     let stop = span
         .end()
         .checked_add(1)
         .and_then(|value| usize::try_from(value).ok());
-    let is_valid = start.zip(stop).is_some_and(|(start, stop)| {
-        std::str::from_utf8(bytes).is_ok_and(|text| text.get(start..stop).is_some())
-    });
+    let is_valid = start
+        .zip(stop)
+        .is_some_and(|(start, stop)| text.get(start..stop).is_some());
     if is_valid {
         Ok(())
     } else {

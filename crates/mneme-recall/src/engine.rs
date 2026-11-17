@@ -256,7 +256,13 @@ fn budget_use(spent: SpentAmounts<'_>) -> crate::model::BudgetUse {
     let mut excerpt_bytes: u128 = 0;
     for candidate in spent.returned {
         let bytes = candidate.text.len() as u128;
-        text_bytes = text_bytes.saturating_add(bytes);
+        // Context bytes include what each attached media citation is charged.
+        let citations = candidate
+            .media_locations
+            .iter()
+            .map(citation_bytes)
+            .fold(0_usize, usize::saturating_add) as u128;
+        text_bytes = text_bytes.saturating_add(bytes).saturating_add(citations);
         if candidate.quote {
             excerpt_bytes = excerpt_bytes.max(bytes);
         }
@@ -2006,8 +2012,9 @@ fn fill_quote(
     filled.text = excerpt.text;
     filled.span = Some(excerpt.span);
     filled.text_truncated = excerpt.truncated;
-    // Citations share the candidate's context bytes with its excerpt.
-    let mut citation_room = cap.saturating_sub(filled.text.len());
+    // Citations are charged to the context bytes that remain after the
+    // excerpt; the per-item cap bounds the excerpt alone.
+    let mut citation_room = context.packed.remaining.saturating_sub(filled.text.len());
     for location in document.media_locations.iter().filter(|location| {
         location.text_span.start() <= excerpt.span.end()
             && excerpt.span.start() <= location.text_span.end()

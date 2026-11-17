@@ -95,7 +95,9 @@ pub struct Request {
     pub include_disputed: bool,
     pub include_hypothetical: bool,
     pub max_items: usize,
-    /// Maximum bytes of item text (not counting structured attribution fields).
+    /// Maximum context bytes: item text plus a fixed charge for each attached
+    /// media citation (its encoded location and 160 bytes for identities);
+    /// other structured attribution fields are not counted.
     pub max_context_bytes: usize,
     /// Maximum bytes for any one excerpt.
     pub max_quote_bytes: usize,
@@ -469,8 +471,9 @@ pub struct BudgetUse {
     /// Candidates returned, against the request's item limit.
     pub items_used: u64,
     pub items_allowed: u64,
-    /// Bytes of returned candidate text, against the request's context budget.
-    /// Attribution fields are not counted, exactly as the limit counts them.
+    /// Context bytes of the returned candidates, against the request's context
+    /// budget: text plus each attached media citation's charge, exactly as the
+    /// limit counts them; other attribution fields are not counted.
     pub text_bytes_used: u64,
     pub text_bytes_allowed: u64,
     /// Bytes of the longest returned excerpt, against the per-excerpt limit.
