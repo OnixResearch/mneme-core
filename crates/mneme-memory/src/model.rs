@@ -909,6 +909,7 @@ pub struct RecognitionSegmentView {
     pub media_source: mneme_core::SourcePin,
     pub media_digest: mneme_core::ContentDigest,
     pub location: mneme_core::MediaLocation,
+    pub block: Option<mneme_core::RecognitionBlock>,
 }
 
 impl RecognitionSegmentView {
@@ -944,6 +945,23 @@ impl RecognitionSegmentView {
             media_source: required_source_pin(&record, "media-source")?,
             media_digest: required_digest(&record, "media-digest")?,
             location,
+            block: record
+                .payload
+                .get("block")
+                .map(|value| {
+                    mneme_core::RecognitionBlock::from_value(
+                        value,
+                        &mneme_core::Path::root().field("block"),
+                    )
+                    .map_err(|diagnostic| {
+                        crate::failure::EvidenceError::invalid(
+                            record.record_id,
+                            "recognition-segment",
+                            diagnostic.to_string(),
+                        )
+                    })
+                })
+                .transpose()?,
             record,
         })
     }

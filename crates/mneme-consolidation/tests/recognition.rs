@@ -226,6 +226,96 @@ fn await_start<T>(log: &std::path::Path, runner: &std::thread::ScopedJoinHandle<
 }
 
 #[test]
+fn layout_readings_and_provider_scores_survive_publication() {
+    let (temp, mut workspace, media) = scan(1);
+    let log = temp.path().join("starts");
+    let answer = r#"printf '%s' '{"status":"complete","text":"quartz\nE = mc^2","scores":[{"provider":"layout-detector","metric":"block-7-detection","value":0.875}],"segments":[{"start":0,"end":5,"block":{"reading":"literal","identity":"7","label":"text","order":1},"location":{"kind":"region","x":10,"y":20,"width":30,"height":40,"frame":{"pixels":{"width":400,"height":300}}}},{"start":7,"end":14,"block":{"reading":"structure","identity":"8","label":"formula","order":2},"location":{"kind":"region","x":50,"y":60,"width":70,"height":80,"frame":{"pixels":{"width":400,"height":300}}}}]}'"#;
+    let job = job(
+        media,
+        worker(answer, &log, &log),
+        std::time::Duration::from_secs(60),
+    );
+    let report = mneme_consolidation::recognition::run(
+        &mut workspace,
+        &job,
+        &mneme_recall::inference::InvocationControl::new(),
+    )
+    .expect("run");
+    assert_eq!(
+        report.state,
+        mneme_consolidation::recognition::JobState::Complete
+    );
+    let committed = runs(&mut workspace);
+    assert_eq!(committed.len(), 1);
+    assert_eq!(committed[0].scores.len(), 1);
+    assert_eq!(committed[0].scores[0].provider(), "layout-detector");
+    assert_eq!(committed[0].scores[0].metric(), "block-7-detection");
+    assert_eq!(committed[0].scores[0].value(), 0.875);
+    let snapshot = workspace.snapshot().expect("snapshot");
+    let formula = snapshot
+        .records
+        .iter()
+        .find(|record| {
+            record.kind == mneme_core::RecordKind::RecognitionSegment
+                && record.payload.get("span")
+                    == Some(&mneme_core::SourceSpan::new(7, 14).expect("span").to_value())
+        })
+        .expect("formula segment");
+    assert_eq!(
+        formula.payload.get("block"),
+        Some(&mneme_core::Value::record_named(
+            "recognition-block",
+            vec![
+                mneme_core::Value::symbol("structure"),
+                mneme_core::Value::string("8"),
+                mneme_core::Value::string("formula"),
+                mneme_core::Value::integer(2_u32),
+            ]
+        ))
+    );
+}
+
+#[test]
+fn malformed_layout_provenance_and_scores_publish_no_text() {
+    for extra in [
+        serde_json::json!({"block": {"reading":"confident", "identity":"7", "label":"text", "order":1}}),
+        serde_json::json!({"block": {"reading":"literal", "identity":"7", "label":"", "order":1}}),
+        serde_json::json!({"block": {"reading":"literal", "identity":"7", "label":"text", "order":-1}}),
+        serde_json::json!({"scores": [{"provider":"", "metric":"quality", "value":0.9}]}),
+    ] {
+        let (temp, mut workspace, media) = scan(1);
+        let log = temp.path().join("starts");
+        let mut answer = serde_json::json!({"status":"complete", "text":"untrusted text", "segments": [{"start":0,"end":13,"location":{"kind":"region","x":0,"y":0,"width":1,"height":1,"frame":"normalized"}}]});
+        if let Some(block) = extra.get("block") {
+            answer["segments"][0]["block"] = block.clone();
+        }
+        if let Some(scores) = extra.get("scores") {
+            answer["scores"] = scores.clone();
+        }
+        let shell = format!("printf '%s' '{answer}'");
+        let job = job(
+            media,
+            worker(&shell, &log, &log),
+            std::time::Duration::from_secs(60),
+        );
+        let report = mneme_consolidation::recognition::run(
+            &mut workspace,
+            &job,
+            &mneme_recall::inference::InvocationControl::new(),
+        )
+        .expect("run");
+        assert_eq!(
+            report.state,
+            mneme_consolidation::recognition::JobState::Failed
+        );
+        assert!(
+            runs(&mut workspace).is_empty(),
+            "invalid metadata must not publish text"
+        );
+    }
+}
+
+#[test]
 fn a_capture_is_queued_without_a_recognizer_and_recognized_later() {
     let (temp, mut workspace, media) = scan(3);
     let log = temp.path().join("starts");

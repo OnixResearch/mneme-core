@@ -61,8 +61,14 @@ at most 4,096 segments. A run declares the part of its capture it covers
 the capture's extent. A run that declares none covers the whole capture, and
 its segments on the capture itself must lie within its part. Each `RecognitionSegment` pins its text source and inclusive
 `SourceSpan` byte offsets, media source revision and digest, and typed audio,
-page-region, or ink-stroke location. Text spans remain byte offsets into the
-exact UTF-8 source revision; media coordinates never change that contract.
+page-region, or ink-stroke location. Optional `block` metadata retains a
+bounded backend block identity and label, its reported reading order (or
+explicitly unknown order), and one of `literal`, `structure`, or
+`interpretation`. A reconstructed equation/table or a diagram description
+does not silently become a literal reading. Older segments omit this metadata;
+its absence does not invent a reading classification. Text spans remain byte
+offsets into the exact UTF-8 source revision; media coordinates never change
+that contract.
 
 Captured media is separate from its machine-recognized text derivative. A
 human correction is another immutable text revision with a predecessor and
@@ -155,7 +161,15 @@ reserved durably before its worker starts. The worker reads one JSON header
 line and then exactly the capture's bytes on stdin (`invoke_media`, bounded to
 256 MiB of media, 4 MiB of answer and 30 minutes per unit), never a path or an
 environment, and answers with text, inclusive byte spans and locations within
-the unit. The capture is checked again before its bytes reach each worker and
+the unit. A segment may supply a `block` object with `reading`, `identity`,
+`label` and optional `order`; identities/labels are bounded to 128 UTF-8 bytes,
+and labels contain ASCII letters, digits, underscores or hyphens. An answer
+may report up to 128 provider `scores` (`provider`, `metric`, finite `value`)
+and 128 `alternatives` (`text`, optional finite `score`). These remain raw
+provider telemetry, not calibrated confidence; a missing value is not zero.
+Publication and `recognition.read` retain these fields, and unknown reading
+kinds or malformed metadata reject the unit before any text is published.
+The capture is checked again before its bytes reach each worker and
 before each publication: it must still be the planned revision, retained,
 unchanged and unforgotten. A valid answer is published as its own
 recognition run, committed at the revision that check read, and retried

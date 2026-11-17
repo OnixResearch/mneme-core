@@ -189,6 +189,7 @@ fn recognition(
         common::rev(seed.wrapping_add(7)),
         &common::scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: Some(run),
             text_source: transcript,
             span: mneme_core::SourceSpan::new(0, 7).expect("span"),

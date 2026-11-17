@@ -1343,6 +1343,7 @@ fn recognition_records(
         rev(0xe7),
         &scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: Some(run_id),
             text_source: output,
             span: mneme_core::SourceSpan::new(0, text.len() as u64 - 1).expect("text span"),
@@ -3101,6 +3102,7 @@ fn reprocess_media(
         rev(0xf5),
         &scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: Some(rid(0xf2)),
             text_source: output,
             span: mneme_core::SourceSpan::new(0, text.len() as u64 - 1).expect("text span"),

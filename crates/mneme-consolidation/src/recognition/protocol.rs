@@ -1,6 +1,8 @@
 //! A worker's answer for one unit, parsed strictly and checked against the
 //! capture before anything is published.
 
+const MAX_PROVIDER_VALUES: usize = 128;
+
 /// What a worker says about one unit.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -10,6 +12,25 @@ struct WorkerAnswer {
     text: String,
     #[serde(default = "Vec::new")]
     segments: Vec<AnswerSegment>,
+    #[serde(default = "Vec::new")]
+    scores: Vec<AnswerScore>,
+    #[serde(default = "Vec::new")]
+    alternatives: Vec<AnswerAlternative>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnswerScore {
+    provider: String,
+    metric: String,
+    value: f64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnswerAlternative {
+    text: String,
+    score: Option<f64>,
 }
 
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -27,6 +48,7 @@ struct AnswerSegment {
     start: u64,
     end: u64,
     location: AnswerLocation,
+    block: Option<mneme_core::RecognitionBlock>,
 }
 
 #[derive(serde::Deserialize)]
@@ -73,7 +95,16 @@ pub(super) enum Answer {
 /// Recognized text and its alignment to the capture.
 pub(super) struct Recognized {
     pub text: String,
-    pub segments: Vec<(mneme_core::SourceSpan, mneme_core::MediaLocation)>,
+    pub segments: Vec<RecognizedSegment>,
+    pub scores: Vec<mneme_core::RecognitionScore>,
+    pub alternatives: Vec<mneme_core::RecognitionAlternative>,
+}
+
+/// Checked byte span and original location, with optional layout provenance.
+pub(super) struct RecognizedSegment {
+    pub span: mneme_core::SourceSpan,
+    pub location: mneme_core::MediaLocation,
+    pub block: Option<mneme_core::RecognitionBlock>,
 }
 
 /// Parse and check one worker answer for the unit at `selector`.
@@ -90,6 +121,11 @@ pub(super) fn parse(
             if answer.segments.len() > mneme_core::MAX_RECOGNITION_SEGMENTS {
                 return Err("the answer has more segments than a run admits".to_owned());
             }
+            if answer.scores.len() > MAX_PROVIDER_VALUES
+                || answer.alternatives.len() > MAX_PROVIDER_VALUES
+            {
+                return Err("the answer has more provider values than a run admits".to_owned());
+            }
             let mut segments = Vec::with_capacity(answer.segments.len());
             for segment in answer.segments {
                 segments.push(check_segment(segment, &answer.text, selector, capture)?);
@@ -97,6 +133,22 @@ pub(super) fn parse(
             Ok(Answer::Recognized(Recognized {
                 text: answer.text,
                 segments,
+                scores: answer
+                    .scores
+                    .into_iter()
+                    .map(|score| {
+                        mneme_core::RecognitionScore::new(score.provider, score.metric, score.value)
+                            .map_err(str::to_owned)
+                    })
+                    .collect::<Result<_, _>>()?,
+                alternatives: answer
+                    .alternatives
+                    .into_iter()
+                    .map(|alternative| {
+                        mneme_core::RecognitionAlternative::new(alternative.text, alternative.score)
+                            .map_err(str::to_owned)
+                    })
+                    .collect::<Result<_, _>>()?,
             }))
         }
     }
@@ -107,7 +159,7 @@ fn check_segment(
     text: &str,
     selector: super::UnitSelector,
     capture: &mneme_memory::SourceView,
-) -> Result<(mneme_core::SourceSpan, mneme_core::MediaLocation), String> {
+) -> Result<RecognizedSegment, String> {
     let span = mneme_core::SourceSpan::new(segment.start, segment.end)
         .map_err(|message| message.to_owned())?;
     let start = usize::try_from(segment.start).ok();
@@ -128,7 +180,14 @@ fn check_segment(
     location
         .validate_source(extent, capture.media_frame, capture.ink_inventory.as_ref())
         .map_err(|message| message.to_owned())?;
-    Ok((span, location))
+    if let Some(block) = &segment.block {
+        block.validate().map_err(str::to_owned)?;
+    }
+    Ok(RecognizedSegment {
+        span,
+        location,
+        block: segment.block,
+    })
 }
 
 /// The capture location of an answer location given within one unit.

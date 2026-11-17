@@ -142,6 +142,7 @@ fn record(workspace: &mut mneme_store::Workspace) -> Recording {
         rev(0x45),
         &scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: Some(run),
             text_source: transcript,
             span: mneme_core::SourceSpan::new(0, 2).expect("span"),

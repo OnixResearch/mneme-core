@@ -59,6 +59,7 @@ fn commit_recognition(workspace: &mut mneme_store::Workspace) -> Fixture {
         common::rev(0xb4),
         &common::scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: Some(run_id),
             text_source: output,
             span: mneme_core::SourceSpan::new(0, 4).expect("text span"),
@@ -159,6 +160,7 @@ fn recognition_and_correction_keep_exact_pins_and_shared_evidence_roots() {
         common::rev(0xb6),
         &common::scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: None,
             text_source: corrected,
             span: mneme_core::SourceSpan::new(5, 9).expect("updated text span"),
@@ -276,6 +278,7 @@ fn recognition_refuses_changed_input_digest_and_out_of_range_media_locations() {
         common::rev(0xb7),
         &common::scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: Some(common::rid(0xa8)),
             text_source: fixture.output,
             span: mneme_core::SourceSpan::new(0, 4).expect("span"),
@@ -473,6 +476,7 @@ fn recognize(
         common::rev(seed + 2),
         &common::scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: Some(run_id),
             text_source: text,
             span: mneme_core::SourceSpan::new(0, 3).expect("span"),
@@ -741,6 +745,7 @@ fn recognize_run(
             common::rev(run.byte.wrapping_add(2)),
             &common::scope(),
             mneme_memory::RecognitionSegmentOptions {
+                block: None,
                 run: Some(run_id),
                 text_source: output,
                 span: mneme_core::SourceSpan::new(0, 0).expect("text span"),
@@ -819,6 +824,7 @@ fn correct(
                 common::rev(segment),
                 &common::scope(),
                 mneme_memory::RecognitionSegmentOptions {
+                    block: None,
                     run: None,
                     text_source: corrected,
                     span: mneme_core::SourceSpan::new(0, 0).expect("text span"),

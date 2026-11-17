@@ -177,6 +177,7 @@ fn a_corrected_transcript_stays_out_of_export_and_the_rest_imports() {
         common::rev(0xc8),
         &common::scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: Some(run_id),
             text_source: transcript,
             span: mneme_core::SourceSpan::new(0, 4).expect("span"),
@@ -213,6 +214,7 @@ fn a_corrected_transcript_stays_out_of_export_and_the_rest_imports() {
         common::rev(0xca),
         &common::scope(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: None,
             text_source: corrected_pin,
             span: mneme_core::SourceSpan::new(5, 9).expect("updated span"),

@@ -265,6 +265,8 @@ pub enum FieldType {
     RecognitionScores,
     /// Bounded provider alternative sequence.
     RecognitionAlternatives,
+    /// Layout block identity, reading kind, label and optional order.
+    RecognitionBlock,
     /// Human correction provenance and alignment disposition.
     CorrectionProvenance,
     /// The coordinate frame a page or ink source's pages use.
@@ -601,6 +603,7 @@ impl RecordSchema {
                 required("media-source", reference(Some(RecordKind::SourceRevision))),
                 required("media-digest", FieldType::Digest),
                 required("location", FieldType::MediaLocation),
+                optional("block", FieldType::RecognitionBlock),
             ],
             ExtensionPolicy::Retain,
         ));
@@ -911,6 +914,9 @@ pub fn validate_field(
         }
         FieldType::RecognitionAlternatives => {
             validate_sequence_field(value, path, crate::lineage::validate_alternatives)
+        }
+        FieldType::RecognitionBlock => {
+            parsed(crate::layout::RecognitionBlock::from_value, value, path)
         }
         FieldType::CorrectionProvenance => parsed(
             crate::lineage::CorrectionProvenance::from_value,

@@ -4140,6 +4140,13 @@ fn recognition_segment_value(
             segment.location.to_value(),
         ),
         (
+            mneme_core::Symbol::from("block"),
+            segment
+                .block
+                .as_ref()
+                .map_or_else(none_value, mneme_core::RecognitionBlock::to_value),
+        ),
+        (
             mneme_core::Symbol::from("original-location"),
             original.map_or_else(none_value, mneme_core::MediaLocation::to_value),
         ),

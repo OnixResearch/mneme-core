@@ -21,6 +21,7 @@ pub mod fields;
 pub mod fixtures;
 pub mod hashing;
 pub mod ids;
+pub mod layout;
 pub mod lineage;
 pub mod payload;
 pub mod pointer;
@@ -44,6 +45,7 @@ pub use fields::{
 pub use hashing::{ContentDigest, EncodingProfile, HashAlgorithm, ValueBoundary};
 pub use hashing::{kernel_digest, request_fingerprint};
 pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
+pub use layout::{RecognitionBlock, RecognitionReading};
 pub use lineage::{
     ACQUISITION_SCHEMA_VERSION, Acquisition, AlignmentDisposition, CapturePart, CoordinateFrame,
     CorrectionProvenance, InkInventory, MAX_INK_LAYERS, MAX_INK_STROKES, MAX_RECOGNITION_SEGMENTS,

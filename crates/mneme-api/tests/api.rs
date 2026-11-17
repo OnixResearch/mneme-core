@@ -1844,6 +1844,15 @@ fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
         rev(0xb4),
         &cedar(),
         mneme_memory::RecognitionSegmentOptions {
+            block: Some(
+                &mneme_core::RecognitionBlock::new(
+                    mneme_core::RecognitionReading::Literal,
+                    "speech-0".to_owned(),
+                    "text".to_owned(),
+                    None,
+                )
+                .expect("block provenance"),
+            ),
             run: Some(run_id),
             text_source: output_pin,
             span: mneme_core::SourceSpan::new(0, 4).expect("text byte span"),
@@ -1904,6 +1913,14 @@ fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
     );
     let segments = sequence(data(&response), "segments");
     assert_eq!(segments.len(), 1);
+    let block = mneme_core::RecognitionBlock::from_value(
+        field(&segments[0], "block"),
+        &mneme_core::Path::root(),
+    )
+    .expect("API block metadata");
+    assert_eq!(block.reading(), mneme_core::RecognitionReading::Literal);
+    assert_eq!(block.identity(), "speech-0");
+    assert_eq!(block.order(), None);
     assert_eq!(
         field(&segments[0], "span"),
         &mneme_core::SourceSpan::new(0, 4).expect("span").to_value()
@@ -2666,6 +2683,7 @@ fn original_location_follows_every_processing_step_back_to_the_run_input() {
         rev(0xd5),
         &cedar(),
         mneme_memory::RecognitionSegmentOptions {
+            block: None,
             run: Some(run_id),
             text_source: text,
             span: mneme_core::SourceSpan::new(0, 3).expect("span"),

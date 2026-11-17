@@ -1730,6 +1730,8 @@ pub struct RecognitionSegmentOptions<'a> {
     pub media_source: mneme_core::SourcePin,
     pub media_digest: mneme_core::ContentDigest,
     pub location: &'a mneme_core::MediaLocation,
+    /// Optional backend layout provenance; legacy/audio segments omit it.
+    pub block: Option<&'a mneme_core::RecognitionBlock>,
 }
 
 /// Metadata for an unavailable or pruned source revision.
@@ -2206,6 +2208,12 @@ pub fn build_recognition_segment(
             mneme_core::Symbol::from("run"),
             reference(run, mneme_core::RecordKind::RecognitionRun).to_value(),
         ));
+    }
+    if let Some(block) = options.block {
+        block
+            .validate()
+            .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+        fields.push((mneme_core::Symbol::from("block"), block.to_value()));
     }
     Ok(mneme_store::RecordDraft {
         schema_version: 5,

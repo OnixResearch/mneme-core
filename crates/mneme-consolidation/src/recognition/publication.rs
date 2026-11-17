@@ -184,12 +184,10 @@ fn records(
     drafts.push(run_record(
         job,
         (attempt, media_digest),
-        (text, &recognized.text),
+        (text, recognized),
         &segment_ids,
     )?);
-    for (ordinal, ((span, location), id)) in
-        recognized.segments.iter().zip(&segment_ids).enumerate()
-    {
+    for (ordinal, (segment, id)) in recognized.segments.iter().zip(&segment_ids).enumerate() {
         let ordinal = u32::try_from(ordinal).map_err(|_| "too many segments".to_owned())?;
         drafts.push(
             mneme_memory::build_recognition_segment(
@@ -199,10 +197,11 @@ fn records(
                 mneme_memory::RecognitionSegmentOptions {
                     run: Some(attempt.run()),
                     text_source: text,
-                    span: *span,
+                    span: segment.span,
                     media_source: job.media,
                     media_digest,
-                    location,
+                    location: &segment.location,
+                    block: segment.block.as_ref(),
                 },
             )
             .map_err(|error| error.to_string())?,
@@ -226,7 +225,7 @@ fn records(
 fn run_record(
     job: &super::Job,
     (attempt, media_digest): (&UnitAttempt<'_>, mneme_core::ContentDigest),
-    (text, content): (mneme_core::SourcePin, &str),
+    (text, recognized): (mneme_core::SourcePin, &super::protocol::Recognized),
     segments: &[mneme_core::RecordId],
 ) -> Result<mneme_store::RecordDraft, String> {
     let recognizer = &job.recognizer;
@@ -238,7 +237,7 @@ fn run_record(
             input: job.media,
             input_digest: media_digest,
             output: text,
-            output_digest: mneme_core::ContentDigest::of_source_bytes(content.as_bytes()),
+            output_digest: mneme_core::ContentDigest::of_source_bytes(recognized.text.as_bytes()),
             model: &recognizer.model,
             runtime: &recognizer.runtime,
             adapter: &recognizer.adapter,
@@ -249,8 +248,8 @@ fn run_record(
             coverage: mneme_core::RecognitionCoverage::new(1, 1)
                 .map_err(|message| message.to_owned())?,
             status: mneme_core::RecognitionStatus::Complete,
-            scores: &[],
-            alternatives: &[],
+            scores: &recognized.scores,
+            alternatives: &recognized.alternatives,
             covers: attempt.covers,
         },
     )
