@@ -119,7 +119,7 @@ pub(super) fn publish(
     media_digest: mneme_core::ContentDigest,
     recognized: &super::protocol::Recognized,
 ) -> Result<Outcome, super::Failure> {
-    if recognized.text.is_empty() && recognized.segments.is_empty() {
+    if recognized.text.is_empty() && recognized.segments.is_empty() && recognized.page.is_none() {
         return Ok(Outcome::Empty);
     }
     for _ in 0..PUBLISH_TRIES {
@@ -234,6 +234,7 @@ fn run_record(
         attempt.revision("run", 0),
         &job.scope,
         mneme_memory::RecognitionRunOptions {
+            page: recognized.page.as_ref(),
             input: job.media,
             input_digest: media_digest,
             output: text,
@@ -244,10 +245,8 @@ fn run_record(
             preprocessing: &recognizer.preprocessing,
             configuration: &recognizer.configuration,
             segments,
-            // One run per unit: the run covers its unit completely.
-            coverage: mneme_core::RecognitionCoverage::new(1, 1)
-                .map_err(|message| message.to_owned())?,
-            status: mneme_core::RecognitionStatus::Complete,
+            coverage: recognized.coverage,
+            status: recognized.status,
             scores: &recognized.scores,
             alternatives: &recognized.alternatives,
             covers: attempt.covers,

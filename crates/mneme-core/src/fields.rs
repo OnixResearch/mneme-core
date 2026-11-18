@@ -267,6 +267,8 @@ pub enum FieldType {
     RecognitionAlternatives,
     /// Layout block identity, reading kind, label and optional order.
     RecognitionBlock,
+    /// Raster page frames, unknown/partial detection coverage and regions.
+    RecognitionPage,
     /// Human correction provenance and alignment disposition.
     CorrectionProvenance,
     /// The coordinate frame a page or ink source's pages use.
@@ -591,6 +593,7 @@ impl RecordSchema {
                 optional("scores", FieldType::RecognitionScores),
                 optional("alternatives", FieldType::RecognitionAlternatives),
                 optional("covers", FieldType::CapturePart),
+                optional("page", FieldType::RecognitionPage),
             ],
             ExtensionPolicy::Retain,
         ));
@@ -917,6 +920,9 @@ pub fn validate_field(
         }
         FieldType::RecognitionBlock => {
             parsed(crate::layout::RecognitionBlock::from_value, value, path)
+        }
+        FieldType::RecognitionPage => {
+            parsed(crate::raster::RecognitionPage::from_value, value, path)
         }
         FieldType::CorrectionProvenance => parsed(
             crate::lineage::CorrectionProvenance::from_value,
@@ -1471,6 +1477,7 @@ fn validate_recognition_run_domain(
                 if let Err(message) = status.validate_coverage(coverage) {
                     diagnostics.push(domain_error(&path.field("status"), message));
                 }
+                diagnostics.extend(validate_run_page(payload, (coverage, status), path));
             }
             (None, _) => diagnostics.push(domain_error(
                 &path.field("status"),
@@ -1490,6 +1497,46 @@ fn validate_recognition_run_domain(
         }
     }
     diagnostics
+}
+
+fn validate_run_page(
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    result: (crate::RecognitionCoverage, crate::RecognitionStatus),
+    path: &crate::Path,
+) -> Vec<crate::Diagnostic> {
+    let Some(value) = payload.get(&crate::Symbol::from("page")) else {
+        return Vec::new();
+    };
+    let page = match crate::RecognitionPage::from_value(value, &path.field("page")) {
+        Ok(page) => page,
+        Err(error) => return vec![error],
+    };
+    let Some(segments) = payload
+        .get(&crate::Symbol::from("segments"))
+        .and_then(crate::Value::as_set)
+    else {
+        return vec![domain_error(
+            &path.field("segments"),
+            "a page run needs its segment set",
+        )];
+    };
+    let covers = match payload.get(&crate::Symbol::from("covers")) {
+        Some(value) => match crate::CapturePart::from_value(value, &path.field("covers")) {
+            Ok(covers) => covers,
+            Err(error) => return vec![error],
+        },
+        None => crate::CapturePart::Whole,
+    };
+    let Ok(segment_count) = u64::try_from(segments.len()) else {
+        return vec![domain_error(
+            &path.field("segments"),
+            "a page run's segment set exceeds its bound",
+        )];
+    };
+    match page.validate_result(result, covers, segment_count) {
+        Ok(()) => Vec::new(),
+        Err(message) => vec![domain_error(&path.field("page"), message)],
+    }
 }
 
 fn validate_recognition_segment_domain(

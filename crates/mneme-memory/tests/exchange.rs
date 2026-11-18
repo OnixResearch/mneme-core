@@ -154,6 +154,7 @@ fn a_corrected_transcript_stays_out_of_export_and_the_rest_imports() {
         common::rev(0xc7),
         &common::scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input: original,
             input_digest: audio_digest,
             output: transcript,

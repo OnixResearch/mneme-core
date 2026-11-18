@@ -732,6 +732,11 @@ pub enum CapturePart {
     Whole,
     /// One zero-based page of a page or ink capture.
     Page(u32),
+    /// A selected region of one zero-based page, such as the strokes a person
+    /// selected on an ink page. `key` is the caller's identity of that exact
+    /// selection: two regions are one part only when page and key are equal.
+    /// A region never covers its whole page.
+    Region { page: u32, key: [u8; 16] },
     /// The half-open tick interval `[start_tick, end_tick)` of an audio capture.
     Audio { start_tick: u64, end_tick: u64 },
 }
@@ -744,7 +749,10 @@ impl CapturePart {
                 start_tick,
                 end_tick,
             } if start_tick >= end_tick => Err("a covered audio interval must be non-empty"),
-            CapturePart::Whole | CapturePart::Page(_) | CapturePart::Audio { .. } => Ok(()),
+            CapturePart::Whole
+            | CapturePart::Page(_)
+            | CapturePart::Region { .. }
+            | CapturePart::Audio { .. } => Ok(()),
         }
     }
 
@@ -754,7 +762,7 @@ impl CapturePart {
         match (self, extent) {
             (CapturePart::Whole, _) => Ok(()),
             (
-                CapturePart::Page(page),
+                CapturePart::Page(page) | CapturePart::Region { page, .. },
                 MediaExtent::Pages { page_count } | MediaExtent::InkPages { page_count },
             ) if *page < page_count => Ok(()),
             (CapturePart::Audio { end_tick, .. }, MediaExtent::Audio { duration_ticks, .. })
@@ -771,7 +779,7 @@ impl CapturePart {
         match (self, location) {
             (CapturePart::Whole, _) => true,
             (
-                CapturePart::Page(page),
+                CapturePart::Page(page) | CapturePart::Region { page, .. },
                 MediaLocation::PageRegion { page: at, .. }
                 | MediaLocation::InkStrokes { page: at, .. },
             ) => page == at,
@@ -786,7 +794,7 @@ impl CapturePart {
                     ..
                 },
             ) => start_tick <= from && to <= end_tick,
-            (CapturePart::Page(_), MediaLocation::Audio { .. })
+            (CapturePart::Page(_) | CapturePart::Region { .. }, MediaLocation::Audio { .. })
             | (
                 CapturePart::Audio { .. },
                 MediaLocation::PageRegion { .. } | MediaLocation::InkStrokes { .. },
@@ -795,11 +803,15 @@ impl CapturePart {
     }
 
     /// Whether two parts of one capture share any of it. Parts of different
-    /// media kinds cannot describe one capture and are treated as sharing it.
+    /// media kinds cannot describe one capture and are treated as sharing it,
+    /// as are a page and any region of it, or two regions of one page.
     pub const fn overlaps(&self, other: &CapturePart) -> bool {
         match (self, other) {
             (CapturePart::Whole, _) | (_, CapturePart::Whole) => true,
-            (CapturePart::Page(left), CapturePart::Page(right)) => *left == *right,
+            (
+                CapturePart::Page(left) | CapturePart::Region { page: left, .. },
+                CapturePart::Page(right) | CapturePart::Region { page: right, .. },
+            ) => *left == *right,
             (
                 CapturePart::Audio {
                     start_tick: left_start,
@@ -810,8 +822,10 @@ impl CapturePart {
                     end_tick: right_end,
                 },
             ) => *left_start < *right_end && *right_start < *left_end,
-            (CapturePart::Page(_), CapturePart::Audio { .. })
-            | (CapturePart::Audio { .. }, CapturePart::Page(_)) => true,
+            (CapturePart::Page(_) | CapturePart::Region { .. }, CapturePart::Audio { .. })
+            | (CapturePart::Audio { .. }, CapturePart::Page(_) | CapturePart::Region { .. }) => {
+                true
+            }
         }
     }
 
@@ -822,6 +836,11 @@ impl CapturePart {
             CapturePart::Page(page) => vec![
                 crate::typed::Value::symbol("page"),
                 crate::typed::Value::integer(*page),
+            ],
+            CapturePart::Region { page, key } => vec![
+                crate::typed::Value::symbol("region"),
+                crate::typed::Value::integer(*page),
+                crate::typed::Value::bytes(key.to_vec()),
             ],
             CapturePart::Audio {
                 start_tick,
@@ -851,6 +870,13 @@ impl CapturePart {
             ("page", 2) => CapturePart::Page(
                 u32_value(&fields[1]).ok_or_else(|| type_error(path, "page index"))?,
             ),
+            ("region", 3) => CapturePart::Region {
+                page: u32_value(&fields[1]).ok_or_else(|| type_error(path, "page index"))?,
+                key: fields[2]
+                    .as_bytes()
+                    .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+                    .ok_or_else(|| type_error(path, "16-byte region key"))?,
+            },
             ("audio", 3) => CapturePart::Audio {
                 start_tick: unsigned(&fields[1])
                     .ok_or_else(|| type_error(path, "non-negative audio start"))?,
@@ -1714,6 +1740,51 @@ mod tests {
         fields[3] = crate::typed::Value::double(f64::INFINITY);
         encoded = crate::typed::Value::record_named("media-location", fields);
         assert!(MediaLocation::from_value(&encoded, &crate::problem::Path::root()).is_err());
+    }
+
+    #[test]
+    fn a_selected_region_is_its_own_part_of_one_page() {
+        let path = crate::problem::Path::root();
+        let region = CapturePart::Region {
+            page: 1,
+            key: [7; 16],
+        };
+        assert_eq!(
+            CapturePart::from_value(&region.to_value(), &path).expect("region"),
+            region
+        );
+        assert!(
+            region
+                .validate_extent(MediaExtent::InkPages { page_count: 2 })
+                .is_ok()
+        );
+        assert!(
+            region
+                .validate_extent(MediaExtent::InkPages { page_count: 1 })
+                .is_err()
+        );
+        let strokes = MediaLocation::InkStrokes {
+            page: 1,
+            layer: "layer-1".to_owned(),
+            strokes: vec!["stroke-1".to_owned()],
+        };
+        assert!(region.holds(&strokes));
+        let other_page = CapturePart::Region {
+            page: 0,
+            key: [7; 16],
+        };
+        assert!(!other_page.holds(&strokes));
+        assert!(region.overlaps(&CapturePart::Page(1)));
+        assert!(!region.overlaps(&other_page));
+        let short_key = crate::typed::Value::record_named(
+            "capture-part",
+            vec![
+                crate::typed::Value::symbol("region"),
+                crate::typed::Value::integer(1_u32),
+                crate::typed::Value::bytes(vec![7; 15]),
+            ],
+        );
+        assert!(CapturePart::from_value(&short_key, &path).is_err());
     }
 
     #[test]

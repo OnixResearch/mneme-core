@@ -81,19 +81,7 @@ impl RecognitionBlock {
 
     /// Refuse empty/oversized identities and non-identifier layout labels.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.identity.trim().is_empty() || self.identity.len() > MAX_BLOCK_IDENTITY_BYTES {
-            return Err("recognition block identity must be non-empty and bounded");
-        }
-        let is_label = !self.label.is_empty()
-            && self.label.len() <= MAX_BLOCK_LABEL_BYTES
-            && self
-                .label
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
-        if !is_label {
-            return Err("recognition block label must be a bounded identifier");
-        }
-        Ok(())
+        validate_identity_label(&self.identity, &self.label)
     }
 
     /// Encode the classification with the exact provider layout metadata.
@@ -159,6 +147,21 @@ impl RecognitionBlock {
         Self::new(reading, identity.to_owned(), label.to_owned(), order)
             .map_err(|message| invalid(path, message))
     }
+}
+
+pub(crate) fn validate_identity_label(identity: &str, label: &str) -> Result<(), &'static str> {
+    if identity.trim().is_empty() || identity.len() > MAX_BLOCK_IDENTITY_BYTES {
+        return Err("recognition block identity must be non-empty and bounded");
+    }
+    let is_label = !label.is_empty()
+        && label.len() <= MAX_BLOCK_LABEL_BYTES
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
+    if !is_label {
+        return Err("recognition block label must be a bounded identifier");
+    }
+    Ok(())
 }
 
 fn invalid(path: &crate::problem::Path, message: &str) -> crate::problem::Diagnostic {

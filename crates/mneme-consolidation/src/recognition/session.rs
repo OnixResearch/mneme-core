@@ -435,8 +435,8 @@ impl Claimed<'_> {
         output: &[u8],
     ) -> Result<Settled, super::Failure> {
         let recognized = match super::protocol::parse(output, selector, unit.capture) {
-            Ok(super::protocol::Answer::Recognized(recognized)) => recognized,
-            Ok(super::protocol::Answer::Unsupported) => {
+            Ok(Some(recognized)) => recognized,
+            Ok(None) => {
                 return Ok(Settled::new(
                     super::UnitState::Unsupported,
                     Some("the recognizer cannot recognize this unit"),

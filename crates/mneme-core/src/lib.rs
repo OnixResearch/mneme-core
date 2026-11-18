@@ -27,6 +27,7 @@ pub mod payload;
 pub mod pointer;
 pub mod problem;
 pub mod projection;
+pub mod raster;
 pub mod tenancy;
 pub mod text;
 #[allow(unknown_lints)] // public transport module path
@@ -56,6 +57,7 @@ pub use payload::{RetainedSource, SourceContent, SourceSpan};
 pub use pointer::{Reference, RevisionEntry, SnapshotIndex};
 pub use problem::{Diagnostic, ErrorCode, Path, Stage, render_diagnostics};
 pub use projection::{AdapterCapabilities, ValueKind, project_value};
+pub use raster::{RecognitionPage, RecognitionPageReport, RecognitionRegion};
 pub use tenancy::{ScopeClass, ScopeId};
 pub use transport::{
     decode_document, decode_document_value, decode_nested_value, decode_value, encode_document,

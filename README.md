@@ -57,8 +57,12 @@ output source revisions and digests, model/runtime/adapter/preprocessing and
 configuration identities, coverage and status, plus optional scores and
 alternatives; its machine text is committed in the same batch, and it names
 at most 4,096 segments. A run declares the part of its capture it covers
-(`covers`): the whole capture, one page, or a half-open audio interval within
-the capture's extent. A run that declares none covers the whole capture, and
+(`covers`): the whole capture, one page, a selected region of one page, or a
+half-open audio interval within the capture's extent. A region carries the
+caller's 16-byte key for its exact selection (for ink, the selected strokes):
+other regions of the page stay selected beside it, the same key replaces only
+itself, and a reading of the whole page covers every region of it. A run that
+declares none covers the whole capture, and
 its segments on the capture itself must lie within its part. Each `RecognitionSegment` pins its text source and inclusive
 `SourceSpan` byte offsets, media source revision and digest, and typed audio,
 page-region, or ink-stroke location. Optional `block` metadata retains a
@@ -69,6 +73,19 @@ does not silently become a literal reading. Older segments omit this metadata;
 its absence does not invent a reading classification. Text spans remain byte
 offsets into the exact UTF-8 source revision; media coordinates never change
 that contract.
+
+A run may retain a versioned `page` processing report: input and processed
+raster dimensions, an invertible quarter-turn orientation, and up to 128
+normalized original-page regions each for missing blocks and detections.
+Identities, labels and optional order remain provider metadata, not words or
+verified assertions. Declared image frames and the selected original page are
+checked before publication. Reported readable/missing block counts must agree
+with the run's segments; a no-detection report leaves block coverage unknown,
+not an invented 0/0 or evidence that the original is blank. Text-empty reports
+remain durable and inspectable. Page-only reruns cannot displace retained
+readable text; a person's deliberate empty correction still has precedence.
+Older readers retain unknown fields but do not provide these page-aware
+selection/inspection semantics, so upgrade every participating device.
 
 Captured media is separate from its machine-recognized text derivative. A
 human correction is another immutable text revision with a predecessor and
@@ -183,6 +200,15 @@ stops after dispatching a unit
 leaves it uncertain unless its deterministic run was already committed; an
 uncertain unit is never dispatched again automatically, and an explicit retry
 is a new, charged attempt.
+
+`UnitPlan::Page { page }` dispatches only that original page, without renumbering
+it or repeatedly recognizing one selection as if it covered every page;
+`UnitPlan::Region { page, key }` dispatches only that page and publishes a run
+covering the region, never the page. Worker
+answers may explicitly report `partial` plus `coverage:{completed,total}`;
+partial answers require those counts. Legacy complete answers without counts
+retain their unit-level 1/1 behavior. When a page report omits block coverage,
+that unit-level completion is not detected-block or exhaustive-page coverage.
 
 ## Development and verification
 

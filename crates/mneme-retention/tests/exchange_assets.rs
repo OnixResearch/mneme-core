@@ -119,6 +119,7 @@ fn record(workspace: &mut mneme_store::Workspace) -> Recording {
         rev(0x47),
         &scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input: audio,
             input_digest: digest,
             output: transcript,

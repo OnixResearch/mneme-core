@@ -1821,6 +1821,7 @@ fn recognition_read_returns_pinned_text_provenance_and_typed_locations() {
         rev(0xb3),
         &cedar(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input: input_pin,
             input_digest,
             output: output_pin,
@@ -2652,6 +2653,7 @@ fn original_location_follows_every_processing_step_back_to_the_run_input() {
         rev(0xd4),
         &cedar(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input: original,
             input_digest,
             output: text,

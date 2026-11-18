@@ -15,6 +15,8 @@ pub enum UnitSelector {
     Whole,
     /// One page of a page or ink capture.
     Page { page: u32 },
+    /// A selected region of one page, under the caller's key for it.
+    Region { page: u32, key: [u8; 16] },
     /// The half-open tick interval `[start_tick, end_tick)` of an audio capture.
     Audio { start_tick: u64, end_tick: u64 },
 }
@@ -25,6 +27,7 @@ impl UnitSelector {
         match self {
             UnitSelector::Whole => mneme_core::CapturePart::Whole,
             UnitSelector::Page { page } => mneme_core::CapturePart::Page(page),
+            UnitSelector::Region { page, key } => mneme_core::CapturePart::Region { page, key },
             UnitSelector::Audio {
                 start_tick,
                 end_tick,
@@ -45,6 +48,13 @@ pub(super) fn units(
     match plan {
         super::UnitPlan::Whole => whole_unit(extent),
         super::UnitPlan::Pages => page_units(extent, max_units),
+        super::UnitPlan::Page { page } => selected_page(extent, *page),
+        super::UnitPlan::Region { page, key } => check_selected(extent, *page).map(|()| {
+            vec![UnitSelector::Region {
+                page: *page,
+                key: *key,
+            }]
+        }),
         super::UnitPlan::AudioChunks { ticks } => audio_units(extent, *ticks, max_units),
         super::UnitPlan::AudioSpans { ends } => audio_spans(extent, ends, max_units),
     }
@@ -123,21 +133,44 @@ fn whole_unit(
     }
 }
 
+fn page_count(extent: Option<mneme_core::MediaExtent>) -> Result<u32, super::Failure> {
+    match extent {
+        Some(
+            mneme_core::MediaExtent::Pages { page_count }
+            | mneme_core::MediaExtent::InkPages { page_count },
+        ) => Ok(page_count),
+        Some(mneme_core::MediaExtent::Audio { .. }) | None => Err(super::Failure::Invalid(
+            "a page plan needs a page or ink capture".to_owned(),
+        )),
+    }
+}
+
+fn selected_page(
+    extent: Option<mneme_core::MediaExtent>,
+    page: u32,
+) -> Result<Vec<UnitSelector>, super::Failure> {
+    check_selected(extent, page)?;
+    Ok(vec![UnitSelector::Page { page }])
+}
+
+/// A selected page or region must name a page of the capture.
+fn check_selected(
+    extent: Option<mneme_core::MediaExtent>,
+    page: u32,
+) -> Result<(), super::Failure> {
+    if page >= page_count(extent)? {
+        return Err(super::Failure::Invalid(
+            "the selected page is outside the capture".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn page_units(
     extent: Option<mneme_core::MediaExtent>,
     max_units: u32,
 ) -> Result<Vec<UnitSelector>, super::Failure> {
-    let page_count = match extent {
-        Some(
-            mneme_core::MediaExtent::Pages { page_count }
-            | mneme_core::MediaExtent::InkPages { page_count },
-        ) => page_count,
-        Some(mneme_core::MediaExtent::Audio { .. }) | None => {
-            return Err(super::Failure::Invalid(
-                "a page plan needs a page or ink capture".to_owned(),
-            ));
-        }
-    };
+    let page_count = page_count(extent)?;
     if page_count > max_units {
         return Err(super::Failure::Invalid(
             "the capture has more pages than the job admits".to_owned(),

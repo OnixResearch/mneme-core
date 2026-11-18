@@ -29,13 +29,13 @@ fn commit_recognition(workspace: &mut mneme_store::Workspace) -> Fixture {
     };
     let (input_record, input_blob, output_record, output_blob) =
         recognition_source_records(input, output, audio, text, time_base);
-    let run_id = common::rid(0xa3);
-    let segment_id = common::rid(0xa4);
+    let (run_id, segment_id) = (common::rid(0xa3), common::rid(0xa4));
     let run = mneme_memory::build_recognition_run(
         run_id,
         common::rev(0xb3),
         &common::scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input,
             input_digest,
             output,
@@ -239,6 +239,7 @@ fn recognition_refuses_changed_input_digest_and_out_of_range_media_locations() {
         common::rev(0xb6),
         &common::scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input: fixture.input,
             input_digest: mneme_core::ContentDigest::of_source_bytes(b"changed bytes"),
             output: fixture.output,
@@ -293,6 +294,7 @@ fn recognition_refuses_changed_input_digest_and_out_of_range_media_locations() {
         common::rev(0xb8),
         &common::scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input: fixture.input,
             input_digest: fixture.input_digest,
             output: fixture.output,
@@ -359,6 +361,7 @@ fn a_later_run_cannot_claim_existing_machine_text() {
         common::rev(0xb9),
         &common::scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input: fixture.input,
             input_digest: fixture.input_digest,
             output: fixture.output,
@@ -453,6 +456,7 @@ fn recognize(
         common::rev(seed + 1),
         &common::scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input,
             input_digest,
             output: text,
@@ -718,6 +722,7 @@ fn recognize_run(
         common::rev(run.byte.wrapping_add(1)),
         &common::scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input: capture,
             input_digest: capture_digest,
             output,
@@ -1252,6 +1257,7 @@ fn a_text_two_runs_name_is_selected_once() {
             common::rev(byte),
             &common::scope(),
             mneme_memory::RecognitionRunOptions {
+                page: None,
                 input: fixture.input,
                 input_digest: fixture.input_digest,
                 output: text,

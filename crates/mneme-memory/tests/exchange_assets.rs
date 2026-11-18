@@ -166,6 +166,7 @@ fn recognition(
         common::rev(seed.wrapping_add(5)),
         &common::scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input: audio,
             input_digest: audio_digest,
             output: transcript,

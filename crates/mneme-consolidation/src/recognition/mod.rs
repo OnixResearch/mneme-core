@@ -47,6 +47,12 @@ pub struct Recognizer {
 pub enum UnitPlan {
     /// One unit per page of a page or ink capture.
     Pages,
+    /// Only the selected original page, retaining its original page index.
+    Page { page: u32 },
+    /// Only a selected region of one original page, under the caller's key
+    /// for that exact selection. Its run covers the region, never the page,
+    /// so other regions of the page stay selected beside it.
+    Region { page: u32, key: [u8; 16] },
     /// Consecutive intervals of an audio capture, each at most `ticks` long.
     AudioChunks { ticks: u64 },
     /// Consecutive intervals of an audio capture ending at `ends`: strictly

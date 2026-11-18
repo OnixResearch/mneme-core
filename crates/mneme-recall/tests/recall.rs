@@ -1320,6 +1320,7 @@ fn recognition_records(
         rev(0xe6),
         &scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input,
             input_digest,
             output,
@@ -3079,6 +3080,7 @@ fn reprocess_media(
         rev(0xf3),
         &scope(),
         mneme_memory::RecognitionRunOptions {
+            page: None,
             input,
             input_digest,
             output,

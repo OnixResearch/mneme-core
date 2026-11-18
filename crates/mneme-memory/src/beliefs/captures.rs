@@ -6,9 +6,10 @@
 //!
 //! 1. a text whose bytes are retained, before a pruned or erased one;
 //! 2. a corrected text, before machine output;
-//! 3. among machine output, a complete run's text before a partial, failed or
+//! 3. a machine reading before a page-only result with no readable blocks;
+//! 4. among machine output, a complete run's text before a partial, failed or
 //!    cancelled one;
-//! 4. the most recently committed.
+//! 5. the most recently committed.
 //!
 //! A text is selected unless the more preferred texts already selected cover
 //! all of the part of the capture it covers. Otherwise it is an alternative:
@@ -226,6 +227,7 @@ impl super::View {
                 .is_available
                 .cmp(&left.is_available)
                 .then(right.is_corrected.cmp(&left.is_corrected))
+                .then(has_reading(right).cmp(&has_reading(left)))
                 .then(is_complete(right).cmp(&is_complete(left)))
                 .then(right.revision_order.cmp(&left.revision_order))
                 .then(left.pin.cmp(&right.pin))
@@ -319,6 +321,16 @@ impl super::View {
     }
 }
 
+/// A page-only report preserves processing history, not evidence that a prior
+/// reading disappeared. A deliberate human empty correction still wins.
+fn has_reading(text: &Text) -> bool {
+    text.is_corrected
+        || text.run.page.as_ref().is_none_or(|page| {
+            page.reported_coverage()
+                .is_some_and(|coverage| coverage.completed() > 0)
+        })
+}
+
 /// A corrected text counts as complete: a person chose it, whatever the run
 /// that produced it reported.
 const fn is_complete(text: &Text) -> bool {
@@ -353,6 +365,11 @@ fn is_covered(
         mneme_core::CapturePart::Page(page) => {
             covered.contains(&mneme_core::CapturePart::Page(page))
         }
+        // A region is covered by its page or by the same selection again;
+        // other regions of the page are selected beside it.
+        mneme_core::CapturePart::Region { page, .. } => covered
+            .iter()
+            .any(|chosen| *chosen == part || *chosen == mneme_core::CapturePart::Page(page)),
         mneme_core::CapturePart::Audio {
             start_tick,
             end_tick,
@@ -367,6 +384,7 @@ fn all_pages_covered(covered: &[mneme_core::CapturePart], page_count: u32) -> bo
         .filter_map(|chosen| match chosen {
             mneme_core::CapturePart::Page(page) if *page < page_count => Some(*page),
             mneme_core::CapturePart::Page(_)
+            | mneme_core::CapturePart::Region { .. }
             | mneme_core::CapturePart::Whole
             | mneme_core::CapturePart::Audio { .. } => None,
         })
@@ -383,7 +401,9 @@ fn ticks_covered(covered: &[mneme_core::CapturePart], (start, end): (u64, u64)) 
                 start_tick,
                 end_tick,
             } => Some((*start_tick, *end_tick)),
-            mneme_core::CapturePart::Whole | mneme_core::CapturePart::Page(_) => None,
+            mneme_core::CapturePart::Whole
+            | mneme_core::CapturePart::Page(_)
+            | mneme_core::CapturePart::Region { .. } => None,
         })
         .collect();
     intervals.sort_unstable();
@@ -404,7 +424,9 @@ fn ticks_covered(covered: &[mneme_core::CapturePart], (start, end): (u64, u64)) 
 fn part_position(part: mneme_core::CapturePart) -> u64 {
     match part {
         mneme_core::CapturePart::Whole => 0,
-        mneme_core::CapturePart::Page(page) => u64::from(page),
+        mneme_core::CapturePart::Page(page) | mneme_core::CapturePart::Region { page, .. } => {
+            u64::from(page)
+        }
         mneme_core::CapturePart::Audio { start_tick, .. } => start_tick,
     }
 }

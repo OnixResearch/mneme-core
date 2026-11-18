@@ -315,6 +315,379 @@ fn malformed_layout_provenance_and_scores_publish_no_text() {
     }
 }
 
+/// What a page-reporting worker read on its one page.
+#[derive(Clone, Copy)]
+enum PageReading {
+    /// One readable block and one unread formula block.
+    Partial,
+    /// Only an unread formula block.
+    Unread,
+    /// No detected block at all.
+    Nothing,
+}
+
+impl PageReading {
+    /// Whether the page has a readable block, and an unread one.
+    const fn blocks(self) -> (bool, bool) {
+        match self {
+            PageReading::Partial => (true, true),
+            PageReading::Unread => (false, true),
+            PageReading::Nothing => (false, false),
+        }
+    }
+}
+
+fn raster_answer(reading: PageReading) -> serde_json::Value {
+    let (has_words, has_missing) = reading.blocks();
+    let mut answer = serde_json::json!({
+        "status": if has_missing { "partial" } else { "complete" },
+        "text": if has_words { "quartz" } else { "" },
+        "segments": [],
+        "page": {
+            "index":0,"source-width":400,"source-height":300,
+            "processed-width":400,"processed-height":300,
+            "orientation-ccw-degrees":0,"nonlinear-unwarping":false,
+            "coverage-basis":"detected-blocks-not-exhaustive-page",
+            "missing":[],"detections":[]
+        }
+    });
+    if has_words {
+        answer["segments"] = serde_json::json!([{
+            "start":0,"end":5,
+            "block":{"reading":"literal","identity":"read","label":"text","order":1},
+            "location":{"kind":"region","frame":"normalized","x":0.1,"y":0.2,"width":0.3,"height":0.1}
+        }]);
+    }
+    if has_missing {
+        answer["page"]["missing"] = serde_json::json!([{
+            "identity":"unread","label":"formula","order":null,
+            "region":{"kind":"region","frame":"normalized","x":0.2,"y":0.5,"width":0.4,"height":0.2}
+        }]);
+    }
+    if has_words || has_missing {
+        let completed = u64::from(has_words);
+        let total = completed
+            .checked_add(u64::from(has_missing))
+            .expect("two blocks");
+        answer["coverage"] = serde_json::json!({"completed":completed,"total":total});
+    }
+    answer
+}
+
+#[test]
+fn partial_and_text_empty_page_provenance_survives_publication_and_restart() {
+    for reading in [
+        PageReading::Partial,
+        PageReading::Unread,
+        PageReading::Nothing,
+    ] {
+        let (has_words, has_missing) = reading.blocks();
+        let (temp, mut workspace, media) = scan(1);
+        let log = temp.path().join("starts");
+        let answer = raster_answer(reading);
+        let shell = format!("printf '%s' '{answer}'");
+        let job = job(
+            media,
+            worker(&shell, &log, &log),
+            std::time::Duration::from_secs(60),
+        );
+        let report = mneme_consolidation::recognition::run(
+            &mut workspace,
+            &job,
+            &mneme_recall::inference::InvocationControl::new(),
+        )
+        .expect("run");
+        assert_eq!(
+            report.state,
+            mneme_consolidation::recognition::JobState::Complete
+        );
+        assert_eq!(
+            report.published, 1,
+            "page-only results are durable, not discarded as empty"
+        );
+        drop(workspace);
+        let mut reopened = mneme_store::Workspace::open(temp.path(), config()).expect("reopen");
+        let committed = runs(&mut reopened);
+        let run = &committed[0];
+        assert_eq!(run.input, media);
+        assert_eq!(
+            run.status,
+            if has_missing {
+                mneme_core::RecognitionStatus::Partial
+            } else {
+                mneme_core::RecognitionStatus::Complete
+            }
+        );
+        assert_eq!(
+            run.output_digest,
+            mneme_core::ContentDigest::of_source_bytes(if has_words { b"quartz" } else { b"" })
+        );
+        let page = run.page.as_ref().expect("retained raster map");
+        assert_eq!(page.source_dimensions(), (400, 300));
+        assert_eq!(page.missing().len(), usize::from(has_missing));
+        assert_eq!(page.reported_coverage().is_some(), has_words || has_missing);
+        if has_missing {
+            assert_eq!(page.missing()[0].identity(), "unread");
+            assert_eq!(page.missing()[0].order(), None);
+            assert_eq!(run.coverage.completed(), u64::from(has_words));
+        }
+    }
+}
+
+#[test]
+fn invalid_partial_page_claims_publish_no_text() {
+    for (pointer, value) in [
+        ("/coverage", serde_json::Value::Null),
+        ("/coverage/completed", serde_json::json!(1)),
+        ("/status", serde_json::json!("complete")),
+        ("/page/index", serde_json::json!(1)),
+        ("/page/nonlinear-unwarping", serde_json::json!(true)),
+        ("/page/source-width", serde_json::json!(0)),
+        ("/page/missing/0/region/x", serde_json::json!(1.0)),
+    ] {
+        let (temp, mut workspace, media) = scan(1);
+        let log = temp.path().join("starts");
+        let mut answer = raster_answer(PageReading::Unread);
+        *answer.pointer_mut(pointer).expect("existing field") = value;
+        let shell = format!("printf '%s' '{answer}'");
+        let job = job(
+            media,
+            worker(&shell, &log, &log),
+            std::time::Duration::from_secs(60),
+        );
+        let report = mneme_consolidation::recognition::run(
+            &mut workspace,
+            &job,
+            &mneme_recall::inference::InvocationControl::new(),
+        )
+        .expect("run");
+        assert_eq!(
+            report.state,
+            mneme_consolidation::recognition::JobState::Failed
+        );
+        assert!(
+            runs(&mut workspace).is_empty(),
+            "invalid provenance cannot publish text"
+        );
+    }
+}
+
+#[test]
+fn a_page_only_reprocess_keeps_prior_readable_text_selected() {
+    let (temp, mut workspace, media) = scan(1);
+    let log = temp.path().join("starts");
+    let shell = format!("printf '%s' '{}'", raster_answer(PageReading::Partial));
+    let first = job(
+        media,
+        worker(&shell, &log, &log),
+        std::time::Duration::from_secs(60),
+    );
+    mneme_consolidation::recognition::run(
+        &mut workspace,
+        &first,
+        &mneme_recall::inference::InvocationControl::new(),
+    )
+    .expect("readable partial");
+    let prior = runs(&mut workspace)[0].output;
+    let shell = format!("printf '%s' '{}'", raster_answer(PageReading::Nothing));
+    let mut next = job(
+        media,
+        worker(&shell, &log, &log),
+        std::time::Duration::from_secs(60),
+    );
+    next.job_id = "page-only-reprocess".to_owned();
+    mneme_consolidation::recognition::run(
+        &mut workspace,
+        &next,
+        &mneme_recall::inference::InvocationControl::new(),
+    )
+    .expect("no detections");
+    let view = mneme_memory::Engine::new(&mut workspace, mneme_memory::Access::Operator)
+        .view()
+        .expect("view");
+    let selection = view.capture_texts(media, &scope());
+    assert_eq!(
+        selection
+            .selected
+            .iter()
+            .map(|text| text.pin)
+            .collect::<Vec<_>>(),
+        vec![prior]
+    );
+    assert!(selection.alternatives.iter().any(|text| {
+        text.run
+            .page
+            .as_ref()
+            .is_some_and(|page| page.reported_coverage().is_none())
+    }));
+}
+
+#[test]
+fn a_report_cannot_relabel_the_retained_original_image_frame() {
+    let (temp, mut workspace, media) = scan(1);
+    let log = temp.path().join("starts");
+    let mut answer = raster_answer(PageReading::Nothing);
+    answer["page"]["source-width"] = serde_json::json!(401);
+    answer["page"]["processed-width"] = serde_json::json!(401);
+    let shell = format!("printf '%s' '{answer}'");
+    let job = job(
+        media,
+        worker(&shell, &log, &log),
+        std::time::Duration::from_secs(60),
+    );
+    let report = mneme_consolidation::recognition::run(
+        &mut workspace,
+        &job,
+        &mneme_recall::inference::InvocationControl::new(),
+    )
+    .expect("run");
+    assert_eq!(
+        report.state,
+        mneme_consolidation::recognition::JobState::Failed
+    );
+    assert!(
+        runs(&mut workspace).is_empty(),
+        "a consistent but forged raster frame cannot publish"
+    );
+}
+
+#[test]
+fn a_selected_page_keeps_its_original_index_and_dispatches_no_other_page() {
+    let (temp, mut workspace, media) = scan(3);
+    let log = temp.path().join("starts");
+    let mut job = job(
+        media,
+        worker(GOOD, &log, &log),
+        std::time::Duration::from_secs(60),
+    );
+    job.plan = mneme_consolidation::recognition::UnitPlan::Page { page: 2 };
+    job.limits.max_units = 1;
+    let report = mneme_consolidation::recognition::run(
+        &mut workspace,
+        &job,
+        &mneme_recall::inference::InvocationControl::new(),
+    )
+    .expect("selected page");
+    assert_eq!((report.published, report.total, starts(&log)), (1, 1, 1));
+    let committed = runs(&mut workspace);
+    assert_eq!(committed[0].covers, mneme_core::CapturePart::Page(2));
+    assert_eq!(
+        committed[0].output_digest,
+        mneme_core::ContentDigest::of_source_bytes(b"third page")
+    );
+    job.plan = mneme_consolidation::recognition::UnitPlan::Page { page: 3 };
+    assert!(matches!(
+        mneme_consolidation::recognition::queue(&mut workspace, &job),
+        Err(mneme_consolidation::recognition::Failure::Invalid(_))
+    ));
+    assert_eq!(
+        starts(&log),
+        1,
+        "out-of-extent selection never invokes a worker"
+    );
+}
+
+fn region_job(
+    media: mneme_core::SourcePin,
+    log: &std::path::Path,
+    (job_id, plan): (&str, mneme_consolidation::recognition::UnitPlan),
+) -> mneme_consolidation::recognition::Job {
+    let mut region = job(
+        media,
+        worker(GOOD, log, log),
+        std::time::Duration::from_secs(60),
+    );
+    job_id.clone_into(&mut region.job_id);
+    region.plan = plan;
+    region
+}
+
+fn selected_parts(
+    workspace: &mut mneme_store::Workspace,
+    media: mneme_core::SourcePin,
+) -> (Vec<mneme_core::CapturePart>, usize) {
+    let view = mneme_memory::Engine::new(workspace, mneme_memory::Access::Operator)
+        .view()
+        .expect("view");
+    let selection = view.capture_texts(media, &scope());
+    let parts = selection
+        .selected
+        .iter()
+        .map(|text| text.run.covers)
+        .collect();
+    (parts, selection.alternatives.len())
+}
+
+#[test]
+fn regions_of_one_page_are_searched_together_until_their_page_is_recognized() {
+    let (temp, mut workspace, media) = scan(3);
+    let log = temp.path().join("starts");
+    let first = mneme_core::CapturePart::Region {
+        page: 2,
+        key: [0xa1; 16],
+    };
+    let second = mneme_core::CapturePart::Region {
+        page: 2,
+        key: [0xb2; 16],
+    };
+    for (job_id, key) in [("region-a", [0xa1; 16]), ("region-b", [0xb2; 16])] {
+        let plan = mneme_consolidation::recognition::UnitPlan::Region { page: 2, key };
+        let region = region_job(media, &log, (job_id, plan));
+        let report = mneme_consolidation::recognition::run(
+            &mut workspace,
+            &region,
+            &mneme_recall::inference::InvocationControl::new(),
+        )
+        .expect("region");
+        assert_eq!((report.published, report.total), (1, 1));
+    }
+    assert_eq!(starts(&log), 2, "a region dispatches only its own page");
+    assert_eq!(
+        selected_parts(&mut workspace, media),
+        (vec![first, second], 0),
+        "a second region does not hide the first from search"
+    );
+    let again = mneme_consolidation::recognition::UnitPlan::Region {
+        page: 2,
+        key: [0xa1; 16],
+    };
+    let again = region_job(media, &log, ("region-a-again", again));
+    mneme_consolidation::recognition::run(
+        &mut workspace,
+        &again,
+        &mneme_recall::inference::InvocationControl::new(),
+    )
+    .expect("same region again");
+    let (parts, alternatives) = selected_parts(&mut workspace, media);
+    assert_eq!(parts.len(), 2);
+    assert!(parts.contains(&first));
+    assert!(parts.contains(&second));
+    assert_eq!(alternatives, 1, "the same selection replaces only itself");
+    let page = mneme_consolidation::recognition::UnitPlan::Page { page: 2 };
+    let page = region_job(media, &log, ("page-2", page));
+    mneme_consolidation::recognition::run(
+        &mut workspace,
+        &page,
+        &mneme_recall::inference::InvocationControl::new(),
+    )
+    .expect("whole page");
+    assert_eq!(
+        selected_parts(&mut workspace, media),
+        (vec![mneme_core::CapturePart::Page(2)], 3),
+        "a newer page reading covers every region of it"
+    );
+    let outside = mneme_consolidation::recognition::UnitPlan::Region {
+        page: 3,
+        key: [0xa1; 16],
+    };
+    let outside = region_job(media, &log, ("region-outside", outside));
+    assert!(matches!(
+        mneme_consolidation::recognition::queue(&mut workspace, &outside),
+        Err(mneme_consolidation::recognition::Failure::Invalid(_))
+    ));
+    assert_eq!(starts(&log), 4, "an out-of-extent region invokes no worker");
+}
+
 #[test]
 fn a_capture_is_queued_without_a_recognizer_and_recognized_later() {
     let (temp, mut workspace, media) = scan(3);
@@ -357,7 +730,9 @@ fn a_capture_is_queued_without_a_recognizer_and_recognized_later() {
         committed.iter().map(|run| run.covers).collect();
     covered.sort_by_key(|part| match part {
         mneme_core::CapturePart::Page(page) => *page,
-        mneme_core::CapturePart::Whole | mneme_core::CapturePart::Audio { .. } => u32::MAX,
+        mneme_core::CapturePart::Whole
+        | mneme_core::CapturePart::Region { .. }
+        | mneme_core::CapturePart::Audio { .. } => u32::MAX,
     });
     assert_eq!(
         covered,

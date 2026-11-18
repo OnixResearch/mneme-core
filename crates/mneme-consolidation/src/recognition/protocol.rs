@@ -16,6 +16,15 @@ struct WorkerAnswer {
     scores: Vec<AnswerScore>,
     #[serde(default = "Vec::new")]
     alternatives: Vec<AnswerAlternative>,
+    coverage: Option<AnswerCoverage>,
+    page: Option<mneme_core::RecognitionPageReport>,
+}
+
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnswerCoverage {
+    completed: u64,
+    total: u64,
 }
 
 #[derive(serde::Deserialize)]
@@ -37,6 +46,7 @@ struct AnswerAlternative {
 #[serde(rename_all = "kebab-case")]
 enum AnswerStatus {
     Complete,
+    Partial,
     Unsupported,
 }
 
@@ -85,19 +95,15 @@ enum AnswerFrame {
     PagePoints { width: f64, height: f64 },
 }
 
-/// A validated answer for one unit.
-pub(super) enum Answer {
-    Recognized(Recognized),
-    /// The recognizer reports it cannot recognize this unit.
-    Unsupported,
-}
-
 /// Recognized text and its alignment to the capture.
 pub(super) struct Recognized {
     pub text: String,
     pub segments: Vec<RecognizedSegment>,
     pub scores: Vec<mneme_core::RecognitionScore>,
     pub alternatives: Vec<mneme_core::RecognitionAlternative>,
+    pub coverage: mneme_core::RecognitionCoverage,
+    pub status: mneme_core::RecognitionStatus,
+    pub page: Option<mneme_core::RecognitionPage>,
 }
 
 /// Checked byte span and original location, with optional layout provenance.
@@ -108,50 +114,118 @@ pub(super) struct RecognizedSegment {
 }
 
 /// Parse and check one worker answer for the unit at `selector`.
+/// `None` means explicitly unsupported, not an empty recognized page.
 pub(super) fn parse(
     output: &[u8],
     selector: super::UnitSelector,
     capture: &mneme_memory::SourceView,
-) -> Result<Answer, String> {
+) -> Result<Option<Recognized>, String> {
     let answer: WorkerAnswer = serde_json::from_slice(output)
         .map_err(|_| "the worker's answer does not follow the recognition protocol".to_owned())?;
     match answer.status {
-        AnswerStatus::Unsupported => Ok(Answer::Unsupported),
-        AnswerStatus::Complete => {
-            if answer.segments.len() > mneme_core::MAX_RECOGNITION_SEGMENTS {
-                return Err("the answer has more segments than a run admits".to_owned());
-            }
-            if answer.scores.len() > MAX_PROVIDER_VALUES
-                || answer.alternatives.len() > MAX_PROVIDER_VALUES
-            {
-                return Err("the answer has more provider values than a run admits".to_owned());
-            }
-            let mut segments = Vec::with_capacity(answer.segments.len());
-            for segment in answer.segments {
-                segments.push(check_segment(segment, &answer.text, selector, capture)?);
-            }
-            Ok(Answer::Recognized(Recognized {
-                text: answer.text,
-                segments,
-                scores: answer
-                    .scores
-                    .into_iter()
-                    .map(|score| {
-                        mneme_core::RecognitionScore::new(score.provider, score.metric, score.value)
-                            .map_err(str::to_owned)
-                    })
-                    .collect::<Result<_, _>>()?,
-                alternatives: answer
-                    .alternatives
-                    .into_iter()
-                    .map(|alternative| {
-                        mneme_core::RecognitionAlternative::new(alternative.text, alternative.score)
-                            .map_err(str::to_owned)
-                    })
-                    .collect::<Result<_, _>>()?,
-            }))
-        }
+        AnswerStatus::Unsupported => Ok(None),
+        AnswerStatus::Complete => recognize(
+            answer,
+            selector,
+            capture,
+            mneme_core::RecognitionStatus::Complete,
+        )
+        .map(Some),
+        AnswerStatus::Partial => recognize(
+            answer,
+            selector,
+            capture,
+            mneme_core::RecognitionStatus::Partial,
+        )
+        .map(Some),
     }
+}
+
+fn recognize(
+    answer: WorkerAnswer,
+    selector: super::UnitSelector,
+    capture: &mneme_memory::SourceView,
+    status: mneme_core::RecognitionStatus,
+) -> Result<Recognized, String> {
+    if answer.segments.len() > mneme_core::MAX_RECOGNITION_SEGMENTS {
+        return Err("the answer has more segments than a run admits".to_owned());
+    }
+    if answer.scores.len() > MAX_PROVIDER_VALUES || answer.alternatives.len() > MAX_PROVIDER_VALUES
+    {
+        return Err("the answer has more provider values than a run admits".to_owned());
+    }
+    let reported = answer
+        .coverage
+        .map(|coverage| mneme_core::RecognitionCoverage::new(coverage.completed, coverage.total))
+        .transpose()
+        .map_err(str::to_owned)?;
+    if status == mneme_core::RecognitionStatus::Partial && reported.is_none() {
+        return Err("a partial answer needs explicit coverage".to_owned());
+    }
+    let coverage = match reported {
+        Some(coverage) => coverage,
+        None => mneme_core::RecognitionCoverage::new(1, 1).map_err(str::to_owned)?,
+    };
+    status.validate_coverage(coverage).map_err(str::to_owned)?;
+    let mut segments = Vec::with_capacity(answer.segments.len());
+    for segment in answer.segments {
+        segments.push(check_segment(segment, &answer.text, selector, capture)?);
+    }
+    let segment_count = u64::try_from(segments.len())
+        .map_err(|_| "the answer has more segments than a run admits".to_owned())?;
+    let page = check_page(
+        answer.page,
+        (reported, coverage, status),
+        (selector, capture),
+        segment_count,
+    )?;
+    Ok(Recognized {
+        text: answer.text,
+        segments,
+        coverage,
+        status,
+        page,
+        scores: answer
+            .scores
+            .into_iter()
+            .map(|score| {
+                mneme_core::RecognitionScore::new(score.provider, score.metric, score.value)
+                    .map_err(str::to_owned)
+            })
+            .collect::<Result<_, _>>()?,
+        alternatives: answer
+            .alternatives
+            .into_iter()
+            .map(|alternative| {
+                mneme_core::RecognitionAlternative::new(alternative.text, alternative.score)
+                    .map_err(str::to_owned)
+            })
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn check_page(
+    report: Option<mneme_core::RecognitionPageReport>,
+    (reported, coverage, status): (
+        Option<mneme_core::RecognitionCoverage>,
+        mneme_core::RecognitionCoverage,
+        mneme_core::RecognitionStatus,
+    ),
+    (selector, capture): (super::UnitSelector, &mneme_memory::SourceView),
+    segments: u64,
+) -> Result<Option<mneme_core::RecognitionPage>, String> {
+    let Some(report) = report else {
+        return Ok(None);
+    };
+    let page = report.bind(reported).map_err(str::to_owned)?;
+    page.validate_result((coverage, status), selector.part(), segments)
+        .map_err(str::to_owned)?;
+    let extent = capture
+        .media_extent
+        .ok_or("page provenance needs a declared capture extent")?;
+    page.validate_source(extent, capture.media_frame, selector.part())
+        .map_err(str::to_owned)?;
+    Ok(Some(page))
 }
 
 fn check_segment(
@@ -247,7 +321,7 @@ fn locate(
 /// only page of a whole-capture unit.
 fn unit_page(selector: super::UnitSelector) -> Result<u32, String> {
     match selector {
-        super::UnitSelector::Page { page } => Ok(page),
+        super::UnitSelector::Page { page } | super::UnitSelector::Region { page, .. } => Ok(page),
         super::UnitSelector::Whole => Ok(0),
         super::UnitSelector::Audio { .. } => {
             Err("a page location cannot belong to an audio unit".to_owned())

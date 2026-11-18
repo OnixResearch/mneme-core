@@ -838,6 +838,7 @@ pub struct RecognitionRunView {
     /// The part of the input the run covers: the whole capture when the run
     /// declares none.
     pub covers: mneme_core::CapturePart,
+    pub page: Option<mneme_core::RecognitionPage>,
 }
 
 impl RecognitionRunView {
@@ -894,6 +895,11 @@ impl RecognitionRunView {
                 mneme_core::CapturePart::from_value,
             )?
             .unwrap_or(mneme_core::CapturePart::Whole),
+            page: parse_optional_media_value(
+                &record,
+                "page",
+                mneme_core::RecognitionPage::from_value,
+            )?,
             record,
         })
     }

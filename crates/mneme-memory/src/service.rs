@@ -1407,6 +1407,11 @@ fn validate_recognition_run(
     })?;
     run.covers
         .validate_extent(extent)
+        .and_then(|()| {
+            run.page.as_ref().map_or(Ok(()), |page| {
+                page.validate_source(extent, input.media_frame, run.covers)
+            })
+        })
         .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
     let output_text = validate_utf8_text_source(&output, context)?;
     if mneme_core::ContentDigest::of_source_bytes(output_text.as_bytes()) != run.output_digest {
@@ -1718,6 +1723,8 @@ pub struct RecognitionRunOptions<'a> {
     pub alternatives: &'a [mneme_core::RecognitionAlternative],
     /// The part of the input the run covers.
     pub covers: mneme_core::CapturePart,
+    /// Optional strict raster processing map, including unread regions.
+    pub page: Option<&'a mneme_core::RecognitionPage>,
 }
 
 /// Typed mapping from a text byte span to one pinned media source location.
@@ -2077,6 +2084,19 @@ fn validate_recognition_run_options(
             .validate()
             .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
     }
+    if let Some(page) = options.page {
+        let segment_count = u64::try_from(options.segments.len()).map_err(|_| {
+            crate::failure::EvidenceError::policy(
+                "recognition run segment ids must be unique and bounded",
+            )
+        })?;
+        page.validate_result(
+            (options.coverage, options.status),
+            options.covers,
+            segment_count,
+        )
+        .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+    }
     options
         .covers
         .validate()
@@ -2084,7 +2104,7 @@ fn validate_recognition_run_options(
 }
 
 fn recognition_run_payload(options: &RecognitionRunOptions<'_>) -> mneme_core::Payload {
-    let mut fields = Vec::with_capacity(15);
+    let mut fields = Vec::with_capacity(16);
     append_recognition_pins(&mut fields, options);
     append_recognition_identity(&mut fields, options);
     append_recognition_results(&mut fields, options);
@@ -2170,6 +2190,9 @@ fn append_recognition_results(
         mneme_core::Symbol::from("covers"),
         options.covers.to_value(),
     ));
+    if let Some(page) = options.page {
+        fields.push((mneme_core::Symbol::from("page"), page.to_value()));
+    }
 }
 
 /// Build a segment mapping. A corrected alignment omits `run` and pins its
