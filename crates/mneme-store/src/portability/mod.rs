@@ -21,11 +21,9 @@
 
 mod file;
 mod manifest;
-mod restore;
+mod rebuild;
 
-pub use restore::restore;
-
-use crate::error::Failure;
+pub use rebuild::restore;
 
 /// The manifest record label.
 pub const PORTABLE_ARCHIVE_FORMAT: &str = "mneme-portable-vault";
@@ -190,10 +188,7 @@ impl OmissionCounts {
 pub(crate) struct PortableRetentionExport {
     pub state: PortableRetentionState,
     pub forgotten_content: std::collections::BTreeSet<[u8; 32]>,
-    pub pruning_targets: std::collections::BTreeSet<(
-        mneme_core::RecordId,
-        mneme_core::RevisionId,
-    )>,
+    pub pruning_targets: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
     pub pruning_digests: std::collections::BTreeSet<[u8; 32]>,
     pub omissions: OmissionCounts,
 }
@@ -212,151 +207,14 @@ impl crate::coordinator::Workspace {
         out: &std::path::Path,
         scope: &mneme_core::ScopeId,
     ) -> crate::error::Result<PortableExportReport> {
-        // Retention state and the pinned snapshot must describe one committed
-        // revision. A normal commit can land between the two reads, so retry the
-        // pair a bounded number of times; a barrier makes the eligibility guard
-        // refuse a generation that was already stale.
-        let mut attempts = 0_u32;
-        let (snapshot, retention, guard) = loop {
-            attempts = attempts.saturating_add(1);
-            let snapshot = self.snapshot()?;
-            let retention = self.export_portable_retention(scope)?;
-            if self.current_revision()? != snapshot.revision {
-                if attempts >= 3 {
-                    return Err(Failure::InvalidCommand(
-                        "workspace changed while starting the portable backup; try again"
-                            .to_owned(),
-                    ));
-                }
-                continue;
-            }
-            match self.eligibility_guard(snapshot.eligibility_generation) {
-                Ok(guard) => break (snapshot, retention, guard),
-                Err(Failure::BarrierAdvanced { .. }) if attempts < 3 => continue,
-                Err(error) => return Err(error),
-            }
-        };
-        let mut omissions = retention.omissions;
-        if retention.state.generation != snapshot.eligibility_generation {
-            return Err(Failure::InvalidCommand(
-                "workspace retention state changed while starting the portable backup; try again"
-                    .to_owned(),
-            ));
-        }
-        let mut records = Vec::new();
-        let mut current = Vec::new();
-        let mut blob_lengths: std::collections::BTreeMap<
-            [u8; 32],
-            (mneme_core::ContentDigest, u64),
-        > = std::collections::BTreeMap::new();
-        let mut snapshot_records: Vec<&mneme_core::RecordEnvelope> =
-            snapshot.records.iter().collect();
-        snapshot_records.sort_by_key(|record| record.record_id);
-        for record in snapshot_records {
-            if record.scope != *scope {
-                omissions.bump("foreign-scope-record", 1);
-                continue;
-            }
-            let Some(revisions) = self.portable_history(
-                record,
-                scope,
-                snapshot.sequence,
-                &retention.forgotten_content,
-                &retention.pruning_targets,
-                &retention.pruning_digests,
-                &mut omissions,
-            )?
-            else {
-                continue;
-            };
-            for revision in &revisions {
-                let Some(retained) = portable_retained_source(&revision.envelope)? else {
-                    continue;
-                };
-                let length = retained.byte_length();
-                if length > MAX_PORTABLE_BLOB_BYTES {
-                    return Err(Failure::HistoryLimitExceeded);
-                }
-                let key = *retained.digest().as_bytes();
-                match blob_lengths.entry(key) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert((retained.digest(), length));
-                    }
-                    std::collections::btree_map::Entry::Occupied(entry) => {
-                        if entry.get().1 != length {
-                            return Err(Failure::PortableArchive(
-                                "one source digest is declared with two lengths".to_owned(),
-                            ));
-                        }
-                    }
-                }
-            }
-            current.push(PortableCurrent {
-                record_id: record.record_id,
-                revision_id: record.revision_id,
-                kind: record.kind,
-            });
-            records.push(PortableRecord {
-                record_id: record.record_id,
-                scope: record.scope.clone(),
-                revisions,
-            });
-        }
-        current.sort_by_key(|entry| entry.record_id);
-        if blob_lengths.len() > MAX_PORTABLE_BLOBS {
-            return Err(Failure::HistoryLimitExceeded);
-        }
-        let mut blobs = Vec::with_capacity(blob_lengths.len());
-        for (_, (digest, length)) in &blob_lengths {
-            let bytes = crate::payload::read(self.root(), *digest)?;
-            if bytes.len() as u64 != *length {
-                return Err(Failure::CorruptBlob {
-                    digest: digest.to_hex(),
-                    reason: "stored length differs from the length its record declares".to_owned(),
-                });
-            }
-            blobs.push(PortableBlob {
-                digest: *digest,
-                length: *length,
-            });
-        }
-        let revision_count = records
+        let (snapshot, retention, guard) = self.pin_export(scope)?;
+        let manifest = self.plan_export(scope, &snapshot, retention)?;
+        let revision_count = manifest
+            .records
             .iter()
             .map(|record| record.revisions.len())
             .sum::<usize>();
-        validate_restore_batches(&records)?;
-        let manifest = PortableManifest {
-            scope: scope.clone(),
-            revision: snapshot.revision,
-            sequence: snapshot.sequence,
-            generation: snapshot.eligibility_generation,
-            records,
-            current,
-            blobs,
-            suppressions: retention.state.suppressions,
-            prunings: retention.state.prunings,
-            omissions: omissions.into_vec(),
-        };
-        manifest.validate()?;
-        let bytes = manifest.encode();
-        let mut writer = file::ArchiveWriter::create(out, Some(self.root()))?;
-        writer.write_manifest(&bytes)?;
-        for blob in &manifest.blobs {
-            let source = crate::payload::read(self.root(), blob.digest)?;
-            if source.len() as u64 != blob.length {
-                return Err(Failure::CorruptBlob {
-                    digest: blob.digest.to_hex(),
-                    reason: "source bytes changed between archive checks".to_owned(),
-                });
-            }
-            writer.write_blob(blob.digest, &source)?;
-        }
-        if self.current_revision()? != snapshot.revision {
-            return Err(Failure::InvalidCommand(
-                "workspace changed while writing the portable backup; try again".to_owned(),
-            ));
-        }
-        let published = writer.finish()?;
+        let published = self.write_export(out, &manifest)?;
         drop(guard);
         Ok(PortableExportReport {
             path: published.path,
@@ -373,6 +231,139 @@ impl crate::coordinator::Workspace {
         })
     }
 
+    fn pin_export(
+        &self,
+        scope: &mneme_core::ScopeId,
+    ) -> crate::error::Result<(
+        crate::Snapshot,
+        PortableRetentionExport,
+        crate::coordinator::CommitGuard,
+    )> {
+        // Retention state and the pinned snapshot must describe one committed
+        // revision. A normal commit can land between the two reads, so retry the
+        // pair a bounded number of times; a barrier makes the eligibility guard
+        // refuse a generation that was already stale.
+        let mut attempts = 0_u32;
+        loop {
+            attempts = attempts.saturating_add(1);
+            let snapshot = self.snapshot()?;
+            let retention = self.export_portable_retention(scope)?;
+            if self.current_revision()? != snapshot.revision {
+                if attempts >= 3 {
+                    return Err(crate::error::Failure::InvalidCommand(
+                        "workspace changed while starting the portable backup; try again"
+                            .to_owned(),
+                    ));
+                }
+                continue;
+            }
+            match self.eligibility_guard(snapshot.eligibility_generation) {
+                Ok(guard) => return Ok((snapshot, retention, guard)),
+                Err(crate::error::Failure::BarrierAdvanced { .. }) if attempts < 3 => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn plan_export(
+        &self,
+        scope: &mneme_core::ScopeId,
+        snapshot: &crate::Snapshot,
+        mut retention: PortableRetentionExport,
+    ) -> crate::error::Result<PortableManifest> {
+        if retention.state.generation != snapshot.eligibility_generation {
+            return Err(crate::error::Failure::InvalidCommand(
+                "workspace retention state changed while starting the portable backup; try again"
+                    .to_owned(),
+            ));
+        }
+        let capacity = snapshot.records.len();
+        let mut records = Vec::with_capacity(capacity.min(MAX_PORTABLE_RECORDS));
+        let mut current = Vec::with_capacity(capacity.min(MAX_PORTABLE_RECORDS));
+        let mut blob_lengths: std::collections::BTreeMap<
+            [u8; 32],
+            (mneme_core::ContentDigest, u64),
+        > = std::collections::BTreeMap::new();
+        let mut snapshot_records: Vec<&mneme_core::RecordEnvelope> =
+            snapshot.records.iter().collect();
+        snapshot_records.sort_by_key(|record| record.record_id);
+        let mut revision_total = 0_usize;
+        for record in snapshot_records {
+            if record.scope != *scope {
+                retention.omissions.bump("foreign-scope-record", 1);
+                continue;
+            }
+            let Some(revisions) =
+                self.portable_history(record, snapshot.sequence, &mut retention)?
+            else {
+                continue;
+            };
+            revision_total = revision_total.saturating_add(revisions.len());
+            if revision_total > MAX_PORTABLE_REVISIONS {
+                return Err(crate::error::Failure::HistoryLimitExceeded);
+            }
+            add_sources(&mut blob_lengths, &revisions)?;
+            if records.len() >= MAX_PORTABLE_RECORDS {
+                return Err(crate::error::Failure::HistoryLimitExceeded);
+            }
+            current.push(PortableCurrent {
+                record_id: record.record_id,
+                revision_id: record.revision_id,
+                kind: record.kind,
+            });
+            records.push(PortableRecord {
+                record_id: record.record_id,
+                scope: record.scope.clone(),
+                revisions,
+            });
+        }
+        let blobs = blob_lengths
+            .into_values()
+            .map(|(digest, length)| PortableBlob { digest, length })
+            .collect();
+        validate_restore_batches(&records)?;
+        let manifest = PortableManifest {
+            scope: scope.clone(),
+            revision: snapshot.revision,
+            sequence: snapshot.sequence,
+            generation: snapshot.eligibility_generation,
+            records,
+            current,
+            blobs,
+            suppressions: retention.state.suppressions,
+            prunings: retention.state.prunings,
+            omissions: retention.omissions.into_vec(),
+        };
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    fn write_export(
+        &self,
+        out: &std::path::Path,
+        manifest: &PortableManifest,
+    ) -> crate::error::Result<file::PublishedArchive> {
+        let bytes = manifest.encode();
+        let mut writer = file::ArchiveWriter::create(out, Some(self.root()))?;
+        writer.write_manifest(&bytes)?;
+        for blob in &manifest.blobs {
+            let source = crate::payload::read(self.root(), blob.digest)?;
+            if source.len() as u64 != blob.length {
+                return Err(crate::error::Failure::CorruptBlob {
+                    digest: blob.digest.to_hex(),
+                    reason: "source bytes changed between archive checks".to_owned(),
+                });
+            }
+            writer.write_blob(blob.digest, &source)?;
+        }
+        if self.current_revision()? != manifest.revision {
+            return Err(crate::error::Failure::InvalidCommand(
+                "workspace changed while writing the portable backup; try again".to_owned(),
+            ));
+        }
+        writer.finish()
+    }
+
     /// Every includable retained revision as of one sequence.
     ///
     /// Each retained revision is judged on its own: a revision in another
@@ -385,114 +376,56 @@ impl crate::coordinator::Workspace {
     fn portable_history(
         &self,
         current: &mneme_core::RecordEnvelope,
-        scope: &mneme_core::ScopeId,
         sequence: u64,
-        forgotten_content: &std::collections::BTreeSet<[u8; 32]>,
-        pruning_targets: &std::collections::BTreeSet<(
-            mneme_core::RecordId,
-            mneme_core::RevisionId,
-        )>,
-        pruning_digests: &std::collections::BTreeSet<[u8; 32]>,
-        omissions: &mut OmissionCounts,
+        retention: &mut PortableRetentionExport,
     ) -> crate::error::Result<Option<Vec<PortableRevision>>> {
-        let mut newest_first = Vec::new();
-        let mut cursor = None;
-        let mut pages = 0_usize;
-        loop {
-            let page = match self.record_revision_commits(current.record_id, cursor) {
-                Ok(page) => page,
-                Err(Failure::RetentionSuppressed { .. }) => {
-                    omissions.bump("forgotten-record", 1);
-                    return Ok(None);
-                }
-                Err(error) => return Err(error),
-            };
-            pages = pages.saturating_add(1);
-            if pages > (MAX_PORTABLE_REVISIONS / 10).saturating_add(1) {
-                return Err(Failure::HistoryLimitExceeded);
+        let newest_first = match self.read_pinned_history(current.record_id, sequence) {
+            Ok(rows) => rows,
+            Err(crate::error::Failure::RetentionSuppressed { .. }) => {
+                retention.omissions.bump("forgotten-record", 1);
+                return Ok(None);
             }
-            if page.entries.len() > 10 {
-                return Err(Failure::PortableArchive(
-                    "history page exceeds its admitted entry bound".to_owned(),
-                ));
-            }
-            newest_first.extend(
-                page.entries
-                    .into_iter()
-                    .filter(|entry| entry.commit.sequence <= sequence),
-            );
-            if newest_first.len() > MAX_PORTABLE_REVISIONS {
-                return Err(Failure::HistoryLimitExceeded);
-            }
-            if !page.has_more {
-                break;
-            }
-            let next = page.next_before_sequence.ok_or_else(|| {
-                Failure::PortableArchive("history page has no continuation cursor".to_owned())
-            })?;
-            if cursor.is_some_and(|previous| next >= previous) {
-                return Err(Failure::PortableArchive(
-                    "history continuation cursor does not advance".to_owned(),
-                ));
-            }
-            cursor = Some(next);
-        }
-        if newest_first.is_empty() {
-            return Err(Failure::PortableArchive(
-                "a snapshot record has no readable retained history".to_owned(),
-            ));
-        }
-        let mut seen_revisions = std::collections::BTreeSet::new();
-        let mut previous_sequence: Option<u64> = None;
-        for entry in &newest_first {
-            if !seen_revisions.insert(entry.record.revision_id) {
-                return Err(Failure::PortableArchive(
-                    "retained history repeats one revision".to_owned(),
-                ));
-            }
-            if previous_sequence.is_some_and(|previous| previous <= entry.commit.sequence) {
-                return Err(Failure::PortableArchive(
-                    "retained history is not in descending commit order".to_owned(),
-                ));
-            }
-            previous_sequence = Some(entry.commit.sequence);
-        }
+            Err(error) => return Err(error),
+        };
         let registry = mneme_core::SchemaRegistry::production();
-        let mut kept: Vec<PortableRevision> = Vec::new();
+        let mut kept: Vec<PortableRevision> = Vec::with_capacity(newest_first.len());
         for entry in newest_first {
             let revision_id = entry.record.revision_id;
-            let in_scope = entry.record.scope == *scope;
+            let is_in_scope = entry.record.scope == current.scope;
             let retained = portable_retained_source(&entry.record)?;
-            let pruned = pruning_targets.contains(&(entry.record.record_id, revision_id))
+            let is_pruned = retention
+                .pruning_targets
+                .contains(&(entry.record.record_id, revision_id))
                 || retained.as_ref().is_some_and(|source| {
-                    pruning_digests.contains(source.digest().as_bytes())
+                    retention
+                        .pruning_digests
+                        .contains(source.digest().as_bytes())
                 });
-            let forgotten = retained
-                .as_ref()
-                .is_some_and(|source| forgotten_content.contains(source.digest().as_bytes()));
-            let supported = mneme_core::validate_record_value(
-                &entry.record.to_value(),
-                &registry,
-                None,
-            )
-            .is_ok();
-            if in_scope && !pruned && !forgotten && supported {
+            let is_forgotten = retained.as_ref().is_some_and(|source| {
+                retention
+                    .forgotten_content
+                    .contains(source.digest().as_bytes())
+            });
+            let is_supported =
+                mneme_core::validate_record_value(&entry.record.to_value(), &registry, None)
+                    .is_ok();
+            if is_in_scope && !is_pruned && !is_forgotten && is_supported {
                 kept.push(PortableRevision {
                     envelope: entry.record,
                     commit: entry.commit,
                 });
                 continue;
             }
-            let reason = if !in_scope {
+            let reason = if !is_in_scope {
                 "foreign-scope-revision"
-            } else if pruned {
+            } else if is_pruned {
                 "pruned-revision"
-            } else if forgotten {
+            } else if is_forgotten {
                 "forgotten-content"
             } else {
                 "unsupported-schema"
             };
-            omissions.bump(reason, 1);
+            retention.omissions.bump(reason, 1);
         }
         if kept.is_empty() {
             return Ok(None);
@@ -501,18 +434,113 @@ impl crate::coordinator::Workspace {
         // omitted, older revisions cannot stand in for it: the record itself is
         // not restorable as current, so leave it out and say how much history
         // went with it.
-        if kept
-            .first()
-            .map(|entry| entry.envelope.revision_id)
-            != Some(current.revision_id)
-        {
-            omissions.bump("current-revision-unavailable", 1);
-            omissions.bump("record-history-dropped", kept.len() as u64);
+        if kept.first().map(|entry| entry.envelope.revision_id) != Some(current.revision_id) {
+            retention.omissions.bump("current-revision-unavailable", 1);
+            retention
+                .omissions
+                .bump("record-history-dropped", kept.len() as u64);
             return Ok(None);
         }
         kept.reverse();
         Ok(Some(kept))
     }
+    fn read_pinned_history(
+        &self,
+        record: mneme_core::RecordId,
+        sequence: u64,
+    ) -> crate::error::Result<Vec<crate::coordinator::RecordRevisionCommit>> {
+        let mut newest_first = Vec::new();
+        let mut cursor = None;
+        let mut pages = 0_usize;
+        let page_size = crate::coordinator::MAX_RECORD_REVISION_PAGE;
+        loop {
+            let page = self.record_revision_commits(record, cursor)?;
+            pages = pages.saturating_add(1);
+            if pages > MAX_PORTABLE_REVISIONS.div_ceil(page_size) {
+                return Err(crate::error::Failure::HistoryLimitExceeded);
+            }
+            newest_first
+                .try_reserve(page.entries.len())
+                .map_err(|_| crate::error::Failure::HistoryLimitExceeded)?;
+            newest_first.extend(
+                page.entries
+                    .into_iter()
+                    .filter(|entry| entry.commit.sequence <= sequence),
+            );
+            if newest_first.len() > MAX_PORTABLE_REVISIONS {
+                return Err(crate::error::Failure::HistoryLimitExceeded);
+            }
+            if !page.has_more {
+                break;
+            }
+            let next = page.next_before_sequence.ok_or_else(|| {
+                crate::error::Failure::PortableArchive(
+                    "history page has no continuation cursor".to_owned(),
+                )
+            })?;
+            if cursor.is_some_and(|previous| next >= previous) {
+                return Err(crate::error::Failure::PortableArchive(
+                    "history continuation cursor does not advance".to_owned(),
+                ));
+            }
+            cursor = Some(next);
+        }
+        if newest_first.is_empty() {
+            return Err(crate::error::Failure::PortableArchive(
+                "a snapshot record has no readable retained history".to_owned(),
+            ));
+        }
+        let mut seen_revisions = std::collections::BTreeSet::new();
+        let mut previous_sequence: Option<u64> = None;
+        for entry in &newest_first {
+            if !seen_revisions.insert(entry.record.revision_id) {
+                return Err(crate::error::Failure::PortableArchive(
+                    "retained history repeats one revision".to_owned(),
+                ));
+            }
+            if previous_sequence.is_some_and(|previous| previous <= entry.commit.sequence) {
+                return Err(crate::error::Failure::PortableArchive(
+                    "retained history is not in descending commit order".to_owned(),
+                ));
+            }
+            previous_sequence = Some(entry.commit.sequence);
+        }
+        Ok(newest_first)
+    }
+}
+
+type SourceInventory = std::collections::BTreeMap<[u8; 32], (mneme_core::ContentDigest, u64)>;
+
+fn add_sources(
+    blob_lengths: &mut SourceInventory,
+    revisions: &[PortableRevision],
+) -> crate::error::Result<()> {
+    for revision in revisions {
+        let Some(retained) = portable_retained_source(&revision.envelope)? else {
+            continue;
+        };
+        let length = retained.byte_length();
+        if length > MAX_PORTABLE_BLOB_BYTES {
+            return Err(crate::error::Failure::HistoryLimitExceeded);
+        }
+        let key = *retained.digest().as_bytes();
+        match blob_lengths.entry(key) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert((retained.digest(), length));
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                if entry.get().1 != length {
+                    return Err(crate::error::Failure::PortableArchive(
+                        "one source digest is declared with two lengths".to_owned(),
+                    ));
+                }
+            }
+        }
+        if blob_lengths.len() > MAX_PORTABLE_BLOBS {
+            return Err(crate::error::Failure::HistoryLimitExceeded);
+        }
+    }
+    Ok(())
 }
 
 /// Validate the archive's batches exactly as restore will submit them.
@@ -523,43 +551,44 @@ impl crate::coordinator::Workspace {
 /// export refuses instead of writing bytes restore would reject.
 fn validate_restore_batches(records: &[PortableRecord]) -> crate::error::Result<()> {
     let registry = mneme_core::SchemaRegistry::production();
-    let mut batches: std::collections::BTreeMap<
-        u64,
-        Vec<(&PortableRecord, &PortableRevision)>,
-    > = std::collections::BTreeMap::new();
-    for record in records {
-        for revision in &record.revisions {
-            batches
-                .entry(revision.commit.sequence)
-                .or_default()
-                .push((record, revision));
-        }
-    }
-    let mut previous: std::collections::BTreeMap<
-        mneme_core::RecordId,
-        mneme_core::RevisionId,
-    > = std::collections::BTreeMap::new();
+    let ordered = ordered_revisions(records);
+    let mut previous: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RevisionId> =
+        std::collections::BTreeMap::new();
     let mut index = mneme_core::SnapshotIndex::new();
-    for entries in batches.into_values() {
-        let mut values = Vec::with_capacity(entries.len());
-        for (record, revision) in &entries {
-            let mut envelope = revision.envelope.clone();
-            envelope.predecessor = previous.get(&record.record_id).copied();
-            values.push(envelope.to_value());
-        }
-        let validated = mneme_core::validate_batch(&values, &registry, Some(&index))
-            .map_err(|diagnostics| {
-                Failure::PortableArchive(format!(
+    for entries in ordered.chunk_by(same_batch) {
+        let values: Vec<_> = entries
+            .iter()
+            .map(|revision| {
+                let mut envelope = revision.envelope.clone();
+                envelope.predecessor = previous.insert(envelope.record_id, envelope.revision_id);
+                envelope.to_value()
+            })
+            .collect();
+        let validated = mneme_core::validate_batch(&values, &registry, Some(&index)).map_err(
+            |diagnostics| {
+                crate::error::Failure::PortableArchive(format!(
                     "this scope cannot be restored as a set of complete batches: {}",
                     mneme_core::render_diagnostics(&diagnostics)
                 ))
-            })?;
+            },
+        )?;
         index = validated.index;
-        for (record, revision) in entries {
-            previous.insert(record.record_id, revision.envelope.revision_id);
-        }
     }
     Ok(())
+}
+
+/// Original commit order, with a stable record order within each commit.
+fn ordered_revisions(records: &[PortableRecord]) -> Vec<&PortableRevision> {
+    let capacity = records.iter().map(|record| record.revisions.len()).sum();
+    let mut ordered = Vec::with_capacity(capacity);
+    ordered.extend(records.iter().flat_map(|record| &record.revisions));
+    ordered
+        .sort_unstable_by_key(|revision| (revision.commit.sequence, revision.envelope.record_id));
+    ordered
+}
+
+fn same_batch(a: &&PortableRevision, b: &&PortableRevision) -> bool {
+    a.commit.sequence == b.commit.sequence
 }
 
 /// The retained source a record revision names, when it retains bytes.
@@ -572,10 +601,11 @@ pub(crate) fn portable_retained_source(
     let Some(value) = record.payload.get("content") else {
         return Ok(None);
     };
-    let content = mneme_core::SourceContent::from_value(value, &mneme_core::Path::root())
-        .map_err(|diagnostic| {
-            Failure::PortableArchive(format!("source content: {diagnostic}"))
-        })?;
+    let content = mneme_core::SourceContent::from_value(value, &mneme_core::Path::root()).map_err(
+        |diagnostic| {
+            crate::error::Failure::PortableArchive(format!("source content: {diagnostic}"))
+        },
+    )?;
     match content {
         mneme_core::SourceContent::Retained(retained) => Ok(Some(retained)),
         mneme_core::SourceContent::Unavailable { .. } => Ok(None),

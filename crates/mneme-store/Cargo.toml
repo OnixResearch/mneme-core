@@ -10,12 +10,13 @@ mneme-kernel.workspace = true
 getrandom.workspace = true
 mneme-core.workspace = true
 rusqlite.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 num-bigint.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

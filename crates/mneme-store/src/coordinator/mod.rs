@@ -49,9 +49,9 @@ use crate::timekeeper::Clock;
 use crate::injectors::FaultInjector;
 
 mod commit;
+pub(crate) mod custody;
 mod history;
 mod jobs;
-pub(crate) mod portable;
 mod publishing;
 mod recovery;
 mod sweep;
@@ -159,7 +159,7 @@ const MAX_CACHED_RECORD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_HISTORY_REVISIONS: usize = 1_000_000;
 
 /// The maximum retained record revisions one history read returns.
-const MAX_RECORD_REVISION_PAGE: usize = 10;
+pub(crate) const MAX_RECORD_REVISION_PAGE: usize = 10;
 
 /// The on-disk identity of one verified blob file.
 ///

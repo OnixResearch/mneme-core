@@ -497,6 +497,7 @@ dependencies = [
  "mneme-kernel",
  "num-bigint",
  "rusqlite",
+ "rustix",
  "sha2",
  "tempfile",
  "thiserror",

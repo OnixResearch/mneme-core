@@ -15,7 +15,7 @@ pub mod error;
 pub mod injectors;
 pub mod lifecycle;
 pub mod payload;
-pub mod portable;
+pub mod portability;
 pub mod requests;
 pub mod timekeeper;
 

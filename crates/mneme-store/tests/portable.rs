@@ -4,10 +4,6 @@
 
 mod common;
 
-use mneme_store::portable::{
-    PortableExportReport, PortableOmission, PortableRestoreReport,
-};
-
 const V2_SOURCE: &[u8] = b"= Cedar Notes\n\nSecond committed revision.\n";
 const IMAGE: &[u8] = b"\x89PNG\r\n\x1a\nportable-image-bytes";
 const PRUNED_ALPHA: &[u8] = b"= Alpha source\n\nAlpha body.\n";
@@ -98,28 +94,24 @@ fn pruned_source_draft(
                 mneme_core::Symbol::from("availability"),
                 mneme_core::Value::symbol("pruned"),
             ),
-            (
-                mneme_core::Symbol::from("content-digest"),
-                prior.to_value(),
-            ),
+            (mneme_core::Symbol::from("content-digest"), prior.to_value()),
         ]),
     }
 }
 
-fn retained_bytes(
-    root: &std::path::Path,
-    record: &mneme_core::RecordEnvelope,
-) -> Vec<u8> {
+fn retained_bytes(root: &std::path::Path, record: &mneme_core::RecordEnvelope) -> Vec<u8> {
     let value = record.payload.get("content").expect("source content");
     let content = mneme_core::SourceContent::from_value(value, &mneme_core::Path::root())
         .expect("decoded content");
-    let mneme_core::SourceContent::Retained(retained) = content else {
-        panic!("expected retained source");
-    };
+    let retained = match content {
+        mneme_core::SourceContent::Retained(retained) => Some(retained),
+        mneme_core::SourceContent::Unavailable { .. } => None,
+    }
+    .expect("retained source");
     mneme_store::payload::read(root, retained.digest()).expect("verified source")
 }
 
-fn omission(report: &PortableExportReport, reason: &str) -> u64 {
+fn omission(report: &mneme_store::portability::PortableExportReport, reason: &str) -> u64 {
     report
         .omissions
         .iter()
@@ -128,7 +120,7 @@ fn omission(report: &PortableExportReport, reason: &str) -> u64 {
         .sum()
 }
 
-fn restore_omission(report: &PortableRestoreReport, reason: &str) -> u64 {
+fn restore_omission(report: &mneme_store::portability::PortableRestoreReport, reason: &str) -> u64 {
     report
         .omissions
         .iter()
@@ -137,7 +129,10 @@ fn restore_omission(report: &PortableRestoreReport, reason: &str) -> u64 {
         .sum()
 }
 
-fn omission_entry(report: &PortableExportReport, reason: &str) -> PortableOmission {
+fn omission_entry(
+    report: &mneme_store::portability::PortableExportReport,
+    reason: &str,
+) -> mneme_store::portability::PortableOmission {
     report
         .omissions
         .iter()
@@ -231,12 +226,8 @@ fn portable_backup_preserves_history_attachment_and_memory_records() {
     assert!(!report.checksum.is_empty());
     assert!(archive.is_file());
 
-    let restored_report = mneme_store::portable::restore(
-        &archive,
-        &restored,
-        config(2_000),
-    )
-    .expect("restore");
+    let restored_report =
+        mneme_store::portability::restore(&archive, &restored, config(2_000)).expect("restore");
     assert_eq!(restored_report.destination, restored);
     assert_eq!(restored_report.scope, scope());
     assert_eq!(restored_report.record_count, 6);
@@ -248,9 +239,7 @@ fn portable_backup_preserves_history_attachment_and_memory_records() {
         restored_report
             .publications
             .iter()
-            .filter(|publication| {
-                publication.state == mneme_store::PublicationState::Published
-            })
+            .filter(|publication| { publication.state == mneme_store::PublicationState::Published })
             .count(),
         2
     );
@@ -369,8 +358,8 @@ fn portable_restore_keeps_forgotten_identity_and_content_unreplayable() {
             .iter()
             .any(|omission| omission.reason == "forgotten-record")
     );
-    let restore = mneme_store::portable::restore(&archive, &restored, config(2_000))
-        .expect("restore");
+    let restore =
+        mneme_store::portability::restore(&archive, &restored, config(2_000)).expect("restore");
     assert_eq!(restore_omission(&restore, "forgotten-record"), 1);
 
     let mut restored_workspace = common::open(&restored, 3_000);
@@ -450,7 +439,10 @@ fn portable_export_refuses_a_scope_whose_remaining_records_dangle() {
             .contains("cannot be restored as a set of complete batches"),
         "{error}"
     );
-    assert!(!archive.exists(), "a refused export leaves no partial archive");
+    assert!(
+        !archive.exists(),
+        "a refused export leaves no partial archive"
+    );
 }
 
 #[test]
@@ -477,7 +469,7 @@ fn portable_restore_refuses_corruption_and_an_existing_destination() {
     std::fs::write(&flipped, &damaged).expect("write flipped");
     let destination = temp.path().join("flipped-restore");
     assert!(
-        mneme_store::portable::restore(&flipped, &destination, config(2_000)).is_err(),
+        mneme_store::portability::restore(&flipped, &destination, config(2_000)).is_err(),
         "a changed byte must be refused"
     );
     assert!(!destination.exists());
@@ -486,7 +478,7 @@ fn portable_restore_refuses_corruption_and_an_existing_destination() {
     std::fs::write(&truncated, &bytes[..bytes.len() - 5]).expect("write truncated");
     let destination = temp.path().join("truncated-restore");
     assert!(
-        mneme_store::portable::restore(&truncated, &destination, config(3_000)).is_err(),
+        mneme_store::portability::restore(&truncated, &destination, config(3_000)).is_err(),
         "a truncated body must be refused"
     );
     assert!(!destination.exists());
@@ -495,7 +487,7 @@ fn portable_restore_refuses_corruption_and_an_existing_destination() {
     std::fs::create_dir_all(&occupied).expect("occupied");
     std::fs::write(occupied.join("keep.txt"), b"user data").expect("keep");
     assert!(
-        mneme_store::portable::restore(&archive, &occupied, config(4_000)).is_err(),
+        mneme_store::portability::restore(&archive, &occupied, config(4_000)).is_err(),
         "an existing destination must be refused"
     );
     assert_eq!(
@@ -504,7 +496,7 @@ fn portable_restore_refuses_corruption_and_an_existing_destination() {
     );
 
     let destination = temp.path().join("valid-restore");
-    mneme_store::portable::restore(&archive, &destination, config(5_000))
+    mneme_store::portability::restore(&archive, &destination, config(5_000))
         .expect("valid restore");
     assert!(destination.join(mneme_store::LEDGER_FILE).is_file());
 }
@@ -585,8 +577,8 @@ fn portable_restore_keeps_pre_prune_history_and_blocks_pruned_bytes() {
     assert_eq!(report.revision_count, 2);
     assert_eq!(report.blob_count, 1);
 
-    let restore = mneme_store::portable::restore(&archive, &restored, config(2_000))
-        .expect("restore");
+    let restore =
+        mneme_store::portability::restore(&archive, &restored, config(2_000)).expect("restore");
     assert_eq!(restore.rewritten_predecessors, 1);
     let mut restored_workspace = common::open(&restored, 3_000);
     let snapshot = restored_workspace.snapshot().expect("snapshot");
@@ -597,10 +589,7 @@ fn portable_restore_keeps_pre_prune_history_and_blocks_pruned_bytes() {
         .expect("source");
     assert_eq!(source.revision_id, pruned);
     let histories = restored_workspace
-        .record_histories_of(
-            &snapshot,
-            &std::collections::BTreeSet::from([source_id]),
-        )
+        .record_histories_of(&snapshot, &std::collections::BTreeSet::from([source_id]))
         .expect("histories");
     let history = histories.get(&source_id).expect("history");
     assert_eq!(

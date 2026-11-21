@@ -7,22 +7,14 @@
 //! retention decisions an imported copy must keep. Blob bytes live in the
 //! archive body, never in the manifest.
 //!
-//! Parsing is structural; [`PortableManifest::validate`] then re-runs the
+//! Parsing is structural; [`super::PortableManifest::validate`] then re-runs the
 //! engine's envelope validator and checks the closure between histories,
 //! current records, blobs, and retention decisions. An archive that cannot be
 //! restored is refused before any destination is written.
 
-use crate::error::Failure;
-use crate::portable::{
-    MAX_PORTABLE_BLOBS, MAX_PORTABLE_BLOB_BYTES, MAX_PORTABLE_RECORDS,
-    MAX_PORTABLE_REVISIONS, PORTABLE_ARCHIVE_FORMAT, PORTABLE_ARCHIVE_VERSION, PortableBlob,
-    PortableCurrent, PortableManifest, PortableOmission, PortablePruning, PortableRecord,
-    PortableRevision, PortableSuppression,
-};
-
 /// A manifest-shaped failure.
-pub(super) fn invalid(message: impl Into<String>) -> Failure {
-    Failure::PortableArchive(message.into())
+pub(super) fn invalid(message: impl Into<String>) -> crate::error::Failure {
+    crate::error::Failure::PortableArchive(message.into())
 }
 
 /// Read a record with an exact label and field count.
@@ -35,9 +27,7 @@ fn record_fields<'a>(
         .as_record()
         .ok_or_else(|| invalid(format!("expected a <{label} …> record")))?;
     if record.label() != &mneme_core::Value::symbol(label) || record.fields().len() != count {
-        return Err(invalid(format!(
-            "expected <{label} …> with {count} fields"
-        )));
+        return Err(invalid(format!("expected <{label} …> with {count} fields")));
     }
     Ok(record.fields())
 }
@@ -52,7 +42,7 @@ fn sequence<'a>(
         .as_sequence()
         .ok_or_else(|| invalid(format!("{what} must be a sequence")))?;
     if items.len() > max {
-        return Err(Failure::HistoryLimitExceeded);
+        return Err(crate::error::Failure::HistoryLimitExceeded);
     }
     Ok(items)
 }
@@ -91,7 +81,7 @@ fn is_none(value: &mneme_core::Value) -> bool {
 /// Decode an optional revision identity.
 fn optional_revision(
     value: &mneme_core::Value,
-    what: &str,
+    what: &'static str,
 ) -> crate::error::Result<Option<mneme_core::RevisionId>> {
     if is_none(value) {
         return Ok(None);
@@ -108,7 +98,10 @@ fn parse_scope(value: &mneme_core::Value) -> crate::error::Result<mneme_core::Sc
 }
 
 /// Decode a content digest.
-fn digest(value: &mneme_core::Value, what: &str) -> crate::error::Result<mneme_core::ContentDigest> {
+fn digest(
+    value: &mneme_core::Value,
+    what: &'static str,
+) -> crate::error::Result<mneme_core::ContentDigest> {
     mneme_core::ContentDigest::from_value(value, &mneme_core::Path::root().field(what))
         .map_err(|diagnostic| invalid(format!("{what}: {diagnostic}")))
 }
@@ -121,9 +114,7 @@ fn require_source_digest(
     if value.profile() != mneme_core::EncodingProfile::RawBytesV1
         || value.boundary() != mneme_core::ValueBoundary::SourceBytes
     {
-        return Err(invalid(format!(
-            "{what} must be a raw source-byte digest"
-        )));
+        return Err(invalid(format!("{what} must be a raw source-byte digest")));
     }
     Ok(())
 }
@@ -136,11 +127,9 @@ fn label(value: &mneme_core::Value, what: &str) -> crate::error::Result<String> 
     let text = symbol.as_str();
     if text.is_empty()
         || text.len() > 64
-        || !text
-            .bytes()
-            .all(|byte| {
-                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
-            })
+        || !text.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+        })
     {
         return Err(invalid(format!(
             "{what} must be 1-64 lowercase ASCII letters, digits, hyphens or underscores"
@@ -167,39 +156,163 @@ fn retained_source(
     }
 }
 
-impl PortableManifest {
+fn validate_envelope(
+    envelope: &mneme_core::RecordEnvelope,
+    registry: &mneme_core::SchemaRegistry,
+) -> crate::error::Result<()> {
+    let value = envelope.to_value();
+    let validated =
+        mneme_core::validate_record_value(&value, registry, None).map_err(|diagnostics| {
+            invalid(format!(
+                "archive revision {} is not valid: {}",
+                envelope.revision_id,
+                mneme_core::render_diagnostics(&diagnostics)
+            ))
+        })?;
+    if &validated != envelope {
+        return Err(invalid(format!(
+            "archive revision {} does not roundtrip through the record validator",
+            envelope.revision_id
+        )));
+    }
+    Ok(())
+}
+
+fn verify_batch_fact(
+    batch_facts: &mut std::collections::BTreeMap<u64, crate::coordinator::RevisionCommit>,
+    commit: &crate::coordinator::RevisionCommit,
+) -> crate::error::Result<()> {
+    match batch_facts.entry(commit.sequence) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(commit.clone());
+        }
+        std::collections::btree_map::Entry::Occupied(entry) => {
+            if entry.get() != commit {
+                return Err(invalid(
+                    "archive names conflicting commit facts for one batch",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+type BlobLengths = std::collections::BTreeMap<[u8; 32], u64>;
+
+struct Inventory {
+    owners: std::collections::BTreeMap<mneme_core::RevisionId, mneme_core::RecordId>,
+    source_lengths: BlobLengths,
+    batches: std::collections::BTreeMap<u64, crate::coordinator::RevisionCommit>,
+    registry: mneme_core::SchemaRegistry,
+}
+
+impl Inventory {
+    fn scan(
+        &mut self,
+        record: &super::PortableRecord,
+        manifest_sequence: u64,
+    ) -> crate::error::Result<()> {
+        let mut previous_sequence = 0_u64;
+        for revision in &record.revisions {
+            let envelope = &revision.envelope;
+            if envelope.record_id != record.record_id || envelope.scope != record.scope {
+                return Err(invalid(
+                    "archive revision does not belong to its record and scope",
+                ));
+            }
+            if self.owners.len() >= super::MAX_PORTABLE_REVISIONS {
+                return Err(crate::error::Failure::HistoryLimitExceeded);
+            }
+            if self
+                .owners
+                .insert(envelope.revision_id, envelope.record_id)
+                .is_some()
+            {
+                return Err(invalid("archive repeats one record revision identity"));
+            }
+            let sequence = revision.commit.sequence;
+            if sequence <= previous_sequence || sequence > manifest_sequence {
+                return Err(invalid(
+                    "archive record revisions are not in admitted commit order",
+                ));
+            }
+            previous_sequence = sequence;
+            verify_batch_fact(&mut self.batches, &revision.commit)?;
+            validate_envelope(envelope, &self.registry)?;
+            if let Some(retained) = retained_source(envelope)? {
+                self.add_source(&retained)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn add_source(&mut self, retained: &mneme_core::RetainedSource) -> crate::error::Result<()> {
+        require_source_digest(&retained.digest(), "retained source digest")?;
+        let length = retained.byte_length();
+        if length > super::MAX_PORTABLE_BLOB_BYTES {
+            return Err(crate::error::Failure::HistoryLimitExceeded);
+        }
+        if let Some(previous) = self
+            .source_lengths
+            .insert(*retained.digest().as_bytes(), length)
+            && previous != length
+        {
+            return Err(invalid(
+                "archive declares conflicting lengths for one source digest",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl super::PortableManifest {
     /// Encode as `<mneme-portable-vault …>`.
     pub(super) fn to_value(&self) -> mneme_core::Value {
         mneme_core::Value::record_named(
-            PORTABLE_ARCHIVE_FORMAT,
+            super::PORTABLE_ARCHIVE_FORMAT,
             vec![
-                mneme_core::Value::integer(PORTABLE_ARCHIVE_VERSION),
+                mneme_core::Value::integer(super::PORTABLE_ARCHIVE_VERSION),
                 self.scope.to_value(),
                 self.revision.to_value(),
                 mneme_core::Value::integer(self.sequence),
                 mneme_core::Value::integer(self.generation),
                 mneme_core::Value::sequence(
-                    self.records.iter().map(PortableRecord::to_value).collect(),
+                    self.records
+                        .iter()
+                        .map(super::PortableRecord::to_value)
+                        .collect(),
                 ),
                 mneme_core::Value::sequence(
-                    self.current.iter().map(PortableCurrent::to_value).collect(),
+                    self.current
+                        .iter()
+                        .copied()
+                        .map(super::PortableCurrent::to_value)
+                        .collect(),
                 ),
                 mneme_core::Value::sequence(
-                    self.blobs.iter().map(PortableBlob::to_value).collect(),
+                    self.blobs
+                        .iter()
+                        .copied()
+                        .map(super::PortableBlob::to_value)
+                        .collect(),
                 ),
                 mneme_core::Value::sequence(
                     self.suppressions
                         .iter()
-                        .map(PortableSuppression::to_value)
+                        .map(super::PortableSuppression::to_value)
                         .collect(),
                 ),
                 mneme_core::Value::sequence(
-                    self.prunings.iter().map(PortablePruning::to_value).collect(),
+                    self.prunings
+                        .iter()
+                        .copied()
+                        .map(super::PortablePruning::to_value)
+                        .collect(),
                 ),
                 mneme_core::Value::sequence(
                     self.omissions
                         .iter()
-                        .map(PortableOmission::to_value)
+                        .map(super::PortableOmission::to_value)
                         .collect(),
                 ),
             ],
@@ -213,10 +326,10 @@ impl PortableManifest {
 
     /// Decode a structural manifest.
     pub(super) fn from_value(value: &mneme_core::Value) -> crate::error::Result<Self> {
-        let fields = record_fields(value, PORTABLE_ARCHIVE_FORMAT, 11)?;
+        let fields = record_fields(value, super::PORTABLE_ARCHIVE_FORMAT, 11)?;
         let version = unsigned(&fields[0], "archive version")?;
-        if version != PORTABLE_ARCHIVE_VERSION {
-            return Err(Failure::UnsupportedLayout(format!(
+        if version != super::PORTABLE_ARCHIVE_VERSION {
+            return Err(crate::error::Failure::UnsupportedLayout(format!(
                 "portable archive version {version} is not supported"
             )));
         }
@@ -226,36 +339,36 @@ impl PortableManifest {
             &mneme_core::Path::root().field("revision"),
         )
         .map_err(|diagnostic| invalid(format!("revision: {diagnostic}")))?;
-        let sequence = unsigned(&fields[3], "sequence")?;
+        let source_sequence = unsigned(&fields[3], "sequence")?;
         let generation = unsigned(&fields[4], "generation")?;
-        let records = sequence(&fields[5], "records", MAX_PORTABLE_RECORDS)?
+        let records = sequence(&fields[5], "records", super::MAX_PORTABLE_RECORDS)?
             .iter()
-            .map(PortableRecord::from_value)
+            .map(super::PortableRecord::from_value)
             .collect::<crate::error::Result<Vec<_>>>()?;
-        let current = sequence(&fields[6], "current records", MAX_PORTABLE_RECORDS)?
+        let current = sequence(&fields[6], "current records", super::MAX_PORTABLE_RECORDS)?
             .iter()
-            .map(PortableCurrent::from_value)
+            .map(super::PortableCurrent::from_value)
             .collect::<crate::error::Result<Vec<_>>>()?;
-        let blobs = sequence(&fields[7], "blobs", MAX_PORTABLE_BLOBS)?
+        let blobs = sequence(&fields[7], "blobs", super::MAX_PORTABLE_BLOBS)?
             .iter()
-            .map(PortableBlob::from_value)
+            .map(super::PortableBlob::from_value)
             .collect::<crate::error::Result<Vec<_>>>()?;
-        let suppressions = sequence(&fields[8], "suppressions", MAX_PORTABLE_REVISIONS)?
+        let suppressions = sequence(&fields[8], "suppressions", super::MAX_PORTABLE_REVISIONS)?
             .iter()
-            .map(PortableSuppression::from_value)
+            .map(super::PortableSuppression::from_value)
             .collect::<crate::error::Result<Vec<_>>>()?;
-        let prunings = sequence(&fields[9], "prunings", MAX_PORTABLE_REVISIONS)?
+        let prunings = sequence(&fields[9], "prunings", super::MAX_PORTABLE_REVISIONS)?
             .iter()
-            .map(PortablePruning::from_value)
+            .map(super::PortablePruning::from_value)
             .collect::<crate::error::Result<Vec<_>>>()?;
         let omissions = sequence(&fields[10], "omissions", 64)?
             .iter()
-            .map(PortableOmission::from_value)
+            .map(super::PortableOmission::from_value)
             .collect::<crate::error::Result<Vec<_>>>()?;
-        Ok(PortableManifest {
+        Ok(super::PortableManifest {
             scope,
             revision,
-            sequence,
+            sequence: source_sequence,
             generation,
             records,
             current,
@@ -271,100 +384,30 @@ impl PortableManifest {
         if self.generation == 0 {
             return Err(invalid("archive generation must be at least one"));
         }
-        let registry = mneme_core::SchemaRegistry::production();
-        let mut revision_ids = std::collections::BTreeSet::new();
-        let mut record_ids = std::collections::BTreeSet::new();
-        let mut referenced = std::collections::BTreeMap::new();
-        let mut revision_count = 0_usize;
+        let mut inventory = Inventory {
+            owners: std::collections::BTreeMap::new(),
+            source_lengths: BlobLengths::new(),
+            batches: std::collections::BTreeMap::new(),
+            registry: mneme_core::SchemaRegistry::production(),
+        };
         let mut previous_record: Option<mneme_core::RecordId> = None;
-        let mut batch_facts: std::collections::BTreeMap<
-            u64,
-            crate::coordinator::RevisionCommit,
-        > = std::collections::BTreeMap::new();
         for record in &self.records {
             if previous_record.is_some_and(|previous| previous >= record.record_id) {
                 return Err(invalid("archive records are not in unique identity order"));
             }
             previous_record = Some(record.record_id);
-            if !record_ids.insert(record.record_id) {
-                return Err(invalid("archive repeats one record identity"));
-            }
             if record.scope != self.scope {
                 return Err(invalid("archive record is outside the exported scope"));
             }
             if record.revisions.is_empty() {
                 return Err(invalid("archive record has no retained revision"));
             }
-            let mut previous_sequence: Option<u64> = None;
-            for revision in &record.revisions {
-                revision_count = revision_count.saturating_add(1);
-                if revision_count > MAX_PORTABLE_REVISIONS {
-                    return Err(Failure::HistoryLimitExceeded);
-                }
-                let envelope = &revision.envelope;
-                if envelope.record_id != record.record_id || envelope.scope != self.scope {
-                    return Err(invalid(
-                        "archive revision does not belong to its record and scope",
-                    ));
-                }
-                if !revision_ids.insert(envelope.revision_id) {
-                    return Err(invalid("archive repeats one record revision identity"));
-                }
-                if previous_sequence.is_some_and(|previous| previous >= revision.commit.sequence)
-                {
-                    return Err(invalid(
-                        "archive record revisions are not in increasing commit order",
-                    ));
-                }
-                previous_sequence = Some(revision.commit.sequence);
-                match batch_facts.entry(revision.commit.sequence) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(revision.commit.clone());
-                    }
-                    std::collections::btree_map::Entry::Occupied(entry) => {
-                        if entry.get() != &revision.commit {
-                            return Err(invalid(
-                                "archive names conflicting commit facts for one batch",
-                            ));
-                        }
-                    }
-                }
-                let value = envelope.to_value();
-                let validated = mneme_core::validate_record_value(&value, &registry, None)
-                    .map_err(|diagnostics| {
-                        invalid(format!(
-                            "archive revision {} is not valid: {}",
-                            envelope.revision_id,
-                            mneme_core::render_diagnostics(&diagnostics)
-                        ))
-                    })?;
-                if &validated != envelope {
-                    return Err(invalid(format!(
-                        "archive revision {} does not roundtrip through the record validator",
-                        envelope.revision_id
-                    )));
-                }
-                let Some(retained) = retained_source(envelope)? else {
-                    continue;
-                };
-                require_source_digest(&retained.digest(), "retained source digest")?;
-                if retained.byte_length() > MAX_PORTABLE_BLOB_BYTES {
-                    return Err(Failure::HistoryLimitExceeded);
-                }
-                if let Some((_, length)) =
-                    referenced.insert(*retained.digest().as_bytes(), retained.byte_length())
-                    && length != retained.byte_length()
-                {
-                    return Err(invalid(
-                        "archive declares conflicting lengths for one source digest",
-                    ));
-                }
-            }
+            inventory.scan(record, self.sequence)?;
         }
 
         self.validate_current()?;
-        self.validate_blobs(&referenced)?;
-        self.validate_retention(&referenced)?;
+        self.validate_blobs(&inventory.source_lengths)?;
+        self.validate_retention(&inventory)?;
         self.validate_omissions()?;
         Ok(())
     }
@@ -415,8 +458,8 @@ impl PortableManifest {
                 return Err(invalid("archive blobs are not in unique digest order"));
             }
             previous = Some(key);
-            if blob.length > MAX_PORTABLE_BLOB_BYTES {
-                return Err(Failure::HistoryLimitExceeded);
+            if blob.length > super::MAX_PORTABLE_BLOB_BYTES {
+                return Err(crate::error::Failure::HistoryLimitExceeded);
             }
             if declared.insert(key, blob.length).is_some() {
                 return Err(invalid("archive repeats one blob"));
@@ -438,10 +481,7 @@ impl PortableManifest {
     }
 
     /// Check retention decisions against the included content.
-    fn validate_retention(
-        &self,
-        referenced: &std::collections::BTreeMap<[u8; 32], u64>,
-    ) -> crate::error::Result<()> {
+    fn validate_retention(&self, inventory: &Inventory) -> crate::error::Result<()> {
         let mut suppressions = std::collections::BTreeSet::new();
         for suppression in &self.suppressions {
             if suppression.generation == 0 || suppression.generation > self.generation {
@@ -463,7 +503,7 @@ impl PortableManifest {
             if let Some(content) = suppression.content_digest {
                 require_source_digest(&content, "suppression content digest")?;
                 if suppression.mode == crate::lifecycle::SuppressionMode::Forgotten
-                    && referenced.contains_key(content.as_bytes())
+                    && inventory.source_lengths.contains_key(content.as_bytes())
                 {
                     return Err(invalid(
                         "archive includes source bytes a suppression declares forgotten",
@@ -476,27 +516,31 @@ impl PortableManifest {
             if suppression.mode != crate::lifecycle::SuppressionMode::Forgotten {
                 continue;
             }
-            for record in &self.records {
-                if record.record_id != suppression.target {
-                    continue;
-                }
-                if suppression.revision.is_none()
-                    || record
-                        .revisions
-                        .iter()
-                        .any(|revision| Some(revision.envelope.revision_id) == suppression.revision)
-                {
-                    return Err(invalid(
-                        "archive includes a record a suppression declares forgotten",
-                    ));
-                }
+            let is_present = match suppression.revision {
+                Some(revision) => inventory.owners.get(&revision) == Some(&suppression.target),
+                None => self
+                    .records
+                    .binary_search_by_key(&suppression.target, |record| record.record_id)
+                    .is_ok(),
+            };
+            if is_present {
+                return Err(invalid(
+                    "archive includes a record a suppression declares forgotten",
+                ));
             }
         }
 
+        self.validate_pruning(inventory)
+    }
+
+    fn validate_pruning(&self, inventory: &Inventory) -> crate::error::Result<()> {
         let mut prunings = std::collections::BTreeSet::new();
         for pruning in &self.prunings {
             require_source_digest(&pruning.digest, "pruning digest")?;
-            if referenced.contains_key(pruning.digest.as_bytes()) {
+            if inventory
+                .source_lengths
+                .contains_key(pruning.digest.as_bytes())
+            {
                 return Err(invalid(
                     "archive includes source bytes a pruning decision declares absent",
                 ));
@@ -504,13 +548,7 @@ impl PortableManifest {
             if !prunings.insert((pruning.source, pruning.revision)) {
                 return Err(invalid("archive repeats one pruning target"));
             }
-            if self.records.iter().any(|record| {
-                record.record_id == pruning.source
-                    && record
-                        .revisions
-                        .iter()
-                        .any(|revision| revision.envelope.revision_id == pruning.revision)
-            }) {
+            if inventory.owners.get(&pruning.revision) == Some(&pruning.source) {
                 return Err(invalid(
                     "archive includes a revision a pruning decision suppresses",
                 ));
@@ -528,9 +566,10 @@ impl PortableManifest {
             }
             if omission.reason.is_empty()
                 || omission.reason.len() > 64
-                || !omission.reason.bytes().all(|byte| {
-                    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
-                })
+                || !omission
+                    .reason
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
             {
                 return Err(invalid("archive omission reason is malformed"));
             }
@@ -543,7 +582,7 @@ impl PortableManifest {
     }
 }
 
-impl PortableRecord {
+impl super::PortableRecord {
     /// Encode as `<portable-record …>`.
     fn to_value(&self) -> mneme_core::Value {
         mneme_core::Value::record_named(
@@ -554,7 +593,7 @@ impl PortableRecord {
                 mneme_core::Value::sequence(
                     self.revisions
                         .iter()
-                        .map(PortableRevision::to_value)
+                        .map(super::PortableRevision::to_value)
                         .collect(),
                 ),
             ],
@@ -564,17 +603,19 @@ impl PortableRecord {
     /// Decode a record history.
     fn from_value(value: &mneme_core::Value) -> crate::error::Result<Self> {
         let fields = record_fields(value, "portable-record", 3)?;
-        let record_id = mneme_core::RecordId::from_value(
-            &fields[0],
-            &mneme_core::Path::root().field("record"),
-        )
-        .map_err(|diagnostic| invalid(format!("record: {diagnostic}")))?;
+        let record_id =
+            mneme_core::RecordId::from_value(&fields[0], &mneme_core::Path::root().field("record"))
+                .map_err(|diagnostic| invalid(format!("record: {diagnostic}")))?;
         let scope = parse_scope(&fields[1])?;
-        let revisions = sequence(&fields[2], "record revisions", MAX_PORTABLE_REVISIONS)?
-            .iter()
-            .map(PortableRevision::from_value)
-            .collect::<crate::error::Result<Vec<_>>>()?;
-        Ok(PortableRecord {
+        let revisions = sequence(
+            &fields[2],
+            "record revisions",
+            super::MAX_PORTABLE_REVISIONS,
+        )?
+        .iter()
+        .map(super::PortableRevision::from_value)
+        .collect::<crate::error::Result<Vec<_>>>()?;
+        Ok(super::PortableRecord {
             record_id,
             scope,
             revisions,
@@ -582,15 +623,12 @@ impl PortableRecord {
     }
 }
 
-impl PortableRevision {
+impl super::PortableRevision {
     /// Encode as `<portable-revision …>`.
     fn to_value(&self) -> mneme_core::Value {
         mneme_core::Value::record_named(
             "portable-revision",
-            vec![
-                self.envelope.to_value(),
-                self.commit.to_value(),
-            ],
+            vec![self.envelope.to_value(), self.commit.to_value()],
         )
     }
 
@@ -600,13 +638,13 @@ impl PortableRevision {
         let envelope = mneme_core::RecordEnvelope::from_value(&fields[0])
             .map_err(|diagnostics| invalid(mneme_core::render_diagnostics(&diagnostics)))?;
         let commit = crate::coordinator::RevisionCommit::from_value(&fields[1])?;
-        Ok(PortableRevision { envelope, commit })
+        Ok(super::PortableRevision { envelope, commit })
     }
 }
 
-impl PortableCurrent {
+impl super::PortableCurrent {
     /// Encode as `<portable-current …>`.
-    fn to_value(&self) -> mneme_core::Value {
+    fn to_value(self) -> mneme_core::Value {
         mneme_core::Value::record_named(
             "portable-current",
             vec![
@@ -620,7 +658,7 @@ impl PortableCurrent {
     /// Decode one current-record entry.
     fn from_value(value: &mneme_core::Value) -> crate::error::Result<Self> {
         let fields = record_fields(value, "portable-current", 3)?;
-        Ok(PortableCurrent {
+        Ok(super::PortableCurrent {
             record_id: mneme_core::RecordId::from_value(
                 &fields[0],
                 &mneme_core::Path::root().field("record"),
@@ -640,9 +678,9 @@ impl PortableCurrent {
     }
 }
 
-impl PortableBlob {
+impl super::PortableBlob {
     /// Encode as `<portable-blob …>`.
-    fn to_value(&self) -> mneme_core::Value {
+    fn to_value(self) -> mneme_core::Value {
         mneme_core::Value::record_named(
             "portable-blob",
             vec![
@@ -655,14 +693,14 @@ impl PortableBlob {
     /// Decode one blob descriptor.
     fn from_value(value: &mneme_core::Value) -> crate::error::Result<Self> {
         let fields = record_fields(value, "portable-blob", 2)?;
-        Ok(PortableBlob {
+        Ok(super::PortableBlob {
             digest: digest(&fields[0], "blob digest")?,
             length: unsigned(&fields[1], "blob length")?,
         })
     }
 }
 
-impl PortableSuppression {
+impl super::PortableSuppression {
     /// Encode as `<portable-suppression …>`.
     fn to_value(&self) -> mneme_core::Value {
         mneme_core::Value::record_named(
@@ -696,7 +734,7 @@ impl PortableSuppression {
         } else {
             Some(digest(&fields[4], "suppression digest")?)
         };
-        Ok(PortableSuppression {
+        Ok(super::PortableSuppression {
             target: mneme_core::RecordId::from_value(
                 &fields[0],
                 &mneme_core::Path::root().field("target"),
@@ -711,9 +749,9 @@ impl PortableSuppression {
     }
 }
 
-impl PortablePruning {
+impl super::PortablePruning {
     /// Encode as `<portable-pruning …>`.
-    fn to_value(&self) -> mneme_core::Value {
+    fn to_value(self) -> mneme_core::Value {
         mneme_core::Value::record_named(
             "portable-pruning",
             vec![
@@ -727,7 +765,7 @@ impl PortablePruning {
     /// Decode one pruning decision.
     fn from_value(value: &mneme_core::Value) -> crate::error::Result<Self> {
         let fields = record_fields(value, "portable-pruning", 3)?;
-        Ok(PortablePruning {
+        Ok(super::PortablePruning {
             source: mneme_core::RecordId::from_value(
                 &fields[0],
                 &mneme_core::Path::root().field("source"),
@@ -743,7 +781,7 @@ impl PortablePruning {
     }
 }
 
-impl PortableOmission {
+impl super::PortableOmission {
     /// Encode as `<portable-omission …>`.
     fn to_value(&self) -> mneme_core::Value {
         mneme_core::Value::record_named(
@@ -758,7 +796,7 @@ impl PortableOmission {
     /// Decode one omission.
     fn from_value(value: &mneme_core::Value) -> crate::error::Result<Self> {
         let fields = record_fields(value, "portable-omission", 2)?;
-        Ok(PortableOmission {
+        Ok(super::PortableOmission {
             reason: label(&fields[0], "omission reason")?,
             count: unsigned(&fields[1], "omission count")?,
         })
@@ -801,20 +839,21 @@ impl crate::coordinator::RevisionCommit {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn omission_labels_are_bounded_and_lowercase() {
-        let reason = PortableOmission {
+        let reason = crate::portability::PortableOmission {
             reason: "foreign-scope-record".to_owned(),
             count: 1,
         };
-        let decoded = PortableOmission::from_value(&reason.to_value()).expect("roundtrip");
+        let decoded = crate::portability::PortableOmission::from_value(&reason.to_value())
+            .expect("roundtrip");
         assert_eq!(decoded, reason);
-        let invalid_reason = PortableOmission {
+        let invalid_reason = crate::portability::PortableOmission {
             reason: "Upper Case".to_owned(),
             count: 1,
         };
-        assert!(PortableOmission::from_value(&invalid_reason.to_value()).is_err());
+        assert!(
+            crate::portability::PortableOmission::from_value(&invalid_reason.to_value()).is_err()
+        );
     }
 }

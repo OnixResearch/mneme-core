@@ -174,6 +174,7 @@ impl ApiError {
                 "request is blocked by current retention state",
             ),
             mneme_store::Failure::InvalidCommand(_)
+            | mneme_store::Failure::PortableArchive(_)
             | mneme_store::Failure::ScopeMismatch { .. }
             | mneme_store::Failure::MissingSource { .. }
             | mneme_store::Failure::SourceLengthMismatch { .. }
