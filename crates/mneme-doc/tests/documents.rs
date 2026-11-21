@@ -948,6 +948,183 @@ fn markdown_notes_bind_through_front_matter_and_keep_links_as_text() {
     );
 }
 
+/// Import `body` as an unbound Markdown note and report its derived title,
+/// extracted paragraphs and preview HTML.
+fn note_outcome(body: &str) -> (String, Vec<String>, String) {
+    let mut harness = Harness::new();
+    harness.write_file("notes/note.md", body.as_bytes());
+    let imported = harness.import(harness.request("note", None, "notes/note.md", None));
+    let mut documents = mneme_doc::Documents::new(&mut harness.workspace);
+    let title = documents
+        .document(imported.document_id)
+        .expect("document")
+        .title;
+    let paragraphs = documents
+        .extract_proposals(imported.document_id)
+        .expect("extract")
+        .into_iter()
+        .map(|candidate| candidate.text)
+        .collect();
+    let html = documents
+        .preview(imported.document_id, None, render_config())
+        .expect("preview")
+        .html;
+    (title, paragraphs, html)
+}
+
+#[test]
+fn markdown_four_backtick_fence_hides_its_example_from_title_extraction_and_preview() {
+    let body = concat!(
+        "````markdown\n",
+        "```\n",
+        "# Example heading\n",
+        "Example content.\n",
+        "````\n",
+        "# Actual note\n",
+        "Actual note text.\n",
+    );
+    let (title, paragraphs, html) = note_outcome(body);
+    assert_eq!(title, "Actual note");
+    assert_eq!(paragraphs, vec!["Actual note text.".to_owned()]);
+    assert!(
+        html.contains(
+            "<pre><code class=\"language-markdown\">```\n# Example heading\nExample content.</code></pre>"
+        ),
+        "{html}"
+    );
+    assert!(html.contains("<h1>Actual note</h1>"), "{html}");
+    assert!(html.contains("<p>Actual note text.</p>"), "{html}");
+    assert!(!html.contains("<h1>Example heading</h1>"), "{html}");
+    assert!(!html.contains("<p>Example content.</p>"), "{html}");
+}
+
+#[test]
+fn markdown_tilde_fence_ignores_a_backtick_run_inside_it() {
+    let body = concat!(
+        "~~~text\n",
+        "```\n",
+        "not a closer\n",
+        "~~~\n",
+        "# Tilde note\n",
+        "Tilde prose.\n",
+    );
+    let (title, paragraphs, html) = note_outcome(body);
+    assert_eq!(title, "Tilde note");
+    assert_eq!(paragraphs, vec!["Tilde prose.".to_owned()]);
+    assert!(
+        html.contains("<pre><code class=\"language-text\">```\nnot a closer</code></pre>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn markdown_shorter_inner_run_stays_code_and_a_longer_closer_closes() {
+    let shorter = concat!(
+        "````\n",
+        "```\n",
+        "short run\n",
+        "````\n",
+        "# Short run note\n",
+        "Short run prose.\n",
+    );
+    let (title, paragraphs, html) = note_outcome(shorter);
+    assert_eq!(title, "Short run note");
+    assert_eq!(paragraphs, vec!["Short run prose.".to_owned()]);
+    assert!(
+        html.contains("<pre><code>```\nshort run</code></pre>"),
+        "{html}"
+    );
+
+    let longer = concat!(
+        "```\n",
+        "longer closer\n",
+        "`````\n",
+        "# Longer closer note\n",
+        "Longer closer prose.\n",
+    );
+    let (title, paragraphs, html) = note_outcome(longer);
+    assert_eq!(title, "Longer closer note");
+    assert_eq!(paragraphs, vec!["Longer closer prose.".to_owned()]);
+    assert!(
+        html.contains("<pre><code>longer closer</code></pre>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn markdown_closing_fence_rejects_a_nonblank_suffix() {
+    let body = concat!(
+        "```\n",
+        "code\n",
+        "``` rust\n",
+        "still code\n",
+        "```\n",
+        "# Suffix note\n",
+        "Suffix prose.\n",
+    );
+    let (title, paragraphs, html) = note_outcome(body);
+    assert_eq!(title, "Suffix note");
+    assert_eq!(paragraphs, vec!["Suffix prose.".to_owned()]);
+    assert!(
+        html.contains("<pre><code>code\n``` rust\nstill code</code></pre>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn markdown_unterminated_fence_consumes_the_rest_of_the_note() {
+    let body = concat!(
+        "```\n",
+        "unclosed code\n",
+        "# Not a heading\n",
+        "Not prose.\n",
+    );
+    let (title, paragraphs, html) = note_outcome(body);
+    assert_eq!(title, "note");
+    assert!(paragraphs.is_empty(), "{paragraphs:?}");
+    assert_eq!(
+        html,
+        "<pre><code>unclosed code\n# Not a heading\nNot prose.</code></pre>"
+    );
+}
+
+#[test]
+fn markdown_indented_fence_and_full_info_string_are_preserved() {
+    let body = concat!(
+        "  ~~~~~ rust extra\n",
+        "  # example\n",
+        "  ~~~~~\n",
+        "# Indented note\n",
+        "Indented prose.\n",
+    );
+    let (title, paragraphs, html) = note_outcome(body);
+    assert_eq!(title, "Indented note");
+    assert_eq!(paragraphs, vec!["Indented prose.".to_owned()]);
+    assert!(
+        html.contains("<pre><code class=\"language-rust extra\">  # example</code></pre>"),
+        "{html}"
+    );
+}
+
+#[test]
+fn markdown_backtick_info_string_with_a_backtick_is_not_a_fence() {
+    let body = concat!(
+        "``` not`a fence\n",
+        "# Backtick info note\n",
+        "Backtick info prose.\n",
+    );
+    let (title, paragraphs, html) = note_outcome(body);
+    assert_eq!(title, "Backtick info note");
+    assert_eq!(
+        paragraphs,
+        vec![
+            "``` not`a fence".to_owned(),
+            "Backtick info prose.".to_owned()
+        ]
+    );
+    assert!(!html.contains("<pre>"), "{html}");
+}
+
 #[test]
 fn publication_recovery_does_not_overwrite_an_external_edit() {
     let mut harness = Harness::new();

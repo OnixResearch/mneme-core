@@ -7,6 +7,10 @@
 //! takes its title from its first `# ` heading outside fenced code. Markdown has
 //! no include or anchor syntax: `include::` and `[[...]]` stay text, and `[[...]]`
 //! renders as a wiki link.
+//!
+//! A fenced code block is classified once for titles, authored paragraphs and
+//! the preview: a closer repeats the opener's marker character, runs at least
+//! as long, and is followed only by spaces or tabs.
 
 /// Whether a logical path names a Markdown note: `.md` or `.markdown`.
 pub fn is_note_path(path: &str) -> bool {
@@ -85,12 +89,93 @@ fn unquote(value: &str) -> &str {
         .unwrap_or(value)
 }
 
-/// Whether a line opens or closes fenced code, and with which marker.
-fn fence(line: &str) -> Option<&'static str> {
+/// The marker character of a fenced code block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fence {
+    Backtick,
+    Tilde,
+}
+
+impl Fence {
+    /// The byte that a run of this marker repeats.
+    fn byte(self) -> u8 {
+        match self {
+            Fence::Backtick => b'`',
+            Fence::Tilde => b'~',
+        }
+    }
+}
+
+/// The role of one body line relative to fenced code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LineKind<'a> {
+    /// Outside every fence.
+    Prose,
+    /// An opening fence, with the complete info string after its run.
+    Opening { info: &'a str },
+    /// A line inside a fence, including a shorter or foreign run.
+    Code,
+    /// The same marker, at least as long as the opener, then blanks only.
+    Closing,
+}
+
+/// The marker and complete run length of a fence line, or `None` for an
+/// ordinary line.
+///
+/// Any leading whitespace is allowed and ignored, matching the indentation
+/// support this parser has always had. The run is at least three characters.
+fn fence(line: &str) -> Option<(Fence, usize)> {
     let trimmed = line.trim_start();
-    ["```", "~~~"]
-        .into_iter()
-        .find(|marker| trimmed.starts_with(marker))
+    let marker = if trimmed.starts_with('`') {
+        Fence::Backtick
+    } else if trimmed.starts_with('~') {
+        Fence::Tilde
+    } else {
+        return None;
+    };
+    let run = trimmed
+        .bytes()
+        .take_while(|byte| *byte == marker.byte())
+        .count();
+    (run >= 3).then_some((marker, run))
+}
+
+/// Whether `rest` after a fence run holds only spaces and tabs.
+fn is_blank(rest: &str) -> bool {
+    rest.chars()
+        .all(|character| matches!(character, ' ' | '\t'))
+}
+
+/// Classify one line, advancing the open fence state.
+///
+/// A backtick opener whose info string contains a backtick is not a fence, as
+/// CommonMark requires; a tilde info string may hold anything. A closer must
+/// repeat the opener's marker, run at least as long, and end in blanks only.
+fn classify_line<'a>(text: &'a str, open: &mut Option<(Fence, usize)>) -> LineKind<'a> {
+    let Some((marker, run)) = fence(text) else {
+        return match open {
+            Some(_) => LineKind::Code,
+            None => LineKind::Prose,
+        };
+    };
+    let rest = text.trim_start().get(run..).unwrap_or_default();
+    match *open {
+        Some((open_marker, open_run)) => {
+            if marker == open_marker && run >= open_run && is_blank(rest) {
+                *open = None;
+                LineKind::Closing
+            } else {
+                LineKind::Code
+            }
+        }
+        None => {
+            if marker == Fence::Backtick && rest.contains('`') {
+                return LineKind::Prose;
+            }
+            *open = Some((marker, run));
+            LineKind::Opening { info: rest.trim() }
+        }
+    }
 }
 
 /// The level and text of an ATX heading: one to six `#` and a space.
@@ -101,33 +186,21 @@ fn heading(line: &str) -> Option<(usize, &str)> {
     is_heading.then(|| (level, rest.trim().trim_end_matches('#').trim_end()))
 }
 
-/// The lines after the front matter, with whether each is inside fenced code.
+/// The lines after the front matter, each with its fence role.
 fn body_lines<'a>(
     lines: &'a [crate::asciidoc::Line<'a>],
-) -> impl Iterator<Item = (bool, &'a crate::asciidoc::Line<'a>)> {
+) -> impl Iterator<Item = (LineKind<'a>, &'a crate::asciidoc::Line<'a>)> {
     let skip = front_matter(lines).map_or(0, |matter| {
         lines
             .iter()
             .position(|line| line.start == matter.close_start)
             .map_or(0, |index| index.saturating_add(1))
     });
-    let mut open: Option<&'static str> = None;
-    lines.iter().skip(skip).map(move |line| {
-        let marker = fence(line.text);
-        let is_code = match (open, marker) {
-            (Some(current), Some(found)) if current == found => {
-                open = None;
-                true
-            }
-            (Some(_), _) => true,
-            (None, Some(found)) => {
-                open = Some(found);
-                true
-            }
-            (None, None) => false,
-        };
-        (is_code, line)
-    })
+    let mut open: Option<(Fence, usize)> = None;
+    lines
+        .iter()
+        .skip(skip)
+        .map(move |line| (classify_line(line.text, &mut open), line))
 }
 
 /// Parse the front matter title and literal entity binding, or the first
@@ -174,7 +247,7 @@ pub fn parse_header(
     }
     if header.title.is_none() {
         header.title = body_lines(&lines)
-            .filter(|(is_code, _)| !is_code)
+            .filter(|(kind, _)| matches!(kind, LineKind::Prose))
             .find_map(|(_, line)| heading(line.text).filter(|(level, _)| *level == 1))
             .map(|(_, title)| title.to_owned())
             .filter(|title| !title.is_empty());
@@ -192,7 +265,8 @@ pub fn scan_paragraphs(text: &str) -> Vec<crate::asciidoc::Paragraph> {
     let lines = crate::asciidoc::lines(text);
     let mut paragraphs = Vec::with_capacity(lines.len());
     let mut current: Option<(usize, usize, usize)> = None;
-    for (is_code, line) in body_lines(&lines) {
+    for (kind, line) in body_lines(&lines) {
+        let is_code = !matches!(kind, LineKind::Prose);
         let content = line.text.trim();
         let is_text = !is_code
             && !content.is_empty()
@@ -335,23 +409,30 @@ pub(crate) fn render(text: &str, max_bytes: usize) -> Rendered {
     let lines = crate::asciidoc::lines(text);
     let mut html = String::with_capacity(text.len().min(max_bytes).saturating_add(64));
     let mut open: Option<Block> = None;
-    let mut fence_marker: Option<&'static str> = None;
-    for (_, line) in body_lines(&lines) {
+    for (kind, line) in body_lines(&lines) {
         if html.len() > max_bytes {
             return Rendered {
                 html,
                 is_truncated: true,
             };
         }
-        let Some(marker) = fence_marker else {
-            open = render_line(&mut html, open, line.text, &mut fence_marker);
-            continue;
-        };
-        if fence(line.text) == Some(marker) {
-            fence_marker = None;
-            flush_block(&mut html, open.take());
-        } else if let Some(block) = open.as_mut() {
-            block.lines.push(line.text.to_owned());
+        match kind {
+            LineKind::Opening { info } => {
+                flush_block(&mut html, open.take());
+                open = Some(Block {
+                    kind: Kind::Code {
+                        language: info.chars().take(32).collect(),
+                    },
+                    lines: Vec::new(),
+                });
+            }
+            LineKind::Code => {
+                if let Some(block) = open.as_mut() {
+                    block.lines.push(line.text.to_owned());
+                }
+            }
+            LineKind::Closing => flush_block(&mut html, open.take()),
+            LineKind::Prose => open = render_line(&mut html, open, line.text),
         }
     }
     flush_block(&mut html, open);
@@ -362,24 +443,8 @@ pub(crate) fn render(text: &str, max_bytes: usize) -> Rendered {
 }
 
 /// Feed one line outside fenced code to the open block.
-fn render_line(
-    html: &mut String,
-    open: Option<Block>,
-    raw: &str,
-    fence_marker: &mut Option<&'static str>,
-) -> Option<Block> {
+fn render_line(html: &mut String, open: Option<Block>, raw: &str) -> Option<Block> {
     let content = raw.trim();
-    if let Some(marker) = fence(raw) {
-        flush_block(html, open);
-        *fence_marker = Some(marker);
-        let language = content.trim_start_matches(marker).trim();
-        return Some(Block {
-            kind: Kind::Code {
-                language: language.chars().take(32).collect(),
-            },
-            lines: Vec::new(),
-        });
-    }
     if content.is_empty() {
         flush_block(html, open);
         return None;
