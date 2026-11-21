@@ -267,6 +267,9 @@ push to `main`, every pull request, and on demand. It asks for `contents: read`
 only, uses no repository secret, persists no checkout credential, and has no
 `pull_request_target` workflow. The checkout and Nix installer actions are
 pinned to full commits, and every flake input is pinned in `flake.lock`.
+The pinned Octet UI library also fetches a public `bounded-exec` revision
+directly over SSH. The workflow rewrites that one URL to anonymous HTTPS
+in the runner's Git configuration; it does not change the revision or hash.
 
 The job runs the same gate as a local checkout:
 
@@ -288,9 +291,9 @@ the pinned shell with `nix develop --command just proofs`, as described above;
 the consumer-side completion gate should execute
 `scripts/verify-kernel-proofs.mjs` from the exact revision it compiles.
 
-To reproduce the CI gate locally, run the same `nix flake check` command from a
-clone with network access to the pinned public inputs; no configuration,
-secret, or SSH agent is required.
+To reproduce the CI gate locally without an SSH key, use the same transport
+rewrite in your Git configuration and the command above. No repository secret
+or SSH agent is needed.
 
 ## Repository status and licensing
 
