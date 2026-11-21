@@ -9,7 +9,7 @@
 #     nix develop --command just proofs
 #
 # No repository secret is used. The job needs only the default read-only
-# workflow token and the public HTTPS inputs already pinned in flake.lock.
+# workflow token and public inputs. See the transitive source rewrite below.
 name: verify
 
 on:
@@ -57,6 +57,13 @@ jobs:
         uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
           install_url: https://releases.nixos.org/nix/nix-2.36.0/install
+
+      # The pinned Octet UI library fetches bounded-exec directly with an SSH
+      # URL (not through its flake lock). Keep its exact revision and hash.
+      - name: Fetch the public bounded-exec source without an SSH key
+        run: |
+          git config --global url."https://github.com/OnixResearch/bounded-exec.git".insteadOf \
+            "ssh://git@github.com/OnixResearch/bounded-exec.git"
 
       - name: Run the repository's Nix gates
         run: >-
