@@ -89,7 +89,7 @@ impl super::Workspace {
     /// pruned* records the digest it was pruned at; exporting that pair lets the
     /// restored copy identify and suppress the pre-prune revision instead of
     /// serving its bytes.
-    fn ledger_prunings(&self) -> crate::error::Result<Vec<RestoredPruning>> {
+    pub(super) fn ledger_prunings(&self) -> crate::error::Result<Vec<RestoredPruning>> {
         let revision = self.current_revision()?;
         let bindings =
             current_source_bindings(&self.connection, &self.root, revision, self.facts())?;
@@ -495,8 +495,8 @@ struct RestoredLedger {
 /// One pruning decision carried by a suppression ledger.
 #[derive(Clone, Copy)]
 pub(super) struct RestoredPruning {
-    source: mneme_core::RecordId,
-    digest: mneme_core::ContentDigest,
+    pub(super) source: mneme_core::RecordId,
+    pub(super) digest: mneme_core::ContentDigest,
 }
 
 fn pruning_to_value(pruning: &RestoredPruning) -> mneme_core::Value {

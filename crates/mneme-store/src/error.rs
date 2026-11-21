@@ -105,6 +105,9 @@ pub enum Failure {
 
     #[error("system randomness unavailable: {0}")]
     Random(String),
+
+    #[error("portable vault archive is invalid: {0}")]
+    PortableArchive(String),
 }
 
 impl Failure {

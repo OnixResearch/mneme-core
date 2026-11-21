@@ -51,6 +51,7 @@ use crate::injectors::FaultInjector;
 mod commit;
 mod history;
 mod jobs;
+pub(crate) mod portable;
 mod publishing;
 mod recovery;
 mod sweep;
