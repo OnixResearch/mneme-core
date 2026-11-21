@@ -3,7 +3,27 @@
 
   inputs = {
     # The pinned Octet runner and Dylint library are development tools only.
-    octet.url = "git+ssh://git@github.com/OnixResearch/octet?rev=2bdd581980eef7f6ec8363ffa20ab9f3c798c9ee";
+    # Octet and its Cairn, Valence and artifact inputs are public; pin the same
+    # revisions over HTTPS and redirect Octet's SSH-only declarations to these
+    # inputs, so every flake command needs no SSH key or other credential.
+    octet = {
+      url = "git+https://github.com/OnixResearch/octet?rev=2bdd581980eef7f6ec8363ffa20ab9f3c798c9ee";
+      inputs.cairn.follows = "cairn";
+      inputs.valence.follows = "valence";
+    };
+    cairn = {
+      url = "git+https://github.com/OnixResearch/cairn.git?ref=change/hash-bound-cairn-migration&rev=695124d459574ba7aeba6097310d237f393c243c";
+      inputs.nixpkgs.follows = "octet/nixpkgs";
+      inputs.artifact.follows = "artifact";
+    };
+    valence = {
+      url = "git+https://github.com/OnixResearch/valence.git?ref=review/source-token-v2-7546a78b&rev=7546a78b4eeef8686c6837e187aa12420f4f03bb";
+      inputs.nixpkgs.follows = "octet/nixpkgs";
+    };
+    artifact = {
+      url = "git+https://github.com/OnixResearch/onix-artifact.git?rev=e41340bec587b6d049b5cc518ec7db925dde84be";
+      flake = false;
+    };
     # Pinned Charon/Aeneas pair and the Rust nightly Charon is built against.
     aeneas.url = "github:AeneasVerif/aeneas/505b6ca35217e7be5c96c3e2f8045edfbdf47291";
     crane.url = "github:ipetkov/crane";

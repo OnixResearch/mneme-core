@@ -212,10 +212,11 @@ that unit-level completion is not detected-block or exhaustive-page coverage.
 
 ## Development and verification
 
-The source can be cloned without authentication. The pinned Nix environment
-still fetches private OnixResearch verification tooling (Octet and its
-dependencies), so those Nix commands require authorized SSH access. The Cargo
-library workspace itself uses only local crates and crates.io dependencies.
+The source can be cloned without authentication. Every pinned flake input,
+including Octet and its Cairn, Valence and artifact dependencies, is fetched
+over HTTPS from its public repository, so the Nix commands need no SSH key,
+token, or other credential. The Cargo library workspace itself uses only local
+crates and crates.io dependencies.
 
 Enter the pinned development shell to obtain Rust 1.99.1, the pinned Octet runner, the real Scryer Prolog test engine, and—on `x86_64-linux`—the matching Charon/Aeneas/Lean tools:
 
@@ -247,7 +248,7 @@ cargo test --locked --workspace --doc --all-features
 
 `just octet` runs the strict required profile in `dylint.toml`, without a baseline. `just octet-all` runs the full-catalog profile from `dylint-all.toml` in an isolated Nix source copy and compares findings with `octet-baseline.json`, keeping the strict profile untouched. Baseline debt does not suppress strict findings.
 
-The all-lint baseline contains 1,834 accepted finding identities in the same
+The all-lint baseline contains 1,869 accepted finding identities in the same
 ten lint families as the extracted engine-owned baseline (1,228 identities):
 issue-driven additions were refactored until no finding outside those families
 remained, and the rest were reviewed before regeneration with the pinned
@@ -258,6 +259,38 @@ profile must remain clean without a baseline.
 `just proofs` runs the preserved source-to-Lean translation and audits all 128 inventoried kernel theorems against the Rust kernel, checked-in translation, and allowed Lean axioms. It is intentionally a developer/consumer workflow, not a sandboxed Nix check: Lake may fetch proof dependencies. Run it from the pinned development shell on `x86_64-linux`; the shell selects the Charon-matched extraction toolchain. The consumer-side completion gate should execute the verifier from the exact Git revision it compiles.
 
 `nix flake check` provides the standalone Nix Rust build, Rust formatting check, and both Octet profiles. The flake and development shell require no desktop, GUI toolkit, or sibling application checkout.
+
+### Continuous integration
+
+[`.github/workflows/verify.yml`](.github/workflows/verify.yml) runs on every
+push to `main`, every pull request, and on demand. It asks for `contents: read`
+only, uses no repository secret, persists no checkout credential, and has no
+`pull_request_target` workflow. The checkout and Nix installer actions are
+pinned to full commits, and every flake input is pinned in `flake.lock`.
+
+The job runs the same gate as a local checkout:
+
+```sh
+nix flake check --no-update-lock-file --keep-going --max-jobs 2
+```
+
+That is the standalone Nix Rust build, Rust formatting check, and both Octet
+profiles, including the workspace's own Clippy, test, and doctest commands. It
+installs Nix 2.36.0 on `ubuntu-24.04` and runs with a 240-minute timeout after
+reclaiming disk from preinstalled toolchains the job does not use. A failing
+check fails the job.
+
+The proof gate is not run by CI: `just proofs` needs the Charon, Aeneas and Lean
+tools from the `x86_64-linux` development shell, builds the Lean proofs, and
+Lake may fetch proof dependencies, so it remains a separate
+developer/consumer workflow rather than a sandboxed flake check. Run it from
+the pinned shell with `nix develop --command just proofs`, as described above;
+the consumer-side completion gate should execute
+`scripts/verify-kernel-proofs.mjs` from the exact revision it compiles.
+
+To reproduce the CI gate locally, run the same `nix flake check` command from a
+clone with network access to the pinned public inputs; no configuration,
+secret, or SSH agent is required.
 
 ## Repository status and licensing
 

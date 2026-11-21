@@ -1,0 +1,67 @@
+# Verification gates for the public engine.
+#
+# Runs the repository's own `nix flake check` on every push to main, every pull
+# request, and on demand. The proof gate (`just proofs`) is intentionally not
+# run here: it needs the Charon/Aeneas/Lean development shell, builds the Lean
+# proofs, and lets Lake fetch proof dependencies, so it remains a separate
+# developer/consumer workflow. Run it from the pinned shell with:
+#
+#     nix develop --command just proofs
+#
+# No repository secret is used. The job needs only the default read-only
+# workflow token and the public HTTPS inputs already pinned in flake.lock.
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read # Check out the verification subject.
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  nix-flake-check:
+    name: nix flake check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Check out the revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Refuse credential-bearing flake inputs
+        run: |
+          if grep -n 'ssh://' flake.lock; then
+            echo "::error::flake.lock pins an SSH input and this job has no credentials"
+            exit 1
+          fi
+
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          df -h / /tmp
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.36.0/install
+
+      - name: Run the repository's Nix gates
+        run: >-
+          nix flake check
+          --no-update-lock-file
+          --keep-going
+          --max-jobs 2
+          --print-build-logs
