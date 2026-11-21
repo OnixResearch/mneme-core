@@ -80,7 +80,10 @@ fn hex(bytes: &[u8; 32]) -> String {
 
 impl ArchiveWriter {
     /// Create a temporary sibling of `target`; an existing target is refused.
-    pub(super) fn create(target: &std::path::Path) -> crate::error::Result<Self> {
+    pub(super) fn create(
+        target: &std::path::Path,
+        forbidden_root: Option<&std::path::Path>,
+    ) -> crate::error::Result<Self> {
         let parent = target
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -91,6 +94,14 @@ impl ArchiveWriter {
             Failure::InvalidCommand("archive destination has no file name".to_owned())
         })?;
         let target = parent.join(name);
+        if let Some(root) = forbidden_root
+            && target.starts_with(root)
+        {
+            return Err(Failure::InvalidCommand(format!(
+                "archive destination {} lies inside the live workspace",
+                target.display()
+            )));
+        }
         if entry_exists(&target) {
             return Err(Failure::InvalidCommand(format!(
                 "archive destination {} already exists",

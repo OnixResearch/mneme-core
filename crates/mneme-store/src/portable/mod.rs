@@ -194,7 +194,7 @@ pub(crate) struct PortableRetentionExport {
         mneme_core::RecordId,
         mneme_core::RevisionId,
     )>,
-    pub pruning_digests: std::collections::BTreeSet<(mneme_core::RecordId, [u8; 32])>,
+    pub pruning_digests: std::collections::BTreeSet<[u8; 32]>,
     pub omissions: OmissionCounts,
 }
 
@@ -324,6 +324,7 @@ impl crate::coordinator::Workspace {
             .iter()
             .map(|record| record.revisions.len())
             .sum::<usize>();
+        validate_restore_batches(&records)?;
         let manifest = PortableManifest {
             scope: scope.clone(),
             revision: snapshot.revision,
@@ -338,7 +339,7 @@ impl crate::coordinator::Workspace {
         };
         manifest.validate()?;
         let bytes = manifest.encode();
-        let mut writer = file::ArchiveWriter::create(out)?;
+        let mut writer = file::ArchiveWriter::create(out, Some(self.root()))?;
         writer.write_manifest(&bytes)?;
         for blob in &manifest.blobs {
             let source = crate::payload::read(self.root(), blob.digest)?;
@@ -391,7 +392,7 @@ impl crate::coordinator::Workspace {
             mneme_core::RecordId,
             mneme_core::RevisionId,
         )>,
-        pruning_digests: &std::collections::BTreeSet<(mneme_core::RecordId, [u8; 32])>,
+        pruning_digests: &std::collections::BTreeSet<[u8; 32]>,
         omissions: &mut OmissionCounts,
     ) -> crate::error::Result<Option<Vec<PortableRevision>>> {
         let mut newest_first = Vec::new();
@@ -437,8 +438,9 @@ impl crate::coordinator::Workspace {
             cursor = Some(next);
         }
         if newest_first.is_empty() {
-            omissions.bump("history-gap", 1);
-            return Ok(None);
+            return Err(Failure::PortableArchive(
+                "a snapshot record has no readable retained history".to_owned(),
+            ));
         }
         let mut seen_revisions = std::collections::BTreeSet::new();
         let mut previous_sequence: Option<u64> = None;
@@ -463,8 +465,7 @@ impl crate::coordinator::Workspace {
             let retained = portable_retained_source(&entry.record)?;
             let pruned = pruning_targets.contains(&(entry.record.record_id, revision_id))
                 || retained.as_ref().is_some_and(|source| {
-                    pruning_digests
-                        .contains(&(entry.record.record_id, *source.digest().as_bytes()))
+                    pruning_digests.contains(source.digest().as_bytes())
                 });
             let forgotten = retained
                 .as_ref()
@@ -512,6 +513,53 @@ impl crate::coordinator::Workspace {
         kept.reverse();
         Ok(Some(kept))
     }
+}
+
+/// Validate the archive's batches exactly as restore will submit them.
+///
+/// A record revision omitted by scope, pruning, forgetting, or schema support
+/// may have been the target of a reference in the same original commit. Such
+/// an archive would commit a batch whose references no longer resolve, so the
+/// export refuses instead of writing bytes restore would reject.
+fn validate_restore_batches(records: &[PortableRecord]) -> crate::error::Result<()> {
+    let registry = mneme_core::SchemaRegistry::production();
+    let mut batches: std::collections::BTreeMap<
+        u64,
+        Vec<(&PortableRecord, &PortableRevision)>,
+    > = std::collections::BTreeMap::new();
+    for record in records {
+        for revision in &record.revisions {
+            batches
+                .entry(revision.commit.sequence)
+                .or_default()
+                .push((record, revision));
+        }
+    }
+    let mut previous: std::collections::BTreeMap<
+        mneme_core::RecordId,
+        mneme_core::RevisionId,
+    > = std::collections::BTreeMap::new();
+    let mut index = mneme_core::SnapshotIndex::new();
+    for entries in batches.into_values() {
+        let mut values = Vec::with_capacity(entries.len());
+        for (record, revision) in &entries {
+            let mut envelope = revision.envelope.clone();
+            envelope.predecessor = previous.get(&record.record_id).copied();
+            values.push(envelope.to_value());
+        }
+        let validated = mneme_core::validate_batch(&values, &registry, Some(&index))
+            .map_err(|diagnostics| {
+                Failure::PortableArchive(format!(
+                    "this scope cannot be restored as a set of complete batches: {}",
+                    mneme_core::render_diagnostics(&diagnostics)
+                ))
+            })?;
+        index = validated.index;
+        for (record, revision) in entries {
+            previous.insert(record.record_id, revision.envelope.revision_id);
+        }
+    }
+    Ok(())
 }
 
 /// The retained source a record revision names, when it retains bytes.

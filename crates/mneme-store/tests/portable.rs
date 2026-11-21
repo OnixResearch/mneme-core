@@ -315,12 +315,27 @@ fn portable_restore_keeps_forgotten_identity_and_content_unreplayable() {
     let root = temp.path().join("source");
     let archive = temp.path().join("vault.mneme-backup");
     let restored = temp.path().join("restored");
-    let source_id = mneme_core::fixtures::source_revision_id();
+    let source_id = record_id(0x61);
+    let source_revision = revision_id(0x62);
     let mut workspace = mneme_store::Workspace::create(&root, config(1_000)).expect("create");
+    let mut seed = common::retained_source_record(
+        source_id,
+        source_revision,
+        &scope(),
+        mneme_core::fixtures::SOURCE_TEXT.as_bytes(),
+        Some("source.adoc"),
+    );
+    seed.predecessor = None;
     workspace
-        .commit(common::fixture_command(
+        .commit(common::record_command(
             workspace.current_revision().expect("base"),
+            &scope(),
             "seed",
+            vec![seed],
+            vec![common::source_blob(
+                mneme_core::fixtures::SOURCE_TEXT.as_bytes(),
+            )],
+            Vec::new(),
         ))
         .expect("seed");
     let generation = workspace
@@ -345,6 +360,9 @@ fn portable_restore_keeps_forgotten_identity_and_content_unreplayable() {
         .export_portable(&archive, &scope())
         .expect("export");
     assert_eq!(omission(&report, "forgotten-record"), 1);
+    assert_eq!(report.record_count, 0);
+    assert_eq!(report.revision_count, 0);
+    assert_eq!(report.blob_count, 0);
     assert!(
         report
             .omissions
@@ -391,6 +409,48 @@ fn portable_restore_keeps_forgotten_identity_and_content_unreplayable() {
         error,
         mneme_store::Failure::RetentionSuppressed { .. }
     ));
+}
+
+#[test]
+fn portable_export_refuses_a_scope_whose_remaining_records_dangle() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = temp.path().join("source");
+    let archive = temp.path().join("vault.mneme-backup");
+    let source_id = mneme_core::fixtures::source_revision_id();
+    let mut workspace = mneme_store::Workspace::create(&root, config(1_000)).expect("create");
+    workspace
+        .commit(common::fixture_command(
+            workspace.current_revision().expect("base"),
+            "seed",
+        ))
+        .expect("seed");
+    let generation = workspace
+        .eligibility_generation()
+        .expect("generation")
+        .saturating_add(1);
+    let retention = common::forget_content_barrier(
+        source_id,
+        mneme_core::fixtures::SOURCE_TEXT.as_bytes(),
+        generation,
+        "forget-source",
+    );
+    workspace
+        .commit(common::audit_barrier_command(
+            workspace.current_revision().expect("base"),
+            "forget-source",
+            retention,
+        ))
+        .expect("forget");
+    let error = workspace
+        .export_portable(&archive, &scope())
+        .expect_err("a batch that references a forgotten record cannot be restored");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot be restored as a set of complete batches"),
+        "{error}"
+    );
+    assert!(!archive.exists(), "a refused export leaves no partial archive");
 }
 
 #[test]

@@ -102,7 +102,7 @@ fn optional_revision(
 }
 
 /// Decode a scope identity.
-fn scope(value: &mneme_core::Value) -> crate::error::Result<mneme_core::ScopeId> {
+fn parse_scope(value: &mneme_core::Value) -> crate::error::Result<mneme_core::ScopeId> {
     mneme_core::ScopeId::from_value(value, &mneme_core::Path::root().field("scope"))
         .map_err(|diagnostic| invalid(format!("scope: {diagnostic}")))
 }
@@ -220,7 +220,7 @@ impl PortableManifest {
                 "portable archive version {version} is not supported"
             )));
         }
-        let scope = scope(&fields[1])?;
+        let scope = parse_scope(&fields[1])?;
         let revision = mneme_core::WorkspaceRevisionId::from_value(
             &fields[2],
             &mneme_core::Path::root().field("revision"),
@@ -277,6 +277,10 @@ impl PortableManifest {
         let mut referenced = std::collections::BTreeMap::new();
         let mut revision_count = 0_usize;
         let mut previous_record: Option<mneme_core::RecordId> = None;
+        let mut batch_facts: std::collections::BTreeMap<
+            u64,
+            crate::coordinator::RevisionCommit,
+        > = std::collections::BTreeMap::new();
         for record in &self.records {
             if previous_record.is_some_and(|previous| previous >= record.record_id) {
                 return Err(invalid("archive records are not in unique identity order"));
@@ -313,6 +317,18 @@ impl PortableManifest {
                     ));
                 }
                 previous_sequence = Some(revision.commit.sequence);
+                match batch_facts.entry(revision.commit.sequence) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(revision.commit.clone());
+                    }
+                    std::collections::btree_map::Entry::Occupied(entry) => {
+                        if entry.get() != &revision.commit {
+                            return Err(invalid(
+                                "archive names conflicting commit facts for one batch",
+                            ));
+                        }
+                    }
+                }
                 let value = envelope.to_value();
                 let validated = mneme_core::validate_record_value(&value, &registry, None)
                     .map_err(|diagnostics| {
@@ -553,7 +569,7 @@ impl PortableRecord {
             &mneme_core::Path::root().field("record"),
         )
         .map_err(|diagnostic| invalid(format!("record: {diagnostic}")))?;
-        let scope = scope(&fields[1])?;
+        let scope = parse_scope(&fields[1])?;
         let revisions = sequence(&fields[2], "record revisions", MAX_PORTABLE_REVISIONS)?
             .iter()
             .map(PortableRevision::from_value)

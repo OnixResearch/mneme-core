@@ -78,52 +78,86 @@ fn import_into(
     )?;
     let mut rewritten_predecessors = 0_u64;
     let mut revisions = 0_u64;
+    // Replay the archive's own commit batches. Records introduced together may
+    // reference each other (an assertion and its evidence, for example), so
+    // importing one record revision per transaction would refuse a reference
+    // the original batch resolved internally.
+    let mut batches: std::collections::BTreeMap<
+        u64,
+        Vec<(&crate::portable::PortableRecord, &crate::portable::PortableRevision)>,
+    > = std::collections::BTreeMap::new();
     for record in &manifest.records {
-        let mut previous: Option<mneme_core::RevisionId> = None;
         for revision in &record.revisions {
+            batches
+                .entry(revision.commit.sequence)
+                .or_default()
+                .push((record, revision));
+        }
+    }
+    let mut last_imported: std::collections::BTreeMap<
+        mneme_core::RecordId,
+        mneme_core::RevisionId,
+    > = std::collections::BTreeMap::new();
+    for (sequence, entries) in batches {
+        let mut records = Vec::with_capacity(entries.len());
+        let mut imported = Vec::with_capacity(entries.len());
+        let mut source_blobs: std::collections::BTreeMap<
+            [u8; 32],
+            crate::SourceBlobDraft,
+        > = std::collections::BTreeMap::new();
+        for (record, revision) in entries {
             let envelope = &revision.envelope;
-            if envelope.predecessor != previous {
+            let predecessor = last_imported.get(&record.record_id).copied();
+            if envelope.predecessor != predecessor {
                 rewritten_predecessors = rewritten_predecessors.saturating_add(1);
             }
-            let mut source_blobs = Vec::new();
             if let Some(retained) = portable_retained_source(envelope)? {
-                let bytes = archive.blob(retained.digest())?;
-                if bytes.len() as u64 != retained.byte_length()
-                    || retained.byte_length() > MAX_PORTABLE_BLOB_BYTES
-                {
-                    return Err(Failure::CorruptBlob {
-                        digest: retained.digest().to_hex(),
-                        reason: "archive source length does not match its record".to_owned(),
-                    });
+                let key = *retained.digest().as_bytes();
+                if !source_blobs.contains_key(&key) {
+                    let bytes = archive.blob(retained.digest())?;
+                    if bytes.len() as u64 != retained.byte_length()
+                        || retained.byte_length() > MAX_PORTABLE_BLOB_BYTES
+                    {
+                        return Err(Failure::CorruptBlob {
+                            digest: retained.digest().to_hex(),
+                            reason: "archive source length does not match its record"
+                                .to_owned(),
+                        });
+                    }
+                    source_blobs.insert(
+                        key,
+                        crate::SourceBlobDraft {
+                            bytes,
+                            media_type: retained.media_type().clone(),
+                        },
+                    );
                 }
-                source_blobs.push(crate::SourceBlobDraft {
-                    bytes,
-                    media_type: retained.media_type().clone(),
-                });
             }
-            let draft = crate::RecordDraft {
+            records.push(crate::RecordDraft {
                 schema_version: envelope.schema_version,
                 kind: envelope.kind,
                 record_id: envelope.record_id,
                 revision_id: envelope.revision_id,
-                predecessor: previous,
+                predecessor,
                 scope: envelope.scope.clone(),
                 payload: envelope.payload.clone(),
-            };
-            let command = crate::CommitCommand {
-                base: workspace.current_revision()?,
-                actor: RESTORE_ACTOR.to_owned(),
-                scope: manifest.scope.clone(),
-                idempotency_key: restore_key(envelope.record_id, envelope.revision_id),
-                records: vec![draft],
-                source_blobs,
-                publications: Vec::new(),
-                import_candidates: Vec::new(),
-                retention: None,
-            };
-            workspace.commit(command)?;
-            previous = Some(envelope.revision_id);
+            });
+            imported.push((record.record_id, envelope.revision_id));
             revisions = revisions.saturating_add(1);
+        }
+        workspace.commit(crate::CommitCommand {
+            base: workspace.current_revision()?,
+            actor: RESTORE_ACTOR.to_owned(),
+            scope: manifest.scope.clone(),
+            idempotency_key: format!("portable-restore:commit:{sequence}"),
+            records,
+            source_blobs: source_blobs.into_values().collect(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })?;
+        for (record, revision) in imported {
+            last_imported.insert(record, revision);
         }
     }
     let snapshot = workspace.snapshot()?;
@@ -323,14 +357,6 @@ fn verify_restored(
         }
     }
     Ok(())
-}
-
-/// A deterministic idempotency key for one imported revision.
-fn restore_key(
-    record: mneme_core::RecordId,
-    revision: mneme_core::RevisionId,
-) -> String {
-    format!("portable-restore:{record}:{revision}")
 }
 
 /// Move the completed staging directory to its final name.

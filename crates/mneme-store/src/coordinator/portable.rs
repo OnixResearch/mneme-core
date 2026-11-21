@@ -77,7 +77,13 @@ impl super::Workspace {
             }
         }
         let mut omissions = OmissionCounts::default();
-        let mut suppressions = Vec::new();
+        let mut suppressions: std::collections::BTreeMap<
+            (
+                mneme_core::RecordId,
+                Option<mneme_core::RevisionId>,
+            ),
+            PortableSuppression,
+        > = std::collections::BTreeMap::new();
         for suppression in super::sweep::all_suppressions(connection)? {
             let scopes = record_scopes_in(connection, suppression.target)?;
             let operation_allows = match operation_scopes.get(&suppression.operation_id) {
@@ -100,21 +106,46 @@ impl super::Workspace {
                 omissions.bump("foreign-suppression", 1);
                 continue;
             }
-            if suppression.mode == crate::lifecycle::SuppressionMode::Forgotten {
-                if suppression.revision.is_none() {
-                    omissions.bump("forgotten-record", 1);
-                } else {
-                    omissions.bump("forgotten-revision", 1);
-                }
-            }
-            suppressions.push(PortableSuppression {
+            let candidate = PortableSuppression {
                 target: suppression.target,
                 revision: suppression.revision,
                 target_kind: suppression.target_kind,
                 mode: suppression.mode,
                 content_digest: suppression.content_digest,
                 generation: suppression.generation,
-            });
+            };
+            // Repeated forget operations may name the same identity. The
+            // archive carries one row per target so restore's primary key is
+            // unambiguous; the forgotten mode and the newest generation win.
+            match suppressions.entry((candidate.target, candidate.revision)) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(candidate);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let existing = entry.get_mut();
+                    if candidate.mode > existing.mode {
+                        existing.mode = candidate.mode;
+                        existing.target_kind = candidate.target_kind;
+                    }
+                    if candidate.generation > existing.generation {
+                        existing.generation = candidate.generation;
+                    }
+                    if existing.content_digest.is_none() {
+                        existing.content_digest = candidate.content_digest;
+                    }
+                }
+            }
+        }
+        let suppressions: Vec<PortableSuppression> = suppressions.into_values().collect();
+        for suppression in &suppressions {
+            if suppression.mode != crate::lifecycle::SuppressionMode::Forgotten {
+                continue;
+            }
+            if suppression.revision.is_none() {
+                omissions.bump("forgotten-record", 1);
+            } else {
+                omissions.bump("forgotten-revision", 1);
+            }
         }
 
         let mut pruning_rows = Vec::new();
@@ -158,7 +189,7 @@ impl super::Workspace {
                 );
                 continue;
             }
-            pruning_digests.insert((pruning.source, *pruning.digest.as_bytes()));
+            pruning_digests.insert(*pruning.digest.as_bytes());
             for revision in matches {
                 if pruning_targets.insert((pruning.source, revision)) {
                     pruning_rows.push(PortablePruning {
