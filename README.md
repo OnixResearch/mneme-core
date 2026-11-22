@@ -297,4 +297,7 @@ or SSH agent is needed.
 
 ## Repository status and licensing
 
-This repository is publicly readable. No `LICENSE` or `NOTICE` file existed at the cited source commit, and this extraction adds neither. **Public visibility does not add a license grant.**
+This repository is publicly readable. Except where otherwise noted, Mneme Core
+is dual-licensed under the MIT License or Apache License 2.0, at your option.
+See [LICENSE](LICENSE), [MIT](LICENSE-MIT), and [Apache-2.0](LICENSE-APACHE).
+Separate dependencies and third-party material keep their own license terms.
