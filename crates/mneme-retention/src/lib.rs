@@ -1092,7 +1092,12 @@ fn build_plan(
     }
     // Every operation records the managed inventory, even one that removes no
     // payload: a receipt may claim complete cleanup only after inspecting it.
-    add_inventory_locations(workspace, &std::collections::BTreeSet::new(), &[], &mut plan)?;
+    add_inventory_locations(
+        workspace,
+        &std::collections::BTreeSet::new(),
+        &[],
+        &mut plan,
+    )?;
     plan.retained_metadata.sort();
     plan.retained_metadata.dedup();
     plan.commit.retained_metadata = plan.retained_metadata.clone();
