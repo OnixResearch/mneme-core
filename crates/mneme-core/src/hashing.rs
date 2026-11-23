@@ -148,6 +148,31 @@ pub struct ContentDigest {
     bytes: [u8; 32],
 }
 
+/// Temporary canonical encoder storage for hashing full records in one operation.
+///
+/// Each call recomputes the digest from the supplied value. No record identity,
+/// digest, or integrity result survives a call. Keep this scratch on the
+/// operation's stack, not in a workspace or a shared cache.
+#[derive(Default)]
+pub struct FullRecordDigestScratch {
+    encoder: crate::binary::EncodeScratch,
+}
+
+impl FullRecordDigestScratch {
+    /// Start an operation with no retained encoding buffers.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Hash a complete record envelope with the canonical binary profile.
+    pub fn digest(&mut self, value: &crate::typed::Value) -> ContentDigest {
+        let encoded = self.encoder.encode(value);
+        let digest = ContentDigest::of_encoding(&encoded, ValueBoundary::FullRecord);
+        self.encoder.recycle(encoded);
+        digest
+    }
+}
+
 impl ContentDigest {
     /// Construct a digest from already computed bytes and explicit metadata.
     ///
@@ -191,7 +216,10 @@ impl ContentDigest {
     }
 
     fn of_value(value: &crate::typed::Value, boundary: ValueBoundary) -> Self {
-        let encoded = crate::binary::encode(value);
+        Self::of_encoding(&crate::binary::encode(value), boundary)
+    }
+
+    fn of_encoding(encoded: &[u8], boundary: ValueBoundary) -> Self {
         ContentDigest {
             algorithm: HashAlgorithm::Sha256,
             profile: EncodingProfile::CanonicalBinaryV1,
@@ -404,6 +432,29 @@ mod tests {
                 .code,
             crate::problem::ErrorCode::UnsupportedAlgorithm
         );
+    }
+
+    #[test]
+    fn full_record_scratch_hashes_each_exact_value() {
+        let cases = [
+            (
+                crate::typed::Value::record_named("n", vec![crate::typed::Value::Boolean(true)]),
+                &[0xb4, 0xb3, 0x01, b'n', 0x81, 0x84][..],
+            ),
+            (
+                crate::typed::Value::record_named("n", Vec::new()),
+                &[0xb4, 0xb3, 0x01, b'n', 0x84][..],
+            ),
+        ];
+        let mut scratch = FullRecordDigestScratch::new();
+        for (value, canonical) in cases.iter().chain(cases.iter().rev()) {
+            let digest = scratch.digest(value);
+            let expected: [u8; 32] = sha2::Sha256::digest(canonical).into();
+            assert_eq!(*digest.as_bytes(), expected);
+            assert_eq!(digest, ContentDigest::of_full_record(value));
+            assert_eq!(digest.boundary(), ValueBoundary::FullRecord);
+            assert_eq!(digest.profile(), EncodingProfile::CanonicalBinaryV1);
+        }
     }
 
     #[test]

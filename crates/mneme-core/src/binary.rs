@@ -49,75 +49,183 @@ pub const MAX_INTEGER_BYTES: usize = 4096;
 
 /// Encode a value in canonical Preserves binary form.
 pub fn encode(value: &crate::typed::Value) -> Vec<u8> {
-    let mut output = Vec::new();
-    encode_into(value, &mut output);
-    output
+    EncodeScratch::default().encode(value)
 }
 
 enum EncodeTask<'a> {
     Visit(&'a crate::typed::Value),
-    Record(usize),
-    Sequence(usize),
-    Set(usize),
-    Dictionary(usize),
+    Close(Compound, usize),
+}
+
+enum Compound {
+    Record,
+    Sequence,
+    Set,
+    Dictionary,
     Embedded,
 }
 
-fn encode_into(value: &crate::typed::Value, output: &mut Vec<u8>) {
-    let mut tasks = vec![EncodeTask::Visit(value)];
-    let mut values: Vec<Vec<u8>> = Vec::new();
-    while let Some(task) = tasks.pop() {
-        match task {
-            EncodeTask::Visit(value) => match value {
-                crate::typed::Value::Record(record) => {
-                    tasks.push(EncodeTask::Record(record.fields().len()));
-                    for field in record.fields().iter().rev() {
-                        tasks.push(EncodeTask::Visit(field));
-                    }
-                    tasks.push(EncodeTask::Visit(record.label()));
-                }
-                crate::typed::Value::Sequence(items) => {
-                    tasks.push(EncodeTask::Sequence(items.len()));
-                    for item in items.iter().rev() {
-                        tasks.push(EncodeTask::Visit(item));
-                    }
-                }
-                crate::typed::Value::Set(items) => {
-                    tasks.push(EncodeTask::Set(items.len()));
-                    for item in items.iter().rev() {
-                        tasks.push(EncodeTask::Visit(item));
-                    }
-                }
-                crate::typed::Value::Dictionary(entries) => {
-                    tasks.push(EncodeTask::Dictionary(entries.len()));
-                    for (key, item) in entries.iter().rev() {
-                        tasks.push(EncodeTask::Visit(item));
-                        tasks.push(EncodeTask::Visit(key));
-                    }
-                }
-                crate::typed::Value::Embedded(inner) => {
-                    tasks.push(EncodeTask::Embedded);
-                    tasks.push(EncodeTask::Visit(inner));
-                }
-                scalar => {
-                    values.reserve(1);
-                    values.push(encode_scalar(scalar));
-                }
-            },
-            task => {
-                let encoded = build_encoded(task, &mut values);
-                values.reserve(1);
-                values.push(encoded);
-            }
-        }
+// These bound retained capacity between values, not which values can be encoded.
+const RETAINED_BUFFERS: usize = 64;
+const RETAINED_BUFFER_BYTES: usize = 8 * 1024;
+const RETAINED_STACK_SLOTS: usize = 128;
+const DICTIONARY_ENTRY_ITEMS: usize = 2;
+
+#[derive(Default)]
+pub(crate) struct EncodeScratch {
+    pool: BufferPool,
+    values: Vec<Vec<u8>>,
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+#[derive(Default)]
+struct BufferPool(Vec<Vec<u8>>);
+
+impl BufferPool {
+    fn take(&mut self) -> Vec<u8> {
+        // An empty pool needs a fresh buffer, not a different encoding path.
+        self.0.pop().unwrap_or_default()
     }
-    if let Some(encoded) = values.pop() {
-        output.extend_from_slice(&encoded);
+
+    fn recycle(&mut self, mut bytes: Vec<u8>) {
+        if self.0.len() < RETAINED_BUFFERS && bytes.capacity() <= RETAINED_BUFFER_BYTES {
+            bytes.clear();
+            self.0.reserve(1);
+            self.0.push(bytes);
+        }
     }
 }
 
-fn encode_scalar(value: &crate::typed::Value) -> Vec<u8> {
-    let mut output = Vec::new();
+impl EncodeScratch {
+    pub(crate) fn encode(&mut self, value: &crate::typed::Value) -> Vec<u8> {
+        let mut tasks = vec![EncodeTask::Visit(value)];
+        let mut output = Vec::new();
+        while let Some(task) = tasks.pop() {
+            let encoded = match task {
+                EncodeTask::Visit(value) => self.visit(value, &mut tasks),
+                EncodeTask::Close(kind, first) => Some(self.close(kind, first)),
+            };
+            if let Some(encoded) = encoded {
+                if tasks.is_empty() {
+                    output = encoded;
+                } else {
+                    self.values.reserve(1);
+                    self.values.push(encoded);
+                }
+            }
+        }
+        if self.values.capacity() > RETAINED_STACK_SLOTS {
+            self.values = Vec::new();
+        }
+        if self.entries.capacity() > RETAINED_STACK_SLOTS {
+            self.entries = Vec::new();
+        }
+        output
+    }
+
+    pub(crate) fn recycle(&mut self, encoded: Vec<u8>) {
+        self.pool.recycle(encoded);
+    }
+
+    fn visit<'a>(
+        &mut self,
+        value: &'a crate::typed::Value,
+        tasks: &mut Vec<EncodeTask<'a>>,
+    ) -> Option<Vec<u8>> {
+        let first = self.values.len();
+        tasks.reserve(1);
+        match value {
+            crate::typed::Value::Record(record) => {
+                tasks.push(EncodeTask::Close(Compound::Record, first));
+                tasks.extend(record.fields().iter().rev().map(EncodeTask::Visit));
+                tasks.reserve(1);
+                tasks.push(EncodeTask::Visit(record.label()));
+            }
+            crate::typed::Value::Sequence(items) => {
+                tasks.push(EncodeTask::Close(Compound::Sequence, first));
+                tasks.extend(items.iter().rev().map(EncodeTask::Visit));
+            }
+            crate::typed::Value::Set(items) => {
+                tasks.push(EncodeTask::Close(Compound::Set, first));
+                tasks.extend(items.iter().rev().map(EncodeTask::Visit));
+            }
+            crate::typed::Value::Dictionary(entries) => {
+                tasks.push(EncodeTask::Close(Compound::Dictionary, first));
+                tasks.reserve(entries.len().saturating_mul(DICTIONARY_ENTRY_ITEMS));
+                tasks.extend(
+                    entries
+                        .iter()
+                        .rev()
+                        .flat_map(|(key, item)| [EncodeTask::Visit(item), EncodeTask::Visit(key)]),
+                );
+            }
+            crate::typed::Value::Embedded(inner) => {
+                tasks.push(EncodeTask::Close(Compound::Embedded, first));
+                tasks.reserve(1);
+                tasks.push(EncodeTask::Visit(inner));
+            }
+            crate::typed::Value::Boolean(_)
+            | crate::typed::Value::Double(_)
+            | crate::typed::Value::SignedInteger(_)
+            | crate::typed::Value::String(_)
+            | crate::typed::Value::ByteString(_)
+            | crate::typed::Value::Symbol(_) => {
+                let mut bytes = self.pool.take();
+                encode_scalar(value, &mut bytes);
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    fn close(&mut self, kind: Compound, first: usize) -> Vec<u8> {
+        let tag = match kind {
+            Compound::Record => TAG_RECORD,
+            Compound::Sequence => TAG_SEQUENCE,
+            Compound::Set => {
+                self.values[first..].sort();
+                TAG_SET
+            }
+            Compound::Dictionary => return self.close_dictionary(first),
+            Compound::Embedded => TAG_EMBEDDED,
+        };
+        let mut output = self.pool.take();
+        output.push(tag);
+        // The saved index precedes every child, including the label of a record.
+        for bytes in self.values.drain(first..) {
+            output.extend_from_slice(&bytes);
+            self.pool.recycle(bytes);
+        }
+        if tag != TAG_EMBEDDED {
+            output.push(TAG_END);
+        }
+        output
+    }
+
+    fn close_dictionary(&mut self, first: usize) -> Vec<u8> {
+        let count = self.values[first..]
+            .chunks_exact(DICTIONARY_ENTRY_ITEMS)
+            .len();
+        self.entries.reserve(count);
+        let mut children = self.values.drain(first..);
+        while let (Some(key), Some(value)) = (children.next(), children.next()) {
+            self.entries.push((key, value));
+        }
+        self.entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut output = self.pool.take();
+        output.push(TAG_DICTIONARY);
+        for (key, value) in self.entries.drain(..) {
+            output.extend_from_slice(&key);
+            output.extend_from_slice(&value);
+            self.pool.recycle(key);
+            self.pool.recycle(value);
+        }
+        output.push(TAG_END);
+        output
+    }
+}
+
+fn encode_scalar(value: &crate::typed::Value, output: &mut Vec<u8>) {
     match value {
         crate::typed::Value::Boolean(false) => output.push(TAG_FALSE),
         crate::typed::Value::Boolean(true) => output.push(TAG_TRUE),
@@ -129,89 +237,29 @@ fn encode_scalar(value: &crate::typed::Value) -> Vec<u8> {
         crate::typed::Value::SignedInteger(integer) => {
             output.push(TAG_INTEGER);
             let bytes = minimal_signed_bytes(integer.as_bigint());
-            write_varint(&mut output, bytes.len() as u64);
+            write_varint(output, bytes.len() as u64);
             output.extend_from_slice(&bytes);
         }
         crate::typed::Value::String(text) => {
             output.push(TAG_STRING);
-            write_varint(&mut output, text.len() as u64);
+            write_varint(output, text.len() as u64);
             output.extend_from_slice(text.as_bytes());
         }
         crate::typed::Value::ByteString(bytes) => {
             output.push(TAG_BYTESTRING);
-            write_varint(&mut output, bytes.as_slice().len() as u64);
+            write_varint(output, bytes.as_slice().len() as u64);
             output.extend_from_slice(bytes.as_slice());
         }
         crate::typed::Value::Symbol(symbol) => {
             output.push(TAG_SYMBOL);
-            write_varint(&mut output, symbol.as_str().len() as u64);
+            write_varint(output, symbol.as_str().len() as u64);
             output.extend_from_slice(symbol.as_str().as_bytes());
         }
-        _ => {}
-    }
-    output
-}
-
-fn build_encoded(task: EncodeTask<'_>, values: &mut Vec<Vec<u8>>) -> Vec<u8> {
-    let take = |values: &mut Vec<Vec<u8>>| values.pop().unwrap_or_default();
-    match task {
-        EncodeTask::Record(count) => {
-            let mut fields: Vec<Vec<u8>> = (0..count).map(|_| take(values)).collect();
-            fields.reverse();
-            let label = take(values);
-            let mut output = vec![TAG_RECORD];
-            output.extend_from_slice(&label);
-            for field in fields {
-                output.extend_from_slice(&field);
-            }
-            output.push(TAG_END);
-            output
-        }
-        EncodeTask::Sequence(count) => {
-            let mut items: Vec<Vec<u8>> = (0..count).map(|_| take(values)).collect();
-            items.reverse();
-            let mut output = vec![TAG_SEQUENCE];
-            for item in items {
-                output.extend_from_slice(&item);
-            }
-            output.push(TAG_END);
-            output
-        }
-        EncodeTask::Set(count) => {
-            let mut items: Vec<Vec<u8>> = (0..count).map(|_| take(values)).collect();
-            items.sort();
-            let mut output = vec![TAG_SET];
-            for item in items {
-                output.extend_from_slice(&item);
-            }
-            output.push(TAG_END);
-            output
-        }
-        EncodeTask::Dictionary(count) => {
-            let mut entries: Vec<(Vec<u8>, Vec<u8>)> = (0..count)
-                .map(|_| {
-                    let value = take(values);
-                    let key = take(values);
-                    (key, value)
-                })
-                .collect();
-            entries.reverse();
-            entries.sort_by(|left, right| left.0.cmp(&right.0));
-            let mut output = vec![TAG_DICTIONARY];
-            for (key, value) in entries {
-                output.extend_from_slice(&key);
-                output.extend_from_slice(&value);
-            }
-            output.push(TAG_END);
-            output
-        }
-        EncodeTask::Embedded => {
-            let inner = take(values);
-            let mut output = vec![TAG_EMBEDDED];
-            output.extend_from_slice(&inner);
-            output
-        }
-        EncodeTask::Visit(_) => Vec::new(),
+        crate::typed::Value::Record(_)
+        | crate::typed::Value::Sequence(_)
+        | crate::typed::Value::Set(_)
+        | crate::typed::Value::Dictionary(_)
+        | crate::typed::Value::Embedded(_) => {}
     }
 }
 
@@ -1000,6 +1048,72 @@ mod tests {
     }
 
     #[test]
+    fn reused_storage_keeps_nested_canonical_bytes() {
+        let value = crate::typed::Value::record_named(
+            "r",
+            vec![
+                crate::typed::Value::set([
+                    crate::typed::Value::integer(-1_i64),
+                    crate::typed::Value::integer(1_i64),
+                ]),
+                crate::typed::Value::dictionary([
+                    (
+                        crate::typed::Value::string("z"),
+                        crate::typed::Value::embedded(crate::typed::Value::symbol("e")),
+                    ),
+                    (
+                        crate::typed::Value::integer(-1_i64),
+                        crate::typed::Value::sequence(vec![
+                            crate::typed::Value::Boolean(true),
+                            crate::typed::Value::bytes([0xaa, 0xff]),
+                        ]),
+                    ),
+                ]),
+            ],
+        );
+        let canonical = "b4b30172b6b00101b001ff84b7b001ffb581b202aaff84b1017a86b301658484";
+        let mut scratch = EncodeScratch::default();
+        let initial = scratch.encode(&value);
+        assert_eq!(hex(&initial), canonical);
+        scratch.recycle(initial);
+        let shorter = scratch.encode(&crate::typed::Value::sequence(Vec::new()));
+        assert_eq!(shorter, [TAG_SEQUENCE, TAG_END]);
+        scratch.recycle(shorter);
+        assert_eq!(hex(&scratch.encode(&value)), canonical);
+    }
+
+    #[test]
+    fn one_large_value_does_not_keep_oversized_buffers() {
+        let value = crate::typed::Value::dictionary((0..=RETAINED_STACK_SLOTS).map(|index| {
+            (
+                crate::typed::Value::integer(index),
+                crate::typed::Value::bytes(vec![0x39; RETAINED_BUFFER_BYTES]),
+            )
+        }));
+        let mut scratch = EncodeScratch::default();
+        let encoded = scratch.encode(&value);
+        assert_eq!(decode_canonical(&encoded).expect("large value"), value);
+        scratch.recycle(encoded);
+        assert!(scratch.values.is_empty());
+        assert!(scratch.entries.is_empty());
+        assert!(scratch.values.capacity() <= RETAINED_STACK_SLOTS);
+        assert!(scratch.entries.capacity() <= RETAINED_STACK_SLOTS);
+        assert!(scratch.pool.0.len() <= RETAINED_BUFFERS);
+        assert!(scratch.pool.0.iter().all(|bytes| bytes.is_empty()));
+        assert!(
+            scratch
+                .pool
+                .0
+                .iter()
+                .all(|bytes| bytes.capacity() <= RETAINED_BUFFER_BYTES)
+        );
+        assert_eq!(
+            scratch.encode(&crate::typed::Value::Boolean(false)),
+            [TAG_FALSE]
+        );
+    }
+
+    #[test]
     fn set_and_dictionary_encoding_is_order_independent() {
         let ordered = crate::typed::Value::dictionary([
             (
@@ -1038,13 +1152,9 @@ mod tests {
     fn skips_annotations() {
         // @a []  =  0x85 «a» «[]»
         let bytes = [0x85, 0xB3, 0x01, b'a', 0xB5, 0x84];
-        assert_eq!(
-            decode(&bytes).expect("annotated sequence"),
-            crate::typed::Value::sequence(vec![])
-        );
-        let mut output = Vec::new();
-        encode_into(&crate::typed::Value::sequence(vec![]), &mut output);
-        assert!(!output.contains(&TAG_ANNOTATION));
+        let decoded = decode(&bytes).expect("annotated sequence");
+        assert_eq!(decoded, crate::typed::Value::sequence(vec![]));
+        assert_eq!(encode(&decoded), [TAG_SEQUENCE, TAG_END]);
     }
 
     #[test]

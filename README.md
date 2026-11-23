@@ -253,7 +253,7 @@ cargo test --locked --workspace --doc --all-features
 
 `just octet` runs the strict required profile in `dylint.toml`, without a baseline. `just octet-all` runs the full-catalog profile from `dylint-all.toml` in an isolated Nix source copy and compares findings with `octet-baseline.json`, keeping the strict profile untouched. Baseline debt does not suppress strict findings.
 
-The all-lint baseline contains 1,947 accepted finding identities in the same
+The all-lint baseline contains 1,951 accepted finding identities in the same
 ten lint families as the extracted engine-owned baseline (1,228 identities):
 issue-driven additions were refactored until no finding outside those families
 remained, and the rest were reviewed before regeneration with the pinned

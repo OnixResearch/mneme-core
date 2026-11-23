@@ -483,10 +483,9 @@ impl super::Workspace {
             })
             .collect();
         let mut required_blobs = std::collections::BTreeSet::new();
+        let mut digest_scratch = mneme_core::hashing::FullRecordDigestScratch::new();
         for record in snapshot_records.values() {
-            required_blobs.insert(mneme_core::ContentDigest::of_full_record(
-                &record.to_value(),
-            ));
+            required_blobs.insert(digest_scratch.digest(&record.to_value()));
             if let Some(digest) = super::validation::retained_source_digest(record) {
                 required_blobs.insert(digest);
             }
