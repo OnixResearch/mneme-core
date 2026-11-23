@@ -204,7 +204,8 @@ impl EncodeScratch {
 
     fn close_dictionary(&mut self, first: usize) -> Vec<u8> {
         let count = self.values[first..]
-            .chunks_exact(DICTIONARY_ENTRY_ITEMS)
+            .as_chunks::<DICTIONARY_ENTRY_ITEMS>()
+            .0
             .len();
         self.entries.reserve(count);
         let mut children = self.values.drain(first..);

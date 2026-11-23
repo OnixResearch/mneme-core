@@ -10,7 +10,7 @@
     "profile_hash": "b3:3fd67a2616779e6ed6b3c51e744e34d94a9ea0a3ce50f85d532eced949838822",
     "config_hash": "b3:b065a7ffe479551539355f2da753fdc11a7e39910ebdaa1a65a02093ce66d2b1"
   },
-  "baseline_hash": "b3:06e7643258ea8fad019759c4bfe0e2844b2df40a5502e9f3af37d456a081e1df",
+  "baseline_hash": "b3:8d5f49dcd21ab79774c3ab2e9804bec26bad45ade2fa0c8e4edc3e2a7f834d2b",
   "findings": [
     {
       "stable_id": "b3:002cd10692d692b9",
@@ -982,7 +982,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 359,
+      "line": 360,
       "column": 68,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -1710,7 +1710,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 380,
+      "line": 381,
       "column": 62,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -2477,7 +2477,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 374,
+      "line": 375,
       "column": 63,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -2568,7 +2568,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 480,
+      "line": 481,
       "column": 21,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_core"
@@ -2828,7 +2828,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 229,
+      "line": 230,
       "column": 5,
       "message": "same-crate enum `typed::Value` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
@@ -3010,7 +3010,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 861,
+      "line": 862,
       "column": 66,
       "message": "function `dictionary` has 0 assertion(s) in 25 lines (need 2+)",
       "crate_name": "mneme_core"
@@ -3036,7 +3036,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 712,
+      "line": 713,
       "column": 13,
       "message": "`length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_core"
@@ -3218,7 +3218,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 807,
+      "line": 808,
       "column": 66,
       "message": "function `sequence` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_core"
@@ -4739,7 +4739,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 341,
+      "line": 342,
       "column": 93,
       "message": "function `check_profile` has 0 assertion(s) in 49 lines (need 2+)",
       "crate_name": "mneme_core"
@@ -4990,6 +4990,19 @@
       "column": 5,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:2ff5323651479c0e",
+      "semantic_id": "b3:2ff5323651479c0e",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-core/src/binary.rs",
+      "line": 205,
+      "column": 61,
+      "message": "function `close_dictionary` has 0 assertion(s) in 22 lines (need 2+)",
+      "crate_name": "mneme_core"
     },
     {
       "stable_id": "b3:2ff7ba97acf1803a",
@@ -5337,7 +5350,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 778,
+      "line": 779,
       "column": 54,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -6065,7 +6078,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 406,
+      "line": 407,
       "column": 53,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -6754,7 +6767,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 650,
+      "line": 651,
       "column": 13,
       "message": "`length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_core"
@@ -8652,7 +8665,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 791,
+      "line": 792,
       "column": 71,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -10095,7 +10108,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 757,
+      "line": 758,
       "column": 57,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -12227,7 +12240,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 870,
+      "line": 871,
       "column": 70,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -13137,7 +13150,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 832,
+      "line": 833,
       "column": 66,
       "message": "function `set` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme_core"
@@ -13410,7 +13423,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 345,
+      "line": 346,
       "column": 9,
       "message": "same-crate enum `typed::Value` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
@@ -13540,7 +13553,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 777,
+      "line": 778,
       "column": 66,
       "message": "function `record` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme_core"
@@ -13657,7 +13670,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 582,
+      "line": 583,
       "column": 56,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -14242,7 +14255,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 871,
+      "line": 872,
       "column": 87,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -14489,7 +14502,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 571,
+      "line": 572,
       "column": 21,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -15977,19 +15990,6 @@
       "crate_name": "exchange_assets"
     },
     {
-      "stable_id": "b3:9afd566be10757f1",
-      "semantic_id": "b3:9afd566be10757f1",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-core/src/binary.rs",
-      "line": 205,
-      "column": 61,
-      "message": "function `close_dictionary` has 0 assertion(s) in 21 lines (need 2+)",
-      "crate_name": "mneme_core"
-    },
-    {
       "stable_id": "b3:9b01da07f4f60d0e",
       "semantic_id": "b3:9b01da07f4f60d0e",
       "identity_status": "computed",
@@ -17232,7 +17232,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 671,
+      "line": 672,
       "column": 13,
       "message": "`length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_core"
@@ -17804,7 +17804,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 489,
+      "line": 490,
       "column": 98,
       "message": "function `varint` has 0 assertion(s) in 34 lines (need 2+)",
       "crate_name": "mneme_core"
@@ -18129,7 +18129,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 448,
+      "line": 449,
       "column": 17,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -19533,7 +19533,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 464,
+      "line": 465,
       "column": 52,
       "message": "function `take` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme_core"
@@ -19793,7 +19793,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 820,
+      "line": 821,
       "column": 69,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -20209,7 +20209,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 277,
+      "line": 278,
       "column": 17,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_core"
@@ -23290,7 +23290,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 462,
+      "line": 463,
       "column": 9,
       "message": "`length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_core"
@@ -23355,7 +23355,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 563,
+      "line": 564,
       "column": 49,
       "message": "function `skip_annotations` has 0 assertion(s) in 29 lines (need 2+)",
       "crate_name": "mneme_core"
@@ -24694,7 +24694,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 841,
+      "line": 842,
       "column": 69,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
@@ -24902,7 +24902,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 670,
+      "line": 671,
       "column": 66,
       "message": "function `decode_integer` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_core"
@@ -25136,7 +25136,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/binary.rs",
-      "line": 375,
+      "line": 376,
       "column": 47,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_core"
