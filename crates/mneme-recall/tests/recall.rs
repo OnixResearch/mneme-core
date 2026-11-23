@@ -1397,6 +1397,95 @@ fn searchable_recognition_quotes_return_typed_locations_under_scope() {
     );
 }
 
+fn add_recognized_pdf(
+    harness: &mut Harness,
+    location: &mneme_core::MediaLocation,
+) -> (mneme_core::SourcePin, mneme_core::SourcePin) {
+    // A text stream can make an entire PDF UTF-8 without making its
+    // serialization a source-text document. The engine admits typed blobs.
+    let pdf = b"%PDF-1.4\nstream\nBT (Cobalt ledger) Tj ET\nendstream\n%%EOF\n";
+    let text = b"Cobalt ledger";
+    let input = mneme_core::SourcePin::new(rid(0xe0), rev(0xe1));
+    let output = mneme_core::SourcePin::new(rid(0xe2), rev(0xe3));
+    let (input_record, input_blob) = mneme_memory::build_captured_source(
+        input.source(),
+        input.revision(),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: pdf,
+            media_type: "application/pdf",
+            entity: None,
+            path_hint: Some("notebook.pdf"),
+        },
+        mneme_core::MediaExtent::Pages { page_count: 1 },
+    )
+    .expect("captured PDF");
+    let (output_record, output_blob) = mneme_memory::build_recognized_source(
+        output.source(),
+        output.revision(),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: text,
+            media_type: "text/plain; charset=utf-8",
+            entity: None,
+            path_hint: None,
+        },
+        input,
+    )
+    .expect("recognized passage");
+    let digest = mneme_core::ContentDigest::of_source_bytes(pdf);
+    let (run, segment) = recognition_records(input, digest, output, text, location);
+    harness.commit(
+        scope(),
+        "recognized-pdf",
+        vec![input_record, output_record, run, segment],
+        vec![input_blob, output_blob],
+    );
+    (input, output)
+}
+
+#[test]
+fn a_utf8_pdf_returns_its_located_reading_but_not_its_serialized_bytes() {
+    let mut harness = Harness::new();
+    let location = mneme_core::MediaLocation::PageRegion {
+        page: 0,
+        frame: mneme_core::CoordinateFrame::Normalized,
+        x: 0.25,
+        y: 0.5,
+        width: 0.25,
+        height: 0.125,
+    };
+    let (input, output) = add_recognized_pdf(&mut harness, &location);
+    let request = harness.request("Cobalt ledger");
+    let result = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("scoped recall");
+    assert!(
+        result.candidates.iter().all(|candidate| {
+            candidate.source != Some(input.source())
+                || candidate.content_kind != mneme_recall::ContentKind::SourceExcerpt
+        }),
+        "a PDF's UTF-8 container is not a source excerpt"
+    );
+    let located = result
+        .candidates
+        .iter()
+        .find(|candidate| candidate.source == Some(output.source()))
+        .expect("selected OCR text is searchable");
+    assert_eq!(located.source_revision, Some(output.revision()));
+    assert_eq!(located.media_locations.len(), 1);
+    assert_eq!(located.media_locations[0].media_source, input);
+    assert_eq!(located.media_locations[0].location, location);
+
+    let request = harness.request("notebook.pdf");
+    let by_name = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("path recall");
+    assert!(by_name.candidates.iter().any(|candidate| {
+        candidate.source == Some(input.source()) && candidate.field_path == "source.path-hint"
+    }));
+}
+
 #[test]
 fn cancellation_never_looks_successful() {
     let mut harness = Harness::new();

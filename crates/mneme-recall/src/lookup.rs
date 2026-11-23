@@ -204,6 +204,7 @@ struct IndexBuild {
 struct SourceFacts {
     view: mneme_memory::SourceView,
     availability: mneme_memory::SourceAvailability,
+    content_omission: Option<&'static str>,
     bytes: Option<Vec<u8>>,
 }
 
@@ -337,12 +338,9 @@ impl IndexBuild {
         if let Some(path) = &facts.view.path_hint {
             self.push_source_path_document(record, path, facts.view.entity, &roots);
         }
-        if is_image_source(&facts.view) {
+        if let Some(reason) = facts.content_omission {
             self.skipped += 1;
-            self.skip_reasons.insert(
-                "image pixels are not searched; authored captions remain searchable text"
-                    .to_owned(),
-            );
+            self.skip_reasons.insert(reason.to_owned());
             return Ok(());
         }
         match facts.bytes {
@@ -508,7 +506,7 @@ fn effective_availability(
     source.availability.clone()
 }
 
-/// Read one source record's bytes if, and only if, they are still eligible.
+/// Read bytes only for an eligible source whose content enters the index.
 fn source_facts(
     view: &mneme_memory::View,
     record: &mneme_core::RecordEnvelope,
@@ -517,9 +515,10 @@ fn source_facts(
 ) -> BuildResult<SourceFacts> {
     budget.charge(1)?;
     let source = view.source(record.record_id)?;
+    let content_omission = content_omission(&source);
     let declared = effective_availability(view, &source, states);
     let (availability, bytes) =
-        if declared == mneme_memory::SourceAvailability::Retained && !is_image_source(&source) {
+        if declared == mneme_memory::SourceAvailability::Retained && content_omission.is_none() {
             match view.source_status_for(&source) {
                 Ok(mneme_memory::SourceStatus::Retained(bytes)) => {
                     (mneme_memory::SourceAvailability::Retained, Some(bytes))
@@ -538,17 +537,24 @@ fn source_facts(
     Ok(SourceFacts {
         view: source,
         availability,
+        content_omission,
         bytes,
     })
 }
 
-fn is_image_source(source: &mneme_memory::SourceView) -> bool {
-    source.media_type.as_ref().is_some_and(|media_type| {
-        media_type
-            .as_str()
-            .split_once('/')
-            .is_some_and(|(kind, _)| kind.eq_ignore_ascii_case("image"))
-    })
+/// MIME, not UTF-8 decodability, distinguishes PDF containers from prose.
+fn content_omission(source: &mneme_memory::SourceView) -> Option<&'static str> {
+    let media_type = source.media_type.as_ref()?.as_str();
+    let base = media_type
+        .split_once(';')
+        .map_or(media_type, |(base, _)| base)
+        .trim();
+    if base.eq_ignore_ascii_case("application/pdf") {
+        return Some("PDF original bytes are not searched; recognized text remains searchable");
+    }
+    base.split_once('/')
+        .filter(|(kind, _)| kind.eq_ignore_ascii_case("image"))
+        .map(|_| "image pixels are not searched; authored captions remain searchable text")
 }
 
 fn selected_assertions(
