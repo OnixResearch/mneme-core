@@ -158,6 +158,11 @@ export is still a version 1 bundle. A reader that knows only version 1 refuses
 a version 2 bundle as malformed, so every device exchanging larger originals
 must be upgraded; this reader refuses later versions as an unsupported profile.
 
+Source pruning and forgetting inventory registered recovery drafts keyed by the
+affected source IDs as well as the withdrawn document IDs. An ink source can
+have a pending draft even when its enclosing note survives. The cleanup receipt
+accounts for that file without deleting drafts for unrelated sources.
+
 The shared API exposes `recognition.read` with a scoped `{scope, run}` payload.
 It returns the run's exact source pins and digests, model/runtime configuration,
 bounded recognized text, source acquisition/transform metadata, coverage/status,

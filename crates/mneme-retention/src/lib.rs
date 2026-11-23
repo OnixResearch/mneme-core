@@ -1092,7 +1092,7 @@ fn build_plan(
     }
     // Every operation records the managed inventory, even one that removes no
     // payload: a receipt may claim complete cleanup only after inspecting it.
-    add_inventory_locations(workspace, &std::collections::BTreeSet::new(), &mut plan)?;
+    add_inventory_locations(workspace, &std::collections::BTreeSet::new(), &[], &mut plan)?;
     plan.retained_metadata.sort();
     plan.retained_metadata.dedup();
     plan.commit.retained_metadata = plan.retained_metadata.clone();
@@ -1376,7 +1376,7 @@ fn plan_pruning(
             add_record_blob_locations(&revision, plan);
         }
     }
-    add_inventory_locations(workspace, &documents, plan)?;
+    add_inventory_locations(workspace, &documents, &sources, plan)?;
     plan.surviving_assertions = deps.assertions.iter().copied().collect();
     plan.retained_metadata
         .push("source-byte-absence".to_owned());
@@ -1506,7 +1506,12 @@ fn plan_forget(
     record_forgotten_targets(workspace, context.view, &state, plan)?;
     record_forgotten_revisions(context.view, &state, plan)?;
     collect_publication_locations(workspace, &state.content_digests, plan)?;
-    add_inventory_locations(workspace, &state.forgotten_documents, plan)?;
+    add_inventory_locations(
+        workspace,
+        &state.forgotten_documents,
+        &forgotten_sources,
+        plan,
+    )?;
     finish_forget_plan(request, &state, plan);
     Ok(())
 }
@@ -1844,6 +1849,7 @@ fn collect_publication_locations(
 fn add_inventory_locations(
     workspace: &mneme_store::Workspace,
     documents: &std::collections::BTreeSet<mneme_core::RecordId>,
+    sources: &[mneme_core::RecordId],
     plan: &mut Plan,
 ) -> Result<()> {
     for (kind, label) in [
@@ -1856,7 +1862,7 @@ fn add_inventory_locations(
     }
     let participants = workspace.retention_participants()?;
     let participant_audits =
-        add_participant_file_locations(workspace, documents, plan, &participants)?;
+        add_participant_file_locations(workspace, documents, sources, plan, &participants)?;
     // Inventory checks run after all planned participant-file purges. They
     // catch unknown descendants and files that appeared after the plan froze.
     for (location_id, locator) in participant_audits {
@@ -1876,6 +1882,7 @@ fn add_inventory_locations(
 fn add_participant_file_locations(
     workspace: &mneme_store::Workspace,
     documents: &std::collections::BTreeSet<mneme_core::RecordId>,
+    sources: &[mneme_core::RecordId],
     plan: &mut Plan,
     participants: &[mneme_store::lifecycle::RetentionParticipant],
 ) -> Result<Vec<(String, String)>> {
@@ -1884,35 +1891,33 @@ fn add_participant_file_locations(
         match participant.storage_role.as_str() {
             "document-keyed-files" | "document-session-files" => {
                 let base = participant.inventory_locator.trim_end_matches('/');
-                for document in documents {
-                    let document_hex = document.to_hex();
+                // Media editors can stage recovery under a source ID even
+                // when the note referring to it survives retention.
+                for owner in documents.iter().chain(sources) {
+                    let owner_hex = owner.to_hex();
                     for (suffix, kind) in [
                         ("json", "final"),
                         ("json.tmp", "temporary"),
                         ("json.corrupt", "quarantine"),
                     ] {
-                        let locator = format!("{base}/{document_hex}.{suffix}");
+                        let locator = format!("{base}/{owner_hex}.{suffix}");
                         if mneme_kernel::text::is_canonical_relative_path(locator.as_bytes()) {
                             let location_id = if kind == "final" {
-                                format!("participant-file:{}:{document_hex}", participant.name)
+                                format!("participant-file:{}:{owner_hex}", participant.name)
                             } else {
-                                format!(
-                                    "participant-file:{}:{document_hex}:{kind}",
-                                    participant.name
-                                )
+                                format!("participant-file:{}:{owner_hex}:{kind}", participant.name)
                             };
                             push_location(plan, location_id, "participant-file", locator);
                         }
                     }
                     if participant.storage_role == "document-session-files" {
-                        for artifact in collect_session_artifacts(workspace.root(), base, *document)
-                        {
+                        for artifact in collect_session_artifacts(workspace.root(), base, *owner) {
                             let (locator, relative) = artifact;
                             if mneme_kernel::text::is_canonical_relative_path(locator.as_bytes()) {
                                 push_location(
                                     plan,
                                     format!(
-                                        "participant-file:{}:{document_hex}:session:{relative}",
+                                        "participant-file:{}:{owner_hex}:session:{relative}",
                                         participant.name
                                     ),
                                     "participant-file",

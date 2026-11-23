@@ -3008,6 +3008,65 @@ fn document_keyed_participant_files_are_purged() {
 }
 
 #[test]
+fn removing_source_bytes_purges_only_its_pending_sessions() {
+    for kind in [
+        mneme_retention::OperationKind::Forget,
+        mneme_retention::OperationKind::SourcePruning,
+    ] {
+        let mut harness = Harness::new(Box::new(mneme_store::NoFaults));
+        harness
+            .workspace
+            .register_retention_participant(mneme_store::RetentionParticipant {
+                name: "mneme-desktop-draft-sessions".to_owned(),
+                storage_role: "document-session-files".to_owned(),
+                supports_invalidation: true,
+                supports_purge: true,
+                checks_generation: true,
+                inventory_locator: ".mneme-ui/drafts".to_owned(),
+            })
+            .expect("register draft sessions");
+        let scope = scope();
+        harness.add_source("selected", 0x20, 0x21, &scope, SOURCE_A);
+        harness.add_source("independent", 0x30, 0x31, &scope, SOURCE_B);
+        let selected = rid(0x20);
+        let draft_path = |owner: mneme_core::RecordId| {
+            format!(
+                ".mneme-ui/drafts/{}/{}/00000000000000000001.json",
+                owner.to_hex(),
+                rid(0x80).to_hex(),
+            )
+        };
+        let locator = draft_path(selected);
+        let pending = harness.temp.path().join(&locator);
+        let independent = harness.temp.path().join(draft_path(rid(0x30)));
+        for (path, bytes) in [(&pending, SOURCE_A), (&independent, SOURCE_B)] {
+            std::fs::create_dir_all(path.parent().expect("session directory"))
+                .expect("create session directory");
+            std::fs::write(path, bytes).expect("retain pending draft");
+        }
+        let request = harness.request(
+            kind,
+            mneme_retention::Selector::Source(selected),
+            "remove-source-draft",
+            scope,
+        );
+        let result = mneme_retention::Engine::new(&mut harness.workspace)
+            .execute(request)
+            .expect("remove source bytes");
+        assert!(result.physical_cleanup_complete, "{result:?}");
+        assert_missing(&pending);
+        assert!(result.locations.iter().any(|location| {
+            location.locator == locator
+                && location.state == mneme_store::RetentionLocationState::Purged
+        }));
+        assert_eq!(
+            std::fs::read(independent).expect("unrelated draft retained"),
+            SOURCE_B
+        );
+    }
+}
+
+#[test]
 fn unknown_session_descendants_are_not_purged_or_reported_complete() {
     let mut harness = Harness::new(Box::new(mneme_store::NoFaults));
     for participant in [
