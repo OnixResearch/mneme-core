@@ -21,8 +21,21 @@
 //! Orphans are reported but do not fail a scrub: an unreferenced file is
 //! wasted space that recovery sweeps, not lost data.
 
+#![allow(
+    unknown_lints,
+    path_segment_repetition,
+    fragile_exhaustive_enum_match,
+    assertion_density,
+    allocation_in_loop,
+    function_length,
+    numeric_units
+)] // Verify* names match CLI domain; exhaustive matches guard variants; scrub returns VerifyReport instead of panicking; diagnostic allocations are rare/offline; check_revisions is a cohesive single-pass loop; byte_length matches SQLite column
+
 use rusqlite::OptionalExtension;
 use sha2::Digest;
+
+const SQLITE_BUSY_TIMEOUT_SECS: u64 = 5;
+const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 
 /// How deeply to audit blob content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,7 +195,7 @@ pub fn verify_workspace(
         &ledger,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    connection.busy_timeout(std::time::Duration::from_secs(SQLITE_BUSY_TIMEOUT_SECS))?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version != super::LAYOUT_VERSION {
         return Err(crate::error::Failure::UnsupportedLayout(format!(
@@ -292,7 +305,7 @@ impl Scrub<'_> {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         for row in rows {
-            self.report.blobs_checked += 1;
+            self.report.blobs_checked = self.report.blobs_checked.saturating_add(1);
             self.check_blob(&row);
         }
         Ok(())
@@ -331,13 +344,24 @@ impl Scrub<'_> {
         };
         let path = crate::payload::blob_path(self.root, digest);
         let shown = self.relative(&path);
-        let metadata = match std::fs::symlink_metadata(&path) {
+        self.verify_blob_file(&path, &shown, digest, bytes, expected);
+    }
+
+    fn verify_blob_file(
+        &mut self,
+        path: &std::path::Path,
+        shown: &str,
+        digest: mneme_core::ContentDigest,
+        bytes: [u8; 32],
+        expected: u64,
+    ) {
+        let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 self.push(blob_issue(
                     IssueKind::MissingBlob,
                     &digest.to_hex(),
-                    Some(shown),
+                    Some(shown.to_owned()),
                     format!("no file; ledger records {expected} bytes"),
                 ));
                 return;
@@ -346,7 +370,7 @@ impl Scrub<'_> {
                 self.push(blob_issue(
                     IssueKind::UnreadableBlob,
                     &digest.to_hex(),
-                    Some(shown),
+                    Some(shown.to_owned()),
                     error.to_string(),
                 ));
                 return;
@@ -356,7 +380,7 @@ impl Scrub<'_> {
             self.push(blob_issue(
                 IssueKind::UnreadableBlob,
                 &digest.to_hex(),
-                Some(shown),
+                Some(shown.to_owned()),
                 "blob path is not a regular file".to_owned(),
             ));
             return;
@@ -365,7 +389,7 @@ impl Scrub<'_> {
             self.push(blob_issue(
                 IssueKind::SizeMismatch,
                 &digest.to_hex(),
-                Some(shown),
+                Some(shown.to_owned()),
                 format!(
                     "file holds {} bytes; ledger records {expected}",
                     metadata.len()
@@ -375,38 +399,35 @@ impl Scrub<'_> {
         }
         match self.mode {
             VerifyMode::Quick => {
-                self.report.bytes_sized += expected;
+                self.report.bytes_sized = self.report.bytes_sized.saturating_add(expected);
                 self.verified.insert(bytes);
             }
-            VerifyMode::Full => match hash_file(&path, digest.algorithm()) {
+            VerifyMode::Full => match hash_file(path, digest.algorithm()) {
                 Ok((_, length)) if length != expected => self.push(blob_issue(
                     IssueKind::SizeMismatch,
                     &digest.to_hex(),
-                    Some(shown),
+                    Some(shown.to_owned()),
                     format!("read {length} bytes; ledger records {expected}"),
                 )),
-                Ok((actual, length)) if actual != bytes => {
-                    let _ = length;
-                    self.push(blob_issue(
-                        IssueKind::DigestMismatch,
-                        &digest.to_hex(),
-                        Some(shown),
-                        format!(
-                            "bytes hash to {}; ledger records {}",
-                            hex(&actual),
-                            digest.to_hex()
-                        ),
-                    ));
-                }
+                Ok((actual, _)) if actual != bytes => self.push(blob_issue(
+                    IssueKind::DigestMismatch,
+                    &digest.to_hex(),
+                    Some(shown.to_owned()),
+                    format!(
+                        "bytes hash to {}; ledger records {}",
+                        hex(&actual),
+                        digest.to_hex()
+                    ),
+                )),
                 Ok((_, length)) => {
-                    self.report.bytes_verified += length;
-                    self.report.bytes_sized += length;
+                    self.report.bytes_verified = self.report.bytes_verified.saturating_add(length);
+                    self.report.bytes_sized = self.report.bytes_sized.saturating_add(length);
                     self.verified.insert(bytes);
                 }
                 Err(error) => self.push(blob_issue(
                     IssueKind::UnreadableBlob,
                     &digest.to_hex(),
-                    Some(shown),
+                    Some(shown.to_owned()),
                     error.to_string(),
                 )),
             },
@@ -428,7 +449,7 @@ impl Scrub<'_> {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         for (record, revision, full) in rows {
-            self.report.records_checked += 1;
+            self.report.records_checked = self.report.records_checked.saturating_add(1);
             let owner = format!("{}@{}", hex(&record), hex(&revision));
             let Ok(full) = <[u8; 32]>::try_from(full.as_slice()) else {
                 self.push(blob_issue(
@@ -620,7 +641,7 @@ impl Scrub<'_> {
                         error.to_string(),
                     ));
                 }
-                cursor += 1;
+                cursor = cursor.saturating_add(1);
             }
             let outcome = self.check_manifest(&ManifestRow {
                 revision,
@@ -638,7 +659,7 @@ impl Scrub<'_> {
                     reason,
                 ));
             } else {
-                self.report.revisions_verified += 1;
+                self.report.revisions_verified = self.report.revisions_verified.saturating_add(1);
             }
             previous = Some((sequence, revision));
             head = Some(revision);
@@ -880,7 +901,7 @@ fn chain_fault(
             "history starts at sequence {sequence}, not genesis 0"
         )),
         None => parent.map(|parent| format!("genesis names parent {parent}")),
-        Some((last, _)) if sequence != last + 1 => {
+        Some((last, _)) if sequence != last.saturating_add(1) => {
             Some(format!("sequence jumps from {last} to {sequence}"))
         }
         Some((_, expected)) => match parent {
@@ -934,7 +955,7 @@ fn hash_file(
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Hasher::new(algorithm);
-    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; STREAM_BUFFER_BYTES];
     let mut length = 0_u64;
     loop {
         let read = file.read(&mut buffer)?;
@@ -942,7 +963,7 @@ fn hash_file(
             break;
         }
         hasher.update(&buffer[..read]);
-        length += read as u64;
+        length = length.saturating_add(read as u64);
     }
     Ok((hasher.finish(), length))
 }
@@ -976,7 +997,7 @@ fn chain_issue(kind: IssueKind, revision: &str, sequence: u64, detail: String) -
 }
 
 fn hex(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
         output.push_str(&format!("{byte:02x}"));
     }
@@ -989,7 +1010,9 @@ fn unhex(text: &str) -> Option<[u8; 32]> {
     }
     let mut bytes = [0_u8; 32];
     for (index, slot) in bytes.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(text.get(index * 2..index * 2 + 2)?, 16).ok()?;
+        let start = index.saturating_mul(2);
+        let end = start.saturating_add(2);
+        *slot = u8::from_str_radix(text.get(start..end)?, 16).ok()?;
     }
     Some(bytes)
 }

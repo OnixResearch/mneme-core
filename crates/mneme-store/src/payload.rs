@@ -1050,24 +1050,6 @@ pub fn cleanup_orphans(
     Ok((staged, blobs))
 }
 
-/// Every regular blob file on disk, by the digest its name encodes.
-///
-/// Read-only: nothing is removed or opened for writing. The integrity scrub
-/// compares this inventory with the ledger to name files no row accounts for.
-pub(crate) fn blob_file_inventory(
-    root: &std::path::Path,
-) -> crate::error::Result<Vec<([u8; 32], std::path::PathBuf)>> {
-    let blob_root = root.join(BLOB_DIRECTORY);
-    let mut files = Vec::new();
-    if blob_root.is_dir() {
-        for file in BlobFiles::open(&blob_root)? {
-            let file = file?;
-            files.push((file.digest, file.path));
-        }
-    }
-    Ok(files)
-}
-
 /// Remove temporary publication files left under `working/`.
 #[allow(unknown_lints, usize_in_public_api)] // local directory-entry count
 pub fn cleanup_working_temporaries(root: &std::path::Path) -> crate::error::Result<usize> {
@@ -1402,6 +1384,25 @@ fn flush_directory(path: &std::path::Path) -> crate::error::Result<()> {
             .map_err(|error| crate::error::Failure::io(path, error))?;
     }
     Ok(())
+}
+
+/// Every regular blob file on disk, by the digest its name encodes.
+///
+/// Read-only: nothing is removed or opened for writing. The integrity scrub
+/// compares this inventory with the ledger to name files no row accounts for.
+#[allow(unknown_lints, assertion_density)] // read-only directory walk returns Result<Vec<_>>
+pub(crate) fn blob_file_inventory(
+    root: &std::path::Path,
+) -> crate::error::Result<Vec<([u8; 32], std::path::PathBuf)>> {
+    let blob_root = root.join(BLOB_DIRECTORY);
+    let mut files = Vec::new();
+    if blob_root.is_dir() {
+        for file in BlobFiles::open(&blob_root)? {
+            let file = file?;
+            files.push((file.digest, file.path));
+        }
+    }
+    Ok(files)
 }
 
 #[cfg(test)]

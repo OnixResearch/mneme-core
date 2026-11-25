@@ -2,25 +2,97 @@
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test/fixture code fails by panic, not a production path
 
-mod common;
+fn test_scope() -> mneme_core::ScopeId {
+    mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar").expect("scope")
+}
+
+fn test_config() -> mneme_store::WorkspaceConfig {
+    mneme_store::WorkspaceConfig {
+        clock: Box::new(mneme_store::FixedClock::new(
+            mneme_core::Timestamp::from_nanos(1_000),
+        )),
+        faults: Box::new(mneme_store::NoFaults),
+    }
+}
+
+fn fixture_command(base: mneme_core::WorkspaceRevisionId, key: &str) -> mneme_store::CommitCommand {
+    let records: Vec<mneme_store::RecordDraft> = mneme_core::fixtures::fixture_batch()
+        .iter()
+        .map(|envelope| mneme_store::RecordDraft {
+            schema_version: envelope.schema_version,
+            kind: envelope.kind,
+            record_id: envelope.record_id,
+            revision_id: envelope.revision_id,
+            predecessor: envelope.predecessor,
+            scope: envelope.scope.clone(),
+            payload: envelope.payload.clone(),
+        })
+        .collect();
+    assert!(!records.is_empty());
+    assert!(!key.is_empty());
+    mneme_store::CommitCommand {
+        base,
+        actor: "test-author".to_owned(),
+        scope: test_scope(),
+        idempotency_key: key.to_owned(),
+        records,
+        source_blobs: vec![mneme_store::SourceBlobDraft {
+            bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
+            media_type: mneme_core::Symbol::from("text/asciidoc"),
+        }],
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: None,
+    }
+}
+
+fn retained_source_record(bytes: &[u8]) -> mneme_store::RecordDraft {
+    assert!(!bytes.is_empty());
+    let retained = mneme_core::RetainedSource::new(
+        mneme_core::ContentDigest::of_source_bytes(bytes),
+        bytes.len() as u64,
+        "text/asciidoc",
+    )
+    .expect("retained source");
+    assert_eq!(retained.byte_length(), bytes.len() as u64);
+    let entries = vec![
+        (
+            mneme_core::Symbol::from("content"),
+            mneme_core::SourceContent::Retained(retained).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("acquisition"),
+            mneme_core::Value::symbol("authored"),
+        ),
+        (
+            mneme_core::Symbol::from("path-hint"),
+            mneme_core::Value::string("notes/retained.adoc"),
+        ),
+    ];
+    mneme_store::RecordDraft {
+        schema_version: 1,
+        kind: mneme_core::RecordKind::SourceRevision,
+        record_id: mneme_core::RecordId::from_bytes([9; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([10; 16]),
+        predecessor: None,
+        scope: test_scope(),
+        payload: mneme_core::Payload::new(entries),
+    }
+}
 
 fn populated_workspace(root: &std::path::Path) -> mneme_store::Workspace {
     let mut workspace =
-        mneme_store::Workspace::create(root, common::config(1_000)).expect("create workspace");
+        mneme_store::Workspace::create(root, test_config()).expect("create workspace");
     let genesis = workspace.current_revision().expect("genesis");
     let outcome = workspace
-        .commit(common::fixture_command(genesis, "first"))
+        .commit(fixture_command(genesis, "first"))
         .expect("commit fixture");
-    let mut command = common::fixture_command(outcome.revision, "second");
-    command.records = vec![common::retained_source_record(
-        mneme_core::RecordId::from_bytes([9; 16]),
-        mneme_core::RevisionId::from_bytes([10; 16]),
-        &common::scope(),
-        b"retained source payload bytes for scrub test",
-        Some("notes/retained.adoc"),
-    )];
+    assert_eq!(outcome.sequence, 1);
+    let mut command = fixture_command(outcome.revision, "second");
+    let source_bytes = b"retained source payload bytes for scrub test";
+    command.records = vec![retained_source_record(source_bytes)];
     command.source_blobs = vec![mneme_store::SourceBlobDraft {
-        bytes: b"retained source payload bytes for scrub test".to_vec(),
+        bytes: source_bytes.to_vec(),
         media_type: mneme_core::Symbol::from("text/asciidoc"),
     }];
     let second = workspace.commit(command).expect("commit retained source");
