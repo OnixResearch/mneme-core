@@ -648,33 +648,11 @@ impl QueryResult {
         if self.vaults.len() > 1 {
             entries.push((
                 mneme_core::Symbol::from("vaults"),
-                mneme_core::Value::sequence(
-                    self.vaults
-                        .iter()
-                        .map(|vault| {
-                            mneme_core::Value::symbol_dictionary([
-                                (
-                                    mneme_core::Symbol::from("alias"),
-                                    mneme_core::Value::string(vault.alias.clone()),
-                                ),
-                                (
-                                    mneme_core::Symbol::from("root"),
-                                    mneme_core::Value::string(vault.root.display().to_string()),
-                                ),
-                                (
-                                    mneme_core::Symbol::from("requested-revision"),
-                                    vault.requested_revision.to_value(),
-                                ),
-                                (
-                                    mneme_core::Symbol::from("served-revision"),
-                                    vault.served_revision.to_value(),
-                                ),
-                            ])
-                        })
-                        .collect(),
-                ),
+                vault_revision_sequence(&self.vaults),
             ));
         }
+        assert!(!self.context.projection_build_id.is_empty());
+        assert!(!self.context.rule_bundle_id.is_empty());
         entries
     }
 
@@ -868,7 +846,6 @@ impl<'w> Service<'w> {
 
     /// Build a non-published federated projection across the primary workspace
     /// and strictly read-only attached vaults.
-    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn build_federated(&mut self, federated: FederatedBuildRequest) -> Result<Build, Error> {
         let FederatedBuildRequest {
             request,
@@ -887,50 +864,23 @@ impl<'w> Service<'w> {
         let program = request.bundle.validate().map_err(Error::InvalidBundle)?;
         let primary_generation = self.workspace.eligibility_generation()?;
         let primary_head = self.workspace.current_revision()?;
-        let primary_loaded = load_vault_context(
-            self.workspace,
-            PRIMARY_VAULT_ALIAS,
-            request.revision,
-            None,
-            &request.scope,
-            &request.access,
-        )?;
-        let mut attached_states = Vec::with_capacity(attachments.len());
-        for attachment in &attachments {
-            let workspace = mneme_store::Workspace::open_read_only(
-                &attachment.root,
-                mneme_store::WorkspaceConfig::default(),
-            )?;
-            let generation = workspace.eligibility_generation()?;
-            let head = workspace.current_revision()?;
-            let requested = attachment.revision.unwrap_or(head);
-            let loaded = load_vault_context(
-                &workspace,
-                &attachment.alias,
-                requested,
-                Some(generation),
-                &request.scope,
-                &request.access,
-            )?;
-            attached_states.push((workspace, generation, loaded));
-        }
-        let vault_build_ids = std::iter::once(rules::VaultBuildId {
+        let primary_loaded = load_vault_context(VaultLoadSpec {
+            workspace: self.workspace,
             alias: PRIMARY_VAULT_ALIAS,
-            root: self.workspace.root(),
-            revision: primary_loaded.metadata.served_revision,
-            generation: primary_generation,
-        })
-        .chain(
-            attached_states
-                .iter()
-                .map(|(workspace, generation, loaded)| rules::VaultBuildId {
-                    alias: &loaded.metadata.alias,
-                    root: workspace.root(),
-                    revision: loaded.metadata.served_revision,
-                    generation: *generation,
-                }),
-        )
-        .collect::<Vec<_>>();
+            requested_revision: request.revision,
+            pinned_generation: None,
+            scope: &request.scope,
+            access: &request.access,
+        })?;
+        let attached_states =
+            open_attached_vault_contexts(&attachments, &request.scope, &request.access)?;
+        assert_eq!(attached_states.len(), attachments.len());
+        let vault_build_ids = collect_vault_build_ids(
+            self.workspace,
+            primary_generation,
+            &primary_loaded,
+            &attached_states,
+        );
         let build_id = rules::federated_build_id(
             rules::BuildIdContext {
                 revision: request.revision,
@@ -943,41 +893,10 @@ impl<'w> Service<'w> {
             },
             &vault_build_ids,
         );
-        let is_cancellation_requested = request
-            .cancellation
-            .as_ref()
-            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
-        if let Some(existing) = self.builds.get(&build_id).cloned()
-            && !is_cancellation_requested
-            && !matches!(
-                existing.status,
-                ExecutionStatus::Timeout | ExecutionStatus::Cancelled | ExecutionStatus::Failed
-            )
-        {
+        assert!(!build_id.is_empty());
+        if let Some(existing) = self.cached_build(&request, &build_id)? {
             return Ok(existing);
         }
-        let max_cached_builds = 1_024;
-        if !self.builds.contains_key(&build_id) && self.builds.len() >= max_cached_builds {
-            return Err(Error::Failed(
-                "Datalog build cache exceeds the 1024-entry bound".to_owned(),
-            ));
-        }
-        let vaults = std::iter::once(primary_loaded.metadata.clone())
-            .chain(
-                attached_states
-                    .iter()
-                    .map(|(_, _, loaded)| loaded.metadata.clone()),
-            )
-            .collect::<Vec<_>>();
-        let sources = std::iter::once(&primary_loaded)
-            .chain(attached_states.iter().map(|(_, _, loaded)| loaded))
-            .map(|loaded| engine::VaultSource {
-                alias: &loaded.metadata.alias,
-                served_revision: loaded.metadata.served_revision,
-                view: &loaded.view,
-                current_sources: &loaded.current_sources,
-            })
-            .collect::<Vec<_>>();
         let context = BuildContext {
             requested_revision: request.revision,
             served_revision: primary_loaded.metadata.served_revision,
@@ -988,25 +907,39 @@ impl<'w> Service<'w> {
             projection_build_id: build_id.clone(),
             eligibility_generation: primary_generation,
             requested_was_head: request.revision == primary_head,
-            vaults,
+            vaults: collect_vault_revisions(&primary_loaded, &attached_states),
         };
+        let sources = collect_vault_sources(&primary_loaded, &attached_states);
         let evaluated = engine::build_federated(&sources, &request, &context, &program, start);
-        if self.workspace.eligibility_generation()? != primary_generation {
-            return Err(Error::Failed(
-                "eligibility barrier advanced during projection build".to_owned(),
-            ));
-        }
-        for (workspace, generation, _) in &attached_states {
-            if workspace.eligibility_generation()? != *generation {
-                return Err(Error::Failed(
-                    "attached vault eligibility barrier advanced during projection build"
-                        .to_owned(),
-                ));
-            }
-        }
+        verify_federated_barriers(self.workspace, primary_generation, &attached_states)?;
         let build = assembled_build(&request, program, context, evaluated);
         self.builds.insert(build_id, build.clone());
         Ok(build)
+    }
+
+    fn cached_build(&self, request: &BuildRequest, build_id: &str) -> Result<Option<Build>, Error> {
+        assert!(!build_id.is_empty());
+        let is_cancellation_requested = request
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed));
+        if let Some(existing) = self.builds.get(build_id).cloned()
+            && !is_cancellation_requested
+            && !matches!(
+                existing.status,
+                ExecutionStatus::Timeout | ExecutionStatus::Cancelled | ExecutionStatus::Failed
+            )
+        {
+            return Ok(Some(existing));
+        }
+        let max_cached_builds = 1_024;
+        if !self.builds.contains_key(build_id) && self.builds.len() >= max_cached_builds {
+            return Err(Error::Failed(
+                "Datalog build cache exceeds the 1024-entry bound".to_owned(),
+            ));
+        }
+        assert!(self.builds.len() <= max_cached_builds);
+        Ok(None)
     }
 
     fn build_from_snapshot(
@@ -1023,12 +956,15 @@ impl<'w> Service<'w> {
             start,
         } = invocation;
         let loaded = load_vault_from_snapshot(
-            self.workspace,
-            PRIMARY_VAULT_ALIAS,
-            request.revision,
+            VaultLoadSpec {
+                workspace: self.workspace,
+                alias: PRIMARY_VAULT_ALIAS,
+                requested_revision: request.revision,
+                pinned_generation: Some(generation),
+                scope: &request.scope,
+                access: &request.access,
+            },
             snapshot,
-            &request.scope,
-            &request.access,
         )?;
         let context = BuildContext {
             requested_revision: request.revision,
@@ -1463,6 +1399,158 @@ struct LoadedVaultView {
     current_sources: engine::AvailabilityMap,
 }
 
+fn vault_revision_sequence(vaults: &[VaultRevision]) -> mneme_core::Value {
+    mneme_core::Value::sequence(
+        vaults
+            .iter()
+            .map(|vault| {
+                mneme_core::Value::symbol_dictionary([
+                    (
+                        mneme_core::Symbol::from("alias"),
+                        mneme_core::Value::string(vault.alias.clone()),
+                    ),
+                    (
+                        mneme_core::Symbol::from("root"),
+                        mneme_core::Value::string(vault.root.display().to_string()),
+                    ),
+                    (
+                        mneme_core::Symbol::from("requested-revision"),
+                        vault.requested_revision.to_value(),
+                    ),
+                    (
+                        mneme_core::Symbol::from("served-revision"),
+                        vault.served_revision.to_value(),
+                    ),
+                ])
+            })
+            .collect(),
+    )
+}
+
+struct VaultLoadSpec<'a> {
+    workspace: &'a mneme_store::Workspace,
+    alias: &'a str,
+    requested_revision: mneme_core::WorkspaceRevisionId,
+    pinned_generation: Option<u64>,
+    scope: &'a mneme_core::ScopeId,
+    access: &'a mneme_memory::Access,
+}
+
+fn open_attached_vault_contexts(
+    attachments: &[VaultAttachment],
+    scope: &mneme_core::ScopeId,
+    access: &mneme_memory::Access,
+) -> Result<Vec<(mneme_store::Workspace, u64, LoadedVaultView)>, Error> {
+    assert!(!attachments.is_empty());
+    let attached_states = attachments
+        .iter()
+        .map(|attachment| open_single_attached_vault(attachment, scope, access))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(attached_states.len(), attachments.len());
+    Ok(attached_states)
+}
+
+fn open_single_attached_vault(
+    attachment: &VaultAttachment,
+    scope: &mneme_core::ScopeId,
+    access: &mneme_memory::Access,
+) -> Result<(mneme_store::Workspace, u64, LoadedVaultView), Error> {
+    assert!(!attachment.alias.is_empty());
+    let workspace = mneme_store::Workspace::open_read_only(
+        &attachment.root,
+        mneme_store::WorkspaceConfig::new(
+            Box::new(mneme_store::SystemClock),
+            Box::new(mneme_store::NoFaults),
+        ),
+    )?;
+    let generation = workspace.eligibility_generation()?;
+    let head = workspace.current_revision()?;
+    let requested_revision = attachment.revision.unwrap_or(head);
+    let loaded = load_vault_context(VaultLoadSpec {
+        workspace: &workspace,
+        alias: &attachment.alias,
+        requested_revision,
+        pinned_generation: Some(generation),
+        scope,
+        access,
+    })?;
+    assert_eq!(loaded.metadata.alias, attachment.alias);
+    Ok((workspace, generation, loaded))
+}
+
+fn collect_vault_build_ids<'a>(
+    primary_workspace: &'a mneme_store::Workspace,
+    primary_generation: u64,
+    primary_loaded: &'a LoadedVaultView,
+    attached_states: &'a [(mneme_store::Workspace, u64, LoadedVaultView)],
+) -> Vec<rules::VaultBuildId<'a>> {
+    std::iter::once(rules::VaultBuildId {
+        alias: PRIMARY_VAULT_ALIAS,
+        root: primary_workspace.root(),
+        revision: primary_loaded.metadata.served_revision,
+        generation: primary_generation,
+    })
+    .chain(
+        attached_states
+            .iter()
+            .map(|(workspace, generation, loaded)| rules::VaultBuildId {
+                alias: &loaded.metadata.alias,
+                root: workspace.root(),
+                revision: loaded.metadata.served_revision,
+                generation: *generation,
+            }),
+    )
+    .collect()
+}
+
+fn collect_vault_revisions(
+    primary_loaded: &LoadedVaultView,
+    attached_states: &[(mneme_store::Workspace, u64, LoadedVaultView)],
+) -> Vec<VaultRevision> {
+    std::iter::once(primary_loaded.metadata.clone())
+        .chain(
+            attached_states
+                .iter()
+                .map(|(_, _, loaded)| loaded.metadata.clone()),
+        )
+        .collect()
+}
+
+fn collect_vault_sources<'a>(
+    primary_loaded: &'a LoadedVaultView,
+    attached_states: &'a [(mneme_store::Workspace, u64, LoadedVaultView)],
+) -> Vec<engine::VaultSource<'a>> {
+    std::iter::once(primary_loaded)
+        .chain(attached_states.iter().map(|(_, _, loaded)| loaded))
+        .map(|loaded| engine::VaultSource {
+            alias: &loaded.metadata.alias,
+            served_revision: loaded.metadata.served_revision,
+            view: &loaded.view,
+            current_sources: &loaded.current_sources,
+        })
+        .collect()
+}
+
+fn verify_federated_barriers(
+    primary_workspace: &mneme_store::Workspace,
+    primary_generation: u64,
+    attached_states: &[(mneme_store::Workspace, u64, LoadedVaultView)],
+) -> Result<(), Error> {
+    if primary_workspace.eligibility_generation()? != primary_generation {
+        return Err(Error::Failed(
+            "eligibility barrier advanced during projection build".to_owned(),
+        ));
+    }
+    for (workspace, generation, _) in attached_states {
+        if workspace.eligibility_generation()? != *generation {
+            return Err(Error::Failed(
+                "attached vault eligibility barrier advanced during projection build".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_attachments(attachments: &[VaultAttachment]) -> Result<(), Error> {
     let mut aliases = std::collections::BTreeSet::new();
     for attachment in attachments {
@@ -1474,59 +1562,46 @@ fn validate_attachments(attachments: &[VaultAttachment]) -> Result<(), Error> {
     Ok(())
 }
 
-fn load_vault_context(
-    workspace: &mneme_store::Workspace,
-    alias: &str,
-    requested_revision: mneme_core::WorkspaceRevisionId,
-    pinned_generation: Option<u64>,
-    scope: &mneme_core::ScopeId,
-    access: &mneme_memory::Access,
-) -> Result<LoadedVaultView, Error> {
-    let snapshot = workspace.snapshot_at(requested_revision, pinned_generation)?;
-    load_vault_from_snapshot(
-        workspace,
-        alias,
-        requested_revision,
-        snapshot,
-        scope,
-        access,
-    )
+fn load_vault_context(spec: VaultLoadSpec<'_>) -> Result<LoadedVaultView, Error> {
+    let snapshot = spec
+        .workspace
+        .snapshot_at(spec.requested_revision, spec.pinned_generation)?;
+    load_vault_from_snapshot(spec, snapshot)
 }
 
 fn load_vault_from_snapshot(
-    workspace: &mneme_store::Workspace,
-    alias: &str,
-    requested_revision: mneme_core::WorkspaceRevisionId,
+    spec: VaultLoadSpec<'_>,
     snapshot: mneme_store::Snapshot,
-    scope: &mneme_core::ScopeId,
-    access: &mneme_memory::Access,
 ) -> Result<LoadedVaultView, Error> {
     let served_revision = snapshot.revision;
-    let snapshot = visible_snapshot(snapshot, scope, access);
+    let snapshot = visible_snapshot(snapshot, spec.scope, spec.access);
     // The history is bounded to one million retained revisions; the sequences
     // cover only the revisions the view may look up, so the size of the whole
     // ledger no longer decides whether a build can proceed.
-    let loaded = mneme_memory::view_context(workspace, &snapshot).map_err(view_context_error)?;
+    let loaded =
+        mneme_memory::view_context(spec.workspace, &snapshot).map_err(view_context_error)?;
     if loaded.history.len() > 1_000_000 {
         return Err(Error::Failed(
             "workspace history exceeds the 1M revision bound".to_owned(),
         ));
     }
-    let suppressions = workspace.active_suppressions()?;
-    let current_sources = workspace_source_availability_overlay(workspace, served_revision)?;
+    assert!(loaded.history.len() <= 1_000_000);
+    let suppressions = spec.workspace.active_suppressions()?;
+    let current_sources = workspace_source_availability_overlay(spec.workspace, served_revision)?;
     let view = mneme_memory::View::with_retention(
         snapshot,
-        workspace.root(),
+        spec.workspace.root(),
         loaded.history,
         loaded.revision_sequences,
         suppressions,
     )
-    .with_access(access.clone());
+    .with_access(spec.access.clone());
+    assert!(!spec.alias.is_empty());
     Ok(LoadedVaultView {
         metadata: VaultRevision {
-            alias: alias.to_owned(),
-            root: workspace.root().to_path_buf(),
-            requested_revision,
+            alias: spec.alias.to_owned(),
+            root: spec.workspace.root().to_path_buf(),
+            requested_revision: spec.requested_revision,
             served_revision,
         },
         view,

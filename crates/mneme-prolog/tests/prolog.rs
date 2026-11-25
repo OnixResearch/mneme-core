@@ -1582,9 +1582,12 @@ fn federated_prolog_query_joins_across_two_vaults_with_real_engine() {
         },
     };
     let control = mneme_prolog::process::WorkerControl::new();
-    let result =
-        mneme_prolog::run_federated_query(&engine(), &md, &federated, &req, &control, limits())
-            .expect("federated prolog query");
+    let runtime = mneme_prolog::process::WorkerRuntime {
+        control: &control,
+        limits: limits(),
+    };
+    let result = mneme_prolog::run_federated_query(&engine(), &md, &federated, &req, &runtime)
+        .expect("federated prolog query");
     assert_eq!(
         result.outcome.status,
         mneme_prolog::ExecutionStatus::Complete

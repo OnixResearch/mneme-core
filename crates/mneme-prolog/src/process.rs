@@ -91,25 +91,37 @@ pub(crate) const WORKER_ENV_PATH: &str = "";
 /// `engine` must be the pinned Scryer-compatible executable. The worker refuses
 /// an image whose context or digest does not match the request, so a mismatched
 /// image never reaches the engine.
-enum ImageSource<'a> {
-    Single(&'a crate::snapshot::InputImage),
-    Federated(&'a crate::snapshot::FederatedImage),
+#[derive(Clone, Copy)]
+struct ImageSource<'a> {
+    image: &'a crate::snapshot::InputImage,
+    federated: Option<&'a crate::snapshot::FederatedImage>,
 }
 
-impl ImageSource<'_> {
-    fn base(&self) -> &crate::snapshot::InputImage {
-        match self {
-            ImageSource::Single(image) => image,
-            ImageSource::Federated(federated) => &federated.image,
+impl<'a> ImageSource<'a> {
+    fn single(image: &'a crate::snapshot::InputImage) -> Self {
+        Self {
+            image,
+            federated: None,
         }
     }
 
-    fn verify_for_request(&self, request: &crate::Request) -> Result<(), crate::CapabilityError> {
-        match self {
-            ImageSource::Single(image) => image.verify_for_request(request),
-            ImageSource::Federated(federated) => federated.verify_for_request(request),
+    fn federated(federated: &'a crate::snapshot::FederatedImage) -> Self {
+        Self {
+            image: &federated.image,
+            federated: Some(federated),
         }
-        .map_err(|_| {
+    }
+
+    fn base(&self) -> &crate::snapshot::InputImage {
+        self.image
+    }
+
+    fn verify_for_request(&self, request: &crate::Request) -> Result<(), crate::CapabilityError> {
+        let verified = match self.federated {
+            Some(federated) => federated.verify_for_request(request),
+            None => self.image.verify_for_request(request),
+        };
+        verified.map_err(|_| {
             crate::CapabilityError::InvalidRequest(
                 "input image does not match the request".to_owned(),
             )
@@ -121,11 +133,9 @@ impl ImageSource<'_> {
         request: &crate::Request,
         metadata: &crate::CapabilityMetadata,
     ) -> Result<crate::ProtocolIdentity, crate::CapabilityError> {
-        match self {
-            ImageSource::Single(image) => request.protocol_identity(metadata, image),
-            ImageSource::Federated(federated) => {
-                request.federated_protocol_identity(metadata, federated)
-            }
+        match self.federated {
+            Some(federated) => request.federated_protocol_identity(metadata, federated),
+            None => request.protocol_identity(metadata, self.image),
         }
     }
 }
@@ -141,7 +151,7 @@ pub fn run_worker(
     run_worker_source(
         engine,
         metadata,
-        ImageSource::Single(image),
+        ImageSource::single(image),
         request,
         runtime,
     )
@@ -158,7 +168,7 @@ pub(crate) fn run_federated_worker(
     run_worker_source(
         engine,
         metadata,
-        ImageSource::Federated(federated),
+        ImageSource::federated(federated),
         request,
         runtime,
     )
@@ -179,6 +189,8 @@ fn run_worker_source(
             "worker limits must be positive".to_owned(),
         ));
     }
+    assert!(runtime.limits.max_wall_ms > 0);
+    assert!(runtime.limits.max_output_bytes > 0);
     if runtime.control.is_cancelled() {
         return Ok(WorkerOutcome {
             status: WorkerStatus::Cancelled,
@@ -614,6 +626,7 @@ fn write_program(
     metadata: &crate::CapabilityMetadata,
 ) -> Result<(), crate::CapabilityError> {
     let identity = source.protocol_identity(request, metadata)?;
+    assert!(!identity.image_digest.is_empty());
     let mut text = String::from(EMITTER_SOURCE);
     for clause in program_clauses(source, request, metadata)? {
         text.push_str(&clause);
@@ -628,6 +641,7 @@ fn write_program(
     text.push_str(&emit_solution_clause(&output_variables, &identity));
     text.push('\n');
     text.push_str(&goal_directive(request, metadata, &identity)?);
+    assert!(!text.is_empty());
     let mut file = std::fs::File::create(path).map_err(|error| {
         crate::CapabilityError::InvalidRequest(format!("cannot write script: {error}"))
     })?;
@@ -675,7 +689,7 @@ fn program_clauses(
             push_clause(&mut groups, &atom, metadata.terms, budget)?;
         }
     }
-    if let ImageSource::Federated(federated) = source {
+    if let Some(federated) = source.federated {
         push_federated_clauses(federated, request, metadata, &mut groups)?;
     }
     for assumption in &request.assumptions {
@@ -689,17 +703,8 @@ fn program_clauses(
             .push(clause);
     }
     let mut referenced = referenced_predicates(request);
-    if matches!(source, ImageSource::Federated(_)) {
-        for (name, arity) in [
-            ("vault_entity", 4),
-            ("vault_relation", 4),
-            ("vault_assertion", 4),
-            ("vault_assertion", 5),
-            ("vault_denial", 5),
-            ("vault_hypothesis", 5),
-        ] {
-            referenced.push((name.to_owned(), arity));
-        }
+    if source.federated.is_some() {
+        extend_federated_referenced_predicates(&mut referenced);
     }
     for (name, arity) in referenced {
         if groups.contains_key(&(name.clone(), arity)) {
@@ -712,7 +717,22 @@ fn program_clauses(
             .or_default()
             .push(empty_relation_clause(&name, arity));
     }
+    assert!(budget > 0);
+    if !request.rules.is_empty() {
+        assert!(!groups.is_empty());
+    }
     Ok(groups.into_values().flatten().collect())
+}
+
+fn extend_federated_referenced_predicates(referenced: &mut Vec<(String, usize)>) {
+    referenced.extend([
+        ("vault_entity".to_owned(), 4),
+        ("vault_relation".to_owned(), 4),
+        ("vault_assertion".to_owned(), 4),
+        ("vault_assertion".to_owned(), 5),
+        ("vault_denial".to_owned(), 5),
+        ("vault_hypothesis".to_owned(), 5),
+    ]);
 }
 
 fn push_federated_clauses(
@@ -722,156 +742,116 @@ fn push_federated_clauses(
     groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
 ) -> Result<(), crate::CapabilityError> {
     let budget = metadata.limits.max_output_bytes;
+    assert!(budget > 0);
     for fact in &federated.facts {
-        match fact {
-            crate::snapshot::VaultFact::Entity {
-                vault,
-                record_id,
-                entity_type,
-                label,
-            } => {
-                let atom = crate::Atom {
-                    predicate: "vault_entity".to_owned(),
-                    terms: vec![
-                        crate::Term::String(vault.clone()),
-                        crate::Term::String(record_id.to_hex()),
-                        crate::Term::String(entity_type.clone()),
-                        crate::Term::String(label.clone()),
-                    ],
-                };
-                push_clause(groups, &atom, metadata.terms, budget)?;
-            }
-            crate::snapshot::VaultFact::Relation {
-                vault,
-                relation_type,
-                from,
-                to,
-            } => {
-                let atom = crate::Atom {
-                    predicate: "vault_relation".to_owned(),
-                    terms: vec![
-                        crate::Term::String(vault.clone()),
-                        crate::Term::String(relation_type.clone()),
-                        crate::Term::String(from.to_hex()),
-                        crate::Term::String(to.to_hex()),
-                    ],
-                };
-                push_clause(groups, &atom, metadata.terms, budget)?;
-            }
-            crate::snapshot::VaultFact::Assertion {
-                vault,
-                subject,
-                predicate,
-                value,
-                record_id,
-            } => {
-                let value_term =
-                    crate::snapshot::value_term(value).map_err(|_| unrepresentable_image())?;
-                let short_atom = crate::Atom {
-                    predicate: "vault_assertion".to_owned(),
-                    terms: vec![
-                        crate::Term::String(vault.clone()),
-                        crate::Term::String(predicate.clone()),
-                        crate::Term::String(subject.to_hex()),
-                        value_term.clone(),
-                    ],
-                };
-                push_clause(groups, &short_atom, metadata.terms, budget)?;
-                let full_atom = crate::Atom {
-                    predicate: "vault_assertion".to_owned(),
-                    terms: vec![
-                        crate::Term::String(vault.clone()),
-                        crate::Term::String(subject.to_hex()),
-                        crate::Term::String(predicate.clone()),
-                        value_term,
-                        crate::Term::String(record_id.to_hex()),
-                    ],
-                };
-                push_clause(groups, &full_atom, metadata.terms, budget)?;
-            }
-            crate::snapshot::VaultFact::Denial {
-                vault,
-                subject,
-                predicate,
-                value,
-                record_id,
-            } => {
-                let value_term =
-                    crate::snapshot::value_term(value).map_err(|_| unrepresentable_image())?;
-                let atom = crate::Atom {
-                    predicate: "vault_denial".to_owned(),
-                    terms: vec![
-                        crate::Term::String(vault.clone()),
-                        crate::Term::String(subject.to_hex()),
-                        crate::Term::String(predicate.clone()),
-                        value_term,
-                        crate::Term::String(record_id.to_hex()),
-                    ],
-                };
-                push_clause(groups, &atom, metadata.terms, budget)?;
-            }
-            crate::snapshot::VaultFact::Hypothesis {
-                vault,
-                subject,
-                predicate,
-                value,
-                record_id,
-            } => {
-                let value_term =
-                    crate::snapshot::value_term(value).map_err(|_| unrepresentable_image())?;
-                let atom = crate::Atom {
-                    predicate: "vault_hypothesis".to_owned(),
-                    terms: vec![
-                        crate::Term::String(vault.clone()),
-                        crate::Term::String(subject.to_hex()),
-                        crate::Term::String(predicate.clone()),
-                        value_term,
-                        crate::Term::String(record_id.to_hex()),
-                    ],
-                };
-                push_clause(groups, &atom, metadata.terms, budget)?;
-            }
-        }
+        push_vault_fact_clause(fact, metadata.terms, budget, groups)?;
     }
-    let referenced = referenced_predicates(request);
-    for (pred, arity, clause) in [
-        (
-            "entity",
-            3usize,
-            "entity(Id, Type, Label) :- vault_entity(_, Id, Type, Label).",
-        ),
-        (
-            "relation",
-            3usize,
-            "relation(Type, From, To) :- vault_relation(_, Type, From, To).",
-        ),
-        (
-            "assertion",
-            4usize,
-            "assertion(Subj, Pred, Val, Id) :- vault_assertion(_, Subj, Pred, Val, Id).",
-        ),
-        (
-            "denial",
-            4usize,
-            "denial(Subj, Pred, Val, Id) :- vault_denial(_, Subj, Pred, Val, Id).",
-        ),
-        (
-            "hypothesis",
-            4usize,
-            "hypothesis(Subj, Pred, Val, Id) :- vault_hypothesis(_, Subj, Pred, Val, Id).",
-        ),
-    ] {
-        if referenced
-            .iter()
-            .any(|(name, a)| name == pred && *a == arity)
-        {
-            groups
-                .entry((pred.to_owned(), arity))
-                .or_default()
-                .push(clause.to_owned());
-        }
-    }
+    push_federated_bridge_clauses(request, groups);
     Ok(())
+}
+
+fn push_vault_fact_clause(
+    fact: &crate::snapshot::VaultFact,
+    profile: crate::TermProfile,
+    budget: usize,
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) -> Result<(), crate::CapabilityError> {
+    assert!(!fact.predicate.is_empty());
+    assert!(!fact.leading_strings.is_empty());
+    assert!(budget > 0);
+    let rendered_value = fact
+        .trailing_value
+        .as_ref()
+        .map(crate::snapshot::value_term)
+        .transpose()
+        .map_err(|_| unrepresentable_image())?;
+    if let (Some(short_strings), Some(value_term)) =
+        (&fact.short_assertion_strings, &rendered_value)
+    {
+        let mut short_terms = short_strings
+            .iter()
+            .cloned()
+            .map(crate::Term::String)
+            .collect::<Vec<_>>();
+        short_terms.push(value_term.clone());
+        let short_atom = crate::Atom {
+            predicate: fact.predicate.to_owned(),
+            terms: short_terms,
+        };
+        push_clause(groups, &short_atom, profile, budget)?;
+    }
+    let mut terms = fact
+        .leading_strings
+        .iter()
+        .cloned()
+        .map(crate::Term::String)
+        .collect::<Vec<_>>();
+    if let Some(value_term) = rendered_value {
+        terms.push(value_term);
+    }
+    if let Some(record_id) = &fact.trailing_record_id {
+        terms.push(crate::Term::String(record_id.clone()));
+    }
+    let atom = crate::Atom {
+        predicate: fact.predicate.to_owned(),
+        terms,
+    };
+    push_clause(groups, &atom, profile, budget)
+}
+
+const FEDERATED_BRIDGES: [(&str, usize, &str); 5] = [
+    (
+        "entity",
+        3,
+        "entity(Id, Type, Label) :- vault_entity(_, Id, Type, Label).",
+    ),
+    (
+        "relation",
+        3,
+        "relation(Type, From, To) :- vault_relation(_, Type, From, To).",
+    ),
+    (
+        "assertion",
+        4,
+        "assertion(Subj, Pred, Val, Id) :- vault_assertion(_, Subj, Pred, Val, Id).",
+    ),
+    (
+        "denial",
+        4,
+        "denial(Subj, Pred, Val, Id) :- vault_denial(_, Subj, Pred, Val, Id).",
+    ),
+    (
+        "hypothesis",
+        4,
+        "hypothesis(Subj, Pred, Val, Id) :- vault_hypothesis(_, Subj, Pred, Val, Id).",
+    ),
+];
+
+fn push_federated_bridge_clauses(
+    request: &crate::Request,
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) {
+    let referenced = referenced_predicates(request);
+    for bridge in FEDERATED_BRIDGES {
+        maybe_push_bridge(&referenced, bridge, groups);
+    }
+}
+
+fn maybe_push_bridge(
+    referenced: &[(String, usize)],
+    bridge: (&str, usize, &str),
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) {
+    let (pred, arity, clause) = bridge;
+    if referenced
+        .iter()
+        .any(|(name, a)| name == pred && *a == arity)
+    {
+        groups
+            .entry((pred.to_owned(), arity))
+            .or_default()
+            .push(clause.to_owned());
+    }
 }
 
 fn unrepresentable_image() -> crate::CapabilityError {

@@ -1610,6 +1610,7 @@ impl Workspace {
                 root.display()
             )));
         }
+        assert!(ledger.is_file());
         probe_read_only_lock(&root)?;
         let connection = open_read_only_connection(&root)?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -1618,6 +1619,7 @@ impl Workspace {
                 "ledger layout version {version} is not supported"
             )));
         }
+        assert_eq!(version, LAYOUT_VERSION);
         if meta_blob(&connection, META_CURRENT_REVISION)?.len() != 16 {
             return Err(crate::error::Failure::UnsupportedLayout(
                 "ledger has no readable current revision".to_owned(),
@@ -3453,7 +3455,9 @@ fn open_connection(root: &std::path::Path) -> crate::error::Result<rusqlite::Con
 }
 
 fn probe_read_only_lock(root: &std::path::Path) -> crate::error::Result<()> {
+    assert!(root.is_dir());
     let lock_path = root.join(LOCK_FILE);
+    assert!(lock_path.ends_with(LOCK_FILE));
     if !lock_path.exists() {
         return Ok(());
     }
@@ -3478,6 +3482,7 @@ fn open_read_only_connection(root: &std::path::Path) -> crate::error::Result<rus
     let ledger = root.join(LEDGER_FILE);
     let _probe =
         std::fs::File::open(&ledger).map_err(|error| crate::error::Failure::io(&ledger, error))?;
+    assert!(ledger.is_file());
     let wal = root.join(format!("{LEDGER_FILE}-wal"));
     let shm = root.join(format!("{LEDGER_FILE}-shm"));
     let has_live_wal = wal.metadata().is_ok_and(|meta| meta.len() > 0) || shm.exists();
@@ -3494,6 +3499,7 @@ fn open_read_only_connection(root: &std::path::Path) -> crate::error::Result<rus
     };
     connection.pragma_update(None, "query_only", true)?;
     connection.busy_timeout(std::time::Duration::from_millis(50))?;
+    assert!(connection.is_autocommit());
     Ok(connection)
 }
 
@@ -3501,7 +3507,7 @@ fn immutable_sqlite_uri(path: &std::path::Path) -> crate::error::Result<String> 
     let text = path.to_str().ok_or_else(|| {
         crate::error::Failure::InvalidCommand("ledger path is not valid UTF-8".to_owned())
     })?;
-    let mut encoded = String::with_capacity(text.len() + 20);
+    let mut encoded = String::with_capacity(text.len().saturating_add(20));
     encoded.push_str("file:");
     for byte in text.as_bytes() {
         match byte {

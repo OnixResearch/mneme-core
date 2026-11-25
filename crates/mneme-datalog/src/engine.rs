@@ -221,10 +221,12 @@ pub(crate) fn build_federated(
     program: &crate::RuleProgram,
     start: std::time::Instant,
 ) -> BuildFacts {
+    assert!(!sources.is_empty());
     let participating_vaults = sources
         .iter()
         .map(|source| source.alias.to_owned())
         .collect::<std::collections::BTreeSet<_>>();
+    assert!(!participating_vaults.is_empty());
     let mut evaluation = Evaluation {
         bundle: &request.bundle,
         context,
@@ -343,7 +345,9 @@ impl LoadVaultContext<'_> {
 }
 
 fn load_base_facts(sources: &[VaultSource<'_>], evaluation: &mut Evaluation<'_>) {
+    assert!(!sources.is_empty());
     let all_views = sources.iter().map(|source| source.view).collect::<Vec<_>>();
+    assert_eq!(all_views.len(), sources.len());
     for source in sources {
         evaluation.derivation_eligibility.clear();
         let vault_ctx = LoadVaultContext {
@@ -378,6 +382,8 @@ fn load_record_facts(
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
+    assert!(!ctx.alias.is_empty());
+    assert_eq!(record.scope, evaluation.context.scope);
     if ctx.wants_vault_predicate(evaluation, "vault_record") {
         add_canonical_fact(
             evaluation,
@@ -397,8 +403,41 @@ fn load_record_facts(
         mneme_core::RecordKind::Document => load_document_fact(ctx, record, evaluation),
         mneme_core::RecordKind::SourceRevision => load_source_fact(ctx, record, evaluation),
         mneme_core::RecordKind::Derivation => load_derivation_facts(ctx, record, evaluation),
-        _ => {}
+        mneme_core::RecordKind::Episode
+        | mneme_core::RecordKind::Checkpoint
+        | mneme_core::RecordKind::Proposal
+        | mneme_core::RecordKind::Decision
+        | mneme_core::RecordKind::RetentionDirective
+        | mneme_core::RecordKind::DocumentBinding
+        | mneme_core::RecordKind::DocumentAnchor
+        | mneme_core::RecordKind::Comment
+        | mneme_core::RecordKind::RecognitionRun
+        | mneme_core::RecordKind::RecognitionSegment => {}
     }
+}
+
+#[derive(Clone, Copy)]
+struct PredicatePair {
+    base: &'static str,
+    vault: &'static str,
+}
+
+fn add_canonical_pair(
+    ctx: &LoadVaultContext<'_>,
+    evaluation: &mut Evaluation<'_>,
+    predicates: PredicatePair,
+    terms: Vec<mneme_core::Value>,
+    row: CanonicalRow<'_>,
+) {
+    assert!(!ctx.alias.is_empty());
+    assert!(predicates.vault.starts_with("vault_"));
+    if ctx.wants_vault_predicate(evaluation, predicates.vault) {
+        let mut vault_terms = Vec::with_capacity(terms.len().saturating_add(1));
+        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
+        vault_terms.extend(terms.iter().cloned());
+        add_canonical_fact(evaluation, predicates.vault, vault_terms, row.clone());
+    }
+    add_canonical_fact(evaluation, predicates.base, terms, row);
 }
 
 fn load_entity_fact(
@@ -406,6 +445,7 @@ fn load_entity_fact(
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
+    assert_eq!(record.kind, mneme_core::RecordKind::Entity);
     let entity_type = record
         .payload
         .get("entity-type")
@@ -419,18 +459,17 @@ fn load_entity_fact(
         .map(|label| mneme_core::Value::string(label.to_owned()))
         .unwrap_or_else(|| mneme_core::Value::string(""));
     let terms = vec![record.record_id.to_value(), entity_type, label];
-    add_canonical_fact(evaluation, "entity", terms.clone(), plain_row(ctx, record));
-    if ctx.wants_vault_predicate(evaluation, "vault_entity") {
-        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
-        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
-        vault_terms.extend(terms);
-        add_canonical_fact(
-            evaluation,
-            "vault_entity",
-            vault_terms,
-            plain_row(ctx, record),
-        );
-    }
+    assert_eq!(terms.len(), 3);
+    add_canonical_pair(
+        ctx,
+        evaluation,
+        PredicatePair {
+            base: "entity",
+            vault: "vault_entity",
+        },
+        terms,
+        plain_row(ctx, record),
+    );
 }
 
 fn load_relation_fact(
@@ -453,24 +492,19 @@ fn load_relation_fact(
         if !ctx.has_record(from) || !ctx.has_record(to) {
             return;
         }
+        assert!(ctx.has_record(from));
+        assert!(ctx.has_record(to));
         let terms = vec![relation_type, from.to_value(), to.to_value()];
-        add_canonical_fact(
+        add_canonical_pair(
+            ctx,
             evaluation,
-            "relation",
-            terms.clone(),
+            PredicatePair {
+                base: "relation",
+                vault: "vault_relation",
+            },
+            terms,
             plain_row(ctx, record),
         );
-        if ctx.wants_vault_predicate(evaluation, "vault_relation") {
-            let mut vault_terms = Vec::with_capacity(terms.len() + 1);
-            vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
-            vault_terms.extend(terms);
-            add_canonical_fact(
-                evaluation,
-                "vault_relation",
-                vault_terms,
-                plain_row(ctx, record),
-            );
-        }
     }
 }
 
@@ -531,43 +565,35 @@ fn load_assertion_fact(
         assertion.record_id().to_value(),
     ];
     let temporal = temporal_parameters(assertion.valid_time);
-    add_canonical_fact(
+    let predicates = match extent {
+        "assertion" => PredicatePair {
+            base: "assertion",
+            vault: "vault_assertion",
+        },
+        "denial" => PredicatePair {
+            base: "denial",
+            vault: "vault_denial",
+        },
+        "hypothesis" => PredicatePair {
+            base: "hypothesis",
+            vault: "vault_hypothesis",
+        },
+        _ => return,
+    };
+    add_canonical_pair(
+        ctx,
         evaluation,
-        extent,
-        terms.clone(),
+        predicates,
+        terms,
         CanonicalRow {
             record,
-            sources: sources.clone(),
-            availability: availability.clone(),
-            temporal: temporal.clone(),
+            sources,
+            availability,
+            temporal,
             vault_alias: ctx.alias,
             vault_revision: ctx.served_revision,
         },
     );
-    let vault_extent = match extent {
-        "assertion" => "vault_assertion",
-        "denial" => "vault_denial",
-        "hypothesis" => "vault_hypothesis",
-        _ => return,
-    };
-    if ctx.wants_vault_predicate(evaluation, vault_extent) {
-        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
-        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
-        vault_terms.extend(terms);
-        add_canonical_fact(
-            evaluation,
-            vault_extent,
-            vault_terms,
-            CanonicalRow {
-                record,
-                sources,
-                availability,
-                temporal,
-                vault_alias: ctx.alias,
-                vault_revision: ctx.served_revision,
-            },
-        );
-    }
 }
 
 fn load_evidence_fact(
@@ -607,37 +633,25 @@ fn load_evidence_fact(
         .map(|source| source.availability.name().to_owned());
     let availability = source_availability(ctx.current_sources, evidence.source, current);
     let terms = vec![evidence.assertion.to_value(), evidence.source.to_value()];
-    add_canonical_fact(
+    assert!(ctx.has_record(evidence.assertion));
+    assert!(ctx.has_record(evidence.source));
+    add_canonical_pair(
+        ctx,
         evaluation,
-        "evidence",
-        terms.clone(),
+        PredicatePair {
+            base: "evidence",
+            vault: "vault_evidence",
+        },
+        terms,
         CanonicalRow {
             record,
-            sources: sources.clone(),
-            availability: availability.clone(),
+            sources,
+            availability,
             temporal: Vec::new(),
             vault_alias: ctx.alias,
             vault_revision: ctx.served_revision,
         },
     );
-    if ctx.wants_vault_predicate(evaluation, "vault_evidence") {
-        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
-        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
-        vault_terms.extend(terms);
-        add_canonical_fact(
-            evaluation,
-            "vault_evidence",
-            vault_terms,
-            CanonicalRow {
-                record,
-                sources,
-                availability,
-                temporal: Vec::new(),
-                vault_alias: ctx.alias,
-                vault_revision: ctx.served_revision,
-            },
-        );
-    }
 }
 
 fn load_document_fact(
@@ -645,6 +659,7 @@ fn load_document_fact(
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
+    assert_eq!(record.kind, mneme_core::RecordKind::Document);
     let entity = match reference_target(record, "entity") {
         // An entity outside every participating view is a foreign record identity,
         // so the document cannot contribute an in-scope fact.
@@ -659,23 +674,17 @@ fn load_document_fact(
         .map(|path| mneme_core::Value::string(path.to_owned()))
         .unwrap_or_else(|| mneme_core::Value::symbol("unpathed"));
     let terms = vec![record.record_id.to_value(), entity, path];
-    add_canonical_fact(
+    assert_eq!(terms.len(), 3);
+    add_canonical_pair(
+        ctx,
         evaluation,
-        "document",
-        terms.clone(),
+        PredicatePair {
+            base: "document",
+            vault: "vault_document",
+        },
+        terms,
         plain_row(ctx, record),
     );
-    if ctx.wants_vault_predicate(evaluation, "vault_document") {
-        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
-        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
-        vault_terms.extend(terms);
-        add_canonical_fact(
-            evaluation,
-            "vault_document",
-            vault_terms,
-            plain_row(ctx, record),
-        );
-    }
 }
 
 fn load_source_fact(
@@ -683,6 +692,7 @@ fn load_source_fact(
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
+    assert_eq!(record.kind, mneme_core::RecordKind::SourceRevision);
     let Ok(source) = mneme_memory::SourceView::parse(record.clone()) else {
         return;
     };
@@ -704,37 +714,24 @@ fn load_source_fact(
         record.revision_id.to_value(),
         mneme_core::Value::string(availability_name),
     ];
-    add_canonical_fact(
+    assert_eq!(sources.len(), 1);
+    add_canonical_pair(
+        ctx,
         evaluation,
-        "source",
-        terms.clone(),
+        PredicatePair {
+            base: "source",
+            vault: "vault_source",
+        },
+        terms,
         CanonicalRow {
             record,
-            sources: sources.clone(),
+            sources,
             availability: None,
             temporal: Vec::new(),
             vault_alias: ctx.alias,
             vault_revision: ctx.served_revision,
         },
     );
-    if ctx.wants_vault_predicate(evaluation, "vault_source") {
-        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
-        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
-        vault_terms.extend(terms);
-        add_canonical_fact(
-            evaluation,
-            "vault_source",
-            vault_terms,
-            CanonicalRow {
-                record,
-                sources,
-                availability: None,
-                temporal: Vec::new(),
-                vault_alias: ctx.alias,
-                vault_revision: ctx.served_revision,
-            },
-        );
-    }
 }
 
 fn load_derivation_facts(
@@ -757,23 +754,16 @@ fn load_derivation_facts(
     }
     for premise in &derivation.premises {
         let terms = vec![derivation.conclusion.to_value(), premise.to_value()];
-        add_canonical_fact(
+        add_canonical_pair(
+            ctx,
             evaluation,
-            "derivation",
-            terms.clone(),
+            PredicatePair {
+                base: "derivation",
+                vault: "vault_derivation",
+            },
+            terms,
             plain_row(ctx, record),
         );
-        if ctx.wants_vault_predicate(evaluation, "vault_derivation") {
-            let mut vault_terms = Vec::with_capacity(terms.len() + 1);
-            vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
-            vault_terms.extend(terms);
-            add_canonical_fact(
-                evaluation,
-                "vault_derivation",
-                vault_terms,
-                plain_row(ctx, record),
-            );
-        }
     }
 }
 
@@ -899,6 +889,7 @@ fn assertion_sources(
 }
 
 /// Where one canonical base row comes from and how it is grounded.
+#[derive(Clone)]
 struct CanonicalRow<'a> {
     record: &'a mneme_core::RecordEnvelope,
     sources: std::collections::BTreeSet<crate::SourceKey>,
@@ -929,68 +920,47 @@ fn add_canonical_fact(
     terms: FactKey,
     row: CanonicalRow<'_>,
 ) {
-    let CanonicalRow {
-        record,
-        sources,
-        availability,
-        temporal,
-        vault_alias,
-        vault_revision,
-    } = row;
-    let vaults = std::collections::BTreeSet::from([vault_alias.to_owned()]);
-    let support = canonical_support(
-        record,
-        evaluation.context,
-        sources.clone(),
-        availability,
-        temporal.clone(),
-        vault_alias,
-        vault_revision,
-    );
+    let support = canonical_support(&row, evaluation.context);
+    let record_id = row.record.record_id;
+    let vaults = std::collections::BTreeSet::from([row.vault_alias.to_owned()]);
     add_fact(
         evaluation,
         predicate,
         FactContents {
             terms,
             support,
-            sources,
-            canonical: Some(record.record_id),
-            canonical_roots: std::collections::BTreeSet::from([record.record_id]),
+            sources: row.sources,
+            canonical: Some(record_id),
+            canonical_roots: std::collections::BTreeSet::from([record_id]),
             vaults,
-            temporal,
+            temporal: row.temporal,
         },
     );
 }
 
-fn canonical_support(
-    record: &mneme_core::RecordEnvelope,
-    context: &crate::BuildContext,
-    sources: std::collections::BTreeSet<crate::SourceKey>,
-    availability: Option<String>,
-    temporal: Vec<String>,
-    vault_alias: &str,
-    vault_revision: mneme_core::WorkspaceRevisionId,
-) -> crate::Derivation {
-    let vaults = std::collections::BTreeSet::from([vault_alias.to_owned()]);
+fn canonical_support(row: &CanonicalRow<'_>, context: &crate::BuildContext) -> crate::Derivation {
+    assert!(!row.vault_alias.is_empty());
+    let vaults = std::collections::BTreeSet::from([row.vault_alias.to_owned()]);
+    assert_eq!(vaults.len(), 1);
     crate::Derivation {
         rule_id: "canonical".to_owned(),
         rule_version: "1".to_owned(),
         premises: vec![crate::Premise {
-            predicate: record.kind.symbol().to_owned(),
+            predicate: row.record.kind.symbol().to_owned(),
             terms: Vec::new(),
-            canonical: Some(record.record_id),
-            canonical_roots: std::collections::BTreeSet::from([record.record_id]),
-            sources: sources.clone(),
-            source_availability: availability,
-            vault: Some(vault_alias.to_owned()),
+            canonical: Some(row.record.record_id),
+            canonical_roots: std::collections::BTreeSet::from([row.record.record_id]),
+            sources: row.sources.clone(),
+            source_availability: row.availability.clone(),
+            vault: Some(row.vault_alias.to_owned()),
             vaults: vaults.clone(),
             absent: false,
             coverage: None,
         }],
-        sources,
+        sources: row.sources.clone(),
         vaults,
-        temporal_parameters: temporal,
-        revision: vault_revision,
+        temporal_parameters: row.temporal.clone(),
+        revision: row.vault_revision,
         scope: context.scope.clone(),
         truncated: false,
     }
@@ -1976,7 +1946,9 @@ fn negative_premise(
         };
         (single, evaluation.participating_vaults.clone())
     };
+    assert!(!atom.predicate.is_empty());
     support.vaults.extend(vaults.iter().cloned());
+    assert!(!support.vaults.is_empty());
     Some(crate::Premise {
         predicate: atom.predicate.clone(),
         terms,

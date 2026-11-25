@@ -88,6 +88,12 @@ pub(crate) fn canonical_schema(predicate: &str) -> Option<&'static [CanonicalKin
             CanonicalKind::RevisionId,
             CanonicalKind::String,
         ]),
+        _ => vault_canonical_schema(predicate),
+    }
+}
+
+fn vault_canonical_schema(predicate: &str) -> Option<&'static [CanonicalKind]> {
+    match predicate {
         "vault_entity" => Some(&[
             CanonicalKind::String,
             CanonicalKind::RecordId,
@@ -760,6 +766,7 @@ pub(crate) fn federated_build_id(
         incomplete_extents,
         at,
     } = context;
+    assert!(!bundle.id.is_empty());
     let incomplete = incomplete_extents
         .iter()
         .cloned()
@@ -789,24 +796,29 @@ pub(crate) fn federated_build_id(
         effective_time,
     ];
     if !vaults.is_empty() {
-        let vault_values = vaults
-            .iter()
-            .map(|vault| {
-                mneme_core::Value::record_named(
-                    "vault-build-id",
-                    vec![
-                        mneme_core::Value::string(vault.alias.to_owned()),
-                        mneme_core::Value::string(vault.root.display().to_string()),
-                        vault.revision.to_value(),
-                        mneme_core::Value::integer(vault.generation as i64),
-                    ],
-                )
-            })
-            .collect();
-        fields.push(mneme_core::Value::sequence(vault_values));
+        fields.push(mneme_core::Value::sequence(vault_build_id_values(vaults)));
     }
     let value = mneme_core::Value::record_named("datalog-build-context", fields);
-    mneme_core::ContentDigest::of_payload(&value).to_hex()
+    let hex = mneme_core::ContentDigest::of_payload(&value).to_hex();
+    assert!(!hex.is_empty());
+    hex
+}
+
+fn vault_build_id_values(vaults: &[VaultBuildId<'_>]) -> Vec<mneme_core::Value> {
+    vaults
+        .iter()
+        .map(|vault| {
+            mneme_core::Value::record_named(
+                "vault-build-id",
+                vec![
+                    mneme_core::Value::string(vault.alias.to_owned()),
+                    mneme_core::Value::string(vault.root.display().to_string()),
+                    vault.revision.to_value(),
+                    mneme_core::Value::integer(vault.generation as i64),
+                ],
+            )
+        })
+        .collect()
 }
 
 fn bundle_value(bundle: &crate::RuleBundle) -> mneme_core::Value {

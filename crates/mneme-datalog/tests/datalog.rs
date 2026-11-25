@@ -2904,22 +2904,24 @@ fn absence_is_established_only_for_a_complete_declared_current_answer() {
     ));
 }
 
-fn add_typed_entity(
-    harness: &mut Harness,
-    key: &str,
+struct TypedEntitySpec<'a> {
     id: mneme_core::RecordId,
-    scope: &mneme_core::ScopeId,
-    entity_type: &str,
-    label: &str,
-) {
+    scope: &'a mneme_core::ScopeId,
+    entity_type: &'a str,
+    label: &'a str,
+}
+
+fn add_typed_entity(harness: &mut Harness, key: &str, spec: TypedEntitySpec<'_>) {
+    assert!(!key.is_empty());
+    assert!(!spec.entity_type.is_empty());
     let payload = mneme_core::Payload::new([
         (
             mneme_core::Symbol::from("entity-type"),
-            mneme_core::Value::symbol(entity_type),
+            mneme_core::Value::symbol(spec.entity_type),
         ),
         (
             mneme_core::Symbol::from("label"),
-            mneme_core::Value::string(label),
+            mneme_core::Value::string(spec.label),
         ),
         (
             mneme_core::Symbol::from("properties"),
@@ -2932,17 +2934,17 @@ fn add_typed_entity(
         .commit(mneme_store::CommitCommand {
             base,
             actor: "test".to_owned(),
-            scope: scope.clone(),
+            scope: spec.scope.clone(),
             idempotency_key: key.to_owned(),
             records: vec![mneme_store::RecordDraft {
                 schema_version: 1,
                 kind: mneme_core::RecordKind::Entity,
-                record_id: id,
+                record_id: spec.id,
                 revision_id: mneme_core::RevisionId::from_bytes(
-                    [id.as_bytes()[0].wrapping_add(1); 16],
+                    [spec.id.as_bytes()[0].wrapping_add(1); 16],
                 ),
                 predecessor: None,
-                scope: scope.clone(),
+                scope: spec.scope.clone(),
                 payload,
             }],
             source_blobs: Vec::new(),
@@ -2957,15 +2959,18 @@ fn add_typed_entity(
 fn federated_query_joins_across_vaults_with_provenance_negation_and_pinned_determinism() {
     let mut insights = Harness::new();
     let mut bookmarks = Harness::new();
+    let default_scope = scope();
 
     // Primary vault (`insights`) holds a `principle` entity, plus an excluded-scope entity.
     add_typed_entity(
         &mut insights,
         "principle-1",
-        rid(0x11),
-        &scope(),
-        "principle",
-        "stratified-negation",
+        TypedEntitySpec {
+            id: rid(0x11),
+            scope: &default_scope,
+            entity_type: "principle",
+            label: "stratified-negation",
+        },
     );
     // Excluded-scope entity in `bookmarks` must never leak into federated results.
     let hidden_scope =
@@ -2973,19 +2978,23 @@ fn federated_query_joins_across_vaults_with_provenance_negation_and_pinned_deter
     add_typed_entity(
         &mut bookmarks,
         "hidden-paper",
-        rid(0x21),
-        &hidden_scope,
-        "paper",
-        "stratified-negation",
+        TypedEntitySpec {
+            id: rid(0x21),
+            scope: &hidden_scope,
+            entity_type: "paper",
+            label: "stratified-negation",
+        },
     );
     // Visible `paper` entity in `bookmarks` at rev1.
     add_typed_entity(
         &mut bookmarks,
         "paper-1",
-        rid(0x22),
-        &scope(),
-        "paper",
-        "stratified-negation",
+        TypedEntitySpec {
+            id: rid(0x22),
+            scope: &default_scope,
+            entity_type: "paper",
+            label: "stratified-negation",
+        },
     );
     let bookmarks_rev1 = bookmarks.workspace.current_revision().expect("rev1");
 
@@ -2993,27 +3002,33 @@ fn federated_query_joins_across_vaults_with_provenance_negation_and_pinned_deter
     add_typed_entity(
         &mut bookmarks,
         "paper-2",
-        rid(0x23),
-        &scope(),
-        "paper",
-        "unreviewed-topic",
+        TypedEntitySpec {
+            id: rid(0x23),
+            scope: &default_scope,
+            entity_type: "paper",
+            label: "unreviewed-topic",
+        },
     );
     add_typed_entity(
         &mut insights,
         "principle-2",
-        rid(0x12),
-        &scope(),
-        "principle",
-        "unreviewed-topic",
+        TypedEntitySpec {
+            id: rid(0x12),
+            scope: &default_scope,
+            entity_type: "principle",
+            label: "unreviewed-topic",
+        },
     );
     // In `insights`, mark `principle-1` (`rid(0x11)`) as already linked to an anchor `rid(0x13)`.
     add_typed_entity(
         &mut insights,
         "anchor-1",
-        rid(0x13),
-        &scope(),
-        "anchor",
-        "anchor",
+        TypedEntitySpec {
+            id: rid(0x13),
+            scope: &default_scope,
+            entity_type: "anchor",
+            label: "anchor",
+        },
     );
     insights.add_relation("bridge-edge", rid(0x31), &scope(), rid(0x11), rid(0x13));
 

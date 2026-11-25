@@ -65,40 +65,145 @@ pub struct VaultRevision {
 
 /// One vault-tagged base fact exposed to federated Prolog queries.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum VaultFact {
-    Entity {
-        vault: String,
-        record_id: mneme_core::RecordId,
-        entity_type: String,
-        label: String,
-    },
-    Relation {
-        vault: String,
+pub struct VaultFact {
+    pub record_name: &'static str,
+    pub predicate: &'static str,
+    pub digest_fields: Vec<mneme_core::Value>,
+    pub leading_strings: Vec<String>,
+    pub trailing_value: Option<mneme_core::Value>,
+    pub trailing_record_id: Option<String>,
+    pub short_assertion_strings: Option<Vec<String>>,
+}
+
+struct EntityFactFields<'a> {
+    vault: &'a str,
+    record_id: mneme_core::RecordId,
+    entity_type: &'a str,
+    label: &'a str,
+}
+
+#[derive(Clone, Copy)]
+struct AssertionFactKind {
+    record_name: &'static str,
+    predicate_name: &'static str,
+    with_short: bool,
+}
+
+impl VaultFact {
+    fn entity(fields: EntityFactFields<'_>) -> Self {
+        Self {
+            record_name: "vault-entity",
+            predicate: "vault_entity",
+            digest_fields: vec![
+                mneme_core::Value::string(fields.vault.to_owned()),
+                fields.record_id.to_value(),
+                mneme_core::Value::string(fields.entity_type.to_owned()),
+                mneme_core::Value::string(fields.label.to_owned()),
+            ],
+            leading_strings: vec![
+                fields.vault.to_owned(),
+                fields.record_id.to_hex(),
+                fields.entity_type.to_owned(),
+                fields.label.to_owned(),
+            ],
+            trailing_value: None,
+            trailing_record_id: None,
+            short_assertion_strings: None,
+        }
+    }
+
+    fn relation(
+        vault: &str,
         relation_type: String,
         from: mneme_core::RecordId,
         to: mneme_core::RecordId,
-    },
-    Assertion {
-        vault: String,
-        subject: mneme_core::RecordId,
-        predicate: String,
-        value: mneme_core::Value,
-        record_id: mneme_core::RecordId,
-    },
-    Denial {
-        vault: String,
-        subject: mneme_core::RecordId,
-        predicate: String,
-        value: mneme_core::Value,
-        record_id: mneme_core::RecordId,
-    },
-    Hypothesis {
-        vault: String,
-        subject: mneme_core::RecordId,
-        predicate: String,
-        value: mneme_core::Value,
-        record_id: mneme_core::RecordId,
-    },
+    ) -> Self {
+        Self {
+            record_name: "vault-relation",
+            predicate: "vault_relation",
+            digest_fields: vec![
+                mneme_core::Value::string(vault.to_owned()),
+                mneme_core::Value::string(relation_type.clone()),
+                from.to_value(),
+                to.to_value(),
+            ],
+            leading_strings: vec![vault.to_owned(), relation_type, from.to_hex(), to.to_hex()],
+            trailing_value: None,
+            trailing_record_id: None,
+            short_assertion_strings: None,
+        }
+    }
+
+    fn assertion(vault: &str, assertion: &mneme_memory::AssertionView) -> Self {
+        Self::from_assertion_view(
+            AssertionFactKind {
+                record_name: "vault-assertion",
+                predicate_name: "vault_assertion",
+                with_short: true,
+            },
+            vault,
+            assertion,
+        )
+    }
+
+    fn denial(vault: &str, assertion: &mneme_memory::AssertionView) -> Self {
+        Self::from_assertion_view(
+            AssertionFactKind {
+                record_name: "vault-denial",
+                predicate_name: "vault_denial",
+                with_short: false,
+            },
+            vault,
+            assertion,
+        )
+    }
+
+    fn hypothesis(vault: &str, assertion: &mneme_memory::AssertionView) -> Self {
+        Self::from_assertion_view(
+            AssertionFactKind {
+                record_name: "vault-hypothesis",
+                predicate_name: "vault_hypothesis",
+                with_short: false,
+            },
+            vault,
+            assertion,
+        )
+    }
+
+    fn from_assertion_view(
+        kind: AssertionFactKind,
+        vault: &str,
+        assertion: &mneme_memory::AssertionView,
+    ) -> Self {
+        assert!(!vault.is_empty());
+        assert!(!assertion.predicate.is_empty());
+        let short_assertion_strings = kind.with_short.then(|| {
+            vec![
+                vault.to_owned(),
+                assertion.predicate.clone(),
+                assertion.subject.to_hex(),
+            ]
+        });
+        Self {
+            record_name: kind.record_name,
+            predicate: kind.predicate_name,
+            digest_fields: vec![
+                mneme_core::Value::string(vault.to_owned()),
+                assertion.subject.to_value(),
+                mneme_core::Value::string(assertion.predicate.clone()),
+                assertion.value.clone(),
+                assertion.record.record_id.to_value(),
+            ],
+            leading_strings: vec![
+                vault.to_owned(),
+                assertion.subject.to_hex(),
+                assertion.predicate.clone(),
+            ],
+            trailing_value: Some(assertion.value.clone()),
+            trailing_record_id: Some(assertion.record.record_id.to_hex()),
+            short_assertion_strings,
+        }
+    }
 }
 
 /// One immutable federated input image across a primary vault and attached read-only vaults.
@@ -207,10 +312,62 @@ pub fn build_federated_input_image(
     scope: &mneme_core::ScopeId,
     results: Vec<mneme_datalog::QueryResult>,
 ) -> Result<FederatedImage, ImageError> {
-    let mut all_inputs = Vec::with_capacity(1 + attached.len());
+    let mut all_inputs = Vec::with_capacity(attached.len().saturating_add(1));
     all_inputs.push(&primary);
     all_inputs.extend(attached);
-    for input in &all_inputs {
+    assert!(!all_inputs.is_empty());
+    verify_federated_inputs(&all_inputs)?;
+    let vault_data = collect_federated_vault_data(&all_inputs, scope)?;
+    let all_views = all_inputs
+        .iter()
+        .map(|input| input.view)
+        .collect::<Vec<_>>();
+    let (relations, is_all_complete) =
+        collect_federated_relations(&all_inputs, &all_views, scope, &primary, results)?;
+    let mut federated = FederatedImage {
+        image: InputImage {
+            context: crate::SearchContext {
+                revision: primary.served_revision,
+                scope: scope.clone(),
+                eligibility_generation: primary.eligibility_generation,
+                image_digest: String::new(),
+                profile: "positive-minimal/v1".to_owned(),
+                rule_versions: relations.rule_versions,
+            },
+            canonical: vault_data.canonical,
+            relations: relations.selected,
+            coverage: crate::InputCoverage {
+                complete: is_all_complete,
+                reason: if is_all_complete {
+                    None
+                } else {
+                    Some("one or more selected Datalog relations are incomplete".to_owned())
+                },
+            },
+        },
+        vaults: vault_data.vaults,
+        facts: vault_data.facts,
+    };
+    federated.seal();
+    assert_eq!(federated.vaults.len(), all_inputs.len());
+    Ok(federated)
+}
+
+const MAX_FEDERATED_CANONICAL_FACTS: usize = 1_000_000;
+
+struct CollectedVaultData {
+    vaults: Vec<VaultRevision>,
+    canonical: Vec<CanonicalFact>,
+    facts: Vec<VaultFact>,
+}
+
+struct CollectedRelations {
+    selected: Vec<SelectedRelation>,
+    rule_versions: std::collections::BTreeMap<String, String>,
+}
+
+fn verify_federated_inputs(all_inputs: &[&FederatedVaultInput<'_>]) -> Result<(), ImageError> {
+    for input in all_inputs {
         if input.view.revision() != input.served_revision {
             return Err(ImageError::RevisionMismatch {
                 expected: input.served_revision,
@@ -225,28 +382,68 @@ pub fn build_federated_input_image(
             });
         }
     }
+    Ok(())
+}
+
+fn collect_federated_vault_data(
+    all_inputs: &[&FederatedVaultInput<'_>],
+    scope: &mneme_core::ScopeId,
+) -> Result<CollectedVaultData, ImageError> {
+    assert!(!all_inputs.is_empty());
     let all_views = all_inputs
         .iter()
         .map(|input| input.view)
         .collect::<Vec<_>>();
-    let mut canonical = Vec::new();
+    let vaults = all_inputs
+        .iter()
+        .map(|input| vault_revision_entry(input))
+        .collect::<Vec<_>>();
+    let canonical_chunks = all_inputs
+        .iter()
+        .map(|input| canonical_facts(input.view, scope))
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_canonical: usize = canonical_chunks.iter().map(Vec::len).sum();
+    if total_canonical > MAX_FEDERATED_CANONICAL_FACTS {
+        return Err(ImageError::ContextMismatch(
+            "federated canonical fact count exceeds bound".to_owned(),
+        ));
+    }
+    let canonical = canonical_chunks.into_iter().flatten().collect();
     let mut facts = Vec::new();
-    let mut vaults = Vec::with_capacity(all_inputs.len());
-    for input in &all_inputs {
-        vaults.push(VaultRevision {
-            alias: input.alias.to_owned(),
-            root: input.root.to_path_buf(),
-            requested_revision: input.requested_revision,
-            served_revision: input.served_revision,
-        });
-        canonical.extend(canonical_facts(input.view, scope)?);
+    for input in all_inputs {
         collect_vault_facts(input.alias, input.view, &all_views, scope, &mut facts)?;
     }
+    assert_eq!(vaults.len(), all_inputs.len());
+    Ok(CollectedVaultData {
+        vaults,
+        canonical,
+        facts,
+    })
+}
+
+fn vault_revision_entry(input: &FederatedVaultInput<'_>) -> VaultRevision {
+    VaultRevision {
+        alias: input.alias.to_owned(),
+        root: input.root.to_path_buf(),
+        requested_revision: input.requested_revision,
+        served_revision: input.served_revision,
+    }
+}
+
+fn collect_federated_relations(
+    all_inputs: &[&FederatedVaultInput<'_>],
+    all_views: &[&mneme_memory::View],
+    scope: &mneme_core::ScopeId,
+    primary: &FederatedVaultInput<'_>,
+    results: Vec<mneme_datalog::QueryResult>,
+) -> Result<(CollectedRelations, bool), ImageError> {
+    assert!(!all_inputs.is_empty());
+    assert!(!all_views.is_empty());
     let vault_revisions = all_inputs
         .iter()
         .map(|input| input.served_revision)
         .collect::<std::collections::BTreeSet<_>>();
-    let mut relations = Vec::with_capacity(results.len());
+    let mut selected = Vec::with_capacity(results.len());
     let mut validation = ResultContextValidation::default();
     let mut is_all_complete = true;
     for result in results {
@@ -258,35 +455,16 @@ pub fn build_federated_input_image(
             &mut validation,
         )?;
         is_all_complete &= is_coverage_complete;
-        let rows = selected_rows_in_views(&all_views, scope, &vault_revisions, &result)?;
-        relations.push(selected_relation(result, rows, is_coverage_complete));
+        let rows = selected_rows_in_views(all_views, scope, &vault_revisions, &result)?;
+        selected.push(selected_relation(result, rows, is_coverage_complete));
     }
-    let mut federated = FederatedImage {
-        image: InputImage {
-            context: crate::SearchContext {
-                revision: primary.served_revision,
-                scope: scope.clone(),
-                eligibility_generation: primary.eligibility_generation,
-                image_digest: String::new(),
-                profile: "positive-minimal/v1".to_owned(),
-                rule_versions: validation.rule_versions,
-            },
-            canonical,
-            relations,
-            coverage: crate::InputCoverage {
-                complete: is_all_complete,
-                reason: if is_all_complete {
-                    None
-                } else {
-                    Some("one or more selected Datalog relations are incomplete".to_owned())
-                },
-            },
+    Ok((
+        CollectedRelations {
+            selected,
+            rule_versions: validation.rule_versions,
         },
-        vaults,
-        facts,
-    };
-    federated.seal();
-    Ok(federated)
+        is_all_complete,
+    ))
 }
 
 impl InputImage {
@@ -436,10 +614,12 @@ impl FederatedImage {
 
     /// Fail when the request names a different context or a different image.
     pub fn verify_for_request(&self, request: &crate::Request) -> Result<(), ImageError> {
-        if self.image.context.revision != request.revision
-            || self.image.context.scope != request.scope
-            || self.image.context.eligibility_generation != request.eligibility_generation
-            || self.image.context.image_digest != request.image_digest
+        let context = &self.image.context;
+        if context.revision != request.revision || context.scope != request.scope {
+            return Err(ImageError::RequestMismatch);
+        }
+        if context.eligibility_generation != request.eligibility_generation
+            || context.image_digest != request.image_digest
         {
             return Err(ImageError::RequestMismatch);
         }
@@ -474,84 +654,7 @@ impl FederatedImage {
 }
 
 fn vault_fact_value(fact: &VaultFact) -> mneme_core::Value {
-    match fact {
-        VaultFact::Entity {
-            vault,
-            record_id,
-            entity_type,
-            label,
-        } => mneme_core::Value::record_named(
-            "vault-entity",
-            vec![
-                mneme_core::Value::string(vault.clone()),
-                record_id.to_value(),
-                mneme_core::Value::string(entity_type.clone()),
-                mneme_core::Value::string(label.clone()),
-            ],
-        ),
-        VaultFact::Relation {
-            vault,
-            relation_type,
-            from,
-            to,
-        } => mneme_core::Value::record_named(
-            "vault-relation",
-            vec![
-                mneme_core::Value::string(vault.clone()),
-                mneme_core::Value::string(relation_type.clone()),
-                from.to_value(),
-                to.to_value(),
-            ],
-        ),
-        VaultFact::Assertion {
-            vault,
-            subject,
-            predicate,
-            value,
-            record_id,
-        } => mneme_core::Value::record_named(
-            "vault-assertion",
-            vec![
-                mneme_core::Value::string(vault.clone()),
-                subject.to_value(),
-                mneme_core::Value::string(predicate.clone()),
-                value.clone(),
-                record_id.to_value(),
-            ],
-        ),
-        VaultFact::Denial {
-            vault,
-            subject,
-            predicate,
-            value,
-            record_id,
-        } => mneme_core::Value::record_named(
-            "vault-denial",
-            vec![
-                mneme_core::Value::string(vault.clone()),
-                subject.to_value(),
-                mneme_core::Value::string(predicate.clone()),
-                value.clone(),
-                record_id.to_value(),
-            ],
-        ),
-        VaultFact::Hypothesis {
-            vault,
-            subject,
-            predicate,
-            value,
-            record_id,
-        } => mneme_core::Value::record_named(
-            "vault-hypothesis",
-            vec![
-                mneme_core::Value::string(vault.clone()),
-                subject.to_value(),
-                mneme_core::Value::string(predicate.clone()),
-                value.clone(),
-                record_id.to_value(),
-            ],
-        ),
-    }
+    mneme_core::Value::record_named(fact.record_name, fact.digest_fields.clone())
 }
 
 /// Convert one Preserves value into a restricted-profile term.
@@ -786,106 +889,134 @@ fn collect_vault_facts(
     scope: &mneme_core::ScopeId,
     facts: &mut Vec<VaultFact>,
 ) -> Result<(), ImageError> {
-    let has_record = |id: mneme_core::RecordId| all_views.iter().any(|v| v.record(id).is_ok());
+    assert!(!alias.is_empty());
+    assert!(!all_views.is_empty());
     for record in &view.snapshot().records {
         if &record.scope != scope {
             continue;
         }
-        match record.kind {
-            mneme_core::RecordKind::Entity => {
-                let entity_type = record
-                    .payload
-                    .get("entity-type")
-                    .and_then(mneme_core::Value::as_symbol)
-                    .map_or_else(|| "unknown".to_owned(), |s| s.as_str().to_owned());
-                let label = record
-                    .payload
-                    .get("label")
-                    .and_then(mneme_core::Value::as_string)
-                    .unwrap_or_default()
-                    .to_owned();
-                facts.push(VaultFact::Entity {
-                    vault: alias.to_owned(),
-                    record_id: record.record_id,
-                    entity_type,
-                    label,
-                });
-            }
-            mneme_core::RecordKind::Relation => {
-                let relation_type = record
-                    .payload
-                    .get("relation-type")
-                    .and_then(mneme_core::Value::as_symbol)
-                    .map_or_else(|| "unknown".to_owned(), |s| s.as_str().to_owned());
-                let from = record
-                    .payload
-                    .get("from")
-                    .and_then(|v| {
-                        mneme_core::Reference::from_value(v, &mneme_core::Path::root()).ok()
-                    })
-                    .and_then(|r| r.target());
-                let to = record
-                    .payload
-                    .get("to")
-                    .and_then(|v| {
-                        mneme_core::Reference::from_value(v, &mneme_core::Path::root()).ok()
-                    })
-                    .and_then(|r| r.target());
-                if let (Some(from), Some(to)) = (from, to)
-                    && has_record(from)
-                    && has_record(to)
-                {
-                    facts.push(VaultFact::Relation {
-                        vault: alias.to_owned(),
-                        relation_type,
-                        from,
-                        to,
-                    });
-                }
-            }
-            mneme_core::RecordKind::Assertion => {
-                let Ok(assertion) = mneme_memory::AssertionView::parse(record.clone()) else {
-                    continue;
-                };
-                if assertion.lifecycle != mneme_core::Lifecycle::Accepted
-                    || &assertion.record.scope != scope
-                    || !has_record(assertion.subject)
-                {
-                    continue;
-                }
-                match assertion.stance {
-                    mneme_memory::Stance::Affirm => facts.push(VaultFact::Assertion {
-                        vault: alias.to_owned(),
-                        subject: assertion.subject,
-                        predicate: assertion.predicate,
-                        value: assertion.value,
-                        record_id: assertion.record.record_id,
-                    }),
-                    mneme_memory::Stance::Deny => facts.push(VaultFact::Denial {
-                        vault: alias.to_owned(),
-                        subject: assertion.subject,
-                        predicate: assertion.predicate,
-                        value: assertion.value,
-                        record_id: assertion.record.record_id,
-                    }),
-                    mneme_memory::Stance::Hypothesis
-                        if scope.class() == mneme_core::ScopeClass::Hypothesis =>
-                    {
-                        facts.push(VaultFact::Hypothesis {
-                            vault: alias.to_owned(),
-                            subject: assertion.subject,
-                            predicate: assertion.predicate,
-                            value: assertion.value,
-                            record_id: assertion.record.record_id,
-                        });
-                    }
-                    mneme_memory::Stance::Hypothesis => {}
-                }
-            }
-            _ => {}
-        }
+        collect_record_vault_fact(alias, record, all_views, scope, facts);
     }
     Ok(())
+}
+
+fn collect_record_vault_fact(
+    alias: &str,
+    record: &mneme_core::RecordEnvelope,
+    all_views: &[&mneme_memory::View],
+    scope: &mneme_core::ScopeId,
+    facts: &mut Vec<VaultFact>,
+) {
+    match record.kind {
+        mneme_core::RecordKind::Entity => push_entity_vault_fact(alias, record, facts),
+        mneme_core::RecordKind::Relation => {
+            push_relation_vault_fact(alias, record, all_views, facts);
+        }
+        mneme_core::RecordKind::Assertion => {
+            push_assertion_vault_fact(alias, record, all_views, scope, facts);
+        }
+        mneme_core::RecordKind::Document
+        | mneme_core::RecordKind::SourceRevision
+        | mneme_core::RecordKind::Episode
+        | mneme_core::RecordKind::Evidence
+        | mneme_core::RecordKind::Derivation
+        | mneme_core::RecordKind::Checkpoint
+        | mneme_core::RecordKind::Proposal
+        | mneme_core::RecordKind::Decision
+        | mneme_core::RecordKind::RetentionDirective
+        | mneme_core::RecordKind::DocumentBinding
+        | mneme_core::RecordKind::DocumentAnchor
+        | mneme_core::RecordKind::Comment
+        | mneme_core::RecordKind::RecognitionRun
+        | mneme_core::RecordKind::RecognitionSegment => {}
+    }
+}
+
+fn push_entity_vault_fact(
+    alias: &str,
+    record: &mneme_core::RecordEnvelope,
+    facts: &mut Vec<VaultFact>,
+) {
+    let entity_type = record
+        .payload
+        .get("entity-type")
+        .and_then(mneme_core::Value::as_symbol)
+        .map_or("unknown", mneme_core::Symbol::as_str);
+    let label = record
+        .payload
+        .get("label")
+        .and_then(mneme_core::Value::as_string)
+        .unwrap_or_default();
+    facts.push(VaultFact::entity(EntityFactFields {
+        vault: alias,
+        record_id: record.record_id,
+        entity_type,
+        label,
+    }));
+}
+
+fn push_relation_vault_fact(
+    alias: &str,
+    record: &mneme_core::RecordEnvelope,
+    all_views: &[&mneme_memory::View],
+    facts: &mut Vec<VaultFact>,
+) {
+    let relation_type = record
+        .payload
+        .get("relation-type")
+        .and_then(mneme_core::Value::as_symbol)
+        .map_or_else(|| "unknown".to_owned(), |s| s.as_str().to_owned());
+    let from = reference_field_target(record, "from");
+    let to = reference_field_target(record, "to");
+    if let (Some(from), Some(to)) = (from, to)
+        && view_has_record(all_views, from)
+        && view_has_record(all_views, to)
+    {
+        facts.push(VaultFact::relation(alias, relation_type, from, to));
+    }
+}
+
+fn push_assertion_vault_fact(
+    alias: &str,
+    record: &mneme_core::RecordEnvelope,
+    all_views: &[&mneme_memory::View],
+    scope: &mneme_core::ScopeId,
+    facts: &mut Vec<VaultFact>,
+) {
+    assert!(!alias.is_empty());
+    assert_eq!(record.kind, mneme_core::RecordKind::Assertion);
+    let Ok(assertion) = mneme_memory::AssertionView::parse(record.clone()) else {
+        return;
+    };
+    if assertion.lifecycle != mneme_core::Lifecycle::Accepted
+        || &assertion.record.scope != scope
+        || !view_has_record(all_views, assertion.subject)
+    {
+        return;
+    }
+    match assertion.stance {
+        mneme_memory::Stance::Affirm => facts.push(VaultFact::assertion(alias, &assertion)),
+        mneme_memory::Stance::Deny => facts.push(VaultFact::denial(alias, &assertion)),
+        mneme_memory::Stance::Hypothesis if scope.class() == mneme_core::ScopeClass::Hypothesis => {
+            facts.push(VaultFact::hypothesis(alias, &assertion));
+        }
+        mneme_memory::Stance::Hypothesis => {}
+    }
+}
+
+fn reference_field_target(
+    record: &mneme_core::RecordEnvelope,
+    field: &str,
+) -> Option<mneme_core::RecordId> {
+    record
+        .payload
+        .get(field)
+        .and_then(|v| mneme_core::Reference::from_value(v, &mneme_core::Path::root()).ok())
+        .and_then(|r| r.target())
+}
+
+fn view_has_record(views: &[&mneme_memory::View], id: mneme_core::RecordId) -> bool {
+    views.iter().any(|v| v.record(id).is_ok())
 }
 
 #[derive(Default)]
@@ -960,6 +1091,8 @@ fn selected_rows_in_views(
     expected_revisions: &std::collections::BTreeSet<mneme_core::WorkspaceRevisionId>,
     result: &mneme_datalog::QueryResult,
 ) -> Result<Vec<SelectedRow>, ImageError> {
+    assert!(!views.is_empty());
+    assert!(!expected_revisions.is_empty());
     let mut rows = Vec::with_capacity(result.rows.len());
     for row in &result.rows {
         for support in &row.supports {

@@ -1353,6 +1353,8 @@ impl Request {
         input_order_value: mneme_core::Value,
     ) -> Result<ProtocolIdentity, CapabilityError> {
         metadata.ensure_request(self)?;
+        assert!(!metadata.profile.is_empty());
+        assert!(!self.image_digest.is_empty());
         if context.profile != metadata.profile {
             return Err(CapabilityError::InvalidRequest(
                 "input image profile differs from the configured profile".to_owned(),
@@ -1690,27 +1692,30 @@ pub struct FederatedOutcome {
 }
 
 /// Run one bounded query over a federated multi-vault input image.
-#[allow(unknown_lints, too_many_parameters)]
 pub fn run_federated_query(
     engine: &std::path::Path,
     metadata: &CapabilityMetadata,
     federated: &snapshot::FederatedImage,
     request: &Request,
-    control: &process::WorkerControl,
-    limits: process::WorkerLimits,
+    runtime: &process::WorkerRuntime<'_>,
 ) -> Result<FederatedOutcome, CapabilityError> {
     let identity = request.federated_protocol_identity(metadata, federated)?;
+    assert!(!identity.image_digest.is_empty());
     let effective = process::WorkerLimits {
-        max_wall_ms: limits.max_wall_ms.min(request.limits.max_time_ms),
-        max_output_bytes: limits.max_output_bytes.min(request.limits.max_output_bytes),
+        max_wall_ms: runtime.limits.max_wall_ms.min(request.limits.max_time_ms),
+        max_output_bytes: runtime
+            .limits
+            .max_output_bytes
+            .min(request.limits.max_output_bytes),
     };
-    let runtime = process::WorkerRuntime {
-        control,
+    let clamped = process::WorkerRuntime {
+        control: runtime.control,
         limits: effective,
     };
-    let worker = process::run_federated_worker(engine, metadata, federated, request, &runtime)?;
+    let worker = process::run_federated_worker(engine, metadata, federated, request, &clamped)?;
     let outcome = outcome_from_worker(&worker, &federated.image, request, &identity);
     outcome.validate_for_request(request)?;
+    assert!(!federated.vaults.is_empty());
     Ok(FederatedOutcome {
         outcome,
         vaults: federated.vaults.clone(),
