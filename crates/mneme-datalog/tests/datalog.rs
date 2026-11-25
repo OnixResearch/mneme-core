@@ -2967,7 +2967,7 @@ fn indexed_rev(tag: u16) -> mneme_core::RevisionId {
 #[test]
 fn unfactored_five_atom_entity_relation_query_completes_under_default_limits() {
     let mut harness = Harness::new();
-    let mut records = Vec::new();
+    let mut records = Vec::with_capacity(194);
     let mut next_tag = 1_u16;
 
     let mut push_entity = |entity_type: &str, label: String| -> mneme_core::RecordId {
@@ -3017,16 +3017,12 @@ fn unfactored_five_atom_entity_relation_query_completes_under_default_limits() {
 
     for (idx, &paper) in papers.iter().enumerate() {
         for offset in 0..2_usize {
-            push_relation("in_class", paper, classes[(idx + offset) % classes.len()]);
+            push_relation("in_class", paper, classes[(idx + offset) % 10]);
         }
     }
     for (idx, &principle) in principles.iter().enumerate() {
         for offset in 0..2_usize {
-            push_relation(
-                "in_class",
-                principle,
-                classes[(idx + offset) % classes.len()],
-            );
+            push_relation("in_class", principle, classes[(idx + offset) % 10]);
         }
     }
     for idx in 0..14_usize {
@@ -3184,7 +3180,7 @@ fn unfactored_five_atom_entity_relation_query_completes_under_default_limits() {
 #[test]
 fn cyclic_triangle_and_permuted_body_orders_complete_with_identical_results() {
     let mut harness = Harness::new();
-    let mut records = Vec::new();
+    let mut records = Vec::with_capacity(49);
     let mut next_tag = 1_u16;
     let nodes = (0..12_usize)
         .map(|idx| {
@@ -3215,11 +3211,7 @@ fn cyclic_triangle_and_permuted_body_orders_complete_with_identical_results() {
                 revision_id: rev_id,
                 predecessor: None,
                 scope: scope(),
-                payload: typed_relation_payload(
-                    "depends",
-                    nodes[idx],
-                    nodes[(idx + step) % nodes.len()],
-                ),
+                payload: typed_relation_payload("depends", nodes[idx], nodes[(idx + step) % 12]),
             });
         }
     }

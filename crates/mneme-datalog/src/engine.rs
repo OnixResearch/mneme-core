@@ -1169,11 +1169,11 @@ fn select_next_positive(
         let bound_cols = bound_columns(atom, bound_vars);
         let bound_positions = bound_cols.len();
         let mut unbound_vars = std::collections::BTreeSet::new();
-        let mut shares_bound_var = false;
+        let mut has_bound_var = false;
         for term in &atom.terms {
             if let crate::Term::Variable(name) = term {
                 if bound_vars.contains(name) {
-                    shares_bound_var = true;
+                    has_bound_var = true;
                 } else {
                     unbound_vars.insert(name.as_str());
                 }
@@ -1183,7 +1183,7 @@ fn select_next_positive(
         let score = PositiveScore {
             is_non_empty: extent > 0,
             has_unbound_vars: unbound_distinct > 0,
-            is_unconnected: !bound_vars.is_empty() && !shares_bound_var,
+            is_unconnected: !bound_vars.is_empty() && !has_bound_var,
             bound_positions: std::cmp::Reverse(bound_positions),
             unbound_distinct,
             extent,
@@ -1475,10 +1475,10 @@ fn ensure_column_index(
 fn push_extended_binding(
     output: &mut RuleBindings,
     extended: Binding,
-    binding_limit: usize,
+    max_bindings: usize,
     budget: &mut Budget<'_>,
 ) -> Result<(), RuleOutcome> {
-    if output.len() >= binding_limit {
+    if output.len() >= max_bindings {
         // Intermediate bindings are bounded like result rows so a
         // cross product cannot exhaust memory inside one join.
         budget.stop(crate::ExecutionStatus::Partial);
@@ -1502,73 +1502,100 @@ fn join_indexed(
     if !has_rows {
         return Ok(Vec::new());
     }
-    let binding_limit = evaluation.budget.limits.max_result_rows;
-    // A join can never emit more rows than the intermediate-binding limit, and
-    // the input bindings are already materialized, so reserve the smaller.
-    let mut output = Vec::with_capacity(bindings.len().min(binding_limit));
-
     if bound_cols.is_empty() {
-        let Some(store) = evaluation.facts.get(&atom.predicate) else {
-            return Ok(Vec::new());
-        };
-        for binding in bindings {
-            for (terms, data) in &store.rows {
-                if terms.len() != arity {
-                    continue;
-                }
-                if !evaluation.budget.charge(1) {
-                    return Err(RuleOutcome::Skipped);
-                }
-                if let Some(extended) = unify(atom, terms, binding, data) {
-                    push_extended_binding(
-                        &mut output,
-                        extended,
-                        binding_limit,
-                        &mut evaluation.budget,
-                    )?;
-                }
-            }
-        }
-        return Ok(output);
+        return join_full_scan(evaluation, bindings, atom);
     }
-
     if bound_cols.len() == arity {
-        let Some(store) = evaluation.facts.get(&atom.predicate) else {
-            return Ok(Vec::new());
-        };
-        let mut probe_key = Vec::with_capacity(arity);
-        for binding in bindings {
+        return join_all_bound(evaluation, bindings, atom);
+    }
+    join_by_column_index(evaluation, bindings, atom, bound_cols)
+}
+
+fn join_full_scan(
+    evaluation: &mut Evaluation<'_>,
+    bindings: &[Binding],
+    atom: &crate::Atom,
+) -> Result<RuleBindings, RuleOutcome> {
+    let arity = atom.terms.len();
+    let binding_limit = evaluation.budget.limits.max_result_rows;
+    let mut output = Vec::with_capacity(bindings.len().min(binding_limit));
+    let Some(store) = evaluation.facts.get(&atom.predicate) else {
+        return Ok(Vec::new());
+    };
+    for binding in bindings {
+        for (terms, data) in &store.rows {
+            if terms.len() != arity {
+                continue;
+            }
             if !evaluation.budget.charge(1) {
                 return Err(RuleOutcome::Skipped);
             }
-            probe_key.clear();
-            let mut is_complete_key = true;
-            for term in &atom.terms {
-                match term_value(term, binding) {
-                    Some(value) => probe_key.push(value),
-                    None => {
-                        is_complete_key = false;
-                        break;
-                    }
-                }
-            }
-            if !is_complete_key {
-                continue;
-            }
-            if let Some(data) = store.rows.get(&probe_key)
-                && !data.supports.is_empty()
-            {
+            if let Some(extended) = unify(atom, terms, binding, data) {
                 push_extended_binding(
                     &mut output,
-                    binding.clone(),
+                    extended,
                     binding_limit,
                     &mut evaluation.budget,
                 )?;
             }
         }
-        return Ok(output);
     }
+    Ok(output)
+}
 
+fn join_all_bound(
+    evaluation: &mut Evaluation<'_>,
+    bindings: &[Binding],
+    atom: &crate::Atom,
+) -> Result<RuleBindings, RuleOutcome> {
+    let arity = atom.terms.len();
+    let binding_limit = evaluation.budget.limits.max_result_rows;
+    let mut output = Vec::with_capacity(bindings.len().min(binding_limit));
+    let Some(store) = evaluation.facts.get(&atom.predicate) else {
+        return Ok(Vec::new());
+    };
+    let mut probe_key = Vec::with_capacity(arity);
+    for binding in bindings {
+        if !evaluation.budget.charge(1) {
+            return Err(RuleOutcome::Skipped);
+        }
+        probe_key.clear();
+        let mut is_complete_key = true;
+        for term in &atom.terms {
+            match term_value(term, binding) {
+                Some(value) => probe_key.push(value),
+                None => {
+                    is_complete_key = false;
+                    break;
+                }
+            }
+        }
+        if !is_complete_key {
+            continue;
+        }
+        if let Some(data) = store.rows.get(&probe_key)
+            && !data.supports.is_empty()
+        {
+            push_extended_binding(
+                &mut output,
+                binding.clone(),
+                binding_limit,
+                &mut evaluation.budget,
+            )?;
+        }
+    }
+    Ok(output)
+}
+
+fn join_by_column_index(
+    evaluation: &mut Evaluation<'_>,
+    bindings: &[Binding],
+    atom: &crate::Atom,
+    bound_cols: &[usize],
+) -> Result<RuleBindings, RuleOutcome> {
+    let arity = atom.terms.len();
+    let binding_limit = evaluation.budget.limits.max_result_rows;
+    let mut output = Vec::with_capacity(bindings.len().min(binding_limit));
     if ensure_column_index(evaluation, &atom.predicate, arity, bound_cols)? == IndexState::Empty {
         return Ok(Vec::new());
     }
@@ -1653,37 +1680,7 @@ fn matches_atom(
         .filter_map(|(index, term)| term_value_ref(term, binding).map(|_| index))
         .collect::<Vec<_>>();
     if !bound_cols.is_empty() {
-        if ensure_column_index(evaluation, &atom.predicate, arity, &bound_cols)?
-            == IndexState::Empty
-        {
-            return Ok(false);
-        }
-        let index_key = (arity, bound_cols.clone());
-        let Some(store) = evaluation.facts.get(&atom.predicate) else {
-            return Ok(false);
-        };
-        let Some(index) = store.indexes.get(&index_key) else {
-            return Ok(false);
-        };
-        if !evaluation.budget.charge(1) {
-            return Err(RuleOutcome::Skipped);
-        }
-        let mut probe_key = Vec::with_capacity(bound_cols.len());
-        if !fill_probe_key(atom, &bound_cols, binding, &mut probe_key) {
-            return Ok(false);
-        }
-        let Some(matching_keys) = index.buckets.get(&probe_key) else {
-            return Ok(false);
-        };
-        for terms in matching_keys {
-            if !evaluation.budget.charge(1) {
-                return Err(RuleOutcome::Skipped);
-            }
-            if atom_matches_row(atom, terms, binding) {
-                return Ok(true);
-            }
-        }
-        return Ok(false);
+        return matches_atom_indexed(evaluation, atom, binding, &bound_cols);
     }
 
     let Some(store) = evaluation.facts.get(&atom.predicate) else {
@@ -1694,6 +1691,44 @@ fn matches_atom(
             return Err(RuleOutcome::Skipped);
         }
         if terms.len() == arity && atom_matches_row(atom, terms, binding) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn matches_atom_indexed(
+    evaluation: &mut Evaluation<'_>,
+    atom: &crate::Atom,
+    binding: &Binding,
+    bound_cols: &[usize],
+) -> Result<bool, RuleOutcome> {
+    let arity = atom.terms.len();
+    if ensure_column_index(evaluation, &atom.predicate, arity, bound_cols)? == IndexState::Empty {
+        return Ok(false);
+    }
+    let index_key = (arity, bound_cols.to_vec());
+    let Some(store) = evaluation.facts.get(&atom.predicate) else {
+        return Ok(false);
+    };
+    let Some(index) = store.indexes.get(&index_key) else {
+        return Ok(false);
+    };
+    if !evaluation.budget.charge(1) {
+        return Err(RuleOutcome::Skipped);
+    }
+    let mut probe_key = Vec::with_capacity(bound_cols.len());
+    if !fill_probe_key(atom, bound_cols, binding, &mut probe_key) {
+        return Ok(false);
+    }
+    let Some(matching_keys) = index.buckets.get(&probe_key) else {
+        return Ok(false);
+    };
+    for terms in matching_keys {
+        if !evaluation.budget.charge(1) {
+            return Err(RuleOutcome::Skipped);
+        }
+        if atom_matches_row(atom, terms, binding) {
             return Ok(true);
         }
     }
@@ -2730,72 +2765,42 @@ mod tests {
         crate::Term::constant(mneme_core::Value::integer(value))
     }
 
+    fn push_entities(
+        facts: &mut Vec<(String, FactKey, mneme_core::RecordId)>,
+        next_id: &mut u16,
+        entity_type: &str,
+        prefix: &str,
+        count: usize,
+    ) -> Vec<mneme_core::RecordId> {
+        let mut ids = Vec::with_capacity(count);
+        for idx in 0..count {
+            let id = rid(*next_id);
+            *next_id = next_id.saturating_add(1);
+            ids.push(id);
+            facts.push((
+                "entity".to_owned(),
+                vec![
+                    id.to_value(),
+                    mneme_core::Value::symbol(entity_type),
+                    mneme_core::Value::string(format!("{prefix} {idx}")),
+                ],
+                id,
+            ));
+        }
+        ids
+    }
+
     fn five_atom_fixture_facts() -> Vec<(String, FactKey, mneme_core::RecordId)> {
-        let mut facts = Vec::new();
+        let mut facts = Vec::with_capacity(194);
         let mut next_id = 1_u16;
-        // 25 papers, 25 principles, 10 problem classes, 20 notes (80 entities)
-        let mut papers = Vec::new();
-        for idx in 0..25_u16 {
-            let id = rid(next_id);
-            next_id = next_id.saturating_add(1);
-            papers.push(id);
-            facts.push((
-                "entity".to_owned(),
-                vec![
-                    id.to_value(),
-                    mneme_core::Value::symbol("paper"),
-                    mneme_core::Value::string(format!("Paper {idx}")),
-                ],
-                id,
-            ));
-        }
-        let mut principles = Vec::new();
-        for idx in 0..25_u16 {
-            let id = rid(next_id);
-            next_id = next_id.saturating_add(1);
-            principles.push(id);
-            facts.push((
-                "entity".to_owned(),
-                vec![
-                    id.to_value(),
-                    mneme_core::Value::symbol("principle"),
-                    mneme_core::Value::string(format!("Principle {idx}")),
-                ],
-                id,
-            ));
-        }
-        let mut classes = Vec::new();
-        for idx in 0..10_u16 {
-            let id = rid(next_id);
-            next_id = next_id.saturating_add(1);
-            classes.push(id);
-            facts.push((
-                "entity".to_owned(),
-                vec![
-                    id.to_value(),
-                    mneme_core::Value::symbol("problem_class"),
-                    mneme_core::Value::string(format!("Class {idx}")),
-                ],
-                id,
-            ));
-        }
-        for idx in 0..20_u16 {
-            let id = rid(next_id);
-            next_id = next_id.saturating_add(1);
-            facts.push((
-                "entity".to_owned(),
-                vec![
-                    id.to_value(),
-                    mneme_core::Value::symbol("note"),
-                    mneme_core::Value::string(format!("Note {idx}")),
-                ],
-                id,
-            ));
-        }
+        let papers = push_entities(&mut facts, &mut next_id, "paper", "Paper", 25);
+        let principles = push_entities(&mut facts, &mut next_id, "principle", "Principle", 25);
+        let classes = push_entities(&mut facts, &mut next_id, "problem_class", "Class", 10);
+        let _notes = push_entities(&mut facts, &mut next_id, "note", "Note", 20);
         // 50 in_class edges for papers, 50 for principles, 14 bridged edges (114 relations; 194 total)
         for (idx, paper) in papers.iter().enumerate() {
             for offset in 0..2_usize {
-                let class = classes[(idx + offset) % classes.len()];
+                let class = classes[(idx + offset) % 10];
                 let id = rid(next_id);
                 next_id = next_id.saturating_add(1);
                 facts.push((
@@ -2811,7 +2816,7 @@ mod tests {
         }
         for (idx, principle) in principles.iter().enumerate() {
             for offset in 0..2_usize {
-                let class = classes[(idx + offset) % classes.len()];
+                let class = classes[(idx + offset) % 10];
                 let id = rid(next_id);
                 next_id = next_id.saturating_add(1);
                 facts.push((
@@ -3233,7 +3238,11 @@ mod tests {
                         terms.push(int_const(i64::try_from(next_u64() % 4).expect("mod 4")));
                     } else {
                         let var_name = if !used_vars.is_empty() && next_u64() % 2 == 0 {
-                            used_vars[usize::try_from(next_u64()).expect("u64") % used_vars.len()]
+                            let idx = usize::try_from(next_u64())
+                                .expect("u64")
+                                .checked_rem(used_vars.len())
+                                .expect("non-empty used_vars");
+                            used_vars[idx]
                         } else {
                             let name = vars[usize::try_from(next_u64() % 4).expect("mod 4")];
                             if !used_vars.contains(&name) {
