@@ -249,8 +249,11 @@ pub enum FieldType {
     Extraction,
     /// A document include closure: text paths to pinned source revisions.
     IncludeMap,
-    /// Acquisition provenance on a source revision.
+    /// Acquisition provenance on a source revision: a closed symbol class.
     Acquisition,
+    /// Acquisition provenance that may also be a structured
+    /// `derived(source, backend, backend-version)` record (schema version 6).
+    DerivableAcquisition,
     /// Declared media bounds for a source revision.
     MediaExtent,
     /// Typed source transform mapping.
@@ -613,6 +616,26 @@ impl RecordSchema {
         schema
     }
 
+    /// The production version 6 schema introduced by `derived-acquisition`.
+    ///
+    /// It preserves versions 1-5 and lets a source revision declare
+    /// `acquisition: derived(source, backend, backend-version)`.
+    pub fn derived_v6() -> Self {
+        let mut schema = RecordSchema::media_v5();
+        schema.version = 6;
+        for kind in &mut schema.kinds {
+            if kind.kind == RecordKind::SourceRevision
+                && let Some(acquisition) = kind
+                    .fields
+                    .iter_mut()
+                    .find(|field| field.name == "acquisition")
+            {
+                acquisition.ty = FieldType::DerivableAcquisition;
+            }
+        }
+        schema
+    }
+
     /// A synthetic version 2 schema used only by migration fixtures.
     ///
     /// It adds one required `extraction` field to assertions. It is not a
@@ -803,13 +826,14 @@ impl SchemaRegistry {
         registry
     }
 
-    /// The production registry through media-recognition schema version 5.
+    /// The production registry through derived-acquisition schema version 6.
     pub fn production() -> Self {
         let mut registry = SchemaRegistry::v1();
         registry.register(RecordSchema::evidence_v2());
         registry.register(RecordSchema::documents_v3());
         registry.register(RecordSchema::comments_v4());
         registry.register(RecordSchema::media_v5());
+        registry.register(RecordSchema::derived_v6());
         registry
     }
 
@@ -902,7 +926,12 @@ pub fn validate_field(
         }
         FieldType::Extraction => validate_extraction_field(value, path),
         FieldType::IncludeMap => validate_include_map_field(value, path, index),
-        FieldType::Acquisition => parsed(crate::lineage::Acquisition::from_value, value, path),
+        FieldType::Acquisition => {
+            parsed(crate::lineage::Acquisition::from_symbol_value, value, path)
+        }
+        FieldType::DerivableAcquisition => {
+            parsed(crate::lineage::Acquisition::from_value, value, path)
+        }
         FieldType::MediaExtent => parsed(crate::lineage::MediaExtent::from_value, value, path),
         FieldType::MediaTransform => {
             parsed(crate::lineage::MediaTransform::from_value, value, path)
@@ -1378,6 +1407,9 @@ fn validate_source_domain(
             "corrected acquisition requires correction provenance; other acquisitions must not carry it",
         ));
     }
+    if acquisition == Some(crate::lineage::Acquisition::Derived) {
+        diagnostics.extend(validate_derived_acquisition(payload, path));
+    }
     if let Some(reference) = payload.get(&crate::typed::Symbol::from("derived-from"))
         && crate::lineage::SourcePin::from_value(reference, &path.field("derived-from")).is_err()
     {
@@ -1396,6 +1428,35 @@ fn validate_source_domain(
     }
     diagnostics.extend(validate_page_media(payload, path));
     diagnostics
+}
+
+/// A derived source pins its upstream through `derived-from`, which must be
+/// the exact revision its acquisition names.
+fn validate_derived_acquisition(
+    payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    let named = payload
+        .get(&crate::typed::Symbol::from("acquisition"))
+        .and_then(|value| {
+            crate::lineage::DerivedAcquisition::from_value(value, &path.field("acquisition")).ok()
+        });
+    let pinned = payload
+        .get(&crate::typed::Symbol::from("derived-from"))
+        .and_then(|value| {
+            crate::lineage::SourcePin::from_value(value, &path.field("derived-from")).ok()
+        });
+    match (named, pinned) {
+        (Some(named), Some(pinned)) if named.source() != pinned => vec![domain_error(
+            &path.field("derived-from"),
+            "derived-from must equal the source named by the derived acquisition",
+        )],
+        (Some(_), None) => vec![domain_error(
+            &path.field("derived-from"),
+            "a derived acquisition requires an exact derived-from source pin",
+        )],
+        _ => Vec::new(),
+    }
 }
 
 /// A page frame belongs to a page or ink source, and an ink inventory to an
@@ -1628,9 +1689,9 @@ mod tests {
     }
 
     #[test]
-    fn production_registry_preserves_prior_versions_and_adds_media_v5() {
+    fn production_registry_preserves_prior_versions_and_adds_media_v5_and_derived_v6() {
         let registry = SchemaRegistry::production();
-        assert_eq!(registry.supported_versions(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(registry.supported_versions(), vec![1, 2, 3, 4, 5, 6]);
         assert!(
             registry
                 .schema(1)
@@ -1911,9 +1972,9 @@ mod tests {
             registry.later_field(RecordKind::Assertion, "x-ext", 1),
             None
         );
-        // Nothing is later than the newest registered media schema.
+        // Nothing is later than the newest registered schema.
         assert_eq!(
-            registry.later_field(RecordKind::Document, "includes", 5),
+            registry.later_field(RecordKind::Document, "includes", 6),
             None
         );
     }

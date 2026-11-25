@@ -203,7 +203,8 @@ impl super::View {
             mneme_core::Acquisition::MachineRecognized => false,
             mneme_core::Acquisition::Authored
             | mneme_core::Acquisition::Imported
-            | mneme_core::Acquisition::Captured => return None,
+            | mneme_core::Acquisition::Captured
+            | mneme_core::Acquisition::Derived => return None,
         };
         Some(Text {
             pin: mneme_core::SourcePin::new(record.record_id, record.revision_id),

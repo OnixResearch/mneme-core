@@ -414,6 +414,7 @@ fn paged_image_source(
             path_hint: None,
         },
         mneme_memory::SourceProvenance {
+            derivation: None,
             acquisition: mneme_core::Acquisition::Captured,
             derived_from: derived.map(|(parent, _)| parent),
             media_extent: Some(mneme_core::MediaExtent::Pages { page_count }),

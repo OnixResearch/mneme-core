@@ -296,6 +296,7 @@ pub fn import(
             path_hint: None,
         },
         mneme_memory::SourceProvenance {
+            derivation: None,
             acquisition: mneme_core::Acquisition::Imported,
             derived_from: None,
             media_extent: Some(mneme_core::MediaExtent::Pages { page_count: 1 }),

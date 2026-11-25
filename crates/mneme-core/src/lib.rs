@@ -49,9 +49,10 @@ pub use ids::{RecordId, RevisionId, WorkspaceRevisionId};
 pub use layout::{RecognitionBlock, RecognitionReading};
 pub use lineage::{
     ACQUISITION_SCHEMA_VERSION, Acquisition, AlignmentDisposition, CapturePart, CoordinateFrame,
-    CorrectionProvenance, InkInventory, MAX_INK_LAYERS, MAX_INK_STROKES, MAX_RECOGNITION_SEGMENTS,
-    MediaExtent, MediaLocation, MediaTransform, RecognitionAlternative, RecognitionCoverage,
-    RecognitionScore, RecognitionStatus, SourcePin, TimeBase,
+    CorrectionProvenance, DERIVED_ACQUISITION_SCHEMA_VERSION, DerivedAcquisition, InkInventory,
+    MAX_INK_LAYERS, MAX_INK_STROKES, MAX_RECOGNITION_SEGMENTS, MediaExtent, MediaLocation,
+    MediaTransform, RecognitionAlternative, RecognitionCoverage, RecognitionScore,
+    RecognitionStatus, SourcePin, TimeBase,
 };
 pub use payload::{RetainedSource, SourceContent, SourceSpan};
 pub use pointer::{Reference, RevisionEntry, SnapshotIndex};

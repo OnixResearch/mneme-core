@@ -100,6 +100,7 @@ fn capture_scan(workspace: &mut mneme_store::Workspace, pages: u32) -> mneme_cor
             path_hint: None,
         },
         mneme_memory::SourceProvenance {
+            derivation: None,
             acquisition: mneme_core::Acquisition::Captured,
             derived_from: None,
             media_extent: Some(mneme_core::MediaExtent::Pages { page_count: pages }),
