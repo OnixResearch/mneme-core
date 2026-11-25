@@ -10,7 +10,7 @@
     "profile_hash": "b3:0e2e26107a7d6b0042aac93f23a2dbfce2abd5c8943c7a997adac3b0a61dad29",
     "config_hash": "b3:b065a7ffe479551539355f2da753fdc11a7e39910ebdaa1a65a02093ce66d2b1"
   },
-  "baseline_hash": "b3:e1af7c13a79926945387e0e3478c7e053198c8e01b6ac28a86e12bcbb6594488",
+  "baseline_hash": "b3:8e8cfeaa51501c7b9abb0da9cabcbb63eb8552e5aea8a0b49a94e4235ad16ee8",
   "findings": [
     {
       "stable_id": "b3:002cd10692d692b9",
@@ -1489,7 +1489,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1750,
+      "line": 1784,
       "column": 34,
       "message": "function `prepare_updates` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -1658,7 +1658,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2677,
+      "line": 2749,
       "column": 43,
       "message": "function `append_binding_record` has 0 assertion(s) in 54 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -1996,7 +1996,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3776,
+      "line": 3848,
       "column": 30,
       "message": "function `index_documents` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -2568,7 +2568,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2111,
+      "line": 2158,
       "column": 31,
       "message": "function `revision_from_context` has 0 assertion(s) in 62 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -4154,7 +4154,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2279,
+      "line": 2326,
       "column": 36,
       "message": "function `retire_managed_working_copy` has 0 assertion(s) in 40 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -4505,7 +4505,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3712,
+      "line": 3784,
       "column": 3,
       "message": "function `document_history` has 0 assertion(s) in 60 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -5597,7 +5597,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3437,
+      "line": 3509,
       "column": 73,
       "message": "function `extraction_include_occurrences` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -5653,19 +5653,6 @@
       "column": 1,
       "message": "2 `u64` parameters are easy to swap by accident",
       "crate_name": "mneme_api"
-    },
-    {
-      "stable_id": "b3:37a4cafeb3bfbda9",
-      "semantic_id": "b3:37a4cafeb3bfbda9",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2632,
-      "column": 44,
-      "message": "function `build_source_records` has 0 assertion(s) in 35 lines (need 2+)",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:37c2d13e6458fcd4",
@@ -5857,7 +5844,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2843,
+      "line": 2915,
       "column": 34,
       "message": "function `edited_entity_payload` has 0 assertion(s) in 25 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -5935,7 +5922,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2739,
+      "line": 2811,
       "column": 34,
       "message": "function `document_payload` has 0 assertion(s) in 70 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -7053,7 +7040,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2176,
+      "line": 2223,
       "column": 71,
       "message": "function `validate_batch_request` has 0 assertion(s) in 25 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -8548,7 +8535,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3321,
+      "line": 3393,
       "column": 30,
       "message": "function `render_preview_artifact` has 0 assertion(s) in 63 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9172,7 +9159,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1489,
+      "line": 1490,
       "column": 95,
       "message": "function `import_working_file` has 0 assertion(s) in 37 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9393,7 +9380,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3039,
+      "line": 3111,
       "column": 35,
       "message": "function `commit_prepared` has 0 assertion(s) in 53 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9627,7 +9614,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3827,
+      "line": 3899,
       "column": 13,
       "message": "foreign enum `mneme_core::RecordKind` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_doc"
@@ -9644,19 +9631,6 @@
       "column": 55,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_recall"
-    },
-    {
-      "stable_id": "b3:606b7b08498c802e",
-      "semantic_id": "b3:606b7b08498c802e",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 39 public items (limit: 12) — split unrelated public surface into focused modules",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:609094b402f169e2",
@@ -9926,7 +9900,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1678,
+      "line": 1712,
       "column": 35,
       "message": "function `move_with_updates` has 0 assertion(s) in 61 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -10238,7 +10212,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2355,
+      "line": 2402,
       "column": 35,
       "message": "function `load_existing_document` has 0 assertion(s) in 38 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -10888,7 +10862,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3388,
+      "line": 3460,
       "column": 72,
       "message": "function `load_extraction_sources` has 0 assertion(s) in 44 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -11018,7 +10992,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3648,
+      "line": 3720,
       "column": 1,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
@@ -11278,7 +11252,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2514,
+      "line": 2561,
       "column": 4,
       "message": "function `source_dependencies` has 0 assertion(s) in 48 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -11388,19 +11362,6 @@
       "crate_name": "mneme_recall"
     },
     {
-      "stable_id": "b3:70eb2fd39e729f69",
-      "semantic_id": "b3:70eb2fd39e729f69",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1983,
-      "column": 35,
-      "message": "function `prepare_source_with` has 0 assertion(s) in 52 lines (need 2+)",
-      "crate_name": "mneme_doc"
-    },
-    {
       "stable_id": "b3:711656a79d40ad41",
       "semantic_id": "b3:711656a79d40ad41",
       "identity_status": "computed",
@@ -11499,7 +11460,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1911,
+      "line": 1945,
       "column": 50,
       "message": "function `edit_entity_property` has 0 assertion(s) in 58 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -11802,19 +11763,6 @@
       "column": 31,
       "message": "function `build_derivation` has 0 assertion(s) in 41 lines (need 2+)",
       "crate_name": "mneme_memory"
-    },
-    {
-      "stable_id": "b3:75181f4756c160b6",
-      "semantic_id": "b3:75181f4756c160b6",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2038,
-      "column": 100,
-      "message": "function `prepare_valid_source` has 0 assertion(s) in 63 lines (need 2+)",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:752b9c34e778c285",
@@ -12318,7 +12266,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2873,
+      "line": 2945,
       "column": 17,
       "message": "function `append_anchor_records` has 0 assertion(s) in 23 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -13904,7 +13852,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3475,
+      "line": 3547,
       "column": 3,
       "message": "function `extraction_candidates` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -14125,7 +14073,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1539,
+      "line": 1540,
       "column": 40,
       "message": "function `import_working_files` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -14151,7 +14099,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3507,
+      "line": 3579,
       "column": 17,
       "message": "function `insert_extraction_candidate` has 0 assertion(s) in 29 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -14866,7 +14814,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3275,
+      "line": 3347,
       "column": 36,
       "message": "function `load_root_preview` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -15009,7 +14957,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3557,
+      "line": 3629,
       "column": 17,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -15048,7 +14996,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2441,
+      "line": 2488,
       "column": 62,
       "message": "function `source_header` has 0 assertion(s) in 54 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -17622,7 +17570,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3649,
+      "line": 3721,
       "column": 18,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_doc"
@@ -17882,7 +17830,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1581,
+      "line": 1582,
       "column": 45,
       "message": "function `commit_batch` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -18545,7 +18493,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2567,
+      "line": 2614,
       "column": 27,
       "message": "function `render_prepared_source` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -18575,6 +18523,19 @@
       "column": 47,
       "message": "function `configured_runtime` has 0 assertion(s) in 29 lines (need 2+)",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:b74ada3b73767981",
+      "semantic_id": "b3:b74ada3b73767981",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 2084,
+      "column": 100,
+      "message": "function `prepare_valid_source` has 0 assertion(s) in 64 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:b76612642c9b8df7",
@@ -18636,7 +18597,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3669,
+      "line": 3741,
       "column": 1,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
@@ -20761,19 +20722,6 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:cf0ac9940e75d7c1",
-      "semantic_id": "b3:cf0ac9940e75d7c1",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1619,
-      "column": 35,
-      "message": "function `save_source` has 0 assertion(s) in 35 lines (need 2+)",
-      "crate_name": "mneme_doc"
-    },
-    {
       "stable_id": "b3:cf0e5c27bca71ef3",
       "semantic_id": "b3:cf0e5c27bca71ef3",
       "identity_status": "computed",
@@ -20941,6 +20889,19 @@
       "column": 42,
       "message": "function `validate_procedure` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:d0f412c47202fed9",
+      "semantic_id": "b3:d0f412c47202fed9",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 2703,
+      "column": 44,
+      "message": "function `build_source_records` has 0 assertion(s) in 36 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:d109540eefb4eeb4",
@@ -21210,7 +21171,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2207,
+      "line": 2254,
       "column": 40,
       "message": "function `batch_fingerprint` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -21964,7 +21925,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2965,
+      "line": 3037,
       "column": 26,
       "message": "function `document_anchor_payload` has 0 assertion(s) in 37 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -23056,7 +23017,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3592,
+      "line": 3664,
       "column": 22,
       "message": "function `patch_entity_header` has 0 assertion(s) in 34 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -23138,6 +23099,19 @@
       "column": 55,
       "message": "function `parse_claim` has 0 assertion(s) in 38 lines (need 2+)",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:e6707f4b0a95ec9f",
+      "semantic_id": "b3:e6707f4b0a95ec9f",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 2028,
+      "column": 35,
+      "message": "function `prepare_source_with_derivation` has 0 assertion(s) in 53 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:e67beb3e658cfa08",
@@ -23953,7 +23927,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3209,
+      "line": 3281,
       "column": 29,
       "message": "function `load_preview_sources` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -24226,7 +24200,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1847,
+      "line": 1881,
       "column": 90,
       "message": "function `patch_binding` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -24750,6 +24724,19 @@
       "column": 29,
       "message": "function `validate_model_call_reservation` has 0 assertion(s) in 33 lines (need 2+)",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:f9be979199e5fc0e",
+      "semantic_id": "b3:f9be979199e5fc0e",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 39 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:f9bf5e6f6f25d288",
