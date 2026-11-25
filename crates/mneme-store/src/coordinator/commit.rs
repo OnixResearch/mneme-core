@@ -670,7 +670,7 @@ impl super::Workspace {
         if command.retention.is_some() {
             Self::insert_retention_commit(transaction, command, prepared)?;
         }
-        super::metadata::apply_commit(
+        super::index::apply_commit(
             transaction,
             &prepared.new_records,
             &dropped,
@@ -823,7 +823,7 @@ impl super::Workspace {
             })
             .collect::<crate::error::Result<std::collections::BTreeMap<_, _>>>()?;
         let closing = super::db_i64(prepared.next_sequence.saturating_sub(1), "sequence")?;
-        let mut dropped = Vec::new();
+        let mut dropped = Vec::with_capacity(open.len());
         for (record_id, revision_id) in &open {
             let is_kept = prepared
                 .snapshot_records

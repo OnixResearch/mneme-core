@@ -129,6 +129,19 @@ pub struct MetadataPage<T> {
     pub next_after: Option<mneme_core::RecordId>,
 }
 
+type ActiveMetadataRow = (Vec<u8>, Vec<u8>, String, Vec<u8>, Vec<u8>, Vec<u8>);
+type CurrentRecordRow = (Vec<u8>, String, Vec<u8>, Vec<u8>, Vec<u8>);
+
+fn check_projection_marker(marker: &[u8]) -> crate::error::Result<()> {
+    if marker == b"1".as_slice() {
+        return Ok(());
+    }
+    Err(crate::error::Failure::UnsupportedLayout(format!(
+        "ledger metadata projection format {} is not supported",
+        String::from_utf8_lossy(marker)
+    )))
+}
+
 /// Upgrade an existing ledger in place by creating and populating the metadata
 /// projection tables from verified active record blobs.
 pub(super) fn migrate_metadata_projection(
@@ -138,27 +151,23 @@ pub(super) fn migrate_metadata_projection(
     if let Some(marker) =
         super::meta_blob_optional(connection, super::META_METADATA_PROJECTION_FORMAT)?
     {
-        if marker.as_slice() == b"1".as_slice() {
-            return Ok(());
-        }
-        return Err(crate::error::Failure::UnsupportedLayout(format!(
-            "ledger metadata projection format {} is not supported",
-            String::from_utf8_lossy(&marker)
-        )));
+        return check_projection_marker(&marker);
     }
+    migrate_projection_in_transaction(root, connection)
+}
+
+fn migrate_projection_in_transaction(
+    root: &std::path::Path,
+    connection: &mut rusqlite::Connection,
+) -> crate::error::Result<()> {
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     if let Some(marker) =
         super::meta_blob_optional(&transaction, super::META_METADATA_PROJECTION_FORMAT)?
     {
-        if marker.as_slice() == b"1".as_slice() {
-            transaction.commit()?;
-            return Ok(());
-        }
-        return Err(crate::error::Failure::UnsupportedLayout(format!(
-            "ledger metadata projection format {} is not supported",
-            String::from_utf8_lossy(&marker)
-        )));
+        check_projection_marker(&marker)?;
+        transaction.commit()?;
+        return Ok(());
     }
     transaction.execute_batch(METADATA_PROJECTION_DDL)?;
     rebuild_from_ledger_in(&transaction, root)?;
@@ -217,6 +226,98 @@ pub(super) fn replace_all_from_records(
     Ok(())
 }
 
+fn select_active_metadata_rows(
+    transaction: &rusqlite::Transaction<'_>,
+) -> crate::error::Result<Vec<ActiveMetadataRow>> {
+    let mut statement = transaction.prepare(
+        "SELECT r.record_id, r.revision_id, r.kind, r.envelope_digest, r.payload_digest,
+                r.full_digest
+         FROM record_membership m
+         JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
+         WHERE m.last_sequence IS NULL AND r.kind IN ('entity', 'relation', 'document')
+         ORDER BY r.record_id",
+    )?;
+    statement
+        .query_map([], map_active_metadata_row)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn map_active_metadata_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActiveMetadataRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn verify_and_upsert_active_row(
+    transaction: &rusqlite::Transaction<'_>,
+    root: &std::path::Path,
+    entry: ActiveMetadataRow,
+    context: mneme_core::WorkspaceRevisionId,
+    forgotten: &super::sweep::ForgottenSuppressions,
+) -> crate::error::Result<()> {
+    let (record_id, revision_id, kind) = super::membership_record(&entry, context)?;
+    if forgotten.matches(record_id, revision_id) {
+        return Ok(());
+    }
+    let (_, _, _, envelope_digest, payload_digest, full_digest) = entry;
+    let digest = verify_envelope_digest(&envelope_digest, &full_digest, context)?;
+    let payload_digest = super::digest_with(
+        &payload_digest,
+        "preserves-canonical-binary-v1",
+        "payload",
+        context,
+    )?;
+    let bytes = read_metadata_blob(root, digest, context)?;
+    let record = super::decode_envelope(&bytes, digest, context)?;
+    let identity = super::EnvelopeIdentity {
+        record_id,
+        revision_id,
+        kind,
+        full_digest: &full_digest,
+    };
+    super::require_envelope_identity(&identity, &record, digest, payload_digest, context)?;
+    debug_assert_eq!(record.record_id, record_id);
+    debug_assert_eq!(record.revision_id, revision_id);
+    upsert_record(transaction, &record)
+}
+
+fn verify_envelope_digest(
+    envelope_digest: &[u8],
+    full_digest: &[u8],
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<mneme_core::ContentDigest> {
+    let digest = super::digest_with(
+        envelope_digest,
+        "preserves-canonical-binary-v1",
+        "full-record",
+        context,
+    )?;
+    if digest.as_bytes().as_slice() != full_digest {
+        return Err(crate::error::Failure::Integrity {
+            revision: context,
+            reason: format!("record blob {digest} does not match its ledger identity"),
+        });
+    }
+    Ok(digest)
+}
+
+fn read_metadata_blob(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<Vec<u8>> {
+    crate::payload::read(root, digest).map_err(|error| crate::error::Failure::Integrity {
+        revision: context,
+        reason: format!("record blob {digest} is unavailable: {error}"),
+    })
+}
+
 /// Clear and deterministically rebuild all projection tables from active ledger
 /// membership and verified on-disk record blobs.
 pub(super) fn rebuild_from_ledger_in(
@@ -227,68 +328,9 @@ pub(super) fn rebuild_from_ledger_in(
     let stored = super::meta_blob(transaction, super::META_CURRENT_REVISION)?;
     let context = super::revision_from_blob(&stored)?;
     let forgotten = super::sweep::forgotten_suppressions_in(transaction)?;
-    let mut statement = transaction.prepare(
-        "SELECT r.record_id, r.revision_id, r.kind, r.envelope_digest, r.payload_digest,
-                r.full_digest
-         FROM record_membership m
-         JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
-         WHERE m.last_sequence IS NULL
-           AND r.kind IN ('entity', 'relation', 'document')
-         ORDER BY r.record_id",
-    )?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    drop(statement);
-
+    let rows = select_active_metadata_rows(transaction)?;
     for entry in rows {
-        let (record_id, revision_id, kind) = super::membership_record(&entry, context)?;
-        if forgotten.matches(record_id, revision_id) {
-            continue;
-        }
-        let (_, _, _, envelope_digest, payload_digest, full_digest) = entry;
-        let digest = super::digest_with(
-            &envelope_digest,
-            "preserves-canonical-binary-v1",
-            "full-record",
-            context,
-        )?;
-        if digest.as_bytes().as_slice() != full_digest.as_slice() {
-            return Err(crate::error::Failure::Integrity {
-                revision: context,
-                reason: format!("record blob {digest} does not match its ledger identity"),
-            });
-        }
-        let payload_digest = super::digest_with(
-            &payload_digest,
-            "preserves-canonical-binary-v1",
-            "payload",
-            context,
-        )?;
-        let bytes = crate::payload::read(root, digest).map_err(|error| {
-            crate::error::Failure::Integrity {
-                revision: context,
-                reason: format!("record blob {digest} is unavailable: {error}"),
-            }
-        })?;
-        let record = super::decode_envelope(&bytes, digest, context)?;
-        let identity = super::EnvelopeIdentity {
-            record_id,
-            revision_id,
-            kind,
-            full_digest: &full_digest,
-        };
-        super::require_envelope_identity(&identity, &record, digest, payload_digest, context)?;
-        upsert_record(transaction, &record)?;
+        verify_and_upsert_active_row(transaction, root, entry, context, &forgotten)?;
     }
     Ok(())
 }
@@ -324,10 +366,10 @@ impl super::Workspace {
         query: &EntityQuery,
     ) -> crate::error::Result<MetadataPage<EntityMetadata>> {
         self.require_restore_suppression()?;
-        let limit = bounded_page_limit(query.limit)?;
+        let max_rows = bounded_page_rows(query.limit)?;
         let context = self.current_revision()?;
         let transaction = self.connection.unchecked_transaction()?;
-        let page = query_entities_in(&transaction, query, limit, context)?;
+        let page = query_entities_in(&transaction, query, max_rows, context)?;
         transaction.commit()?;
         Ok(page)
     }
@@ -339,10 +381,10 @@ impl super::Workspace {
         query: &RelationQuery,
     ) -> crate::error::Result<MetadataPage<RelationMetadata>> {
         self.require_restore_suppression()?;
-        let limit = bounded_page_limit(query.limit)?;
+        let max_rows = bounded_page_rows(query.limit)?;
         let context = self.current_revision()?;
         let transaction = self.connection.unchecked_transaction()?;
-        let page = query_relations_in(&transaction, query, limit, context)?;
+        let page = query_relations_in(&transaction, query, max_rows, context)?;
         transaction.commit()?;
         Ok(page)
     }
@@ -354,10 +396,10 @@ impl super::Workspace {
         query: &DocumentQuery,
     ) -> crate::error::Result<MetadataPage<DocumentMetadata>> {
         self.require_restore_suppression()?;
-        let limit = bounded_page_limit(query.limit)?;
+        let max_rows = bounded_page_rows(query.limit)?;
         let context = self.current_revision()?;
         let transaction = self.connection.unchecked_transaction()?;
-        let page = query_documents_in(&transaction, query, limit, context)?;
+        let page = query_documents_in(&transaction, query, max_rows, context)?;
         transaction.commit()?;
         Ok(page)
     }
@@ -372,17 +414,10 @@ impl super::Workspace {
         let context = self.current_revision()?;
         let generation = self.eligibility_generation()?;
         let transaction = self.connection.unchecked_transaction()?;
-        let loaded = self.current_record_in(&transaction, record_id, context, generation);
-        match loaded {
+        match self.current_record_in(&transaction, record_id, context, generation) {
             Ok(record) => {
                 transaction.commit()?;
-                let after = self.eligibility_generation()?;
-                if after != generation {
-                    return Err(crate::error::Failure::BarrierAdvanced {
-                        pinned: generation,
-                        current: after,
-                    });
-                }
+                self.require_unchanged_generation(generation)?;
                 Ok(record)
             }
             Err(error) => {
@@ -390,6 +425,17 @@ impl super::Workspace {
                 Err(self.explain_barrier(error, generation))
             }
         }
+    }
+
+    fn require_unchanged_generation(&self, generation: u64) -> crate::error::Result<()> {
+        let after = self.eligibility_generation()?;
+        if after != generation {
+            return Err(crate::error::Failure::BarrierAdvanced {
+                pinned: generation,
+                current: after,
+            });
+        }
+        Ok(())
     }
 
     fn current_record_in(
@@ -406,29 +452,21 @@ impl super::Workspace {
                 target: record_id.to_string(),
             });
         }
-        use rusqlite::OptionalExtension;
-        type CurrentRecordRow = (Vec<u8>, String, Vec<u8>, Vec<u8>, Vec<u8>);
-        let row: Option<CurrentRecordRow> = connection
-            .query_row(
-                "SELECT r.revision_id, r.kind, r.envelope_digest, r.payload_digest, r.full_digest
-                 FROM record_membership m
-                 JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
-                 WHERE m.record_id = ?1 AND m.last_sequence IS NULL",
-                rusqlite::params![record_id.as_bytes().as_slice()],
-                |row| {
-                    Ok((
-                        row.get::<_, Vec<u8>>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
-                        row.get::<_, Vec<u8>>(4)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((rev_bytes, kind_str, envelope_digest, payload_digest, full_digest)) = row else {
+        let Some(row) = load_open_membership_row(connection, record_id)? else {
             return Ok(None);
         };
+        self.load_non_forgotten_open_row(row, record_id, context, generation, &forgotten)
+    }
+
+    fn load_non_forgotten_open_row(
+        &self,
+        row: CurrentRecordRow,
+        record_id: mneme_core::RecordId,
+        context: mneme_core::WorkspaceRevisionId,
+        generation: u64,
+        forgotten: &super::sweep::ForgottenSuppressions,
+    ) -> crate::error::Result<Option<mneme_core::RecordEnvelope>> {
+        let (rev_bytes, kind_str, envelope_digest, payload_digest, full_digest) = row;
         let revision_id = super::revision_id_from_blob(&rev_bytes, context)?;
         if forgotten.revisions.contains(&(record_id, revision_id)) {
             return Err(crate::error::Failure::RetentionSuppressed {
@@ -442,32 +480,64 @@ impl super::Workspace {
             }
         })?;
         let lengths = super::BlobIndex::new();
-        let envelope = self.load_verified_record_envelope(
-            super::VerifiedRecordEnvelopeInput {
-                record_id,
-                revision_id,
-                kind,
-                envelope_digest: &envelope_digest,
-                payload_digest: &payload_digest,
-                full_digest: &full_digest,
-                revision: context,
-                generation,
-                lengths: &lengths,
-            },
-            super::PayloadCheck::Cached,
-        )?;
+        let input = super::VerifiedRecordEnvelopeInput {
+            record_id,
+            revision_id,
+            kind,
+            envelope_digest: &envelope_digest,
+            payload_digest: &payload_digest,
+            full_digest: &full_digest,
+            revision: context,
+            generation,
+            lengths: &lengths,
+        };
+        let envelope = self.load_verified_record_envelope(input, super::PayloadCheck::Cached)?;
+        debug_assert_eq!(envelope.record_id, record_id);
+        debug_assert_eq!(envelope.revision_id, revision_id);
         Ok(Some(envelope))
     }
 }
 
-fn bounded_page_limit(requested: Option<u32>) -> crate::error::Result<u32> {
-    let limit = requested.unwrap_or(MAX_METADATA_PAGE_SIZE);
-    if limit == 0 || limit > MAX_METADATA_PAGE_SIZE {
+fn map_current_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentRecordRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
+}
+
+fn load_open_membership_row(
+    connection: &rusqlite::Connection,
+    record_id: mneme_core::RecordId,
+) -> crate::error::Result<Option<CurrentRecordRow>> {
+    use rusqlite::OptionalExtension;
+    connection
+        .query_row(
+            "SELECT r.revision_id, r.kind, r.envelope_digest, r.payload_digest, r.full_digest
+             FROM record_membership m
+             JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
+             WHERE m.record_id = ?1 AND m.last_sequence IS NULL",
+            rusqlite::params![record_id.as_bytes().as_slice()],
+            map_current_record_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn bounded_page_rows(requested_rows: Option<u32>) -> crate::error::Result<u32> {
+    let row_count = requested_rows.unwrap_or(MAX_METADATA_PAGE_SIZE);
+    if row_count == 0 || row_count > MAX_METADATA_PAGE_SIZE {
         return Err(crate::error::Failure::InvalidCommand(format!(
-            "metadata page limit must be in 1..={MAX_METADATA_PAGE_SIZE}, got {limit}"
+            "metadata page limit must be in 1..={MAX_METADATA_PAGE_SIZE}, got {row_count}"
         )));
     }
-    Ok(limit)
+    Ok(row_count)
+}
+
+fn max_rows_usize(row_count: u32) -> crate::error::Result<usize> {
+    usize::try_from(row_count).map_err(|_| crate::error::Failure::ValueOutOfRange("limit"))
 }
 
 fn clear_tables(transaction: &rusqlite::Transaction<'_>) -> crate::error::Result<()> {
@@ -526,31 +596,44 @@ fn upsert_record(
         mneme_core::RecordKind::Entity => upsert_entity(transaction, record),
         mneme_core::RecordKind::Relation => upsert_relation(transaction, record),
         mneme_core::RecordKind::Document => upsert_document(transaction, record),
-        _ => Ok(()),
+        mneme_core::RecordKind::SourceRevision
+        | mneme_core::RecordKind::Episode
+        | mneme_core::RecordKind::Assertion
+        | mneme_core::RecordKind::Evidence
+        | mneme_core::RecordKind::Derivation
+        | mneme_core::RecordKind::Checkpoint
+        | mneme_core::RecordKind::Proposal
+        | mneme_core::RecordKind::Decision
+        | mneme_core::RecordKind::RetentionDirective
+        | mneme_core::RecordKind::DocumentBinding
+        | mneme_core::RecordKind::DocumentAnchor
+        | mneme_core::RecordKind::Comment
+        | mneme_core::RecordKind::RecognitionRun
+        | mneme_core::RecordKind::RecognitionSegment => Ok(()),
     }
+}
+
+fn payload_symbol(payload: &mneme_core::Payload, field: &str) -> String {
+    payload
+        .get(field)
+        .and_then(mneme_core::Value::as_symbol)
+        .map(|symbol| symbol.as_str().to_owned())
+        .unwrap_or_default()
+}
+
+fn payload_text<'a>(payload: &'a mneme_core::Payload, field: &str) -> Option<&'a str> {
+    payload.get(field).and_then(mneme_core::Value::as_string)
 }
 
 fn upsert_entity(
     transaction: &rusqlite::Transaction<'_>,
     record: &mneme_core::RecordEnvelope,
 ) -> crate::error::Result<()> {
-    let entity_type = record
-        .payload
-        .get("entity-type")
-        .and_then(mneme_core::Value::as_symbol)
-        .map(|symbol| symbol.as_str().to_owned())
-        .unwrap_or_default();
-    let label = record
-        .payload
-        .get("label")
-        .and_then(mneme_core::Value::as_string)
-        .unwrap_or("")
-        .to_owned();
+    let entity_type = payload_symbol(&record.payload, "entity-type");
+    let label = payload_text(&record.payload, "label").unwrap_or("");
     let external_id = extract_external_id(&record.payload);
     transaction.execute(
-        "INSERT OR REPLACE INTO entities
-             (record_id, revision_id, scope, entity_type, label, external_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR REPLACE INTO entities (record_id, revision_id, scope, entity_type, label, external_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             record.record_id.as_bytes().as_slice(),
             record.revision_id.as_bytes().as_slice(),
@@ -567,18 +650,11 @@ fn upsert_relation(
     transaction: &rusqlite::Transaction<'_>,
     record: &mneme_core::RecordEnvelope,
 ) -> crate::error::Result<()> {
-    let relation_type = record
-        .payload
-        .get("relation-type")
-        .and_then(mneme_core::Value::as_symbol)
-        .map(|symbol| symbol.as_str().to_owned())
-        .unwrap_or_default();
+    let relation_type = payload_symbol(&record.payload, "relation-type");
     let from_id = extract_reference_target(record.payload.get("from"));
     let to_id = extract_reference_target(record.payload.get("to"));
     transaction.execute(
-        "INSERT OR REPLACE INTO relations
-             (record_id, revision_id, scope, relation_type, from_id, to_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR REPLACE INTO relations (record_id, revision_id, scope, relation_type, from_id, to_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             record.record_id.as_bytes().as_slice(),
             record.revision_id.as_bytes().as_slice(),
@@ -595,22 +671,11 @@ fn upsert_document(
     transaction: &rusqlite::Transaction<'_>,
     record: &mneme_core::RecordEnvelope,
 ) -> crate::error::Result<()> {
-    let path = record
-        .payload
-        .get("path")
-        .and_then(mneme_core::Value::as_string)
-        .map(str::to_owned);
-    let title = record
-        .payload
-        .get("title")
-        .and_then(mneme_core::Value::as_string)
-        .unwrap_or("")
-        .to_owned();
+    let path = payload_text(&record.payload, "path");
+    let title = payload_text(&record.payload, "title").unwrap_or("");
     let source_revision_id = extract_reference_target(record.payload.get("source-revision"));
     transaction.execute(
-        "INSERT OR REPLACE INTO documents
-             (record_id, revision_id, scope, path, title, source_revision_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR REPLACE INTO documents (record_id, revision_id, scope, path, title, source_revision_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             record.record_id.as_bytes().as_slice(),
             record.revision_id.as_bytes().as_slice(),
@@ -655,23 +720,29 @@ impl SqlFilterBuilder {
         }
     }
 
-    fn push_text(&mut self, column: &str, op: &str, value: String) {
-        let index = self.params.len() + 1;
-        self.clauses.push(format!("{column} {op} ?{index}"));
+    fn push_eq_text(&mut self, column: &str, value: String) {
+        let param_idx = self.params.len().saturating_add(1);
+        self.clauses.push(format!("{column} = ?{param_idx}"));
         self.params.push(rusqlite::types::Value::Text(value));
     }
 
-    fn push_blob(&mut self, column: &str, op: &str, value: Vec<u8>) {
-        let index = self.params.len() + 1;
-        self.clauses.push(format!("{column} {op} ?{index}"));
+    fn push_eq_blob(&mut self, column: &str, value: Vec<u8>) {
+        let param_idx = self.params.len().saturating_add(1);
+        self.clauses.push(format!("{column} = ?{param_idx}"));
         self.params.push(rusqlite::types::Value::Blob(value));
     }
 
-    fn push_limit(&mut self, limit_plus_one: u32) -> usize {
-        let index = self.params.len() + 1;
+    fn push_gt_blob(&mut self, column: &str, value: Vec<u8>) {
+        let param_idx = self.params.len().saturating_add(1);
+        self.clauses.push(format!("{column} > ?{param_idx}"));
+        self.params.push(rusqlite::types::Value::Blob(value));
+    }
+
+    fn push_row_limit(&mut self, rows_plus_one: u32) -> usize {
+        let param_idx = self.params.len().saturating_add(1);
         self.params
-            .push(rusqlite::types::Value::Integer(i64::from(limit_plus_one)));
-        index
+            .push(rusqlite::types::Value::Integer(i64::from(rows_plus_one)));
+        param_idx
     }
 
     fn where_sql(&self) -> String {
@@ -683,65 +754,29 @@ impl SqlFilterBuilder {
     }
 }
 
-fn query_entities_in(
-    connection: &rusqlite::Connection,
-    query: &EntityQuery,
-    limit: u32,
-    context: mneme_core::WorkspaceRevisionId,
-) -> crate::error::Result<MetadataPage<EntityMetadata>> {
-    let mut filter = SqlFilterBuilder::new();
-    if let Some(scope) = &query.scope {
-        filter.push_text("scope", "=", scope.to_string());
-    }
-    if let Some(entity_type) = &query.entity_type {
-        filter.push_text("entity_type", "=", entity_type.clone());
-    }
-    if let Some(external_id) = &query.external_id {
-        filter.push_text("external_id", "=", external_id.clone());
-    }
-    if let Some(after) = query.after {
-        filter.push_blob("record_id", ">", after.as_bytes().to_vec());
-    }
-    let where_sql = filter.where_sql();
-    let limit_param = filter.push_limit(limit.saturating_add(1));
-    let sql = format!(
-        "SELECT record_id, revision_id, scope, entity_type, label, external_id
-         FROM entities
-         {where_sql}
-         ORDER BY record_id
-         LIMIT ?{limit_param}"
-    );
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement
-        .query_map(rusqlite::params_from_iter(filter.params.iter()), |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<String>>(5)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut items = Vec::with_capacity(rows.len().min(limit as usize));
+fn collect_bounded_page<R, T, F>(
+    rows: Vec<R>,
+    max_items: usize,
+    id_of: fn(&T) -> mneme_core::RecordId,
+    mut map_row: F,
+) -> crate::error::Result<MetadataPage<T>>
+where
+    F: FnMut(R) -> crate::error::Result<T>,
+{
+    let max_bound = max_rows_usize(MAX_METADATA_PAGE_SIZE)?;
+    debug_assert!(max_items <= max_bound);
+    let mut items = Vec::with_capacity(rows.len().min(max_items));
     let mut has_more = false;
-    for (record_bytes, revision_bytes, scope_text, entity_type, label, external_id) in rows {
-        if items.len() == limit as usize {
+    for row in rows {
+        if items.len() == max_items {
             has_more = true;
             break;
         }
-        items.push(EntityMetadata {
-            record_id: super::record_id_from_blob(&record_bytes, context)?,
-            revision_id: super::revision_id_from_blob(&revision_bytes, context)?,
-            scope: parse_scope(&scope_text, context)?,
-            entity_type,
-            label,
-            external_id,
-        });
+        items.push(map_row(row)?);
     }
+    debug_assert!(items.len() <= max_items);
     let next_after = if has_more {
-        items.last().map(|item| item.record_id)
+        items.last().map(id_of)
     } else {
         None
     };
@@ -749,154 +784,280 @@ fn query_entities_in(
         items,
         has_more,
         next_after,
+    })
+}
+
+fn query_entities_in(
+    connection: &rusqlite::Connection,
+    query: &EntityQuery,
+    max_rows: u32,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<MetadataPage<EntityMetadata>> {
+    let mut filter = SqlFilterBuilder::new();
+    if let Some(scope) = &query.scope {
+        filter.push_eq_text("scope", scope.to_string());
+    }
+    if let Some(entity_type) = &query.entity_type {
+        filter.push_eq_text("entity_type", entity_type.clone());
+    }
+    if let Some(external_id) = &query.external_id {
+        filter.push_eq_text("external_id", external_id.clone());
+    }
+    if let Some(after) = query.after {
+        filter.push_gt_blob("record_id", after.as_bytes().to_vec());
+    }
+    run_entity_query(connection, &mut filter, max_rows, context)
+}
+
+type EntityRow = (Vec<u8>, Vec<u8>, String, String, String, Option<String>);
+
+struct QueryTableSpec {
+    table: &'static str,
+    columns: &'static str,
+}
+
+fn query_filter_rows<R>(
+    connection: &rusqlite::Connection,
+    spec: QueryTableSpec,
+    filter: &mut SqlFilterBuilder,
+    max_rows: u32,
+    map_row: fn(&rusqlite::Row<'_>) -> rusqlite::Result<R>,
+) -> crate::error::Result<Vec<R>> {
+    let where_sql = filter.where_sql();
+    let slot_count = filter.push_row_limit(max_rows.saturating_add(1));
+    let sql = format!(
+        "SELECT {} FROM {} {where_sql} ORDER BY record_id LIMIT ?{slot_count}",
+        spec.columns, spec.table
+    );
+    let mut statement = connection.prepare(&sql)?;
+    statement
+        .query_map(rusqlite::params_from_iter(filter.params.iter()), map_row)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn run_entity_query(
+    connection: &rusqlite::Connection,
+    filter: &mut SqlFilterBuilder,
+    max_rows: u32,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<MetadataPage<EntityMetadata>> {
+    let rows = query_filter_rows(
+        connection,
+        QueryTableSpec {
+            table: "entities",
+            columns: "record_id, revision_id, scope, entity_type, label, external_id",
+        },
+        filter,
+        max_rows,
+        map_entity_row,
+    )?;
+    let max_items = max_rows_usize(max_rows)?;
+    collect_bounded_page(
+        rows,
+        max_items,
+        |item| item.record_id,
+        |row| decode_entity_row(row, context),
+    )
+}
+
+fn map_entity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn decode_entity_row(
+    row: EntityRow,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<EntityMetadata> {
+    let (record_bytes, revision_bytes, scope_text, entity_type, label, external_id) = row;
+    Ok(EntityMetadata {
+        record_id: super::record_id_from_blob(&record_bytes, context)?,
+        revision_id: super::revision_id_from_blob(&revision_bytes, context)?,
+        scope: parse_scope(&scope_text, context)?,
+        entity_type,
+        label,
+        external_id,
     })
 }
 
 fn query_relations_in(
     connection: &rusqlite::Connection,
     query: &RelationQuery,
-    limit: u32,
+    max_rows: u32,
     context: mneme_core::WorkspaceRevisionId,
 ) -> crate::error::Result<MetadataPage<RelationMetadata>> {
     let mut filter = SqlFilterBuilder::new();
     if let Some(scope) = &query.scope {
-        filter.push_text("scope", "=", scope.to_string());
+        filter.push_eq_text("scope", scope.to_string());
     }
     if let Some(relation_type) = &query.relation_type {
-        filter.push_text("relation_type", "=", relation_type.clone());
+        filter.push_eq_text("relation_type", relation_type.clone());
     }
     if let Some(from_id) = query.from_id {
-        filter.push_blob("from_id", "=", from_id.as_bytes().to_vec());
+        filter.push_eq_blob("from_id", from_id.as_bytes().to_vec());
     }
     if let Some(to_id) = query.to_id {
-        filter.push_blob("to_id", "=", to_id.as_bytes().to_vec());
+        filter.push_eq_blob("to_id", to_id.as_bytes().to_vec());
     }
     if let Some(after) = query.after {
-        filter.push_blob("record_id", ">", after.as_bytes().to_vec());
+        filter.push_gt_blob("record_id", after.as_bytes().to_vec());
     }
-    let where_sql = filter.where_sql();
-    let limit_param = filter.push_limit(limit.saturating_add(1));
-    let sql = format!(
-        "SELECT record_id, revision_id, scope, relation_type, from_id, to_id
-         FROM relations
-         {where_sql}
-         ORDER BY record_id
-         LIMIT ?{limit_param}"
-    );
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement
-        .query_map(rusqlite::params_from_iter(filter.params.iter()), |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<Vec<u8>>>(4)?,
-                row.get::<_, Option<Vec<u8>>>(5)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut items = Vec::with_capacity(rows.len().min(limit as usize));
-    let mut has_more = false;
-    for (record_bytes, revision_bytes, scope_text, relation_type, from_bytes, to_bytes) in rows {
-        if items.len() == limit as usize {
-            has_more = true;
-            break;
-        }
-        items.push(RelationMetadata {
-            record_id: super::record_id_from_blob(&record_bytes, context)?,
-            revision_id: super::revision_id_from_blob(&revision_bytes, context)?,
-            scope: parse_scope(&scope_text, context)?,
-            relation_type,
-            from_id: from_bytes
-                .as_deref()
-                .map(|bytes| super::record_id_from_blob(bytes, context))
-                .transpose()?,
-            to_id: to_bytes
-                .as_deref()
-                .map(|bytes| super::record_id_from_blob(bytes, context))
-                .transpose()?,
-        });
-    }
-    let next_after = if has_more {
-        items.last().map(|item| item.record_id)
-    } else {
-        None
-    };
-    Ok(MetadataPage {
-        items,
-        has_more,
-        next_after,
+    run_relation_query(connection, &mut filter, max_rows, context)
+}
+
+type RelationRow = (
+    Vec<u8>,
+    Vec<u8>,
+    String,
+    String,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+);
+
+fn run_relation_query(
+    connection: &rusqlite::Connection,
+    filter: &mut SqlFilterBuilder,
+    max_rows: u32,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<MetadataPage<RelationMetadata>> {
+    let rows = query_filter_rows(
+        connection,
+        QueryTableSpec {
+            table: "relations",
+            columns: "record_id, revision_id, scope, relation_type, from_id, to_id",
+        },
+        filter,
+        max_rows,
+        map_relation_row,
+    )?;
+    let max_items = max_rows_usize(max_rows)?;
+    collect_bounded_page(
+        rows,
+        max_items,
+        |item| item.record_id,
+        |row| decode_relation_row(row, context),
+    )
+}
+
+fn map_relation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RelationRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn decode_relation_row(
+    row: RelationRow,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<RelationMetadata> {
+    let (record_bytes, revision_bytes, scope_text, relation_type, from_bytes, to_bytes) = row;
+    Ok(RelationMetadata {
+        record_id: super::record_id_from_blob(&record_bytes, context)?,
+        revision_id: super::revision_id_from_blob(&revision_bytes, context)?,
+        scope: parse_scope(&scope_text, context)?,
+        relation_type,
+        from_id: opt_record_id(from_bytes.as_deref(), context)?,
+        to_id: opt_record_id(to_bytes.as_deref(), context)?,
     })
 }
 
 fn query_documents_in(
     connection: &rusqlite::Connection,
     query: &DocumentQuery,
-    limit: u32,
+    max_rows: u32,
     context: mneme_core::WorkspaceRevisionId,
 ) -> crate::error::Result<MetadataPage<DocumentMetadata>> {
     let mut filter = SqlFilterBuilder::new();
     if let Some(scope) = &query.scope {
-        filter.push_text("scope", "=", scope.to_string());
+        filter.push_eq_text("scope", scope.to_string());
     }
     if let Some(path) = &query.path {
-        filter.push_text("path", "=", path.clone());
+        filter.push_eq_text("path", path.clone());
     }
     if let Some(after) = query.after {
-        filter.push_blob("record_id", ">", after.as_bytes().to_vec());
+        filter.push_gt_blob("record_id", after.as_bytes().to_vec());
     }
-    let where_sql = filter.where_sql();
-    let limit_param = filter.push_limit(limit.saturating_add(1));
-    let sql = format!(
-        "SELECT record_id, revision_id, scope, path, title, source_revision_id
-         FROM documents
-         {where_sql}
-         ORDER BY record_id
-         LIMIT ?{limit_param}"
-    );
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement
-        .query_map(rusqlite::params_from_iter(filter.params.iter()), |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<Vec<u8>>>(5)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut items = Vec::with_capacity(rows.len().min(limit as usize));
-    let mut has_more = false;
-    for (record_bytes, revision_bytes, scope_text, path, title, source_bytes) in rows {
-        if items.len() == limit as usize {
-            has_more = true;
-            break;
-        }
-        items.push(DocumentMetadata {
-            record_id: super::record_id_from_blob(&record_bytes, context)?,
-            revision_id: super::revision_id_from_blob(&revision_bytes, context)?,
-            scope: parse_scope(&scope_text, context)?,
-            path,
-            title,
-            source_revision_id: source_bytes
-                .as_deref()
-                .map(|bytes| super::record_id_from_blob(bytes, context))
-                .transpose()?,
-        });
-    }
-    let next_after = if has_more {
-        items.last().map(|item| item.record_id)
-    } else {
-        None
-    };
-    Ok(MetadataPage {
-        items,
-        has_more,
-        next_after,
+    run_document_query(connection, &mut filter, max_rows, context)
+}
+
+type DocumentRow = (
+    Vec<u8>,
+    Vec<u8>,
+    String,
+    Option<String>,
+    String,
+    Option<Vec<u8>>,
+);
+
+fn run_document_query(
+    connection: &rusqlite::Connection,
+    filter: &mut SqlFilterBuilder,
+    max_rows: u32,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<MetadataPage<DocumentMetadata>> {
+    let rows = query_filter_rows(
+        connection,
+        QueryTableSpec {
+            table: "documents",
+            columns: "record_id, revision_id, scope, path, title, source_revision_id",
+        },
+        filter,
+        max_rows,
+        map_document_row,
+    )?;
+    let max_items = max_rows_usize(max_rows)?;
+    collect_bounded_page(
+        rows,
+        max_items,
+        |item| item.record_id,
+        |row| decode_document_row(row, context),
+    )
+}
+
+fn map_document_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DocumentRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn decode_document_row(
+    row: DocumentRow,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<DocumentMetadata> {
+    let (record_bytes, revision_bytes, scope_text, path, title, source_bytes) = row;
+    Ok(DocumentMetadata {
+        record_id: super::record_id_from_blob(&record_bytes, context)?,
+        revision_id: super::revision_id_from_blob(&revision_bytes, context)?,
+        scope: parse_scope(&scope_text, context)?,
+        path,
+        title,
+        source_revision_id: opt_record_id(source_bytes.as_deref(), context)?,
     })
+}
+
+fn opt_record_id(
+    bytes: Option<&[u8]>,
+    context: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<Option<mneme_core::RecordId>> {
+    bytes
+        .map(|raw| super::record_id_from_blob(raw, context))
+        .transpose()
 }
 
 fn parse_scope(
@@ -929,10 +1090,10 @@ mod tests {
         mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "cedar").expect("scope")
     }
 
-    fn config(at: i64) -> super::super::WorkspaceConfig {
+    fn config(at_ns: i64) -> super::super::WorkspaceConfig {
         super::super::WorkspaceConfig {
             clock: Box::new(crate::timekeeper::FixedClock::new(
-                mneme_core::Timestamp::from_nanos(at),
+                mneme_core::Timestamp::from_nanos(at_ns),
             )),
             faults: Box::new(crate::injectors::NoFaults),
         }
@@ -1150,7 +1311,6 @@ mod tests {
             })
             .expect("commit");
 
-        // Simulate an existing workspace created before the metadata projection existed.
         workspace
             .connection
             .execute_batch(
@@ -1171,8 +1331,11 @@ mod tests {
         let reopened = super::super::Workspace::open(temp.path(), config(2_000)).expect("reopen");
         let entities = reopened
             .query_entities(&EntityQuery {
+                scope: None,
+                entity_type: None,
                 external_id: Some("x:42".to_owned()),
-                ..EntityQuery::default()
+                after: None,
+                limit: None,
             })
             .expect("query entities");
         assert_eq!(entities.items.len(), 1);
@@ -1249,8 +1412,11 @@ mod tests {
         workspace.recover().expect("recover");
         let entities = workspace
             .query_entities(&EntityQuery {
+                scope: None,
+                entity_type: None,
                 external_id: Some("rec:1".to_owned()),
-                ..EntityQuery::default()
+                after: None,
+                limit: None,
             })
             .expect("query after recover");
         assert_eq!(entities.items.len(), 1);

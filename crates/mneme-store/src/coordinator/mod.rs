@@ -51,19 +51,19 @@ use crate::injectors::FaultInjector;
 mod commit;
 pub(crate) mod custody;
 mod history;
+mod index;
 mod jobs;
-mod metadata;
 mod publishing;
 mod recovery;
 mod sweep;
 #[cfg(test)]
 mod tests;
 
-pub use jobs::JobClaim;
-pub use metadata::{
+pub use index::{
     DocumentMetadata, DocumentQuery, EntityMetadata, EntityQuery, MAX_METADATA_PAGE_SIZE,
     MetadataPage, RelationMetadata, RelationQuery,
 };
+pub use jobs::JobClaim;
 mod validation;
 
 /// The ledger file name inside a workspace root.
@@ -1459,7 +1459,7 @@ impl Workspace {
         transaction.execute_batch(DDL)?;
         transaction.execute_batch(MEMBERSHIP_DDL)?;
         transaction.execute_batch(RETENTION_DDL)?;
-        transaction.execute_batch(metadata::METADATA_PROJECTION_DDL)?;
+        transaction.execute_batch(index::METADATA_PROJECTION_DDL)?;
         let revision = mneme_core::WorkspaceRevisionId::from_bytes(crate::payload::random_bytes()?);
         let manifest = crate::catalog::Manifest::genesis(revision);
         let manifest_digest = manifest.digest();
@@ -1557,7 +1557,7 @@ impl Workspace {
         // is refused untouched, so the open fails closed instead of serving
         // unverified membership.
         history::migrate_membership_format(&mut connection)?;
-        metadata::migrate_metadata_projection(&root, &mut connection)?;
+        index::migrate_metadata_projection(&root, &mut connection)?;
         // A restore that was interrupted before its ledger was applied leaves
         // this marker behind; every later open refuses to serve until the
         // marker and the ledger state are written together.
