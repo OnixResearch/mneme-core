@@ -364,9 +364,9 @@ impl super::Workspace {
             revision_sequence: super::db_u64(revision_sequence, "revision sequence")?,
             target_path,
             expected_digest: expected_digest
-                .map(|bytes| super::digest_with(&bytes, "raw-bytes-v1", "source-bytes", revision))
+                .map(|bytes| stored_digest(&self.connection, &bytes, revision))
                 .transpose()?,
-            desired_digest: stored_digest(&desired_digest, revision)?,
+            desired_digest: stored_digest(&self.connection, &desired_digest, revision)?,
             eligibility_generation: super::db_u64(
                 eligibility_generation,
                 "eligibility generation",
@@ -404,10 +404,9 @@ impl super::Workspace {
             state: intent_state(&state),
             observed: observed
                 .map(|bytes| {
-                    super::digest_with(
+                    stored_digest(
+                        &self.connection,
                         &bytes,
-                        "raw-bytes-v1",
-                        "source-bytes",
                         mneme_core::WorkspaceRevisionId::from_bytes([0; 16]),
                     )
                 })
@@ -452,7 +451,7 @@ impl super::Workspace {
                     path,
                     state: intent_state(&state),
                     observed: observed
-                        .map(|bytes| stored_digest(&bytes, revision))
+                        .map(|bytes| stored_digest(&self.connection, &bytes, revision))
                         .transpose()?,
                     detail,
                 })
@@ -511,7 +510,7 @@ pub(super) fn publication_outcomes(
                 path,
                 state: intent_state(&state),
                 observed: observed
-                    .map(|bytes| stored_digest(&bytes, placeholder))
+                    .map(|bytes| stored_digest(connection, &bytes, placeholder))
                     .transpose()?,
                 detail,
             })
@@ -593,7 +592,7 @@ pub(super) fn blob_lengths_for(
         return Ok(super::BlobIndex::new());
     };
     let mut statement = connection.prepare_cached(
-        "SELECT digest, profile, boundary, byte_length FROM blobs ORDER BY digest",
+        "SELECT digest, algorithm, profile, boundary, byte_length FROM blobs ORDER BY digest",
     )?;
     let mut rows = statement.query([])?;
     // At most one row per wanted digest is kept, so the scan buffer's bound is
@@ -608,15 +607,16 @@ pub(super) fn blob_lengths_for(
         if !wanted.contains(&key) {
             continue;
         }
-        let profile: String = row.get(1)?;
-        let boundary: String = row.get(2)?;
-        let length: i64 = row.get(3)?;
-        selected.push((key, profile, boundary, length));
+        let algorithm: String = row.get(1)?;
+        let profile: String = row.get(2)?;
+        let boundary: String = row.get(3)?;
+        let length: i64 = row.get(4)?;
+        selected.push((key, algorithm, profile, boundary, length));
     }
     let output = selected
         .into_iter()
-        .map(|(key, profile, boundary, length)| {
-            blob_record(key, &profile, &boundary, length).map(|record| (key, record))
+        .map(|(key, algorithm, profile, boundary, length)| {
+            blob_record(key, &algorithm, &profile, &boundary, length).map(|record| (key, record))
         })
         .collect::<crate::error::Result<super::BlobIndex>>()?;
     Ok(output)
@@ -625,10 +625,16 @@ pub(super) fn blob_lengths_for(
 /// One ledger blob row's decoded facts.
 fn blob_record(
     key: [u8; 32],
+    algorithm: &str,
     profile: &str,
     boundary: &str,
     length: i64,
 ) -> crate::error::Result<super::BlobRecord> {
+    let Some(algorithm) = mneme_core::HashAlgorithm::parse(algorithm) else {
+        return Err(crate::error::Failure::UnsupportedLayout(format!(
+            "unknown blob algorithm {algorithm}"
+        )));
+    };
     let Some(profile) = mneme_core::EncodingProfile::parse(profile) else {
         return Err(crate::error::Failure::UnsupportedLayout(format!(
             "unknown blob profile {profile}"
@@ -639,15 +645,11 @@ fn blob_record(
             "unknown blob boundary {boundary}"
         )));
     };
-    let digest = mneme_core::ContentDigest::from_parts(
-        mneme_core::HashAlgorithm::Sha256,
-        profile,
-        boundary,
-        key,
-    )
-    .map_err(|message| {
-        crate::error::Failure::UnsupportedLayout(format!("ledger blob metadata: {message}"))
-    })?;
+    let digest = mneme_core::ContentDigest::from_parts(algorithm, profile, boundary, key).map_err(
+        |message| {
+            crate::error::Failure::UnsupportedLayout(format!("ledger blob metadata: {message}"))
+        },
+    )?;
     Ok((
         digest,
         super::db_u64(length, "blob length")?,
@@ -732,8 +734,16 @@ fn intent_state(text: &str) -> super::PublicationState {
 
 /// Recompute one publication digest over the raw bytes a caller supplied.
 fn stored_digest(
+    connection: &rusqlite::Connection,
     bytes: &[u8],
     revision: mneme_core::WorkspaceRevisionId,
 ) -> crate::error::Result<mneme_core::ContentDigest> {
-    super::digest_with(bytes, "raw-bytes-v1", "source-bytes", revision)
+    let algorithm = super::blob_algorithm(connection, bytes)?;
+    super::digest_with(
+        bytes,
+        algorithm.symbol(),
+        "raw-bytes-v1",
+        "source-bytes",
+        revision,
+    )
 }

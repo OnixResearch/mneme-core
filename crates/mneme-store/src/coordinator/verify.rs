@@ -32,7 +32,6 @@
 )] // Verify* names match CLI domain; exhaustive matches guard variants; scrub returns VerifyReport instead of panicking; diagnostic allocations are rare/offline; check_revisions is a cohesive single-pass loop; byte_length matches SQLite column
 
 use rusqlite::OptionalExtension;
-use sha2::Digest;
 
 const SQLITE_BUSY_TIMEOUT_SECS: u64 = 5;
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
@@ -587,10 +586,18 @@ impl Scrub<'_> {
         let mut blobs = std::collections::BTreeSet::new();
         let mut previous: Option<(u64, mneme_core::WorkspaceRevisionId)> = None;
         let mut head = None;
-        let mut statement = self.connection.prepare(
-            "SELECT sequence, revision_id, parent_revision_id, manifest, manifest_digest
-             FROM revisions ORDER BY sequence",
-        )?;
+        let has_algorithm_col =
+            super::has_column(self.connection, "revisions", "manifest_algorithm")?;
+        let query = if has_algorithm_col {
+            "SELECT sequence, revision_id, parent_revision_id, manifest, manifest_digest,
+                    manifest_algorithm
+             FROM revisions ORDER BY sequence"
+        } else {
+            "SELECT sequence, revision_id, parent_revision_id, manifest, manifest_digest,
+                    NULL AS manifest_algorithm
+             FROM revisions ORDER BY sequence"
+        };
+        let mut statement = self.connection.prepare(query)?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let sequence = super::db_u64(row.get::<_, i64>(0)?, "sequence")?;
@@ -598,6 +605,7 @@ impl Scrub<'_> {
             let parent_bytes: Option<Vec<u8>> = row.get(2)?;
             let manifest_bytes: Vec<u8> = row.get(3)?;
             let digest_bytes: Vec<u8> = row.get(4)?;
+            let manifest_algorithm: Option<String> = row.get(5)?;
             let Ok(revision) = super::revision_from_blob(&revision_bytes) else {
                 self.push(chain_issue(
                     IssueKind::BrokenChain,
@@ -649,6 +657,9 @@ impl Scrub<'_> {
                 sequence,
                 bytes: &manifest_bytes,
                 digest: &digest_bytes,
+                algorithm: manifest_algorithm
+                    .as_deref()
+                    .unwrap_or(mneme_core::hashing::ALGORITHM_SHA256),
                 blobs: &blobs,
             });
             if let Err(reason) = outcome {
@@ -671,6 +682,7 @@ impl Scrub<'_> {
     fn check_manifest(&self, row: &ManifestRow<'_>) -> Result<(), String> {
         let stored_digest = super::digest_with(
             row.digest,
+            row.algorithm,
             "preserves-canonical-binary-v1",
             "payload",
             row.revision,
@@ -684,10 +696,11 @@ impl Scrub<'_> {
             records,
             blobs: row.blobs.clone(),
         };
-        if rebuilt.digest() != stored_digest {
+        let expected_digest = rebuilt.digest_with(stored_digest.algorithm());
+        if expected_digest != stored_digest {
             return Err(format!(
                 "reconstructed manifest digest {} differs from recorded {}",
-                rebuilt.digest().to_hex(),
+                expected_digest.to_hex(),
                 stored_digest.to_hex()
             ));
         }
@@ -886,6 +899,7 @@ struct ManifestRow<'a> {
     sequence: u64,
     bytes: &'a [u8],
     digest: &'a [u8],
+    algorithm: &'a str,
     blobs: &'a std::collections::BTreeSet<mneme_core::ContentDigest>,
 }
 
@@ -921,32 +935,6 @@ fn parse_digest(row: &BlobRow, bytes: [u8; 32]) -> Option<mneme_core::ContentDig
     mneme_core::ContentDigest::from_parts(algorithm, profile, boundary, bytes).ok()
 }
 
-/// A streaming hasher chosen by the recorded algorithm. Adding an algorithm to
-/// `HashAlgorithm` fails to compile here until its hasher is wired in.
-enum Hasher {
-    Sha256(sha2::Sha256),
-}
-
-impl Hasher {
-    fn new(algorithm: mneme_core::HashAlgorithm) -> Self {
-        match algorithm {
-            mneme_core::HashAlgorithm::Sha256 => Hasher::Sha256(sha2::Sha256::new()),
-        }
-    }
-
-    fn update(&mut self, bytes: &[u8]) {
-        match self {
-            Hasher::Sha256(hasher) => hasher.update(bytes),
-        }
-    }
-
-    fn finish(self) -> [u8; 32] {
-        match self {
-            Hasher::Sha256(hasher) => hasher.finalize().into(),
-        }
-    }
-}
-
 /// Stream a file through the algorithm's hasher; returns digest and length.
 fn hash_file(
     path: &std::path::Path,
@@ -954,7 +942,7 @@ fn hash_file(
 ) -> std::io::Result<([u8; 32], u64)> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
-    let mut hasher = Hasher::new(algorithm);
+    let mut hasher = mneme_core::hashing::StreamingHasher::new(algorithm);
     let mut buffer = vec![0_u8; STREAM_BUFFER_BYTES];
     let mut length = 0_u64;
     loop {

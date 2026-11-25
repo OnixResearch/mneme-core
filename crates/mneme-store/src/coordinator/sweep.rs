@@ -78,8 +78,10 @@ impl super::Workspace {
                     .transpose()?,
                 digest: digest
                     .map(|bytes| {
+                        let algorithm = super::blob_algorithm(&self.connection, &bytes)?;
                         super::digest_with(
                             &bytes,
+                            algorithm.symbol(),
                             "raw-bytes-v1",
                             "source-bytes",
                             self.current_revision()
@@ -1104,6 +1106,7 @@ pub(super) fn retention_requirements(
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut digests = std::collections::BTreeSet::new();
     let mut scan = RequirementScan {
+        connection,
         root,
         context: revision,
         forgotten: &forgotten,
@@ -1138,6 +1141,7 @@ pub(super) fn retention_requirements(
 
 /// The facts one requirement scan shares across every retained row it folds.
 struct RequirementScan<'a> {
+    connection: &'a rusqlite::Connection,
     root: &'a std::path::Path,
     context: mneme_core::WorkspaceRevisionId,
     forgotten: &'a ForgottenSuppressions,
@@ -1161,8 +1165,10 @@ fn include_retention_record_digests(
             revision: context,
             reason: format!("unknown record kind {kind}"),
         })?;
+    let algorithm = super::blob_algorithm(scan.connection, &full_digest)?;
     let full = super::digest_with(
         &full_digest,
+        algorithm.symbol(),
         "preserves-canonical-binary-v1",
         "full-record",
         context,
@@ -1204,6 +1210,7 @@ fn include_source_record_digest(
     } = input;
     let payload = super::digest_with(
         payload_digest,
+        full.algorithm().symbol(),
         "preserves-canonical-binary-v1",
         "payload",
         context,
@@ -1375,7 +1382,16 @@ pub(super) fn all_suppressions(
                 crate::error::Failure::UnsupportedLayout(format!("unknown suppression mode {mode}"))
             })?,
             content_digest: digest
-                .map(|bytes| super::digest_with(&bytes, "raw-bytes-v1", "source-bytes", context))
+                .map(|bytes| {
+                    let algorithm = super::blob_algorithm(connection, &bytes)?;
+                    super::digest_with(
+                        &bytes,
+                        algorithm.symbol(),
+                        "raw-bytes-v1",
+                        "source-bytes",
+                        context,
+                    )
+                })
                 .transpose()?,
             generation: super::db_u64(generation, "generation")?,
         });
@@ -2116,7 +2132,9 @@ fn ledger_holds_targets(
                         "ledger inspection exceeds its cell bound".to_owned(),
                     ));
                 }
-                if targets.contains(&crate::payload::sha256(bytes)) {
+                if targets.contains(&crate::payload::sha256(bytes))
+                    || targets.contains(&crate::payload::blake3(bytes))
+                {
                     return Ok(true);
                 }
             }

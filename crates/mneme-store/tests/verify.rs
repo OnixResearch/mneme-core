@@ -258,7 +258,7 @@ fn tampered_manifest_digest_fails_chain_verification() {
     drop(conn);
 
     let report =
-        mneme_store::verify_workspace(dir.path(), mneme_store::VerifyMode::Quick).expect("verify");
+        mneme_store::verify_workspace(dir.path(), mneme_store::VerifyMode::Full).expect("verify");
     assert!(!report.is_healthy());
     assert!(
         report.issues.iter().any(
@@ -300,4 +300,359 @@ fn dangling_source_blob_is_detected() {
         Some(source_digest.to_hex().as_str())
     );
     assert!(!issue.records.is_empty());
+}
+
+struct LegacySha256Blobs<'a> {
+    record: &'a mneme_core::RecordEnvelope,
+    source_digest: mneme_core::ContentDigest,
+    full_digest: mneme_core::ContentDigest,
+    payload_digest: mneme_core::ContentDigest,
+    source_len: i64,
+    record_len: i64,
+}
+
+fn rewrite_genesis_to_sha256(connection: &rusqlite::Connection) -> mneme_core::WorkspaceRevisionId {
+    let (gen_rev_bytes,): (Vec<u8>,) = connection
+        .query_row(
+            "SELECT revision_id FROM revisions WHERE sequence = 0",
+            [],
+            |row| Ok((row.get(0)?,)),
+        )
+        .expect("genesis row");
+    assert_eq!(gen_rev_bytes.len(), 16);
+    let gen_rev = mneme_core::WorkspaceRevisionId::from_bytes(
+        gen_rev_bytes.as_slice().try_into().expect("16 bytes"),
+    );
+    let gen_manifest = mneme_store::Manifest::genesis(gen_rev);
+    let gen_sha = gen_manifest.digest_with(mneme_core::HashAlgorithm::Sha256);
+    assert_eq!(gen_sha.algorithm(), mneme_core::HashAlgorithm::Sha256);
+    let updated = connection
+        .execute(
+            "UPDATE revisions SET manifest_digest = ?1, manifest_algorithm = NULL WHERE sequence = 0",
+            rusqlite::params![gen_sha.as_bytes().as_slice()],
+        )
+        .expect("update genesis");
+    assert_eq!(updated, 1);
+    gen_rev
+}
+
+/// Rewrite a newly created workspace's single commit (and genesis) to use
+/// legacy SHA-256 digests and `blobs/sha256/...` paths, simulating a vault
+/// created before BLAKE3 became the default.
+fn convert_workspace_to_legacy_sha256(
+    root: &std::path::Path,
+    mut record: mneme_core::RecordEnvelope,
+) -> mneme_core::ContentDigest {
+    let connection =
+        rusqlite::Connection::open(root.join(mneme_store::LEDGER_FILE)).expect("open sqlite");
+    let gen_rev = rewrite_genesis_to_sha256(&connection);
+
+    let source_bytes = b"legacy sha256 source bytes";
+    let sha_source = mneme_core::ContentDigest::of_source_bytes_with(
+        source_bytes,
+        mneme_core::HashAlgorithm::Sha256,
+    );
+    assert_eq!(sha_source.algorithm(), mneme_core::HashAlgorithm::Sha256);
+    mneme_store::payload::stage(root, sha_source, source_bytes).expect("stage sha source");
+
+    let retained =
+        mneme_core::RetainedSource::new(sha_source, source_bytes.len() as u64, "text/asciidoc")
+            .expect("retained");
+    record.payload.insert(
+        "content",
+        mneme_core::SourceContent::Retained(retained).to_value(),
+    );
+    let sha_full = record.full_digest_with(mneme_core::HashAlgorithm::Sha256);
+    let sha_payload = record.payload_digest_with(mneme_core::HashAlgorithm::Sha256);
+    let encoded_record = mneme_core::binary::encode(&record.to_value());
+    mneme_store::payload::stage(root, sha_full, &encoded_record).expect("stage sha record");
+    assert_eq!(sha_full.algorithm(), mneme_core::HashAlgorithm::Sha256);
+
+    let blobs = LegacySha256Blobs {
+        record: &record,
+        source_digest: sha_source,
+        full_digest: sha_full,
+        payload_digest: sha_payload,
+        source_len: source_bytes.len() as i64,
+        record_len: encoded_record.len() as i64,
+    };
+    replace_rev1_with_sha256(&connection, gen_rev, &blobs);
+
+    let blake3_dir = root.join("blobs").join("blake3");
+    if blake3_dir.exists() {
+        std::fs::remove_dir_all(&blake3_dir).expect("remove blake3 dir");
+    }
+    assert!(!blake3_dir.exists());
+
+    sha_full
+}
+
+fn insert_sha256_ledger_rows(connection: &rusqlite::Connection, blobs: &LegacySha256Blobs<'_>) {
+    connection
+        .execute("DELETE FROM blobs", [])
+        .expect("del blobs");
+    connection
+        .execute("DELETE FROM revision_blob_changes", [])
+        .expect("del changes");
+    connection
+        .execute("DELETE FROM records", [])
+        .expect("del records");
+    connection
+        .execute("DELETE FROM record_membership", [])
+        .expect("del membership");
+
+    let inserted_blobs = connection
+        .execute(
+            "INSERT INTO blobs (digest, algorithm, profile, boundary, byte_length)
+             VALUES (?1, 'sha256', 'raw-bytes-v1', 'source-bytes', ?2),
+                    (?3, 'sha256', 'preserves-canonical-binary-v1', 'full-record', ?4)",
+            rusqlite::params![
+                blobs.source_digest.as_bytes().as_slice(),
+                blobs.source_len,
+                blobs.full_digest.as_bytes().as_slice(),
+                blobs.record_len,
+            ],
+        )
+        .expect("insert sha blobs");
+    assert_eq!(inserted_blobs, 2);
+    connection
+        .execute(
+            "INSERT INTO revision_blob_changes (revision_sequence, digest, change)
+             VALUES (1, ?1, 'add'), (1, ?2, 'add')",
+            rusqlite::params![
+                blobs.source_digest.as_bytes().as_slice(),
+                blobs.full_digest.as_bytes().as_slice(),
+            ],
+        )
+        .expect("insert sha changes");
+    connection
+        .execute(
+            "INSERT INTO records (record_id, revision_id, kind, schema_version, scope,
+                 recorded_at_ns, recorded_order, envelope_digest, payload_digest, full_digest)
+             VALUES (?1, ?2, 'source-revision', 2, ?3, ?4, 0, ?5, ?6, ?5)",
+            rusqlite::params![
+                blobs.record.record_id.as_bytes().as_slice(),
+                blobs.record.revision_id.as_bytes().as_slice(),
+                blobs.record.scope.to_string(),
+                blobs.record.recorded.at().nanos(),
+                blobs.full_digest.as_bytes().as_slice(),
+                blobs.payload_digest.as_bytes().as_slice(),
+            ],
+        )
+        .expect("insert sha record");
+    let inserted_membership = connection
+        .execute(
+            "INSERT INTO record_membership (record_id, revision_id, first_sequence, last_sequence)
+             VALUES (?1, ?2, 1, NULL)",
+            rusqlite::params![
+                blobs.record.record_id.as_bytes().as_slice(),
+                blobs.record.revision_id.as_bytes().as_slice(),
+            ],
+        )
+        .expect("insert sha membership");
+    assert_eq!(inserted_membership, 1);
+}
+
+fn replace_rev1_with_sha256(
+    connection: &rusqlite::Connection,
+    gen_rev: mneme_core::WorkspaceRevisionId,
+    blobs: &LegacySha256Blobs<'_>,
+) {
+    let (rev1_bytes,): (Vec<u8>,) = connection
+        .query_row(
+            "SELECT revision_id FROM revisions WHERE sequence = 1",
+            [],
+            |row| Ok((row.get(0)?,)),
+        )
+        .expect("rev1 row");
+    assert_eq!(rev1_bytes.len(), 16);
+    let rev1 = mneme_core::WorkspaceRevisionId::from_bytes(
+        rev1_bytes.as_slice().try_into().expect("16 bytes"),
+    );
+
+    insert_sha256_ledger_rows(connection, blobs);
+
+    let mut manifest_records = std::collections::BTreeSet::new();
+    manifest_records.insert(mneme_store::ManifestRecord {
+        record_id: blobs.record.record_id,
+        revision_id: blobs.record.revision_id,
+        kind: blobs.record.kind,
+    });
+    let mut manifest_blobs = std::collections::BTreeSet::new();
+    manifest_blobs.insert(blobs.source_digest);
+    manifest_blobs.insert(blobs.full_digest);
+    let rev1_manifest = mneme_store::Manifest {
+        revision: rev1,
+        parent: Some(gen_rev),
+        records: manifest_records,
+        blobs: manifest_blobs,
+    };
+    let rev1_sha = rev1_manifest.digest_with(mneme_core::HashAlgorithm::Sha256);
+    let updated = connection
+        .execute(
+            "UPDATE revisions SET manifest_digest = ?1, manifest_algorithm = NULL WHERE sequence = 1",
+            rusqlite::params![rev1_sha.as_bytes().as_slice()],
+        )
+        .expect("update rev1");
+    assert_eq!(updated, 1);
+}
+
+#[test]
+fn new_workspace_writes_blake3_digests_and_paths() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = populated_workspace(dir.path());
+    drop(workspace);
+
+    assert!(dir.path().join("blobs").join("blake3").exists());
+    assert!(!dir.path().join("blobs").join("sha256").exists());
+
+    let connection =
+        rusqlite::Connection::open(dir.path().join(mneme_store::LEDGER_FILE)).expect("open sqlite");
+    let mut stmt = connection
+        .prepare("SELECT DISTINCT algorithm FROM blobs")
+        .expect("stmt");
+    let algorithms: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("rows");
+    assert_eq!(algorithms, vec!["blake3".to_owned()]);
+
+    let mut stmt = connection
+        .prepare("SELECT DISTINCT manifest_algorithm FROM revisions")
+        .expect("stmt");
+    let manifest_algorithms: Vec<Option<String>> = stmt
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("rows");
+    assert_eq!(manifest_algorithms, vec![Some("blake3".to_owned())]);
+
+    let full = mneme_store::verify_workspace(dir.path(), mneme_store::VerifyMode::Full)
+        .expect("full verify");
+    assert!(full.is_healthy(), "issues: {:?}", full.issues);
+}
+
+fn source_commit(
+    base: mneme_core::WorkspaceRevisionId,
+    key: &str,
+    id_byte: u8,
+    bytes: &[u8],
+) -> mneme_store::CommitCommand {
+    let mut record = retained_source_record(bytes);
+    record.record_id = mneme_core::RecordId::from_bytes([id_byte; 16]);
+    record.revision_id = mneme_core::RevisionId::from_bytes([id_byte.wrapping_add(1); 16]);
+    assert!(!key.is_empty());
+    assert!(!bytes.is_empty());
+    mneme_store::CommitCommand {
+        base,
+        actor: "test-author".to_owned(),
+        scope: test_scope(),
+        idempotency_key: key.to_owned(),
+        records: vec![record],
+        source_blobs: vec![mneme_store::SourceBlobDraft {
+            bytes: bytes.to_vec(),
+            media_type: mneme_core::Symbol::from("text/asciidoc"),
+        }],
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: None,
+    }
+}
+
+#[test]
+fn legacy_sha256_workspace_opens_reads_verifies_and_accepts_blake3_commits() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut workspace = mneme_store::Workspace::create(dir.path(), test_config()).expect("create");
+    let genesis = workspace.current_revision().expect("genesis");
+    let first = source_commit(genesis, "first", 21, b"legacy sha256 source bytes");
+    workspace.commit(first).expect("commit");
+    let record = workspace.snapshot().expect("snap").records[0].clone();
+    drop(workspace);
+
+    let sha_full = convert_workspace_to_legacy_sha256(dir.path(), record);
+    assert_eq!(sha_full.algorithm(), mneme_core::HashAlgorithm::Sha256);
+
+    let legacy_verify = mneme_store::verify_workspace(dir.path(), mneme_store::VerifyMode::Full)
+        .expect("verify legacy");
+    assert!(
+        legacy_verify.is_healthy(),
+        "issues: {:?}",
+        legacy_verify.issues
+    );
+
+    let mut reopened =
+        mneme_store::Workspace::open(dir.path(), test_config()).expect("reopen legacy");
+    let snap = reopened.snapshot().expect("snapshot");
+    assert_eq!(snap.records.len(), 1);
+    let head = reopened.current_revision().expect("head");
+    let blake3_bytes = b"new blake3 source bytes";
+    let cmd = source_commit(head, "second", 31, blake3_bytes);
+    let outcome = reopened.commit(cmd).expect("commit blake3 onto sha256");
+    assert_eq!(
+        outcome.manifest_digest.algorithm(),
+        mneme_core::HashAlgorithm::Blake3
+    );
+    drop(reopened);
+
+    let mixed_verify = mneme_store::verify_workspace(dir.path(), mneme_store::VerifyMode::Full)
+        .expect("verify mixed");
+    assert!(
+        mixed_verify.is_healthy(),
+        "issues: {:?}",
+        mixed_verify.issues
+    );
+    assert_eq!(mixed_verify.revisions_verified, 3);
+
+    let reopened = mneme_store::Workspace::open(dir.path(), test_config()).expect("reopen mixed");
+    let snap = reopened.snapshot().expect("mixed snapshot");
+    assert_eq!(snap.records.len(), 2);
+}
+
+#[test]
+fn mixed_sha256_and_blake3_workspace_catches_corruption_in_both_algorithms() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut workspace = mneme_store::Workspace::create(dir.path(), test_config()).expect("create");
+    let genesis = workspace.current_revision().expect("genesis");
+    let first = source_commit(genesis, "first", 21, b"legacy sha256 source bytes");
+    workspace.commit(first).expect("commit");
+    let record = workspace.snapshot().expect("snap").records[0].clone();
+    drop(workspace);
+
+    let sha_full = convert_workspace_to_legacy_sha256(dir.path(), record);
+
+    let mut reopened = mneme_store::Workspace::open(dir.path(), test_config()).expect("reopen");
+    let head = reopened.current_revision().expect("head");
+    let blake3_bytes = b"new blake3 source bytes";
+    let blake3_source = mneme_core::ContentDigest::of_source_bytes(blake3_bytes);
+    assert_eq!(blake3_source.algorithm(), mneme_core::HashAlgorithm::Blake3);
+    let cmd = source_commit(head, "second", 31, blake3_bytes);
+    reopened.commit(cmd).expect("commit blake3");
+    drop(reopened);
+
+    let sha_path = mneme_store::payload::blob_path(dir.path(), sha_full);
+    let original_sha = std::fs::read(&sha_path).expect("read sha");
+    let mut corrupted_sha = original_sha.clone();
+    corrupted_sha[0] ^= 0xff;
+    std::fs::write(&sha_path, &corrupted_sha).expect("write corrupt sha");
+    let report = mneme_store::verify_workspace(dir.path(), mneme_store::VerifyMode::Full)
+        .expect("verify corrupt sha");
+    assert!(!report.is_healthy());
+    assert!(report.issues.iter().any(|issue| {
+        issue.kind == mneme_store::IssueKind::DigestMismatch
+            && issue.digest.as_deref() == Some(sha_full.to_hex().as_str())
+    }));
+    std::fs::write(&sha_path, &original_sha).expect("restore sha");
+
+    let blake3_path = mneme_store::payload::blob_path(dir.path(), blake3_source);
+    let mut corrupted_b3 = std::fs::read(&blake3_path).expect("read b3");
+    corrupted_b3[0] ^= 0xff;
+    std::fs::write(&blake3_path, &corrupted_b3).expect("write corrupt b3");
+    let report = mneme_store::verify_workspace(dir.path(), mneme_store::VerifyMode::Full)
+        .expect("verify corrupt b3");
+    assert!(!report.is_healthy());
+    assert!(report.issues.iter().any(|issue| {
+        issue.kind == mneme_store::IssueKind::DigestMismatch
+            && issue.digest.as_deref() == Some(blake3_source.to_hex().as_str())
+    }));
 }

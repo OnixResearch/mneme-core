@@ -8,8 +8,6 @@
 //! and publishes a source and its dependents only after every chunk, and then
 //! the whole asset, hash to what the manifest signed.
 
-use sha2::Digest as _;
-
 /// The length a bundle's assets are cut into.
 pub const ASSET_CHUNK_BYTES: u32 = 1024 * 1024;
 /// The shortest chunk length a manifest may declare.
@@ -362,7 +360,7 @@ pub(super) fn asset_of(
         ),
         dependents,
     };
-    let mut whole = sha2::Sha256::new();
+    let mut whole = mneme_core::hashing::StreamingHasher::new(asset.digest.algorithm());
     for index in 0..count {
         let Some((offset, length)) = asset.chunk_span(index) else {
             return Err(super::Error::MalformedBundle);
@@ -372,9 +370,12 @@ pub(super) fn asset_of(
         whole.update(&bytes);
         asset
             .chunks
-            .push(mneme_core::ContentDigest::of_source_bytes(&bytes));
+            .push(mneme_core::ContentDigest::of_source_bytes_with(
+                &bytes,
+                asset.digest.algorithm(),
+            ));
     }
-    let whole: [u8; 32] = whole.finalize().into();
+    let whole: [u8; 32] = whole.finish();
     if &whole != asset.digest.as_bytes() {
         return Err(super::Error::Store(mneme_store::Failure::CorruptBlob {
             digest: asset.digest.to_hex(),

@@ -447,8 +447,10 @@ pub(super) fn current_source_bindings(
         if forgotten.matches(record_id, revision_id) {
             continue;
         }
+        let algorithm = super::blob_algorithm(connection, envelope_digest)?;
         let digest = super::digest_with(
             envelope_digest,
+            algorithm.symbol(),
             "preserves-canonical-binary-v1",
             "full-record",
             revision,
@@ -762,22 +764,27 @@ fn record_digest_rows(
     record_id: mneme_core::RecordId,
 ) -> crate::error::Result<Vec<(mneme_core::RevisionId, String, mneme_core::ContentDigest)>> {
     let context = mneme_core::WorkspaceRevisionId::from_bytes([0; 16]);
-    let mut statement = connection
-        .prepare("SELECT revision_id, kind, full_digest FROM records WHERE record_id = ?1")?;
+    let mut statement = connection.prepare(
+        "SELECT r.revision_id, r.kind, r.full_digest, COALESCE(b.algorithm, 'sha256')
+         FROM records r LEFT JOIN blobs b ON b.digest = r.full_digest
+         WHERE r.record_id = ?1",
+    )?;
     let rows = statement
         .query_map(rusqlite::params![record_id.as_bytes().as_slice()], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut output = Vec::with_capacity(rows.len());
-    for (revision, kind, full) in rows {
+    for (revision, kind, full, algorithm) in rows {
         let revision = super::revision_id_from_blob(&revision, context)?;
         let digest = super::digest_with(
             &full,
+            &algorithm,
             "preserves-canonical-binary-v1",
             "full-record",
             context,
@@ -1149,6 +1156,7 @@ pub(super) fn digest_from_locator(
     };
     super::digest_with(
         &bytes,
+        mneme_core::HashAlgorithm::default().symbol(),
         profile,
         boundary,
         mneme_core::WorkspaceRevisionId::from_bytes([0; 16]),

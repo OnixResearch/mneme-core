@@ -9,8 +9,10 @@
 
 use sha2::Digest;
 
-/// The supported hash algorithm.
+/// The SHA-256 hash algorithm symbol.
 pub const ALGORITHM_SHA256: &str = "sha256";
+/// The BLAKE3 hash algorithm symbol.
+pub const ALGORITHM_BLAKE3: &str = "blake3";
 /// The canonical Preserves binary encoding profile.
 pub const PROFILE_CANONICAL_BINARY_V1: &str = "preserves-canonical-binary-v1";
 /// The exact source-byte encoding profile.
@@ -47,9 +49,13 @@ fn word_16(bytes: &[u8]) -> [u8; 16] {
 }
 
 /// A hash algorithm understood by this build.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HashAlgorithm {
+    /// Legacy SHA-256 content addressing.
     Sha256,
+    /// Default BLAKE3 content addressing.
+    #[default]
+    Blake3,
 }
 
 impl HashAlgorithm {
@@ -57,15 +63,62 @@ impl HashAlgorithm {
     pub const fn symbol(self) -> &'static str {
         match self {
             HashAlgorithm::Sha256 => ALGORITHM_SHA256,
+            HashAlgorithm::Blake3 => ALGORITHM_BLAKE3,
         }
     }
 
     /// Parse a supported algorithm.
     pub fn parse(text: &str) -> Option<Self> {
-        if text == ALGORITHM_SHA256 {
-            Some(HashAlgorithm::Sha256)
-        } else {
-            None
+        match text {
+            ALGORITHM_SHA256 => Some(HashAlgorithm::Sha256),
+            ALGORITHM_BLAKE3 => Some(HashAlgorithm::Blake3),
+            _ => None,
+        }
+    }
+
+    /// Compute the 32-byte digest of exact bytes using this algorithm.
+    pub fn hash_bytes(self, bytes: &[u8]) -> [u8; 32] {
+        match self {
+            HashAlgorithm::Sha256 => sha2::Sha256::digest(bytes).into(),
+            HashAlgorithm::Blake3 => *blake3::hash(bytes).as_bytes(),
+        }
+    }
+}
+
+/// Streaming hasher for a [`HashAlgorithm`].
+pub struct StreamingHasher(StreamingHasherInner);
+
+enum StreamingHasherInner {
+    Sha256(sha2::Sha256),
+    Blake3(Box<blake3::Hasher>),
+}
+
+impl StreamingHasher {
+    /// Start a streaming hash for `algorithm`.
+    pub fn new(algorithm: HashAlgorithm) -> Self {
+        match algorithm {
+            HashAlgorithm::Sha256 => Self(StreamingHasherInner::Sha256(sha2::Sha256::new())),
+            HashAlgorithm::Blake3 => Self(StreamingHasherInner::Blake3(Box::new(
+                blake3::Hasher::new(),
+            ))),
+        }
+    }
+
+    /// Feed `bytes` into the hasher.
+    pub fn update(&mut self, bytes: &[u8]) {
+        match &mut self.0 {
+            StreamingHasherInner::Sha256(hasher) => hasher.update(bytes),
+            StreamingHasherInner::Blake3(hasher) => {
+                hasher.update(bytes);
+            }
+        }
+    }
+
+    /// Finalize the stream and return its 32-byte digest.
+    pub fn finish(self) -> [u8; 32] {
+        match self.0 {
+            StreamingHasherInner::Sha256(hasher) => hasher.finalize().into(),
+            StreamingHasherInner::Blake3(hasher) => *hasher.finalize().as_bytes(),
         }
     }
 }
@@ -166,8 +219,17 @@ impl FullRecordDigestScratch {
 
     /// Hash a complete record envelope with the canonical binary profile.
     pub fn digest(&mut self, value: &crate::typed::Value) -> ContentDigest {
+        self.digest_with(value, HashAlgorithm::default())
+    }
+
+    /// Hash a complete record envelope with the canonical binary profile and an explicit algorithm.
+    pub fn digest_with(
+        &mut self,
+        value: &crate::typed::Value,
+        algorithm: HashAlgorithm,
+    ) -> ContentDigest {
         let encoded = self.encoder.encode(value);
-        let digest = ContentDigest::of_encoding(&encoded, ValueBoundary::FullRecord);
+        let digest = ContentDigest::of_encoding(&encoded, ValueBoundary::FullRecord, algorithm);
         self.encoder.recycle(encoded);
         digest
     }
@@ -197,34 +259,53 @@ impl ContentDigest {
 
     /// Digest a complete record envelope value.
     pub fn of_full_record(value: &crate::typed::Value) -> Self {
-        Self::of_value(value, ValueBoundary::FullRecord)
+        Self::of_full_record_with(value, HashAlgorithm::default())
+    }
+
+    /// Digest a complete record envelope value with an explicit hash algorithm.
+    pub fn of_full_record_with(value: &crate::typed::Value, algorithm: HashAlgorithm) -> Self {
+        Self::of_value(value, ValueBoundary::FullRecord, algorithm)
     }
 
     /// Digest a selected payload value.
     pub fn of_payload(value: &crate::typed::Value) -> Self {
-        Self::of_value(value, ValueBoundary::Payload)
+        Self::of_payload_with(value, HashAlgorithm::default())
+    }
+
+    /// Digest a selected payload value with an explicit hash algorithm.
+    pub fn of_payload_with(value: &crate::typed::Value, algorithm: HashAlgorithm) -> Self {
+        Self::of_value(value, ValueBoundary::Payload, algorithm)
     }
 
     /// Digest exact source bytes.
     pub fn of_source_bytes(bytes: &[u8]) -> Self {
+        Self::of_source_bytes_with(bytes, HashAlgorithm::default())
+    }
+
+    /// Digest exact source bytes with an explicit hash algorithm.
+    pub fn of_source_bytes_with(bytes: &[u8], algorithm: HashAlgorithm) -> Self {
         ContentDigest {
-            algorithm: HashAlgorithm::Sha256,
+            algorithm,
             profile: EncodingProfile::RawBytesV1,
             boundary: ValueBoundary::SourceBytes,
-            bytes: sha2::Sha256::digest(bytes).into(),
+            bytes: algorithm.hash_bytes(bytes),
         }
     }
 
-    fn of_value(value: &crate::typed::Value, boundary: ValueBoundary) -> Self {
-        Self::of_encoding(&crate::binary::encode(value), boundary)
+    fn of_value(
+        value: &crate::typed::Value,
+        boundary: ValueBoundary,
+        algorithm: HashAlgorithm,
+    ) -> Self {
+        Self::of_encoding(&crate::binary::encode(value), boundary, algorithm)
     }
 
-    fn of_encoding(encoded: &[u8], boundary: ValueBoundary) -> Self {
+    fn of_encoding(encoded: &[u8], boundary: ValueBoundary, algorithm: HashAlgorithm) -> Self {
         ContentDigest {
-            algorithm: HashAlgorithm::Sha256,
+            algorithm,
             profile: EncodingProfile::CanonicalBinaryV1,
             boundary,
-            bytes: sha2::Sha256::digest(encoded).into(),
+            bytes: algorithm.hash_bytes(encoded),
         }
     }
 
@@ -350,7 +431,9 @@ impl ContentDigest {
 
     /// Verify that this digest matches freshly computed source bytes.
     pub fn verify_source_bytes(self, bytes: &[u8]) -> bool {
-        self == ContentDigest::of_source_bytes(bytes)
+        self.profile == EncodingProfile::RawBytesV1
+            && self.boundary == ValueBoundary::SourceBytes
+            && self.algorithm.hash_bytes(bytes) == self.bytes
     }
 }
 
@@ -449,11 +532,21 @@ mod tests {
         let mut scratch = FullRecordDigestScratch::new();
         for (value, canonical) in cases.iter().chain(cases.iter().rev()) {
             let digest = scratch.digest(value);
-            let expected: [u8; 32] = sha2::Sha256::digest(canonical).into();
+            let expected: [u8; 32] = *blake3::hash(canonical).as_bytes();
+            assert_eq!(digest.algorithm(), HashAlgorithm::Blake3);
             assert_eq!(*digest.as_bytes(), expected);
             assert_eq!(digest, ContentDigest::of_full_record(value));
             assert_eq!(digest.boundary(), ValueBoundary::FullRecord);
             assert_eq!(digest.profile(), EncodingProfile::CanonicalBinaryV1);
+
+            let legacy = scratch.digest_with(value, HashAlgorithm::Sha256);
+            let legacy_expected: [u8; 32] = sha2::Sha256::digest(canonical).into();
+            assert_eq!(legacy.algorithm(), HashAlgorithm::Sha256);
+            assert_eq!(*legacy.as_bytes(), legacy_expected);
+            assert_eq!(
+                legacy,
+                ContentDigest::of_full_record_with(value, HashAlgorithm::Sha256)
+            );
         }
     }
 

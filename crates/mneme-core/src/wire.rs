@@ -242,12 +242,28 @@ impl RecordEnvelope {
 
     /// Digest of the complete envelope, including identity and provenance.
     pub fn full_digest(&self) -> crate::hashing::ContentDigest {
-        crate::hashing::ContentDigest::of_full_record(&self.to_value())
+        self.full_digest_with(crate::hashing::HashAlgorithm::default())
+    }
+
+    /// Digest of the complete record envelope with an explicit hash algorithm.
+    pub fn full_digest_with(
+        &self,
+        algorithm: crate::hashing::HashAlgorithm,
+    ) -> crate::hashing::ContentDigest {
+        crate::hashing::ContentDigest::of_full_record_with(&self.to_value(), algorithm)
     }
 
     /// Digest of only the payload.
     pub fn payload_digest(&self) -> crate::hashing::ContentDigest {
-        crate::hashing::ContentDigest::of_payload(&self.payload.to_value())
+        self.payload_digest_with(crate::hashing::HashAlgorithm::default())
+    }
+
+    /// Digest of only the payload with an explicit hash algorithm.
+    pub fn payload_digest_with(
+        &self,
+        algorithm: crate::hashing::HashAlgorithm,
+    ) -> crate::hashing::ContentDigest {
+        crate::hashing::ContentDigest::of_payload_with(&self.payload.to_value(), algorithm)
     }
 }
 

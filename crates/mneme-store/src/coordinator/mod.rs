@@ -698,9 +698,9 @@ fn require_envelope_identity(
     if record.record_id != identity.record_id
         || record.revision_id != identity.revision_id
         || record.kind != identity.kind
-        || record.full_digest() != digest
-        || record.full_digest().as_bytes() != identity.full_digest
-        || record.payload_digest() != payload_digest
+        || record.full_digest_with(digest.algorithm()) != digest
+        || record.full_digest_with(digest.algorithm()).as_bytes() != identity.full_digest
+        || record.payload_digest_with(digest.algorithm()) != payload_digest
     {
         return Err(crate::error::Failure::Integrity {
             revision,
@@ -823,7 +823,8 @@ CREATE TABLE IF NOT EXISTS revisions (
     request_digest BLOB NOT NULL,
     eligibility_generation INTEGER NOT NULL,
     manifest BLOB NOT NULL,
-    manifest_digest BLOB NOT NULL
+    manifest_digest BLOB NOT NULL,
+    manifest_algorithm TEXT
 );
 CREATE TABLE IF NOT EXISTS records (
     record_id BLOB NOT NULL,
@@ -1460,8 +1461,8 @@ impl Workspace {
         transaction.execute(
             "INSERT INTO revisions (sequence, revision_id, parent_revision_id, committed_at_ns,
                  actor, scope, command_id, request_digest, eligibility_generation, manifest,
-                 manifest_digest)
-             VALUES (0, ?1, NULL, ?2, 'system', ?3, 'genesis', ?4, 1, ?5, ?6)",
+                 manifest_digest, manifest_algorithm)
+             VALUES (0, ?1, NULL, ?2, 'system', ?3, 'genesis', ?4, 1, ?5, ?6, ?7)",
             rusqlite::params![
                 revision.as_bytes().as_slice(),
                 committed_at,
@@ -1469,6 +1470,7 @@ impl Workspace {
                 [0_u8; 32].as_slice(),
                 Vec::<u8>::new(),
                 manifest_digest.as_bytes().as_slice(),
+                manifest_digest.algorithm().symbol(),
             ],
         )?;
         set_meta(&transaction, META_LAYOUT, b"1")?;
@@ -2393,8 +2395,13 @@ impl Workspace {
             generation,
             lengths,
         } = input;
+        let algorithm = digest_32(full_digest)
+            .ok()
+            .and_then(|key| lengths.get(&key).map(|entry| entry.0.algorithm()))
+            .map_or_else(|| blob_algorithm(&self.connection, full_digest), Ok)?;
         let digest = digest_with(
             envelope_digest,
+            algorithm.symbol(),
             "preserves-canonical-binary-v1",
             "full-record",
             revision,
@@ -2410,6 +2417,7 @@ impl Workspace {
         }
         let payload_digest = digest_with(
             payload_digest,
+            algorithm.symbol(),
             "preserves-canonical-binary-v1",
             "payload",
             revision,
@@ -3350,6 +3358,7 @@ fn open_connection(root: &std::path::Path) -> crate::error::Result<rusqlite::Con
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     add_command_fingerprint_column(&connection)?;
+    add_revision_manifest_algorithm_column(&connection)?;
     Ok(connection)
 }
 
@@ -3386,6 +3395,64 @@ fn add_command_fingerprint_column(connection: &rusqlite::Connection) -> crate::e
         connection.execute("ALTER TABLE commands ADD COLUMN fingerprint BLOB", [])?;
     }
     Ok(())
+}
+
+/// Add the manifest algorithm column to a ledger written before BLAKE3 support.
+///
+/// The column is additive and nullable, so the ledger layout version does not
+/// change: rows committed without a recorded algorithm default to SHA-256.
+fn add_revision_manifest_algorithm_column(
+    connection: &rusqlite::Connection,
+) -> crate::error::Result<()> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version != LAYOUT_VERSION {
+        return Ok(());
+    }
+    if !table_exists(connection, "revisions")? {
+        return Ok(());
+    }
+    if !has_column(connection, "revisions", "manifest_algorithm")? {
+        connection.execute(
+            "ALTER TABLE revisions ADD COLUMN manifest_algorithm TEXT",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn has_column(
+    connection: &rusqlite::Connection,
+    table: &str,
+    column_name: &str,
+) -> crate::error::Result<bool> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut statement = connection.prepare(&pragma)?;
+    let mut is_found = false;
+    for column in statement.query_map([], |row| row.get::<_, String>(1))? {
+        if column? == column_name {
+            is_found = true;
+        }
+    }
+    Ok(is_found)
+}
+
+fn blob_algorithm(
+    connection: &rusqlite::Connection,
+    digest: &[u8],
+) -> crate::error::Result<mneme_core::HashAlgorithm> {
+    let algorithm: Option<String> = connection
+        .query_row(
+            "SELECT algorithm FROM blobs WHERE digest = ?1",
+            rusqlite::params![digest],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match algorithm {
+        Some(text) => mneme_core::HashAlgorithm::parse(&text).ok_or_else(|| {
+            crate::error::Failure::UnsupportedLayout(format!("unknown blob algorithm {text}"))
+        }),
+        None => Ok(mneme_core::HashAlgorithm::Sha256),
+    }
 }
 
 /// Mark a ledger written before the retention ledger as retention format 1.
@@ -3633,6 +3700,7 @@ fn revision_id_from_blob(
 
 fn digest_with(
     bytes: &[u8],
+    algorithm: &str,
     profile: &str,
     boundary: &str,
     revision: mneme_core::WorkspaceRevisionId,
@@ -3643,6 +3711,12 @@ fn digest_with(
             revision,
             reason: "blob digest is not 32 bytes".to_owned(),
         })?;
+    let algorithm = mneme_core::HashAlgorithm::parse(algorithm).ok_or_else(|| {
+        crate::error::Failure::Integrity {
+            revision,
+            reason: format!("unknown hash algorithm {algorithm}"),
+        }
+    })?;
     let profile = mneme_core::EncodingProfile::parse(profile).ok_or_else(|| {
         crate::error::Failure::Integrity {
             revision,
@@ -3655,15 +3729,11 @@ fn digest_with(
             reason: format!("unknown value boundary {boundary}"),
         }
     })?;
-    mneme_core::ContentDigest::from_parts(
-        mneme_core::HashAlgorithm::Sha256,
-        profile,
-        boundary,
-        bytes,
-    )
-    .map_err(|message| crate::error::Failure::Integrity {
-        revision,
-        reason: format!("digest metadata is invalid: {message}"),
+    mneme_core::ContentDigest::from_parts(algorithm, profile, boundary, bytes).map_err(|message| {
+        crate::error::Failure::Integrity {
+            revision,
+            reason: format!("digest metadata is invalid: {message}"),
+        }
     })
 }
 
@@ -3674,7 +3744,7 @@ fn revision_row_by_id(
     let row = connection
         .query_row(
             "SELECT sequence, revision_id, parent_revision_id, manifest_digest,
-                    eligibility_generation
+                    manifest_algorithm, eligibility_generation
              FROM revisions WHERE revision_id = ?1",
             rusqlite::params![revision.as_bytes().as_slice()],
             |row| {
@@ -3683,18 +3753,24 @@ fn revision_row_by_id(
                     row.get::<_, Vec<u8>>(1)?,
                     row.get::<_, Option<Vec<u8>>>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)?,
                 ))
             },
         )
         .optional()?;
-    let Some((sequence, revision_bytes, parent, manifest_digest, generation)) = row else {
+    let Some((sequence, revision_bytes, parent, manifest_digest, manifest_algorithm, generation)) =
+        row
+    else {
         return Ok(None);
     };
     let revision = revision_from_blob(&revision_bytes)?;
     let parent = parent.map(|bytes| revision_from_blob(&bytes)).transpose()?;
     let digest = digest_with(
         &manifest_digest,
+        manifest_algorithm
+            .as_deref()
+            .unwrap_or(mneme_core::hashing::ALGORITHM_SHA256),
         "preserves-canonical-binary-v1",
         "payload",
         revision,
@@ -3807,7 +3883,7 @@ fn manifest_blob_set(
     revision: mneme_core::WorkspaceRevisionId,
 ) -> crate::error::Result<std::collections::BTreeSet<mneme_core::ContentDigest>> {
     let mut statement = connection.prepare(
-        "SELECT c.digest, b.profile, b.boundary, c.change
+        "SELECT c.digest, b.algorithm, b.profile, b.boundary, c.change
          FROM revision_blob_changes c
          JOIN blobs b ON b.digest = c.digest
          WHERE c.revision_sequence <= ?1
@@ -3820,12 +3896,13 @@ fn manifest_blob_set(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut blobs = std::collections::BTreeSet::new();
-    for (digest, profile, boundary, change) in rows {
-        let digest = digest_with(&digest, &profile, &boundary, revision)?;
+    for (digest, algorithm, profile, boundary, change) in rows {
+        let digest = digest_with(&digest, &algorithm, &profile, &boundary, revision)?;
         apply_blob_change(&mut blobs, digest, &change, revision)?;
     }
     Ok(blobs)
@@ -3873,7 +3950,7 @@ fn reconstructed_manifest(
         records,
         blobs: manifest_blob_set(connection, row.sequence, row.revision)?,
     };
-    if manifest.digest() != row.manifest_digest {
+    if manifest.digest_with(row.manifest_digest.algorithm()) != row.manifest_digest {
         return Err(crate::error::Failure::Integrity {
             revision: row.revision,
             reason: "reconstructed manifest does not match the committed manifest digest"

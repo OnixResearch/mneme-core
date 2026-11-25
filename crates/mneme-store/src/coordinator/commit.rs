@@ -470,7 +470,9 @@ impl super::Workspace {
             .iter()
             .map(|record| (record.record_id, record.clone()))
             .collect();
+        let mut new_keys = std::collections::BTreeSet::new();
         for record in new_records {
+            new_keys.insert((record.record_id, record.revision_id));
             snapshot_records.insert(record.record_id, record.clone());
         }
         super::validation::validate_snapshot_bindings(&snapshot_records)?;
@@ -482,10 +484,22 @@ impl super::Workspace {
                 kind: record.kind,
             })
             .collect();
+        let prior_blobs =
+            super::manifest_blob_set(&self.connection, prior.sequence, prior.revision)?;
         let mut required_blobs = std::collections::BTreeSet::new();
         let mut digest_scratch = mneme_core::hashing::FullRecordDigestScratch::new();
         for record in snapshot_records.values() {
-            required_blobs.insert(digest_scratch.digest(&record.to_value()));
+            let value = record.to_value();
+            let b3 = digest_scratch.digest(&value);
+            let full_digest = if !new_keys.contains(&(record.record_id, record.revision_id))
+                && !prior_blobs.contains(&b3)
+            {
+                let sha = digest_scratch.digest_with(&value, mneme_core::HashAlgorithm::Sha256);
+                if prior_blobs.contains(&sha) { sha } else { b3 }
+            } else {
+                b3
+            };
+            required_blobs.insert(full_digest);
             if let Some(digest) = super::validation::retained_source_digest(record) {
                 required_blobs.insert(digest);
             }
@@ -698,8 +712,8 @@ impl super::Workspace {
         transaction.execute(
             "INSERT INTO revisions (sequence, revision_id, parent_revision_id, committed_at_ns,
                  actor, scope, command_id, request_digest, eligibility_generation, manifest,
-                 manifest_digest)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 manifest_digest, manifest_algorithm)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 super::db_i64(prepared.next_sequence, "sequence")?,
                 prepared.revision_id.as_bytes().as_slice(),
@@ -712,6 +726,7 @@ impl super::Workspace {
                 super::db_i64(prepared.next_generation, "generation")?,
                 Vec::<u8>::new(),
                 prepared.manifest_digest.as_bytes().as_slice(),
+                prepared.manifest_digest.algorithm().symbol(),
             ],
         )?;
         Ok(())
