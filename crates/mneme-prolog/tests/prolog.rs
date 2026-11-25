@@ -1413,3 +1413,186 @@ fn premises_and_assumption_bookkeeping_stay_consistent() {
             .is_ok()
     );
 }
+
+#[test]
+fn federated_prolog_query_joins_across_two_vaults_with_real_engine() {
+    let temp_a = tempfile::tempdir().expect("temp a");
+    let temp_b = tempfile::tempdir().expect("temp b");
+    let cfg = || {
+        mneme_store::WorkspaceConfig::new(
+            Box::new(mneme_store::SystemClock),
+            Box::new(mneme_store::NoFaults),
+        )
+    };
+    let mut ws_a = mneme_store::Workspace::create(temp_a.path(), cfg()).expect("ws a");
+    let mut ws_b = mneme_store::Workspace::create(temp_b.path(), cfg()).expect("ws b");
+
+    let commit_typed = |ws: &mut mneme_store::Workspace, id: u8, kind: &str, label: &str| {
+        let base = ws.current_revision().expect("base");
+        let payload = mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("entity-type"),
+                mneme_core::Value::symbol(kind),
+            ),
+            (
+                mneme_core::Symbol::from("label"),
+                mneme_core::Value::string(label),
+            ),
+            (
+                mneme_core::Symbol::from("properties"),
+                mneme_core::Value::dictionary([]),
+            ),
+        ]);
+        ws.commit(mneme_store::CommitCommand {
+            base,
+            actor: "test".to_owned(),
+            scope: scope(),
+            idempotency_key: format!("entity-{id}"),
+            records: vec![mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Entity,
+                record_id: subject(id),
+                revision_id: mneme_core::RevisionId::from_bytes([id.wrapping_add(1); 16]),
+                predecessor: None,
+                scope: scope(),
+                payload,
+            }],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit");
+    };
+
+    commit_typed(&mut ws_a, 0x11, "principle", "shared-concept");
+    commit_typed(&mut ws_b, 0x22, "paper", "shared-concept");
+    let rev_a = ws_a.current_revision().expect("rev a");
+    let rev_b = ws_b.current_revision().expect("rev b");
+    let gen_a = ws_a.eligibility_generation().expect("gen a");
+    let gen_b = ws_b.eligibility_generation().expect("gen b");
+
+    let ro_b = mneme_store::Workspace::open_read_only(temp_b.path(), cfg()).expect("ro b");
+    let view_a = mneme_memory::Engine::new(&mut ws_a, mneme_memory::Access::Operator)
+        .view_at(Some(gen_a))
+        .expect("view a");
+    let snap_b = ro_b.snapshot_at(rev_b, Some(gen_b)).expect("snap b");
+    let ctx_b = mneme_memory::view_context(&ro_b, &snap_b).expect("ctx b");
+    let view_b = mneme_memory::View::with_retention(
+        snap_b,
+        ro_b.root(),
+        ctx_b.history,
+        ctx_b.revision_sequences,
+        ro_b.active_suppressions().expect("suppressions b"),
+    )
+    .with_access(mneme_memory::Access::Operator);
+
+    let federated = mneme_prolog::snapshot::build_federated_input_image(
+        mneme_prolog::snapshot::FederatedVaultInput {
+            alias: "primary",
+            root: ws_a.root(),
+            view: &view_a,
+            requested_revision: rev_a,
+            served_revision: rev_a,
+            eligibility_generation: gen_a,
+        },
+        &[mneme_prolog::snapshot::FederatedVaultInput {
+            alias: "bookmarks",
+            root: ro_b.root(),
+            view: &view_b,
+            requested_revision: rev_b,
+            served_revision: rev_b,
+            eligibility_generation: gen_b,
+        }],
+        &scope(),
+        Vec::new(),
+    )
+    .expect("federated image");
+
+    let mut md = metadata();
+    md.allowed_predicates.insert("bridge".to_owned());
+    md.allowed_predicates.insert("vault_entity".to_owned());
+    let req = mneme_prolog::Request {
+        actor: "agent".to_owned(),
+        scope: scope(),
+        revision: rev_a,
+        eligibility_generation: gen_a,
+        image_digest: federated.image.context.image_digest.clone(),
+        mode: mneme_prolog::QueryMode::Enumerate,
+        goal: atom(
+            "bridge",
+            vec![
+                mneme_prolog::Term::Variable("Paper".to_owned()),
+                mneme_prolog::Term::Variable("Principle".to_owned()),
+                mneme_prolog::Term::Variable("Label".to_owned()),
+            ],
+        ),
+        variables: vec![
+            mneme_prolog::QueryVariable {
+                name: "Paper".to_owned(),
+                role: mneme_prolog::VariableRole::Output,
+            },
+            mneme_prolog::QueryVariable {
+                name: "Principle".to_owned(),
+                role: mneme_prolog::VariableRole::Output,
+            },
+            mneme_prolog::QueryVariable {
+                name: "Label".to_owned(),
+                role: mneme_prolog::VariableRole::Output,
+            },
+        ],
+        rules: vec![mneme_prolog::Rule {
+            id: "r-bridge".to_owned(),
+            version: "1".to_owned(),
+            head: atom(
+                "bridge",
+                vec![
+                    mneme_prolog::Term::Variable("Paper".to_owned()),
+                    mneme_prolog::Term::Variable("Principle".to_owned()),
+                    mneme_prolog::Term::Variable("Label".to_owned()),
+                ],
+            ),
+            body: vec![
+                mneme_prolog::Literal::Positive(atom(
+                    "vault_entity",
+                    vec![
+                        mneme_prolog::Term::String("bookmarks".to_owned()),
+                        mneme_prolog::Term::Variable("Paper".to_owned()),
+                        mneme_prolog::Term::String("paper".to_owned()),
+                        mneme_prolog::Term::Variable("Label".to_owned()),
+                    ],
+                )),
+                mneme_prolog::Literal::Positive(atom(
+                    "vault_entity",
+                    vec![
+                        mneme_prolog::Term::String("primary".to_owned()),
+                        mneme_prolog::Term::Variable("Principle".to_owned()),
+                        mneme_prolog::Term::String("principle".to_owned()),
+                        mneme_prolog::Term::Variable("Label".to_owned()),
+                    ],
+                )),
+            ],
+        }],
+        assumptions: Vec::new(),
+        features: std::collections::BTreeSet::from([mneme_prolog::Feature::PositiveQuery]),
+        limits: mneme_prolog::RequestLimits {
+            max_time_ms: 1_000,
+            max_solutions: 8,
+            max_output_bytes: 16_384,
+        },
+    };
+    let control = mneme_prolog::process::WorkerControl::new();
+    let result =
+        mneme_prolog::run_federated_query(&engine(), &md, &federated, &req, &control, limits())
+            .expect("federated prolog query");
+    assert_eq!(
+        result.outcome.status,
+        mneme_prolog::ExecutionStatus::Complete
+    );
+    assert_eq!(result.vaults.len(), 2);
+    let sols = solutions(&result.outcome);
+    assert_eq!(sols.len(), 1);
+    assert_eq!(bound_string(&sols[0], "Paper"), subject(0x22).to_hex());
+    assert_eq!(bound_string(&sols[0], "Principle"), subject(0x11).to_hex());
+    assert_eq!(bound_string(&sols[0], "Label"), "shared-concept");
+}

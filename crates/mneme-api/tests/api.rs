@@ -2725,3 +2725,83 @@ fn original_location_follows_every_processing_step_back_to_the_run_input() {
         "the region's place on the run's original input"
     );
 }
+
+#[test]
+fn federated_reason_query_joins_vaults_and_reports_served_revisions() {
+    let harness_a = Harness::new();
+    let harness_b = Harness::new();
+    let seeded_a = harness_a.seed(&cedar(), &CEDAR_IDS, CEDAR_TEXT, "SQLite");
+    let accepted_a = harness_a.cedar_service().execute(&accept_command(
+        harness_a.revision(),
+        "accept-a",
+        seeded_a.assertion,
+    ));
+    assert!(accepted_a.ok, "{:?}", accepted_a.value);
+
+    let seeded_b = harness_b.seed(&cedar(), &BIRCH_IDS, BIRCH_TEXT, "PostgreSQL");
+    let accepted_b = harness_b.cedar_service().execute(&accept_command(
+        harness_b.revision(),
+        "accept-b",
+        seeded_b.assertion,
+    ));
+    assert!(accepted_b.ok, "{:?}", accepted_b.value);
+
+    let mut md = reasoning_metadata();
+    md.allowed_predicates.insert("vault_assertion".to_owned());
+    let service = harness_a
+        .service(&harness_a.cedar_session)
+        .with_prolog(reasoning_engine(), md)
+        .expect("configured Prolog API");
+
+    let response = service.execute_federated_reason(&mneme_api::FederatedReasonRequest {
+        request_id: "fed-reason-1".to_owned(),
+        scope: cedar(),
+        primary_revision: None,
+        attachments: vec![mneme_datalog::VaultAttachment {
+            alias: "secondary".to_owned(),
+            root: harness_b.root.clone(),
+            revision: None,
+        }],
+        query: mneme_api::ReasonQuery {
+            mode: mneme_prolog::QueryMode::Enumerate,
+            goal: reason_atom(
+                "vault_assertion",
+                vec![
+                    mneme_prolog::Term::String("secondary".to_owned()),
+                    mneme_prolog::Term::String("storage-engine".to_owned()),
+                    mneme_prolog::Term::Variable("S".to_owned()),
+                    mneme_prolog::Term::Variable("V".to_owned()),
+                ],
+            ),
+            variables: vec![
+                mneme_prolog::QueryVariable {
+                    name: "S".to_owned(),
+                    role: mneme_prolog::VariableRole::Output,
+                },
+                mneme_prolog::QueryVariable {
+                    name: "V".to_owned(),
+                    role: mneme_prolog::VariableRole::Output,
+                },
+            ],
+            rules: Vec::new(),
+            assumptions: Vec::new(),
+            features: std::collections::BTreeSet::from([mneme_prolog::Feature::PositiveQuery]),
+            limits: mneme_prolog::RequestLimits {
+                max_time_ms: 2_000,
+                max_solutions: 8,
+                max_output_bytes: 16_384,
+            },
+        },
+    });
+    assert!(response.ok, "{:?}", response.value);
+    let vaults = sequence(data(&response), "vaults");
+    assert_eq!(vaults.len(), 2);
+    assert_eq!(text(field(&vaults[0], "alias")), "primary");
+    assert_eq!(text(field(&vaults[1], "alias")), "secondary");
+    let result_fields = record_fields(field(data(&response), "result"), "prolog-enumerate-result");
+    let solutions = result_fields[0].as_sequence().expect("solutions");
+    assert_eq!(solutions.len(), 1);
+    let solution_fields = record_fields(&solutions[0], "prolog-solution");
+    let bindings = solution_fields[0].as_sequence().expect("bindings");
+    assert_eq!(reasoning_binding_string(bindings, "V"), "PostgreSQL");
+}

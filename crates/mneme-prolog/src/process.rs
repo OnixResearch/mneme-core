@@ -91,6 +91,45 @@ pub(crate) const WORKER_ENV_PATH: &str = "";
 /// `engine` must be the pinned Scryer-compatible executable. The worker refuses
 /// an image whose context or digest does not match the request, so a mismatched
 /// image never reaches the engine.
+enum ImageSource<'a> {
+    Single(&'a crate::snapshot::InputImage),
+    Federated(&'a crate::snapshot::FederatedImage),
+}
+
+impl ImageSource<'_> {
+    fn base(&self) -> &crate::snapshot::InputImage {
+        match self {
+            ImageSource::Single(image) => image,
+            ImageSource::Federated(federated) => &federated.image,
+        }
+    }
+
+    fn verify_for_request(&self, request: &crate::Request) -> Result<(), crate::CapabilityError> {
+        match self {
+            ImageSource::Single(image) => image.verify_for_request(request),
+            ImageSource::Federated(federated) => federated.verify_for_request(request),
+        }
+        .map_err(|_| {
+            crate::CapabilityError::InvalidRequest(
+                "input image does not match the request".to_owned(),
+            )
+        })
+    }
+
+    fn protocol_identity(
+        &self,
+        request: &crate::Request,
+        metadata: &crate::CapabilityMetadata,
+    ) -> Result<crate::ProtocolIdentity, crate::CapabilityError> {
+        match self {
+            ImageSource::Single(image) => request.protocol_identity(metadata, image),
+            ImageSource::Federated(federated) => {
+                request.federated_protocol_identity(metadata, federated)
+            }
+        }
+    }
+}
+
 #[allow(unknown_lints, ambient_clock)] // worker wall-clock budget is the process shell
 pub fn run_worker(
     engine: &std::path::Path,
@@ -99,12 +138,42 @@ pub fn run_worker(
     request: &crate::Request,
     runtime: &WorkerRuntime<'_>,
 ) -> Result<WorkerOutcome, crate::CapabilityError> {
+    run_worker_source(
+        engine,
+        metadata,
+        ImageSource::Single(image),
+        request,
+        runtime,
+    )
+}
+
+#[allow(unknown_lints, ambient_clock)] // worker wall-clock budget is the process shell
+pub(crate) fn run_federated_worker(
+    engine: &std::path::Path,
+    metadata: &crate::CapabilityMetadata,
+    federated: &crate::snapshot::FederatedImage,
+    request: &crate::Request,
+    runtime: &WorkerRuntime<'_>,
+) -> Result<WorkerOutcome, crate::CapabilityError> {
+    run_worker_source(
+        engine,
+        metadata,
+        ImageSource::Federated(federated),
+        request,
+        runtime,
+    )
+}
+
+#[allow(unknown_lints, ambient_clock)] // worker wall-clock budget is the process shell
+fn run_worker_source(
+    engine: &std::path::Path,
+    metadata: &crate::CapabilityMetadata,
+    source: ImageSource<'_>,
+    request: &crate::Request,
+    runtime: &WorkerRuntime<'_>,
+) -> Result<WorkerOutcome, crate::CapabilityError> {
     metadata.ensure_request(request)?;
-    if image.verify_for_request(request).is_err() {
-        return Err(crate::CapabilityError::InvalidRequest(
-            "input image does not match the request".to_owned(),
-        ));
-    }
+    source.verify_for_request(request)?;
     if runtime.limits.max_wall_ms == 0 || runtime.limits.max_output_bytes == 0 {
         return Err(crate::CapabilityError::LimitExceeded(
             "worker limits must be positive".to_owned(),
@@ -127,7 +196,7 @@ pub fn run_worker(
     let mut worker = start_worker(
         engine,
         metadata,
-        image,
+        source,
         request,
         runtime.limits.max_output_bytes,
     )?;
@@ -202,13 +271,13 @@ struct Observation {
 fn start_worker(
     engine: &std::path::Path,
     metadata: &crate::CapabilityMetadata,
-    image: &crate::snapshot::InputImage,
+    source: ImageSource<'_>,
     request: &crate::Request,
     max_output_bytes: usize,
 ) -> Result<RunningWorker, crate::CapabilityError> {
     let workspace = WorkerDir::new()?;
     let script = workspace.path().join("request.pl");
-    write_program(&script, image, request, metadata)?;
+    write_program(&script, source, request, metadata)?;
     let mut command = std::process::Command::new(engine);
     command
         .arg("-f")
@@ -540,13 +609,13 @@ fn termination_reason(worker: &mut RunningWorker, reason: &str) -> String {
 /// Write the one script that can reach the engine.
 fn write_program(
     path: &std::path::Path,
-    image: &crate::snapshot::InputImage,
+    source: ImageSource<'_>,
     request: &crate::Request,
     metadata: &crate::CapabilityMetadata,
 ) -> Result<(), crate::CapabilityError> {
-    let identity = request.protocol_identity(metadata, image)?;
+    let identity = source.protocol_identity(request, metadata)?;
     let mut text = String::from(EMITTER_SOURCE);
-    for clause in program_clauses(image, request, metadata)? {
+    for clause in program_clauses(source, request, metadata)? {
         text.push_str(&clause);
         text.push('\n');
     }
@@ -569,10 +638,11 @@ fn write_program(
 
 /// Every data clause, grouped so one predicate's clauses stay contiguous.
 fn program_clauses(
-    image: &crate::snapshot::InputImage,
+    source: ImageSource<'_>,
     request: &crate::Request,
     metadata: &crate::CapabilityMetadata,
 ) -> Result<Vec<String>, crate::CapabilityError> {
+    let image = source.base();
     let budget = metadata.limits.max_output_bytes;
     let mut groups: std::collections::BTreeMap<(String, usize), Vec<String>> =
         std::collections::BTreeMap::new();
@@ -605,6 +675,9 @@ fn program_clauses(
             push_clause(&mut groups, &atom, metadata.terms, budget)?;
         }
     }
+    if let ImageSource::Federated(federated) = source {
+        push_federated_clauses(federated, request, metadata, &mut groups)?;
+    }
     for assumption in &request.assumptions {
         push_clause(&mut groups, &assumption.atom, metadata.terms, budget)?;
     }
@@ -615,7 +688,20 @@ fn program_clauses(
             .or_default()
             .push(clause);
     }
-    for (name, arity) in referenced_predicates(request) {
+    let mut referenced = referenced_predicates(request);
+    if matches!(source, ImageSource::Federated(_)) {
+        for (name, arity) in [
+            ("vault_entity", 4),
+            ("vault_relation", 4),
+            ("vault_assertion", 4),
+            ("vault_assertion", 5),
+            ("vault_denial", 5),
+            ("vault_hypothesis", 5),
+        ] {
+            referenced.push((name.to_owned(), arity));
+        }
+    }
+    for (name, arity) in referenced {
         if groups.contains_key(&(name.clone(), arity)) {
             continue;
         }
@@ -627,6 +713,165 @@ fn program_clauses(
             .push(empty_relation_clause(&name, arity));
     }
     Ok(groups.into_values().flatten().collect())
+}
+
+fn push_federated_clauses(
+    federated: &crate::snapshot::FederatedImage,
+    request: &crate::Request,
+    metadata: &crate::CapabilityMetadata,
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) -> Result<(), crate::CapabilityError> {
+    let budget = metadata.limits.max_output_bytes;
+    for fact in &federated.facts {
+        match fact {
+            crate::snapshot::VaultFact::Entity {
+                vault,
+                record_id,
+                entity_type,
+                label,
+            } => {
+                let atom = crate::Atom {
+                    predicate: "vault_entity".to_owned(),
+                    terms: vec![
+                        crate::Term::String(vault.clone()),
+                        crate::Term::String(record_id.to_hex()),
+                        crate::Term::String(entity_type.clone()),
+                        crate::Term::String(label.clone()),
+                    ],
+                };
+                push_clause(groups, &atom, metadata.terms, budget)?;
+            }
+            crate::snapshot::VaultFact::Relation {
+                vault,
+                relation_type,
+                from,
+                to,
+            } => {
+                let atom = crate::Atom {
+                    predicate: "vault_relation".to_owned(),
+                    terms: vec![
+                        crate::Term::String(vault.clone()),
+                        crate::Term::String(relation_type.clone()),
+                        crate::Term::String(from.to_hex()),
+                        crate::Term::String(to.to_hex()),
+                    ],
+                };
+                push_clause(groups, &atom, metadata.terms, budget)?;
+            }
+            crate::snapshot::VaultFact::Assertion {
+                vault,
+                subject,
+                predicate,
+                value,
+                record_id,
+            } => {
+                let value_term =
+                    crate::snapshot::value_term(value).map_err(|_| unrepresentable_image())?;
+                let short_atom = crate::Atom {
+                    predicate: "vault_assertion".to_owned(),
+                    terms: vec![
+                        crate::Term::String(vault.clone()),
+                        crate::Term::String(predicate.clone()),
+                        crate::Term::String(subject.to_hex()),
+                        value_term.clone(),
+                    ],
+                };
+                push_clause(groups, &short_atom, metadata.terms, budget)?;
+                let full_atom = crate::Atom {
+                    predicate: "vault_assertion".to_owned(),
+                    terms: vec![
+                        crate::Term::String(vault.clone()),
+                        crate::Term::String(subject.to_hex()),
+                        crate::Term::String(predicate.clone()),
+                        value_term,
+                        crate::Term::String(record_id.to_hex()),
+                    ],
+                };
+                push_clause(groups, &full_atom, metadata.terms, budget)?;
+            }
+            crate::snapshot::VaultFact::Denial {
+                vault,
+                subject,
+                predicate,
+                value,
+                record_id,
+            } => {
+                let value_term =
+                    crate::snapshot::value_term(value).map_err(|_| unrepresentable_image())?;
+                let atom = crate::Atom {
+                    predicate: "vault_denial".to_owned(),
+                    terms: vec![
+                        crate::Term::String(vault.clone()),
+                        crate::Term::String(subject.to_hex()),
+                        crate::Term::String(predicate.clone()),
+                        value_term,
+                        crate::Term::String(record_id.to_hex()),
+                    ],
+                };
+                push_clause(groups, &atom, metadata.terms, budget)?;
+            }
+            crate::snapshot::VaultFact::Hypothesis {
+                vault,
+                subject,
+                predicate,
+                value,
+                record_id,
+            } => {
+                let value_term =
+                    crate::snapshot::value_term(value).map_err(|_| unrepresentable_image())?;
+                let atom = crate::Atom {
+                    predicate: "vault_hypothesis".to_owned(),
+                    terms: vec![
+                        crate::Term::String(vault.clone()),
+                        crate::Term::String(subject.to_hex()),
+                        crate::Term::String(predicate.clone()),
+                        value_term,
+                        crate::Term::String(record_id.to_hex()),
+                    ],
+                };
+                push_clause(groups, &atom, metadata.terms, budget)?;
+            }
+        }
+    }
+    let referenced = referenced_predicates(request);
+    for (pred, arity, clause) in [
+        (
+            "entity",
+            3usize,
+            "entity(Id, Type, Label) :- vault_entity(_, Id, Type, Label).",
+        ),
+        (
+            "relation",
+            3usize,
+            "relation(Type, From, To) :- vault_relation(_, Type, From, To).",
+        ),
+        (
+            "assertion",
+            4usize,
+            "assertion(Subj, Pred, Val, Id) :- vault_assertion(_, Subj, Pred, Val, Id).",
+        ),
+        (
+            "denial",
+            4usize,
+            "denial(Subj, Pred, Val, Id) :- vault_denial(_, Subj, Pred, Val, Id).",
+        ),
+        (
+            "hypothesis",
+            4usize,
+            "hypothesis(Subj, Pred, Val, Id) :- vault_hypothesis(_, Subj, Pred, Val, Id).",
+        ),
+    ] {
+        if referenced
+            .iter()
+            .any(|(name, a)| name == pred && *a == arity)
+        {
+            groups
+                .entry((pred.to_owned(), arity))
+                .or_default()
+                .push(clause.to_owned());
+        }
+    }
+    Ok(())
 }
 
 fn unrepresentable_image() -> crate::CapabilityError {

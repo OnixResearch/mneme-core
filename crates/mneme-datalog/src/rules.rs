@@ -88,6 +88,48 @@ pub(crate) fn canonical_schema(predicate: &str) -> Option<&'static [CanonicalKin
             CanonicalKind::RevisionId,
             CanonicalKind::String,
         ]),
+        "vault_entity" => Some(&[
+            CanonicalKind::String,
+            CanonicalKind::RecordId,
+            CanonicalKind::Symbol,
+            CanonicalKind::String,
+        ]),
+        "vault_relation" => Some(&[
+            CanonicalKind::String,
+            CanonicalKind::Symbol,
+            CanonicalKind::RecordId,
+            CanonicalKind::RecordId,
+        ]),
+        "vault_assertion" | "vault_denial" | "vault_hypothesis" => Some(&[
+            CanonicalKind::String,
+            CanonicalKind::RecordId,
+            CanonicalKind::Symbol,
+            CanonicalKind::Any,
+            CanonicalKind::RecordId,
+        ]),
+        "vault_evidence" => Some(&[
+            CanonicalKind::String,
+            CanonicalKind::RecordId,
+            CanonicalKind::RecordId,
+        ]),
+        "vault_document" => Some(&[
+            CanonicalKind::String,
+            CanonicalKind::RecordId,
+            CanonicalKind::Any,
+            CanonicalKind::String,
+        ]),
+        "vault_derivation" => Some(&[
+            CanonicalKind::String,
+            CanonicalKind::RecordId,
+            CanonicalKind::RecordId,
+        ]),
+        "vault_source" => Some(&[
+            CanonicalKind::String,
+            CanonicalKind::RecordId,
+            CanonicalKind::RevisionId,
+            CanonicalKind::String,
+        ]),
+        "vault_record" => Some(&[CanonicalKind::String, CanonicalKind::RecordId]),
         _ => None,
     }
 }
@@ -694,7 +736,21 @@ pub(crate) struct BuildIdContext<'a> {
     pub(crate) at: Option<mneme_core::Timestamp>,
 }
 
+pub(crate) struct VaultBuildId<'a> {
+    pub(crate) alias: &'a str,
+    pub(crate) root: &'a std::path::Path,
+    pub(crate) revision: mneme_core::WorkspaceRevisionId,
+    pub(crate) generation: u64,
+}
+
 pub(crate) fn build_id(context: BuildIdContext<'_>) -> String {
+    federated_build_id(context, &[])
+}
+
+pub(crate) fn federated_build_id(
+    context: BuildIdContext<'_>,
+    vaults: &[VaultBuildId<'_>],
+) -> String {
     let BuildIdContext {
         revision,
         scope,
@@ -713,28 +769,43 @@ pub(crate) fn build_id(context: BuildIdContext<'_>) -> String {
         Some(at) => at.to_value(),
         None => mneme_core::Value::symbol("none"),
     };
-    let value = mneme_core::Value::record_named(
-        "datalog-build-context",
-        vec![
-            revision.to_value(),
-            scope.to_value(),
-            mneme_core::Value::integer(generation as i64),
-            mneme_core::Value::string(crate::PROFILE_VERSION.to_owned()),
-            bundle_value(bundle),
-            mneme_core::Value::record_named(
-                "datalog-limits",
-                vec![
-                    mneme_core::Value::integer(limits.max_work),
-                    mneme_core::Value::string(limits.max_time_ms.to_string()),
-                    mneme_core::Value::integer(limits.max_result_rows),
-                    mneme_core::Value::integer(limits.max_supports_per_fact),
-                    mneme_core::Value::integer(limits.max_recursion_depth),
-                ],
-            ),
-            mneme_core::Value::set(incomplete),
-            effective_time,
-        ],
-    );
+    let mut fields = vec![
+        revision.to_value(),
+        scope.to_value(),
+        mneme_core::Value::integer(generation as i64),
+        mneme_core::Value::string(crate::PROFILE_VERSION.to_owned()),
+        bundle_value(bundle),
+        mneme_core::Value::record_named(
+            "datalog-limits",
+            vec![
+                mneme_core::Value::integer(limits.max_work),
+                mneme_core::Value::string(limits.max_time_ms.to_string()),
+                mneme_core::Value::integer(limits.max_result_rows),
+                mneme_core::Value::integer(limits.max_supports_per_fact),
+                mneme_core::Value::integer(limits.max_recursion_depth),
+            ],
+        ),
+        mneme_core::Value::set(incomplete),
+        effective_time,
+    ];
+    if !vaults.is_empty() {
+        let vault_values = vaults
+            .iter()
+            .map(|vault| {
+                mneme_core::Value::record_named(
+                    "vault-build-id",
+                    vec![
+                        mneme_core::Value::string(vault.alias.to_owned()),
+                        mneme_core::Value::string(vault.root.display().to_string()),
+                        vault.revision.to_value(),
+                        mneme_core::Value::integer(vault.generation as i64),
+                    ],
+                )
+            })
+            .collect();
+        fields.push(mneme_core::Value::sequence(vault_values));
+    }
+    let value = mneme_core::Value::record_named("datalog-build-context", fields);
     mneme_core::ContentDigest::of_payload(&value).to_hex()
 }
 

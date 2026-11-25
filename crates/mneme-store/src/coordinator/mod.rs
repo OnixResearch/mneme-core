@@ -1227,10 +1227,11 @@ pub struct Workspace {
     /// The process-wide cache this handle shares with other handles, when it was
     /// opened with one.
     ///
-    /// Such a handle leaves its own cache unused, so a private handle keeps
-    /// exactly the behaviour and bounds it had, and a shared handle serves only
-    /// facts the shared cache verified under the current erasure generation.
+    /// A handle opened with a shared cache never touches its own, so the two
+    /// caches stay disjoint.
     shared: Option<SharedRecordCache>,
+    /// Whether this handle was opened in strictly read-only mode.
+    is_read_only: bool,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -1569,7 +1570,104 @@ impl Workspace {
             requirements: std::cell::RefCell::new(None),
             records: std::cell::RefCell::new(RecordCache::default()),
             shared,
+            is_read_only: false,
         })
+    }
+
+    /// Open an existing workspace strictly read-only without running migrations
+    /// or creating or modifying any files or locks.
+    ///
+    /// Refuses unreadable ledgers, unmigrated layouts, and exclusively locked
+    /// workspaces without blocking normal concurrent WAL writers.
+    pub fn open_read_only(
+        root: impl AsRef<std::path::Path>,
+        config: WorkspaceConfig,
+    ) -> crate::error::Result<Self> {
+        Self::open_read_only_handle(root.as_ref(), config, None)
+    }
+
+    /// Open an existing workspace strictly read-only, sharing verified facts
+    /// through `cache`.
+    pub fn open_read_only_with_cache(
+        root: impl AsRef<std::path::Path>,
+        config: WorkspaceConfig,
+        cache: SharedRecordCache,
+    ) -> crate::error::Result<Self> {
+        Self::open_read_only_handle(root.as_ref(), config, Some(cache))
+    }
+
+    fn open_read_only_handle(
+        requested: &std::path::Path,
+        config: WorkspaceConfig,
+        shared: Option<SharedRecordCache>,
+    ) -> crate::error::Result<Self> {
+        let root = std::fs::canonicalize(requested)
+            .map_err(|error| crate::error::Failure::io(requested, error))?;
+        let ledger = root.join(LEDGER_FILE);
+        if !ledger.is_file() {
+            return Err(crate::error::Failure::UnsupportedLayout(format!(
+                "{} has no {LEDGER_FILE}",
+                root.display()
+            )));
+        }
+        probe_read_only_lock(&root)?;
+        let connection = open_read_only_connection(&root)?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version != LAYOUT_VERSION {
+            return Err(crate::error::Failure::UnsupportedLayout(format!(
+                "ledger layout version {version} is not supported"
+            )));
+        }
+        if meta_blob(&connection, META_CURRENT_REVISION)?.len() != 16 {
+            return Err(crate::error::Failure::UnsupportedLayout(
+                "ledger has no readable current revision".to_owned(),
+            ));
+        }
+        let membership_format = meta_blob_optional(&connection, META_MEMBERSHIP_FORMAT)?;
+        if membership_format.as_deref() != Some(b"2".as_slice()) {
+            return Err(crate::error::Failure::UnsupportedLayout(
+                "ledger membership format requires migration before read-only open".to_owned(),
+            ));
+        }
+        if !table_exists(&connection, "retention_suppressions")? {
+            return Err(crate::error::Failure::UnsupportedLayout(
+                "ledger retention tables are missing; cannot migrate in read-only mode".to_owned(),
+            ));
+        }
+        let is_restore_required = meta_blob_optional(&connection, META_RESTORE_PENDING)?
+            .is_some_and(|value| !value.is_empty());
+        let shared = match shared {
+            Some(cache) => {
+                cache.bind(read_genesis(&connection)?)?;
+                Some(cache)
+            }
+            None => None,
+        };
+        Ok(Workspace {
+            root,
+            connection,
+            clock: config.clock,
+            faults: config.faults,
+            is_restore_required,
+            requirements: std::cell::RefCell::new(None),
+            records: std::cell::RefCell::new(RecordCache::default()),
+            shared,
+            is_read_only: true,
+        })
+    }
+
+    /// Whether this handle was opened strictly read-only.
+    pub fn is_read_only(&self) -> bool {
+        self.is_read_only
+    }
+
+    fn require_writable(&self) -> crate::error::Result<()> {
+        if self.is_read_only {
+            return Err(crate::error::Failure::InvalidCommand(
+                "workspace handle is read-only".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     /// Open a workspace produced by an application-supported restore. Until
@@ -1602,6 +1700,7 @@ impl Workspace {
     /// Shared locks do not exclude each other, so commits stay concurrent; they
     /// exclude every exclusive sweep.
     pub fn shared_commit_lock(&self) -> crate::error::Result<CommitGuard> {
+        self.require_writable()?;
         let file = open_lock_file(&self.root)?;
         let path = self.root.join(LOCK_FILE);
         file.lock_shared()
@@ -1635,6 +1734,7 @@ impl Workspace {
     /// lock before it waits for the SQLite writer lock, so the reverse order
     /// would deadlock.
     pub fn exclusive_sweep_lock(&self) -> crate::error::Result<SweepGuard> {
+        self.require_writable()?;
         let file = open_lock_file(&self.root)?;
         let path = self.root.join(LOCK_FILE);
         file.lock()
@@ -3350,6 +3450,69 @@ fn open_connection(root: &std::path::Path) -> crate::error::Result<rusqlite::Con
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     add_command_fingerprint_column(&connection)?;
     Ok(connection)
+}
+
+fn probe_read_only_lock(root: &std::path::Path) -> crate::error::Result<()> {
+    let lock_path = root.join(LOCK_FILE);
+    if !lock_path.exists() {
+        return Ok(());
+    }
+    let lock_file = std::fs::File::open(&lock_path)
+        .map_err(|error| crate::error::Failure::io(&lock_path, error))?;
+    match lock_file.try_lock_shared() {
+        Ok(()) => Ok(()),
+        Err(std::fs::TryLockError::WouldBlock) => Err(crate::error::Failure::io(
+            &lock_path,
+            std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "workspace is exclusively locked",
+            ),
+        )),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(crate::error::Failure::io(&lock_path, error))
+        }
+    }
+}
+
+fn open_read_only_connection(root: &std::path::Path) -> crate::error::Result<rusqlite::Connection> {
+    let ledger = root.join(LEDGER_FILE);
+    let _probe =
+        std::fs::File::open(&ledger).map_err(|error| crate::error::Failure::io(&ledger, error))?;
+    let wal = root.join(format!("{LEDGER_FILE}-wal"));
+    let shm = root.join(format!("{LEDGER_FILE}-shm"));
+    let has_live_wal = wal.metadata().is_ok_and(|meta| meta.len() > 0) || shm.exists();
+    let connection = if has_live_wal {
+        let flags =
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        rusqlite::Connection::open_with_flags(&ledger, flags)?
+    } else {
+        let uri = immutable_sqlite_uri(&ledger)?;
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        rusqlite::Connection::open_with_flags(uri, flags)?
+    };
+    connection.pragma_update(None, "query_only", true)?;
+    connection.busy_timeout(std::time::Duration::from_millis(50))?;
+    Ok(connection)
+}
+
+fn immutable_sqlite_uri(path: &std::path::Path) -> crate::error::Result<String> {
+    let text = path.to_str().ok_or_else(|| {
+        crate::error::Failure::InvalidCommand("ledger path is not valid UTF-8".to_owned())
+    })?;
+    let mut encoded = String::with_capacity(text.len() + 20);
+    encoded.push_str("file:");
+    for byte in text.as_bytes() {
+        match byte {
+            b'%' => encoded.push_str("%25"),
+            b'?' => encoded.push_str("%3F"),
+            b'#' => encoded.push_str("%23"),
+            other => encoded.push(char::from(*other)),
+        }
+    }
+    encoded.push_str("?immutable=1");
+    Ok(encoded)
 }
 
 /// Add the adapter fingerprint column to a ledger written before it existed.

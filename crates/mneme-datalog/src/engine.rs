@@ -35,6 +35,7 @@ struct FactContents {
     sources: std::collections::BTreeSet<crate::SourceKey>,
     canonical: Option<mneme_core::RecordId>,
     canonical_roots: std::collections::BTreeSet<mneme_core::RecordId>,
+    vaults: std::collections::BTreeSet<String>,
     temporal: Vec<String>,
 }
 
@@ -43,6 +44,7 @@ struct PremiseSet {
     premises: Vec<crate::Premise>,
     sources: std::collections::BTreeSet<crate::SourceKey>,
     roots: std::collections::BTreeSet<mneme_core::RecordId>,
+    vaults: std::collections::BTreeSet<String>,
     temporal: std::collections::BTreeSet<String>,
 }
 
@@ -50,6 +52,7 @@ struct PremiseSet {
 struct PremiseSupport {
     sources: std::collections::BTreeSet<crate::SourceKey>,
     roots: std::collections::BTreeSet<mneme_core::RecordId>,
+    vaults: std::collections::BTreeSet<String>,
     temporal: std::collections::BTreeSet<String>,
 }
 
@@ -138,7 +141,7 @@ struct Evaluation<'a> {
     coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
     base_coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
     coverage_reasons: std::collections::BTreeMap<String, String>,
-    current_sources: &'a AvailabilityMap,
+    participating_vaults: std::collections::BTreeSet<String>,
     at: Option<mneme_core::Timestamp>,
     derivation_eligibility: std::collections::BTreeMap<
         mneme_core::RecordId,
@@ -187,6 +190,14 @@ pub(crate) struct BuildEnvironment<'a> {
     pub current_sources: &'a AvailabilityMap,
 }
 
+/// One participating vault's pinned view and byte availability.
+pub(crate) struct VaultSource<'a> {
+    pub alias: &'a str,
+    pub served_revision: mneme_core::WorkspaceRevisionId,
+    pub view: &'a mneme_memory::View,
+    pub current_sources: &'a AvailabilityMap,
+}
+
 pub(crate) fn build(
     view: &mneme_memory::View,
     request: &crate::BuildRequest,
@@ -194,6 +205,26 @@ pub(crate) fn build(
     program: &crate::RuleProgram,
     environment: BuildEnvironment<'_>,
 ) -> BuildFacts {
+    let sources = [VaultSource {
+        alias: crate::PRIMARY_VAULT_ALIAS,
+        served_revision: context.served_revision,
+        view,
+        current_sources: environment.current_sources,
+    }];
+    build_federated(&sources, request, context, program, environment.start)
+}
+
+pub(crate) fn build_federated(
+    sources: &[VaultSource<'_>],
+    request: &crate::BuildRequest,
+    context: &crate::BuildContext,
+    program: &crate::RuleProgram,
+    start: std::time::Instant,
+) -> BuildFacts {
+    let participating_vaults = sources
+        .iter()
+        .map(|source| source.alias.to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
     let mut evaluation = Evaluation {
         bundle: &request.bundle,
         context,
@@ -201,7 +232,7 @@ pub(crate) fn build(
             limits: &request.limits,
             work: 0,
             stored_rows: 0,
-            start: environment.start,
+            start,
             cancellation: request.cancellation.clone(),
             status: crate::ExecutionStatus::Complete,
             limit_reached: false,
@@ -211,12 +242,12 @@ pub(crate) fn build(
         coverage: std::collections::BTreeMap::new(),
         base_coverage: std::collections::BTreeMap::new(),
         coverage_reasons: std::collections::BTreeMap::new(),
-        current_sources: environment.current_sources,
+        participating_vaults,
         at: request.at,
         derivation_eligibility: std::collections::BTreeMap::new(),
     };
     initialize_base_coverage(&mut evaluation, &request.incomplete_extents);
-    load_base_facts(view, &mut evaluation);
+    load_base_facts(sources, &mut evaluation);
     evaluate_rules(&mut evaluation, &program.strata);
     let coverage = final_coverage(&evaluation);
     let status = if evaluation.budget.status != crate::ExecutionStatus::Complete {
@@ -267,7 +298,7 @@ fn initialize_base_coverage(
             .insert((*predicate).to_owned(), status);
     }
     for predicate in evaluation.bundle.base_predicates.keys() {
-        let status = if !canonical_extents().contains(&predicate.as_str()) {
+        let status = if super::rules::canonical_schema(predicate).is_none() {
             crate::CoverageStatus::Unknown
         } else if incomplete_extents.contains(predicate) {
             crate::CoverageStatus::Incomplete
@@ -293,44 +324,88 @@ fn stop_loading(evaluation: &mut Evaluation<'_>) {
     }
 }
 
-fn load_base_facts(view: &mneme_memory::View, evaluation: &mut Evaluation<'_>) {
-    for record in &view.snapshot().records {
-        // The snapshot is already filtered to records this build may see; the
-        // scope test is kept as a second fence so a wider snapshot can never
-        // ground an in-scope fact.
-        if record.scope != evaluation.context.scope {
-            continue;
-        }
-        if !evaluation.budget.charge(1) {
-            stop_loading(evaluation);
-            return;
-        }
-        load_record_facts(view, record, evaluation);
-        if !evaluation.budget.is_active() {
-            stop_loading(evaluation);
-            return;
+struct LoadVaultContext<'a> {
+    alias: &'a str,
+    served_revision: mneme_core::WorkspaceRevisionId,
+    view: &'a mneme_memory::View,
+    current_sources: &'a AvailabilityMap,
+    all_views: &'a [&'a mneme_memory::View],
+}
+
+impl LoadVaultContext<'_> {
+    fn has_record(&self, id: mneme_core::RecordId) -> bool {
+        self.all_views.iter().any(|view| view.record(id).is_ok())
+    }
+
+    fn wants_vault_predicate(&self, evaluation: &Evaluation<'_>, predicate: &str) -> bool {
+        evaluation.bundle.base_predicates.contains_key(predicate)
+    }
+}
+
+fn load_base_facts(sources: &[VaultSource<'_>], evaluation: &mut Evaluation<'_>) {
+    let all_views = sources.iter().map(|source| source.view).collect::<Vec<_>>();
+    for source in sources {
+        evaluation.derivation_eligibility.clear();
+        let vault_ctx = LoadVaultContext {
+            alias: source.alias,
+            served_revision: source.served_revision,
+            view: source.view,
+            current_sources: source.current_sources,
+            all_views: &all_views,
+        };
+        for record in &source.view.snapshot().records {
+            // The snapshot is already filtered to records this build may see; the
+            // scope test is kept as a second fence so a wider snapshot can never
+            // ground an in-scope fact.
+            if record.scope != evaluation.context.scope {
+                continue;
+            }
+            if !evaluation.budget.charge(1) {
+                stop_loading(evaluation);
+                return;
+            }
+            load_record_facts(&vault_ctx, record, evaluation);
+            if !evaluation.budget.is_active() {
+                stop_loading(evaluation);
+                return;
+            }
         }
     }
 }
 
 fn load_record_facts(
-    view: &mneme_memory::View,
+    ctx: &LoadVaultContext<'_>,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
+    if ctx.wants_vault_predicate(evaluation, "vault_record") {
+        add_canonical_fact(
+            evaluation,
+            "vault_record",
+            vec![
+                mneme_core::Value::string(ctx.alias.to_owned()),
+                record.record_id.to_value(),
+            ],
+            plain_row(ctx, record),
+        );
+    }
     match record.kind {
-        mneme_core::RecordKind::Entity => load_entity_fact(record, evaluation),
-        mneme_core::RecordKind::Relation => load_relation_fact(view, record, evaluation),
-        mneme_core::RecordKind::Assertion => load_assertion_fact(view, record, evaluation),
-        mneme_core::RecordKind::Evidence => load_evidence_fact(view, record, evaluation),
-        mneme_core::RecordKind::Document => load_document_fact(view, record, evaluation),
-        mneme_core::RecordKind::SourceRevision => load_source_fact(record, evaluation),
-        mneme_core::RecordKind::Derivation => load_derivation_facts(view, record, evaluation),
+        mneme_core::RecordKind::Entity => load_entity_fact(ctx, record, evaluation),
+        mneme_core::RecordKind::Relation => load_relation_fact(ctx, record, evaluation),
+        mneme_core::RecordKind::Assertion => load_assertion_fact(ctx, record, evaluation),
+        mneme_core::RecordKind::Evidence => load_evidence_fact(ctx, record, evaluation),
+        mneme_core::RecordKind::Document => load_document_fact(ctx, record, evaluation),
+        mneme_core::RecordKind::SourceRevision => load_source_fact(ctx, record, evaluation),
+        mneme_core::RecordKind::Derivation => load_derivation_facts(ctx, record, evaluation),
         _ => {}
     }
 }
 
-fn load_entity_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Evaluation<'_>) {
+fn load_entity_fact(
+    ctx: &LoadVaultContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    evaluation: &mut Evaluation<'_>,
+) {
     let entity_type = record
         .payload
         .get("entity-type")
@@ -343,16 +418,23 @@ fn load_entity_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Evalua
         .and_then(mneme_core::Value::as_string)
         .map(|label| mneme_core::Value::string(label.to_owned()))
         .unwrap_or_else(|| mneme_core::Value::string(""));
-    add_canonical_fact(
-        evaluation,
-        "entity",
-        vec![record.record_id.to_value(), entity_type, label],
-        plain_row(record),
-    );
+    let terms = vec![record.record_id.to_value(), entity_type, label];
+    add_canonical_fact(evaluation, "entity", terms.clone(), plain_row(ctx, record));
+    if ctx.wants_vault_predicate(evaluation, "vault_entity") {
+        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
+        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
+        vault_terms.extend(terms);
+        add_canonical_fact(
+            evaluation,
+            "vault_entity",
+            vault_terms,
+            plain_row(ctx, record),
+        );
+    }
 }
 
 fn load_relation_fact(
-    view: &mneme_memory::View,
+    ctx: &LoadVaultContext<'_>,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
@@ -366,17 +448,29 @@ fn load_relation_fact(
         reference_target(record, "from"),
         reference_target(record, "to"),
     ) {
-        // An endpoint outside the view is a foreign record identity, so the
-        // edge cannot ground an in-scope fact.
-        if view.record(from).is_err() || view.record(to).is_err() {
+        // An endpoint outside every participating view is a foreign record
+        // identity, so the edge cannot ground an in-scope fact.
+        if !ctx.has_record(from) || !ctx.has_record(to) {
             return;
         }
+        let terms = vec![relation_type, from.to_value(), to.to_value()];
         add_canonical_fact(
             evaluation,
             "relation",
-            vec![relation_type, from.to_value(), to.to_value()],
-            plain_row(record),
+            terms.clone(),
+            plain_row(ctx, record),
         );
+        if ctx.wants_vault_predicate(evaluation, "vault_relation") {
+            let mut vault_terms = Vec::with_capacity(terms.len() + 1);
+            vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
+            vault_terms.extend(terms);
+            add_canonical_fact(
+                evaluation,
+                "vault_relation",
+                vault_terms,
+                plain_row(ctx, record),
+            );
+        }
     }
 }
 
@@ -403,7 +497,7 @@ fn stance_extent(
 }
 
 fn load_assertion_fact(
-    view: &mneme_memory::View,
+    ctx: &LoadVaultContext<'_>,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
@@ -411,8 +505,8 @@ fn load_assertion_fact(
         return;
     };
     if assertion.lifecycle != mneme_core::Lifecycle::Accepted
-        || !view.accepted_decision(&assertion).unwrap_or(false)
-        || !view.assertion_has_current_basis(&assertion)
+        || !ctx.view.accepted_decision(&assertion).unwrap_or(false)
+        || !ctx.view.assertion_has_current_basis(&assertion)
     {
         return;
     }
@@ -421,7 +515,7 @@ fn load_assertion_fact(
     };
     // An out-of-scope subject would leak a record identity the caller cannot
     // see, so the whole assertion stays out of the projection.
-    if view.record(assertion.subject).is_err() {
+    if !ctx.has_record(assertion.subject) {
         return;
     }
     if let Some(at) = evaluation.at
@@ -429,27 +523,55 @@ fn load_assertion_fact(
     {
         return;
     }
-    let (sources, availability) = assertion_sources(view, &assertion, evaluation.current_sources);
+    let (sources, availability) = assertion_sources(ctx.view, &assertion, ctx.current_sources);
+    let terms = vec![
+        assertion.subject.to_value(),
+        mneme_core::Value::symbol(assertion.predicate.clone()),
+        assertion.value.clone(),
+        assertion.record_id().to_value(),
+    ];
+    let temporal = temporal_parameters(assertion.valid_time);
     add_canonical_fact(
         evaluation,
         extent,
-        vec![
-            assertion.subject.to_value(),
-            mneme_core::Value::symbol(assertion.predicate.clone()),
-            assertion.value.clone(),
-            assertion.record_id().to_value(),
-        ],
+        terms.clone(),
         CanonicalRow {
             record,
-            sources,
-            availability,
-            temporal: temporal_parameters(assertion.valid_time),
+            sources: sources.clone(),
+            availability: availability.clone(),
+            temporal: temporal.clone(),
+            vault_alias: ctx.alias,
+            vault_revision: ctx.served_revision,
         },
     );
+    let vault_extent = match extent {
+        "assertion" => "vault_assertion",
+        "denial" => "vault_denial",
+        "hypothesis" => "vault_hypothesis",
+        _ => return,
+    };
+    if ctx.wants_vault_predicate(evaluation, vault_extent) {
+        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
+        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
+        vault_terms.extend(terms);
+        add_canonical_fact(
+            evaluation,
+            vault_extent,
+            vault_terms,
+            CanonicalRow {
+                record,
+                sources,
+                availability,
+                temporal,
+                vault_alias: ctx.alias,
+                vault_revision: ctx.served_revision,
+            },
+        );
+    }
 }
 
 fn load_evidence_fact(
-    view: &mneme_memory::View,
+    ctx: &LoadVaultContext<'_>,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
@@ -461,9 +583,9 @@ fn load_evidence_fact(
     if evidence.relation != mneme_memory::SupportRelation::Supports {
         return;
     }
-    if is_suppressed(view, record)
-        || view.record(evidence.assertion).is_err()
-        || view.record(evidence.source).is_err()
+    if is_suppressed(ctx.view, record)
+        || !ctx.has_record(evidence.assertion)
+        || !ctx.has_record(evidence.source)
     {
         return;
     }
@@ -476,35 +598,57 @@ fn load_evidence_fact(
     // Availability is a property of the source record, not of the revision the
     // evidence pins: at head the record already carries the pruned/erased
     // outcome, and a build of an earlier revision gets it from the overlay.
-    let current = view
+    let current = ctx
+        .view
         .record(evidence.source)
         .ok()
         .and_then(|record| mneme_memory::SourceView::parse(record.clone()).ok())
         .filter(|source| source.availability != mneme_memory::SourceAvailability::Retained)
         .map(|source| source.availability.name().to_owned());
-    let availability = source_availability(evaluation.current_sources, evidence.source, current);
+    let availability = source_availability(ctx.current_sources, evidence.source, current);
+    let terms = vec![evidence.assertion.to_value(), evidence.source.to_value()];
     add_canonical_fact(
         evaluation,
         "evidence",
-        vec![evidence.assertion.to_value(), evidence.source.to_value()],
+        terms.clone(),
         CanonicalRow {
             record,
-            sources,
-            availability,
+            sources: sources.clone(),
+            availability: availability.clone(),
             temporal: Vec::new(),
+            vault_alias: ctx.alias,
+            vault_revision: ctx.served_revision,
         },
     );
+    if ctx.wants_vault_predicate(evaluation, "vault_evidence") {
+        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
+        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
+        vault_terms.extend(terms);
+        add_canonical_fact(
+            evaluation,
+            "vault_evidence",
+            vault_terms,
+            CanonicalRow {
+                record,
+                sources,
+                availability,
+                temporal: Vec::new(),
+                vault_alias: ctx.alias,
+                vault_revision: ctx.served_revision,
+            },
+        );
+    }
 }
 
 fn load_document_fact(
-    view: &mneme_memory::View,
+    ctx: &LoadVaultContext<'_>,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
     let entity = match reference_target(record, "entity") {
-        // An entity outside the view is a foreign record identity, so the
-        // document cannot contribute an in-scope fact.
-        Some(entity) if view.record(entity).is_err() => return,
+        // An entity outside every participating view is a foreign record identity,
+        // so the document cannot contribute an in-scope fact.
+        Some(entity) if !ctx.has_record(entity) => return,
         Some(entity) => entity.to_value(),
         None => mneme_core::Value::symbol("unbound"),
     };
@@ -514,15 +658,31 @@ fn load_document_fact(
         .and_then(mneme_core::Value::as_string)
         .map(|path| mneme_core::Value::string(path.to_owned()))
         .unwrap_or_else(|| mneme_core::Value::symbol("unpathed"));
+    let terms = vec![record.record_id.to_value(), entity, path];
     add_canonical_fact(
         evaluation,
         "document",
-        vec![record.record_id.to_value(), entity, path],
-        plain_row(record),
+        terms.clone(),
+        plain_row(ctx, record),
     );
+    if ctx.wants_vault_predicate(evaluation, "vault_document") {
+        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
+        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
+        vault_terms.extend(terms);
+        add_canonical_fact(
+            evaluation,
+            "vault_document",
+            vault_terms,
+            plain_row(ctx, record),
+        );
+    }
 }
 
-fn load_source_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Evaluation<'_>) {
+fn load_source_fact(
+    ctx: &LoadVaultContext<'_>,
+    record: &mneme_core::RecordEnvelope,
+    evaluation: &mut Evaluation<'_>,
+) {
     let Ok(source) = mneme_memory::SourceView::parse(record.clone()) else {
         return;
     };
@@ -530,7 +690,7 @@ fn load_source_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Evalua
     // workspace overlay, never from reading the bytes: a pruned source is not
     // corrupt, and reading every blob just to label it is unbounded work.
     let availability = source_availability(
-        evaluation.current_sources,
+        ctx.current_sources,
         record.record_id,
         Some(source.availability.name().to_owned()),
     );
@@ -539,43 +699,81 @@ fn load_source_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Evalua
         Some(name) => name,
         None => "retained".to_owned(),
     };
+    let terms = vec![
+        record.record_id.to_value(),
+        record.revision_id.to_value(),
+        mneme_core::Value::string(availability_name),
+    ];
     add_canonical_fact(
         evaluation,
         "source",
-        vec![
-            record.record_id.to_value(),
-            record.revision_id.to_value(),
-            mneme_core::Value::string(availability_name),
-        ],
+        terms.clone(),
         CanonicalRow {
             record,
-            sources,
+            sources: sources.clone(),
             availability: None,
             temporal: Vec::new(),
+            vault_alias: ctx.alias,
+            vault_revision: ctx.served_revision,
         },
     );
+    if ctx.wants_vault_predicate(evaluation, "vault_source") {
+        let mut vault_terms = Vec::with_capacity(terms.len() + 1);
+        vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
+        vault_terms.extend(terms);
+        add_canonical_fact(
+            evaluation,
+            "vault_source",
+            vault_terms,
+            CanonicalRow {
+                record,
+                sources,
+                availability: None,
+                temporal: Vec::new(),
+                vault_alias: ctx.alias,
+                vault_revision: ctx.served_revision,
+            },
+        );
+    }
 }
 
 fn load_derivation_facts(
-    view: &mneme_memory::View,
+    ctx: &LoadVaultContext<'_>,
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
     let Ok(derivation) = mneme_memory::DerivationView::parse(record.clone()) else {
         return;
     };
-    if is_suppressed(view, record)
-        || !is_derivation_eligible(evaluation, view, derivation.conclusion, record.record_id)
+    if is_suppressed(ctx.view, record)
+        || !is_derivation_eligible(
+            evaluation,
+            ctx.view,
+            derivation.conclusion,
+            record.record_id,
+        )
     {
         return;
     }
     for premise in &derivation.premises {
+        let terms = vec![derivation.conclusion.to_value(), premise.to_value()];
         add_canonical_fact(
             evaluation,
             "derivation",
-            vec![derivation.conclusion.to_value(), premise.to_value()],
-            plain_row(record),
+            terms.clone(),
+            plain_row(ctx, record),
         );
+        if ctx.wants_vault_predicate(evaluation, "vault_derivation") {
+            let mut vault_terms = Vec::with_capacity(terms.len() + 1);
+            vault_terms.push(mneme_core::Value::string(ctx.alias.to_owned()));
+            vault_terms.extend(terms);
+            add_canonical_fact(
+                evaluation,
+                "vault_derivation",
+                vault_terms,
+                plain_row(ctx, record),
+            );
+        }
     }
 }
 
@@ -706,15 +904,22 @@ struct CanonicalRow<'a> {
     sources: std::collections::BTreeSet<crate::SourceKey>,
     availability: Option<String>,
     temporal: Vec<String>,
+    vault_alias: &'a str,
+    vault_revision: mneme_core::WorkspaceRevisionId,
 }
 
 /// A canonical row with no supporting sources and no temporal parameters.
-fn plain_row(record: &mneme_core::RecordEnvelope) -> CanonicalRow<'_> {
+fn plain_row<'a>(
+    ctx: &LoadVaultContext<'a>,
+    record: &'a mneme_core::RecordEnvelope,
+) -> CanonicalRow<'a> {
     CanonicalRow {
         record,
         sources: std::collections::BTreeSet::new(),
         availability: None,
         temporal: Vec::new(),
+        vault_alias: ctx.alias,
+        vault_revision: ctx.served_revision,
     }
 }
 
@@ -729,13 +934,18 @@ fn add_canonical_fact(
         sources,
         availability,
         temporal,
+        vault_alias,
+        vault_revision,
     } = row;
+    let vaults = std::collections::BTreeSet::from([vault_alias.to_owned()]);
     let support = canonical_support(
         record,
         evaluation.context,
         sources.clone(),
         availability,
         temporal.clone(),
+        vault_alias,
+        vault_revision,
     );
     add_fact(
         evaluation,
@@ -746,6 +956,7 @@ fn add_canonical_fact(
             sources,
             canonical: Some(record.record_id),
             canonical_roots: std::collections::BTreeSet::from([record.record_id]),
+            vaults,
             temporal,
         },
     );
@@ -757,7 +968,10 @@ fn canonical_support(
     sources: std::collections::BTreeSet<crate::SourceKey>,
     availability: Option<String>,
     temporal: Vec<String>,
+    vault_alias: &str,
+    vault_revision: mneme_core::WorkspaceRevisionId,
 ) -> crate::Derivation {
+    let vaults = std::collections::BTreeSet::from([vault_alias.to_owned()]);
     crate::Derivation {
         rule_id: "canonical".to_owned(),
         rule_version: "1".to_owned(),
@@ -768,12 +982,15 @@ fn canonical_support(
             canonical_roots: std::collections::BTreeSet::from([record.record_id]),
             sources: sources.clone(),
             source_availability: availability,
+            vault: Some(vault_alias.to_owned()),
+            vaults: vaults.clone(),
             absent: false,
             coverage: None,
         }],
         sources,
+        vaults,
         temporal_parameters: temporal,
-        revision: context.served_revision,
+        revision: vault_revision,
         scope: context.scope.clone(),
         truncated: false,
     }
@@ -802,6 +1019,7 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
         sources,
         canonical,
         canonical_roots,
+        vaults,
         temporal,
     } = contents;
     let store = evaluation.facts.entry(predicate.to_owned()).or_default();
@@ -814,6 +1032,7 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
             merge_premises(existing, &support);
             data.sources.extend(sources);
             data.canonical_roots.extend(canonical_roots);
+            data.vaults.extend(vaults);
             merge_strings(&mut data.temporal, temporal);
             return false;
         }
@@ -826,6 +1045,7 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
         data.supports.push(support);
         data.sources.extend(sources);
         data.canonical_roots.extend(canonical_roots);
+        data.vaults.extend(vaults);
         merge_strings(&mut data.temporal, temporal);
         return false;
     }
@@ -837,6 +1057,7 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
             truncated: false,
             canonical,
             canonical_roots,
+            vaults,
             temporal,
         },
     );
@@ -846,6 +1067,7 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
 /// Whether two supports record the same proof.
 fn same_proof(left: &crate::Derivation, right: &crate::Derivation) -> bool {
     left.rule_id == right.rule_id
+        && left.vaults == right.vaults
         && left.premises.len() == right.premises.len()
         && left
             .premises
@@ -855,6 +1077,8 @@ fn same_proof(left: &crate::Derivation, right: &crate::Derivation) -> bool {
                 left.predicate == right.predicate
                     && left.terms == right.terms
                     && left.canonical == right.canonical
+                    && left.vault == right.vault
+                    && left.vaults == right.vaults
                     && left.absent == right.absent
             })
 }
@@ -865,6 +1089,8 @@ fn merge_premises(existing: &mut crate::Derivation, new: &crate::Derivation) {
             candidate.predicate == premise.predicate
                 && candidate.terms == premise.terms
                 && candidate.canonical == premise.canonical
+                && candidate.vault == premise.vault
+                && candidate.vaults == premise.vaults
                 && candidate.absent == premise.absent
         }) {
             Some(candidate) => {
@@ -872,6 +1098,7 @@ fn merge_premises(existing: &mut crate::Derivation, new: &crate::Derivation) {
                 candidate
                     .canonical_roots
                     .extend(premise.canonical_roots.iter().copied());
+                candidate.vaults.extend(premise.vaults.iter().cloned());
                 if candidate.source_availability.is_none() {
                     candidate.source_availability = premise.source_availability.clone();
                 }
@@ -880,6 +1107,7 @@ fn merge_premises(existing: &mut crate::Derivation, new: &crate::Derivation) {
         }
     }
     existing.sources.extend(new.sources.iter().copied());
+    existing.vaults.extend(new.vaults.iter().cloned());
     merge_strings(
         &mut existing.temporal_parameters,
         new.temporal_parameters.clone(),
@@ -1539,6 +1767,7 @@ fn instantiated_support(
         premises,
         sources,
         roots,
+        vaults,
         temporal,
     } = premises_for_binding(rule, evaluation, binding);
     let temporal = temporal.into_iter().collect::<Vec<_>>();
@@ -1547,6 +1776,7 @@ fn instantiated_support(
         rule_version: evaluation.context.rule_bundle_version.clone(),
         premises,
         sources: sources.clone(),
+        vaults: vaults.clone(),
         temporal_parameters: temporal.clone(),
         revision: evaluation.context.served_revision,
         scope: evaluation.context.scope.clone(),
@@ -1558,6 +1788,7 @@ fn instantiated_support(
         sources,
         canonical: None,
         canonical_roots: roots,
+        vaults,
         temporal,
     }
 }
@@ -1572,6 +1803,7 @@ fn aggregate_support(
     let mut seen = std::collections::BTreeSet::new();
     let mut sources = std::collections::BTreeSet::new();
     let mut roots = std::collections::BTreeSet::new();
+    let mut vaults = std::collections::BTreeSet::new();
     let mut temporal = std::collections::BTreeSet::new();
     for index in &row.binding_indices {
         let Some(binding) = bindings.get(*index) else {
@@ -1580,6 +1812,7 @@ fn aggregate_support(
         let premise_set = premises_for_binding(rule, evaluation, binding);
         sources.extend(premise_set.sources);
         roots.extend(premise_set.roots);
+        vaults.extend(premise_set.vaults);
         temporal.extend(premise_set.temporal);
         // De-duplicate by identity instead of a linear scan over every premise
         // already collected: a group can hold thousands of bindings.
@@ -1587,6 +1820,8 @@ fn aggregate_support(
             let key = (
                 premise.predicate.clone(),
                 premise.terms.clone(),
+                premise.vault.clone(),
+                premise.vaults.clone(),
                 premise.absent,
             );
             if seen.insert(key) {
@@ -1602,6 +1837,7 @@ fn aggregate_support(
         rule_version: evaluation.context.rule_bundle_version.clone(),
         premises,
         sources: sources.clone(),
+        vaults: vaults.clone(),
         temporal_parameters: temporal.clone(),
         revision: evaluation.context.served_revision,
         scope: evaluation.context.scope.clone(),
@@ -1613,6 +1849,7 @@ fn aggregate_support(
         sources,
         canonical: None,
         canonical_roots: roots,
+        vaults,
         temporal,
     }
 }
@@ -1632,6 +1869,7 @@ fn premises_for_binding(
     let mut support = PremiseSupport {
         sources: std::collections::BTreeSet::new(),
         roots: std::collections::BTreeSet::new(),
+        vaults: std::collections::BTreeSet::new(),
         temporal: std::collections::BTreeSet::new(),
     };
     for literal in &rule.body {
@@ -1642,7 +1880,7 @@ fn premises_for_binding(
                 }
             }
             crate::Literal::Negative(atom) => {
-                if let Some(premise) = negative_premise(evaluation, atom, binding) {
+                if let Some(premise) = negative_premise(evaluation, atom, binding, &mut support) {
                     premises.push(premise);
                 }
             }
@@ -1653,6 +1891,7 @@ fn premises_for_binding(
         premises,
         sources: support.sources,
         roots: support.roots,
+        vaults: support.vaults,
         temporal: support.temporal,
     }
 }
@@ -1681,7 +1920,13 @@ fn positive_premise(
         .and_then(|store| store.rows.get(&terms))?;
     support.sources.extend(data.sources.iter().copied());
     support.roots.extend(data.canonical_roots.iter().copied());
+    support.vaults.extend(data.vaults.iter().cloned());
     support.temporal.extend(data.temporal.iter().cloned());
+    let vault = if data.vaults.len() == 1 {
+        data.vaults.iter().next().cloned()
+    } else {
+        None
+    };
     Some(crate::Premise {
         predicate: atom.predicate.clone(),
         terms,
@@ -1694,6 +1939,8 @@ fn positive_premise(
                 .iter()
                 .find_map(|premise| premise.source_availability.clone())
         }),
+        vault,
+        vaults: data.vaults.clone(),
         absent: false,
         coverage: None,
     })
@@ -1704,6 +1951,7 @@ fn negative_premise(
     evaluation: &mut Evaluation<'_>,
     atom: &crate::Atom,
     binding: &Binding,
+    support: &mut PremiseSupport,
 ) -> Option<crate::Premise> {
     if !evaluation.budget.charge(1) {
         return None;
@@ -1713,6 +1961,22 @@ fn negative_premise(
         .iter()
         .filter_map(|term| term_value(term, binding))
         .collect::<Vec<_>>();
+    let (vault, vaults) = if atom.predicate.starts_with("vault_")
+        && let Some(alias) = terms.first().and_then(mneme_core::Value::as_string)
+    {
+        (
+            Some(alias.to_owned()),
+            std::collections::BTreeSet::from([alias.to_owned()]),
+        )
+    } else {
+        let single = if evaluation.participating_vaults.len() == 1 {
+            evaluation.participating_vaults.iter().next().cloned()
+        } else {
+            None
+        };
+        (single, evaluation.participating_vaults.clone())
+    };
+    support.vaults.extend(vaults.iter().cloned());
     Some(crate::Premise {
         predicate: atom.predicate.clone(),
         terms,
@@ -1720,6 +1984,8 @@ fn negative_premise(
         canonical_roots: std::collections::BTreeSet::new(),
         sources: std::collections::BTreeSet::new(),
         source_availability: None,
+        vault,
+        vaults,
         absent: true,
         coverage: Some(
             evaluation

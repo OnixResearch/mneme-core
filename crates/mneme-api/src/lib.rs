@@ -17,4 +17,6 @@ pub use command::{
     parse_bundle,
 };
 pub use error::{ApiError, ApiErrorCode, CallResult, FORGOTTEN_TARGET, UNAVAILABLE_RECORD};
-pub use service::{ApiService, CallResponse, error_document, error_document_for};
+pub use service::{
+    ApiService, CallResponse, FederatedReasonRequest, error_document, error_document_for,
+};
