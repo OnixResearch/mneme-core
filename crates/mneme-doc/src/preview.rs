@@ -985,53 +985,39 @@ impl<'a> Renderer<'a> {
     }
 
     fn render_datalog_query(&mut self, pending: PendingQuery, body: Option<&str>) {
+        debug_assert!(self.query_count <= crate::datalog::MAX_INLINE_QUERIES_PER_PREVIEW);
+        let site = QuerySite {
+            line: pending.line,
+            span: pending.span,
+        };
         if self.query_count >= crate::datalog::MAX_INLINE_QUERIES_PER_PREVIEW {
             let msg = format!(
                 "inline Datalog query limit ({}) reached for this preview",
                 crate::datalog::MAX_INLINE_QUERIES_PER_PREVIEW
             );
-            self.record_query_error(
-                pending.line,
-                pending.span,
-                "unknown",
-                "datalog-query-limit",
-                &msg,
-            );
+            self.record_query_error(site, "unknown", "datalog-query-limit", &msg);
             return;
         }
         self.query_count = self.query_count.saturating_add(1);
         let Ok(spec) = pending.parsed else {
             let msg = pending.parsed.err().unwrap_or_default();
-            self.record_query_error(
-                pending.line,
-                pending.span,
-                "unknown",
-                "datalog-query-invalid",
-                &msg,
-            );
+            self.record_query_error(site, "unknown", "datalog-query-invalid", &msg);
             return;
         };
         let prepared = match crate::datalog::prepare(&spec, body) {
             Ok(prepared) => prepared,
             Err(msg) => {
                 let rel = spec.relation.as_deref().unwrap_or("unknown");
-                self.record_query_error(
-                    pending.line,
-                    pending.span,
-                    rel,
-                    "datalog-query-invalid",
-                    &msg,
-                );
+                self.record_query_error(site, rel, "datalog-query-invalid", &msg);
                 return;
             }
         };
-        self.execute_and_render_query(pending.line, pending.span, &prepared);
+        self.execute_and_render_query(site, &prepared);
     }
 
     fn record_query_error(
         &mut self,
-        line: usize,
-        span: Option<mneme_core::SourceSpan>,
+        site: QuerySite,
         relation: &str,
         code: &'static str,
         message: &str,
@@ -1039,34 +1025,27 @@ impl<'a> Renderer<'a> {
         self.note(crate::asciidoc::Diagnostic::warning(
             code,
             message.to_owned(),
-            line,
+            site.line,
             1,
-            span,
+            site.span,
         ));
         self.render_query_diagnostic_html(relation, code, message);
     }
 
     fn execute_and_render_query(
         &mut self,
-        line: usize,
-        span: Option<mneme_core::SourceSpan>,
+        site: QuerySite,
         prepared: &crate::datalog::PreparedQuery,
     ) {
         let Some(HostKind::Full(host)) = self.host.as_mut() else {
             let msg = "Datalog query evaluation is unavailable in this preview context";
-            self.record_query_error(
-                line,
-                span,
-                &prepared.relation,
-                "datalog-query-unavailable",
-                msg,
-            );
+            self.record_query_error(site, &prepared.relation, "datalog-query-unavailable", msg);
             return;
         };
         let outcome = host.run_query(prepared);
         if let Some(mut diag) = outcome.diagnostic.clone() {
-            diag.line = line;
-            diag.span = span;
+            diag.line = site.line;
+            diag.span = site.span;
             self.note(diag);
         }
         self.render_query_outcome_html(&outcome);
@@ -1561,6 +1540,12 @@ impl LineDirectives {
     fn is_header_attribute(&self, line_number: usize, content: &str) -> bool {
         line_number <= self.header_lines && crate::asciidoc::is_attribute_entry(content)
     }
+}
+
+#[derive(Clone, Copy)]
+struct QuerySite {
+    line: usize,
+    span: Option<mneme_core::SourceSpan>,
 }
 
 struct PendingQuery {

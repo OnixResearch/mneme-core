@@ -3167,6 +3167,8 @@ fn commit_entity_record(
     entity_type: &str,
     label: &str,
 ) -> mneme_core::RecordId {
+    assert!(!entity_type.is_empty());
+    assert!(!label.is_empty());
     let record_id = mneme_core::RecordId::from_bytes([id_byte; 16]);
     let payload = mneme_core::Payload::new([
         (
@@ -3215,6 +3217,8 @@ fn commit_relation_record(
     from: mneme_core::RecordId,
     to: mneme_core::RecordId,
 ) -> mneme_core::WorkspaceRevisionId {
+    assert!(!relation_type.is_empty());
+    assert_ne!(from, to);
     let record_id = mneme_core::RecordId::from_bytes([id_byte; 16]);
     let ref_val = |id: mneme_core::RecordId| {
         mneme_core::Reference::local(id, mneme_core::RecordKind::Entity).to_value()

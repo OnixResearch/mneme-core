@@ -7,10 +7,10 @@
     "rustc_version": "rustc 1.96.0-nightly (ac7f9ec7d 2026-03-20)",
     "toolchain": "nightly-2026-03-21-x86_64-unknown-linux-gnu",
     "profile_name": "workspace-metadata",
-    "profile_hash": "b3:3fd67a2616779e6ed6b3c51e744e34d94a9ea0a3ce50f85d532eced949838822",
+    "profile_hash": "b3:0e2e26107a7d6b0042aac93f23a2dbfce2abd5c8943c7a997adac3b0a61dad29",
     "config_hash": "b3:b065a7ffe479551539355f2da753fdc11a7e39910ebdaa1a65a02093ce66d2b1"
   },
-  "baseline_hash": "b3:8d5f49dcd21ab79774c3ab2e9804bec26bad45ade2fa0c8e4edc3e2a7f834d2b",
+  "baseline_hash": "b3:babc333117c421e44f8d037f833b184d36d64994aedf18b5bdcbc49c45f514e9",
   "findings": [
     {
       "stable_id": "b3:002cd10692d692b9",
@@ -141,19 +141,6 @@
       "column": 9,
       "message": "same-crate enum `lifecycle::RetentionLocationState` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
-    },
-    {
-      "stable_id": "b3:011046404ddb353a",
-      "semantic_id": "b3:011046404ddb353a",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/preview.rs",
-      "line": 548,
-      "column": 97,
-      "message": "function `render_image` has 0 assertion(s) in 64 lines (need 2+)",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:017685d29f8f2e11",
@@ -306,7 +293,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 399,
+      "line": 431,
       "column": 60,
       "message": "function `stop_at_line` has 0 assertion(s) in 23 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -806,6 +793,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:08b1368c12edaeb8",
+      "semantic_id": "b3:08b1368c12edaeb8",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 142,
+      "column": 86,
+      "message": "function `apply_attribute` has 0 assertion(s) in 58 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:08c059069540a4bd",
       "semantic_id": "b3:08c059069540a4bd",
       "identity_status": "computed",
@@ -878,7 +878,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 984,
+      "line": 1208,
       "column": 46,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -1248,6 +1248,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:0cd7998a54a9f819",
+      "semantic_id": "b3:0cd7998a54a9f819",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 605,
+      "column": 97,
+      "message": "function `render_image` has 0 assertion(s) in 64 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:0cdb8f9e3e273071",
       "semantic_id": "b3:0cdb8f9e3e273071",
       "identity_status": "computed",
@@ -1502,7 +1515,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1750,
+      "line": 1751,
       "column": 34,
       "message": "function `prepare_updates` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -1671,7 +1684,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2677,
+      "line": 2678,
       "column": 43,
       "message": "function `append_binding_record` has 0 assertion(s) in 54 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -1794,6 +1807,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:115cf7e8e1e91924",
+      "semantic_id": "b3:115cf7e8e1e91924",
+      "identity_status": "computed",
+      "lint": "unbounded_collection_growth",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 1060,
+      "column": 21,
+      "message": "collection grows in loop without a prior reservation or explicit local bound",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:117679a3e164ae73",
       "semantic_id": "b3:117679a3e164ae73",
       "identity_status": "computed",
@@ -1846,6 +1872,19 @@
       "crate_name": "mneme_recall"
     },
     {
+      "stable_id": "b3:11e3e3827dd70b55",
+      "semantic_id": "b3:11e3e3827dd70b55",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 910,
+      "column": 13,
+      "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:11f796cf67c146f1",
       "semantic_id": "b3:11f796cf67c146f1",
       "identity_status": "computed",
@@ -1853,7 +1892,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1181,
+      "line": 1405,
       "column": 24,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -1996,7 +2035,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3776,
+      "line": 3802,
       "column": 30,
       "message": "function `index_documents` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -2052,6 +2091,19 @@
       "column": 61,
       "message": "function `update_derived_coverage` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:147168f03f77c537",
+      "semantic_id": "b3:147168f03f77c537",
+      "identity_status": "computed",
+      "lint": "allocation_in_loop",
+      "group": "tigerstyle::performance",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 749,
+      "column": 28,
+      "message": "Vec allocation constructor runs inside a loop",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:147a135b2b2eb6bb",
@@ -2535,6 +2587,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:1976fde4e4b3cf50",
+      "semantic_id": "b3:1976fde4e4b3cf50",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 311,
+      "column": 65,
+      "message": "function `builtin_auto_relations_bundle` is 109 lines (limit: 70)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:19a9bb85f32e95b1",
       "semantic_id": "b3:19a9bb85f32e95b1",
       "identity_status": "computed",
@@ -2548,6 +2613,19 @@
       "crate_name": "mneme_kernel"
     },
     {
+      "stable_id": "b3:19c9762f0773229d",
+      "semantic_id": "b3:19c9762f0773229d",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 312,
+      "column": 51,
+      "message": "non-trait import `Rule` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:19cf7b1f185ea02d",
       "semantic_id": "b3:19cf7b1f185ea02d",
       "identity_status": "computed",
@@ -2555,7 +2633,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2111,
+      "line": 2112,
       "column": 31,
       "message": "function `revision_from_context` has 0 assertion(s) in 62 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -2637,6 +2715,19 @@
       "column": 28,
       "message": "function `correct_transcript` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "recall"
+    },
+    {
+      "stable_id": "b3:1adb9aa95682015f",
+      "semantic_id": "b3:1adb9aa95682015f",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 940,
+      "column": 92,
+      "message": "function `parse_atom` has 0 assertion(s) in 26 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:1aded7f0e7ee9f2d",
@@ -2919,7 +3010,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 707,
+      "line": 764,
       "column": 15,
       "message": "function `image_markup_fits` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -3140,7 +3231,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 712,
+      "line": 769,
       "column": 13,
       "message": "`height_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -3315,6 +3406,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:1f2556fb8f856c11",
+      "semantic_id": "b3:1f2556fb8f856c11",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 720,
+      "column": 82,
+      "message": "function `prepare_inline` has 0 assertion(s) in 88 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:1f888a9c8d8ded37",
       "semantic_id": "b3:1f888a9c8d8ded37",
       "identity_status": "computed",
@@ -3430,6 +3534,19 @@
       "column": 1,
       "message": "3 `usize` parameters are easy to swap by accident",
       "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:2122537db281573c",
+      "semantic_id": "b3:2122537db281573c",
+      "identity_status": "computed",
+      "lint": "catch_all_on_enum",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 781,
+      "column": 17,
+      "message": "catch-all `_` on enum match returns deny value — new variants will be silently handled",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:212e6beb40f6ffda",
@@ -3569,7 +3686,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 979,
+      "line": 980,
       "column": 49,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_doc"
@@ -3673,7 +3790,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1263,
+      "line": 1264,
       "column": 46,
       "message": "function `resolve_target` has 0 assertion(s) in 63 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -3751,7 +3868,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 632,
+      "line": 689,
       "column": 82,
       "message": "function `append_image` has 0 assertion(s) in 31 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -3764,7 +3881,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 926,
+      "line": 927,
       "column": 13,
       "message": "foreign enum `mneme_core::Reference` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_doc"
@@ -3809,6 +3926,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:250fef2c9f2a204a",
+      "semantic_id": "b3:250fef2c9f2a204a",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 3322,
+      "column": 30,
+      "message": "function `render_preview_artifact` has 0 assertion(s) in 87 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:25167d3b59d70643",
       "semantic_id": "b3:25167d3b59d70643",
       "identity_status": "computed",
@@ -3833,6 +3963,19 @@
       "column": 31,
       "message": "function `build_episode` has 0 assertion(s) in 43 lines (need 2+)",
       "crate_name": "mneme_memory"
+    },
+    {
+      "stable_id": "b3:253ee968fe38ffbe",
+      "semantic_id": "b3:253ee968fe38ffbe",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 605,
+      "column": 5,
+      "message": "2 `&str` parameters are easy to swap by accident",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:25431840c114ba59",
@@ -4141,7 +4284,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2279,
+      "line": 2280,
       "column": 36,
       "message": "function `retire_managed_working_copy` has 0 assertion(s) in 40 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -4180,7 +4323,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1269,
+      "line": 1493,
       "column": 27,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -4420,6 +4563,19 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:2bd579120583a1f2",
+      "semantic_id": "b3:2bd579120583a1f2",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 1026,
+      "column": 64,
+      "message": "function `split_statements` has 0 assertion(s) in 52 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:2bd8d031af5fc50c",
       "semantic_id": "b3:2bd8d031af5fc50c",
       "identity_status": "computed",
@@ -4427,7 +4583,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 578,
+      "line": 635,
       "column": 16,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_doc"
@@ -4485,6 +4641,19 @@
       "crate_name": "mneme_retention"
     },
     {
+      "stable_id": "b3:2bfac333fbc0f97b",
+      "semantic_id": "b3:2bfac333fbc0f97b",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 929,
+      "column": 60,
+      "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:2c285f1f1950806a",
       "semantic_id": "b3:2c285f1f1950806a",
       "identity_status": "computed",
@@ -4505,7 +4674,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3712,
+      "line": 3738,
       "column": 3,
       "message": "function `document_history` has 0 assertion(s) in 60 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -4531,7 +4700,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 307,
+      "line": 339,
       "column": 70,
       "message": "function `render_source` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -4674,7 +4843,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 594,
+      "line": 595,
       "column": 30,
       "message": "function `prepare_move` has 0 assertion(s) in 40 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -4830,7 +4999,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1270,
+      "line": 1494,
       "column": 71,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -4856,7 +5025,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1293,
+      "line": 1517,
       "column": 69,
       "message": "function `scan` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -4979,6 +5148,19 @@
       "crate_name": "mneme_doc"
     },
     {
+      "stable_id": "b3:2fb5452e6c9e3c02",
+      "semantic_id": "b3:2fb5452e6c9e3c02",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/tests/documents.rs",
+      "line": 3164,
+      "column": 1,
+      "message": "2 `&str` parameters are easy to swap by accident",
+      "crate_name": "documents"
+    },
+    {
       "stable_id": "b3:2fecb4609c7566a2",
       "semantic_id": "b3:2fecb4609c7566a2",
       "identity_status": "computed",
@@ -5057,6 +5239,19 @@
       "crate_name": "mneme_recall"
     },
     {
+      "stable_id": "b3:3024ef50235c5c94",
+      "semantic_id": "b3:3024ef50235c5c94",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 915,
+      "column": 20,
+      "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:3041e7147f6c2ef7",
       "semantic_id": "b3:3041e7147f6c2ef7",
       "identity_status": "computed",
@@ -5090,7 +5285,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1187,
+      "line": 1411,
       "column": 9,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -5278,6 +5473,19 @@
       "crate_name": "mneme_recall"
     },
     {
+      "stable_id": "b3:32a1c243c8afd488",
+      "semantic_id": "b3:32a1c243c8afd488",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 855,
+      "column": 70,
+      "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:32b15f556eff4ffa",
       "semantic_id": "b3:32b15f556eff4ffa",
       "identity_status": "computed",
@@ -5428,7 +5636,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 909,
+      "line": 910,
       "column": 70,
       "message": "function `parse` has 0 assertion(s) in 49 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -5445,19 +5653,6 @@
       "column": 80,
       "message": "function `dispatch` has 0 assertion(s) in 43 lines (need 2+)",
       "crate_name": "mneme_consolidation"
-    },
-    {
-      "stable_id": "b3:352a3750a880f97f",
-      "semantic_id": "b3:352a3750a880f97f",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/preview.rs",
-      "line": 464,
-      "column": 7,
-      "message": "function `render_normal_line` has 0 assertion(s) in 28 lines (need 2+)",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:3540eb02fb78a13f",
@@ -5584,7 +5779,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3437,
+      "line": 3463,
       "column": 73,
       "message": "function `extraction_include_occurrences` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -5649,7 +5844,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2632,
+      "line": 2633,
       "column": 44,
       "message": "function `build_source_records` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -5733,6 +5928,19 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:386c0d567616759a",
+      "semantic_id": "b3:386c0d567616759a",
+      "identity_status": "computed",
+      "lint": "platform_dependent_cast",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 434,
+      "column": 68,
+      "message": "`as usize` from `u32` is platform-dependent",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:387a660b70c0d0e2",
       "semantic_id": "b3:387a660b70c0d0e2",
       "identity_status": "computed",
@@ -5779,7 +5987,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 199,
+      "line": 231,
       "column": 13,
       "message": "`limit` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -5831,7 +6039,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2843,
+      "line": 2844,
       "column": 34,
       "message": "function `edited_entity_payload` has 0 assertion(s) in 25 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -5909,7 +6117,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2739,
+      "line": 2740,
       "column": 34,
       "message": "function `document_payload` has 0 assertion(s) in 70 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -5991,6 +6199,19 @@
       "column": 3,
       "message": "function `validate_predecessor` has 0 assertion(s) in 46 lines (need 2+)",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:3b14f8d86a2088f0",
+      "semantic_id": "b3:3b14f8d86a2088f0",
+      "identity_status": "computed",
+      "lint": "explicit_defaults",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 438,
+      "column": 26,
+      "message": "implicit default on external type — construct with explicit values",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:3b24972396e6a6ea",
@@ -6091,7 +6312,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1046,
+      "line": 1270,
       "column": 100,
       "message": "function `render_link` has 0 assertion(s) in 23 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -6108,6 +6329,19 @@
       "column": 99,
       "message": "function `record` has 0 assertion(s) in 36 lines (need 2+)",
       "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:3d0bae68bab6b0bd",
+      "semantic_id": "b3:3d0bae68bab6b0bd",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 624,
+      "column": 19,
+      "message": "function `load_record_labels` has 0 assertion(s) in 49 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:3d245005143af860",
@@ -6169,7 +6403,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 713,
+      "line": 770,
       "column": 17,
       "message": "`markup_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -6331,6 +6565,19 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:3e7afd4b852c780b",
+      "semantic_id": "b3:3e7afd4b852c780b",
+      "identity_status": "computed",
+      "lint": "numeric_units",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 434,
+      "column": 9,
+      "message": "`row_limit` looks like a raw numeric quantity but has no unit suffix",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:3eabf388e97b101f",
       "semantic_id": "b3:3eabf388e97b101f",
       "identity_status": "computed",
@@ -6383,19 +6630,6 @@
       "crate_name": "mneme_consolidation"
     },
     {
-      "stable_id": "b3:3fd79a2f69db1306",
-      "semantic_id": "b3:3fd79a2f69db1306",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/preview.rs",
-      "line": 867,
-      "column": 97,
-      "message": "function `finish_block` has 0 assertion(s) in 30 lines (need 2+)",
-      "crate_name": "mneme_doc"
-    },
-    {
       "stable_id": "b3:3fe84a42ad5b1b41",
       "semantic_id": "b3:3fe84a42ad5b1b41",
       "identity_status": "computed",
@@ -6403,7 +6637,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1183,
+      "line": 1407,
       "column": 41,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -6598,7 +6832,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1125,
+      "line": 1349,
       "column": 81,
       "message": "function `diagnose_custom_macro` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -6877,6 +7111,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:44190b1721739c8f",
+      "semantic_id": "b3:44190b1721739c8f",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 720,
+      "column": 82,
+      "message": "function `prepare_inline` is 86 lines (limit: 70)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:4432a24420762ca2",
       "semantic_id": "b3:4432a24420762ca2",
       "identity_status": "computed",
@@ -7001,7 +7248,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2176,
+      "line": 2177,
       "column": 71,
       "message": "function `validate_batch_request` has 0 assertion(s) in 25 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -7391,7 +7638,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1185,
+      "line": 1409,
       "column": 27,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -7644,6 +7891,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:4d21531972331873",
+      "semantic_id": "b3:4d21531972331873",
+      "identity_status": "computed",
+      "lint": "allocation_in_loop",
+      "group": "tigerstyle::performance",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 786,
+      "column": 40,
+      "message": "String allocation constructor runs inside a loop",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:4d245bb327088e74",
       "semantic_id": "b3:4d245bb327088e74",
       "identity_status": "computed",
@@ -7668,6 +7928,19 @@
       "column": 97,
       "message": "function `validate_command_paths` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:4d925c5f5817ee78",
+      "semantic_id": "b3:4d925c5f5817ee78",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 433,
+      "column": 19,
+      "message": "function `evaluate` has 0 assertion(s) in 64 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:4da94be9da43b6cb",
@@ -7963,7 +8236,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 369,
+      "line": 401,
       "column": 88,
       "message": "function `render_source_lines` has 0 assertion(s) in 29 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -8161,6 +8434,19 @@
       "line": 535,
       "column": 8,
       "message": "condition has 4 boolean operators",
+      "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:52071220a866405b",
+      "semantic_id": "b3:52071220a866405b",
+      "identity_status": "computed",
+      "lint": "allocation_in_loop",
+      "group": "tigerstyle::performance",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 787,
+      "column": 44,
+      "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_doc"
     },
     {
@@ -8437,6 +8723,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:54da0b545a8f694e",
+      "semantic_id": "b3:54da0b545a8f694e",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 1112,
+      "column": 90,
+      "message": "function `split_outside_quotes_and_parens` has 0 assertion(s) in 46 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:551f6efd6d873e1d",
       "semantic_id": "b3:551f6efd6d873e1d",
       "identity_status": "computed",
@@ -8474,19 +8773,6 @@
       "column": 49,
       "message": "function `blocking_extractor` has 0 assertion(s) in 21 lines (need 2+)",
       "crate_name": "mneme_consolidation"
-    },
-    {
-      "stable_id": "b3:5623286ff444cf79",
-      "semantic_id": "b3:5623286ff444cf79",
-      "identity_status": "computed",
-      "lint": "assertion_density",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3321,
-      "column": 30,
-      "message": "function `render_preview_artifact` has 0 assertion(s) in 63 lines (need 2+)",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:56381ac2160619ac",
@@ -8630,6 +8916,19 @@
       "column": 1,
       "message": "`#[allow(...)]` without justification comment",
       "crate_name": "exchange_assets"
+    },
+    {
+      "stable_id": "b3:57c23b236b78d3fd",
+      "semantic_id": "b3:57c23b236b78d3fd",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 1090,
+      "column": 83,
+      "message": "function `render_query_table_html` has 1 assertion(s) in 23 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:581e5f383d637efd",
@@ -8814,6 +9113,19 @@
       "crate_name": "facts"
     },
     {
+      "stable_id": "b3:5a243336008be8be",
+      "semantic_id": "b3:5a243336008be8be",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 944,
+      "column": 28,
+      "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:5a245627cfe44387",
       "semantic_id": "b3:5a245627cfe44387",
       "identity_status": "computed",
@@ -8886,9 +9198,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 177,
+      "line": 178,
       "column": 37,
       "message": "function `key` has 0 assertion(s) in 23 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:5a6164ee63876994",
+      "semantic_id": "b3:5a6164ee63876994",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 1054,
+      "column": 5,
+      "message": "3 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
     },
     {
@@ -9081,7 +9406,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1489,
+      "line": 1490,
       "column": 95,
       "message": "function `import_working_file` has 0 assertion(s) in 37 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9250,7 +9575,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1252,
+      "line": 1476,
       "column": 77,
       "message": "function `find` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9282,6 +9607,19 @@
       "crate_name": "retention"
     },
     {
+      "stable_id": "b3:5d79bc03d31b2496",
+      "semantic_id": "b3:5d79bc03d31b2496",
+      "identity_status": "computed",
+      "lint": "allocation_in_loop",
+      "group": "tigerstyle::performance",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 640,
+      "column": 60,
+      "message": "String allocation constructor runs inside a loop",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:5d8454e3c23eda8e",
       "semantic_id": "b3:5d8454e3c23eda8e",
       "identity_status": "computed",
@@ -9289,7 +9627,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1002,
+      "line": 1226,
       "column": 24,
       "message": "function `render_inline_macro` has 0 assertion(s) in 23 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9302,7 +9640,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3039,
+      "line": 3040,
       "column": 35,
       "message": "function `commit_prepared` has 0 assertion(s) in 53 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9410,6 +9748,19 @@
       "column": 50,
       "message": "function `validate` has 0 assertion(s) in 68 lines (need 2+)",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:5f0322843f6d7acd",
+      "semantic_id": "b3:5f0322843f6d7acd",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 217,
+      "column": 72,
+      "message": "function `prepare_standing` has 0 assertion(s) in 37 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:5f4fdf7039e06060",
@@ -9535,8 +9886,8 @@
       "lint": "foreign_enum_catch_all",
       "group": "tigerstyle::safety",
       "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3827,
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 668,
       "column": 13,
       "message": "foreign enum `mneme_core::RecordKind` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_doc"
@@ -9553,19 +9904,6 @@
       "column": 55,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_recall"
-    },
-    {
-      "stable_id": "b3:606b7b08498c802e",
-      "semantic_id": "b3:606b7b08498c802e",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 39 public items (limit: 12) — split unrelated public surface into focused modules",
-      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:609094b402f169e2",
@@ -9588,7 +9926,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 852,
+      "line": 853,
       "column": 91,
       "message": "function `anchors` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9683,6 +10021,19 @@
       "column": 1,
       "message": "2 `String` parameters are easy to swap by accident",
       "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:612fd00830e527f4",
+      "semantic_id": "b3:612fd00830e527f4",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 869,
+      "column": 98,
+      "message": "function `parse_literal` has 0 assertion(s) in 23 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:614f690b2bd4c487",
@@ -9835,7 +10186,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1678,
+      "line": 1679,
       "column": 35,
       "message": "function `move_with_updates` has 0 assertion(s) in 61 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9926,7 +10277,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 664,
+      "line": 721,
       "column": 65,
       "message": "function `unavailable_image` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -9939,7 +10290,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1387,
+      "line": 1388,
       "column": 1,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
@@ -10030,7 +10381,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 975,
+      "line": 1199,
       "column": 24,
       "message": "function `render_inline_passthrough` has 0 assertion(s) in 21 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -10160,7 +10511,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2355,
+      "line": 2356,
       "column": 35,
       "message": "function `load_existing_document` has 0 assertion(s) in 38 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -10439,6 +10790,19 @@
       "crate_name": "datalog"
     },
     {
+      "stable_id": "b3:675e060109a5ccf6",
+      "semantic_id": "b3:675e060109a5ccf6",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 1083,
+      "column": 9,
+      "message": "same-crate enum `datalog::QueryLayout` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:67681fb3857274df",
       "semantic_id": "b3:67681fb3857274df",
       "identity_status": "computed",
@@ -10550,7 +10914,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1228,
+      "line": 1229,
       "column": 21,
       "message": "function `resolve_directive` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -10634,6 +10998,19 @@
       "crate_name": "exact_cosine_cost"
     },
     {
+      "stable_id": "b3:68fc693b01945cfd",
+      "semantic_id": "b3:68fc693b01945cfd",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 13,
+      "column": 1,
+      "message": "module exposes 17 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:690b30f7d4b6c291",
       "semantic_id": "b3:690b30f7d4b6c291",
       "identity_status": "computed",
@@ -10667,7 +11044,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1093,
+      "line": 1094,
       "column": 95,
       "message": "function `resolve_import_includes` has 0 assertion(s) in 33 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -10790,6 +11167,32 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:6a0124014fa48b2d",
+      "semantic_id": "b3:6a0124014fa48b2d",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 927,
+      "column": 9,
+      "message": "same-crate enum `asciidoc::BlockKind` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:6a0d16961ae3cb17",
+      "semantic_id": "b3:6a0d16961ae3cb17",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 1136,
+      "column": 17,
+      "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:6a2c260488e36b10",
       "semantic_id": "b3:6a2c260488e36b10",
       "identity_status": "computed",
@@ -10842,6 +11245,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:6a783cddb2faa82c",
+      "semantic_id": "b3:6a783cddb2faa82c",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 593,
+      "column": 1,
+      "message": "item name `format_datalog_error` repeats `datalog` from ancestor path segment `datalog`",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:6a795ab54f2d544c",
       "semantic_id": "b3:6a795ab54f2d544c",
       "identity_status": "computed",
@@ -10862,7 +11278,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3388,
+      "line": 3414,
       "column": 72,
       "message": "function `load_extraction_sources` has 0 assertion(s) in 44 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -10992,7 +11408,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3648,
+      "line": 3674,
       "column": 1,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
@@ -11044,7 +11460,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1379,
+      "line": 1380,
       "column": 1,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
@@ -11278,7 +11694,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2514,
+      "line": 2515,
       "column": 4,
       "message": "function `source_dependencies` has 0 assertion(s) in 48 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -11395,7 +11811,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1983,
+      "line": 1984,
       "column": 35,
       "message": "function `prepare_source_with` has 0 assertion(s) in 52 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -11486,7 +11902,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1076,
+      "line": 1300,
       "column": 16,
       "message": "function `render_inline_character` has 0 assertion(s) in 47 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -11499,7 +11915,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1911,
+      "line": 1912,
       "column": 50,
       "message": "function `edit_entity_property` has 0 assertion(s) in 58 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -11681,7 +12097,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 807,
+      "line": 864,
       "column": 13,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -11811,7 +12227,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2038,
+      "line": 2039,
       "column": 100,
       "message": "function `prepare_valid_source` has 0 assertion(s) in 63 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -11906,6 +12322,19 @@
       "column": 58,
       "message": "function `parse_bundle` has 0 assertion(s) in 50 lines (need 2+)",
       "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:7613f5584b1a470b",
+      "semantic_id": "b3:7613f5584b1a470b",
+      "identity_status": "computed",
+      "lint": "unbounded_collection_growth",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 1100,
+      "column": 13,
+      "message": "collection grows in loop without a prior reservation or explicit local bound",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:761b2f20cc577b55",
@@ -12292,7 +12721,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 13,
+      "line": 14,
       "column": 1,
       "message": "module exposes 15 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_doc"
@@ -12331,7 +12760,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2873,
+      "line": 2874,
       "column": 17,
       "message": "function `append_anchor_records` has 0 assertion(s) in 23 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -12844,6 +13273,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:7e5247043f76fedc",
+      "semantic_id": "b3:7e5247043f76fedc",
+      "identity_status": "computed",
+      "lint": "compound_condition",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 103,
+      "column": 8,
+      "message": "condition has 3 boolean operators",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:7e64db639369db53",
       "semantic_id": "b3:7e64db639369db53",
       "identity_status": "computed",
@@ -12877,7 +13319,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 743,
+      "line": 800,
       "column": 40,
       "message": "`markup_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -13520,6 +13962,19 @@
       "crate_name": "facts"
     },
     {
+      "stable_id": "b3:854bf59b15946439",
+      "semantic_id": "b3:854bf59b15946439",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 3322,
+      "column": 30,
+      "message": "function `render_preview_artifact` is 85 lines (limit: 70)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:85542298376ecb7e",
       "semantic_id": "b3:85542298376ecb7e",
       "identity_status": "computed",
@@ -13622,6 +14077,19 @@
       "column": 38,
       "message": "function `validate_reference` has 0 assertion(s) in 42 lines (need 2+)",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:865de96be5355d2a",
+      "semantic_id": "b3:865de96be5355d2a",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 1063,
+      "column": 85,
+      "message": "function `render_query_outcome_html` has 1 assertion(s) in 26 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:866de23d88e59641",
@@ -13754,19 +14222,6 @@
       "crate_name": "mneme_memory"
     },
     {
-      "stable_id": "b3:876c8e7a223c14f3",
-      "semantic_id": "b3:876c8e7a223c14f3",
-      "identity_status": "computed",
-      "lint": "ambiguous_params",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/preview.rs",
-      "line": 548,
-      "column": 5,
-      "message": "2 `&str` parameters are easy to swap by accident",
-      "crate_name": "mneme_doc"
-    },
-    {
       "stable_id": "b3:8778d079a7107f6d",
       "semantic_id": "b3:8778d079a7107f6d",
       "identity_status": "computed",
@@ -13839,7 +14294,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 828,
+      "line": 829,
       "column": 97,
       "message": "function `sources_where` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -13865,7 +14320,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 445,
+      "line": 446,
       "column": 98,
       "message": "function `document_request_fingerprint` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -13904,7 +14359,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3475,
+      "line": 3501,
       "column": 3,
       "message": "function `extraction_candidates` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -13921,6 +14376,19 @@
       "column": 32,
       "message": "function `release_unnamed` has 0 assertion(s) in 26 lines (need 2+)",
       "crate_name": "mneme_memory"
+    },
+    {
+      "stable_id": "b3:8897af5c414e3803",
+      "semantic_id": "b3:8897af5c414e3803",
+      "identity_status": "computed",
+      "lint": "unbounded_collection_growth",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 757,
+      "column": 9,
+      "message": "collection grows in loop without a prior reservation or explicit local bound",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:88f83d1e626fb5ff",
@@ -13947,6 +14415,19 @@
       "column": 8,
       "message": "condition has 5 boolean operators",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:88fef79ea2222f8d",
+      "semantic_id": "b3:88fef79ea2222f8d",
+      "identity_status": "computed",
+      "lint": "allocation_in_loop",
+      "group": "tigerstyle::performance",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 656,
+      "column": 60,
+      "message": "String allocation constructor runs inside a loop",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:8941f0372392474c",
@@ -14125,7 +14606,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1539,
+      "line": 1540,
       "column": 40,
       "message": "function `import_working_files` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -14144,6 +14625,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:8ae12177f141452d",
+      "semantic_id": "b3:8ae12177f141452d",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 312,
+      "column": 25,
+      "message": "non-trait import `Atom` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:8b34b1f6639c8fd2",
       "semantic_id": "b3:8b34b1f6639c8fd2",
       "identity_status": "computed",
@@ -14151,7 +14645,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3507,
+      "line": 3533,
       "column": 17,
       "message": "function `insert_extraction_candidate` has 0 assertion(s) in 29 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -14372,7 +14866,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 744,
+      "line": 801,
       "column": 13,
       "message": "`limit` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -14389,6 +14883,19 @@
       "column": 67,
       "message": "function `source_binding` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:8c87630d17a237f1",
+      "semantic_id": "b3:8c87630d17a237f1",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 758,
+      "column": 39,
+      "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:8c98dc6d7a4465d9",
@@ -14467,6 +14974,19 @@
       "column": 31,
       "message": "function `validate_snapshot_sources` has 0 assertion(s) in 21 lines (need 2+)",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:8d421e0eda9df829",
+      "semantic_id": "b3:8d421e0eda9df829",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 40 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:8d765226cec9bea7",
@@ -14593,7 +15113,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1142,
+      "line": 1366,
       "column": 19,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -14866,7 +15386,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3275,
+      "line": 3276,
       "column": 36,
       "message": "function `load_root_preview` has 0 assertion(s) in 24 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -15009,7 +15529,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3557,
+      "line": 3583,
       "column": 17,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -15048,7 +15568,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2441,
+      "line": 2442,
       "column": 62,
       "message": "function `source_header` has 0 assertion(s) in 54 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -15230,7 +15750,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 855,
+      "line": 912,
       "column": 36,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -15247,6 +15767,45 @@
       "column": 13,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:94008c2311b91404",
+      "semantic_id": "b3:94008c2311b91404",
+      "identity_status": "computed",
+      "lint": "unbounded_collection_growth",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 786,
+      "column": 17,
+      "message": "collection grows in loop without a prior reservation or explicit local bound",
+      "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:944ef5ac979a4796",
+      "semantic_id": "b3:944ef5ac979a4796",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 824,
+      "column": 35,
+      "message": "function `resolve_inline_target` has 0 assertion(s) in 41 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:945b3df97da827fa",
+      "semantic_id": "b3:945b3df97da827fa",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 897,
+      "column": 13,
+      "message": "boolean binding `escaped` should have a predicate prefix",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:9465d9a17f23c6b5",
@@ -15581,7 +16140,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 994,
+      "line": 995,
       "column": 13,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_doc"
@@ -15730,6 +16289,19 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:98a4e2a76670136d",
+      "semantic_id": "b3:98a4e2a76670136d",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 7,
+      "column": 1,
+      "message": "non-trait import `BTreeMap` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:98a8605f4132bf2f",
       "semantic_id": "b3:98a8605f4132bf2f",
       "identity_status": "computed",
@@ -15819,6 +16391,19 @@
       "column": 9,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:99905187fabc80b6",
+      "semantic_id": "b3:99905187fabc80b6",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 987,
+      "column": 83,
+      "message": "function `render_datalog_query` has 1 assertion(s) in 30 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:99a7f3fea955acf0",
@@ -16016,6 +16601,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:9b34b7400044a3b7",
+      "semantic_id": "b3:9b34b7400044a3b7",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 1079,
+      "column": 79,
+      "message": "function `split_outside_quotes` has 0 assertion(s) in 32 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:9b37f36ce99bbb40",
       "semantic_id": "b3:9b37f36ce99bbb40",
       "identity_status": "computed",
@@ -16114,7 +16712,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 711,
+      "line": 768,
       "column": 13,
       "message": "`width_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -16140,7 +16738,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1555,
+      "line": 1793,
       "column": 13,
       "message": "`first_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -16443,6 +17041,19 @@
       "column": 90,
       "message": "function `query_loaded` has 0 assertion(s) in 55 lines (need 2+)",
       "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:9e8901ef85eb7973",
+      "semantic_id": "b3:9e8901ef85eb7973",
+      "identity_status": "computed",
+      "lint": "foreign_enum_catch_all",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 781,
+      "column": 17,
+      "message": "foreign enum `mneme_datalog::Literal` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:9e8db157a28fa7ff",
@@ -16933,7 +17544,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 944,
+      "line": 1168,
       "column": 61,
       "message": "function `inline` has 0 assertion(s) in 25 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -17095,6 +17706,19 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:a67f786d2bfb2adc",
+      "semantic_id": "b3:a67f786d2bfb2adc",
+      "identity_status": "computed",
+      "lint": "numeric_units",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 38,
+      "column": 9,
+      "message": "`limit` looks like a raw numeric quantity but has no unit suffix",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:a693395d7c918dd8",
       "semantic_id": "b3:a693395d7c918dd8",
       "identity_status": "computed",
@@ -17225,6 +17849,19 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:a80f1f4cf9476cbb",
+      "semantic_id": "b3:a80f1f4cf9476cbb",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 118,
+      "column": 63,
+      "message": "function `parse_attributes` has 0 assertion(s) in 23 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:a81d49fe3b3ebf75",
       "semantic_id": "b3:a81d49fe3b3ebf75",
       "identity_status": "computed",
@@ -17310,7 +17947,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1187,
+      "line": 1411,
       "column": 9,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_doc"
@@ -17353,6 +17990,19 @@
       "column": 13,
       "message": "same-crate enum `BatchCoverage` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_consolidation"
+    },
+    {
+      "stable_id": "b3:a93adeaf8ff9d15c",
+      "semantic_id": "b3:a93adeaf8ff9d15c",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 503,
+      "column": 7,
+      "message": "function `render_normal_line` has 0 assertion(s) in 46 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:a9d6b4e3e86768db",
@@ -17444,6 +18094,19 @@
       "column": 9,
       "message": "same-crate enum `tenancy::ScopeClass` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
+    },
+    {
+      "stable_id": "b3:ab3f7b3fc587b069",
+      "semantic_id": "b3:ab3f7b3fc587b069",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 1167,
+      "column": 20,
+      "message": "unprotected unsigned subtraction may overflow",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:abd2ce1260ad1f20",
@@ -17635,7 +18298,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3649,
+      "line": 3675,
       "column": 18,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_doc"
@@ -17895,7 +18558,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1581,
+      "line": 1582,
       "column": 45,
       "message": "function `commit_batch` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -18012,7 +18675,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1413,
+      "line": 1651,
       "column": 18,
       "message": "`byte_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -18545,7 +19208,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2567,
+      "line": 2568,
       "column": 27,
       "message": "function `render_prepared_source` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -18636,7 +19299,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3669,
+      "line": 3695,
       "column": 1,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
@@ -18935,7 +19598,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1373,
+      "line": 1374,
       "column": 46,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -19045,6 +19708,19 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:bb44408530edf7d8",
+      "semantic_id": "b3:bb44408530edf7d8",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 924,
+      "column": 97,
+      "message": "function `finish_block` has 0 assertion(s) in 40 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:bb6ead74c5317acc",
       "semantic_id": "b3:bb6ead74c5317acc",
       "identity_status": "computed",
@@ -19117,7 +19793,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 338,
+      "line": 370,
       "column": 75,
       "message": "function `render_source_text` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -19173,6 +19849,19 @@
       "column": 1,
       "message": "`#[allow(...)]` without justification comment",
       "crate_name": "datalog"
+    },
+    {
+      "stable_id": "b3:bcacc8c047ee0804",
+      "semantic_id": "b3:bcacc8c047ee0804",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 967,
+      "column": 92,
+      "message": "function `parse_term` has 0 assertion(s) in 58 lines (need 2+)",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:bcd31bbbbe0bda4e",
@@ -19461,6 +20150,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:c047faab62b86b2a",
+      "semantic_id": "b3:c047faab62b86b2a",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 893,
+      "column": 83,
+      "message": "function `split_comparison` has 0 assertion(s) in 45 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:c055d32a345daec1",
       "semantic_id": "b3:c055d32a345daec1",
       "identity_status": "computed",
@@ -19507,7 +20209,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1094,
+      "line": 1095,
       "column": 9,
       "message": "`limit` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -19617,6 +20319,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:c26a4960c51256f4",
+      "semantic_id": "b3:c26a4960c51256f4",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 312,
+      "column": 42,
+      "message": "non-trait import `Literal` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:c2871cb0bb1f799a",
       "semantic_id": "b3:c2871cb0bb1f799a",
       "identity_status": "computed",
@@ -19650,7 +20365,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 499,
+      "line": 556,
       "column": 7,
       "message": "function `render_content_line` has 0 assertion(s) in 48 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -19819,7 +20534,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 702,
+      "line": 759,
       "column": 9,
       "message": "`base64_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -19910,7 +20625,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 263,
+      "line": 295,
       "column": 72,
       "message": "function `render_metadata` has 0 assertion(s) in 43 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -20105,7 +20820,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 538,
+      "line": 539,
       "column": 40,
       "message": "function `move_request_fingerprint` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -20417,7 +21132,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1181,
+      "line": 1405,
       "column": 24,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -20482,7 +21197,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 655,
+      "line": 656,
       "column": 23,
       "message": "function `load` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -20551,6 +21266,19 @@
       "column": 63,
       "message": "function `newer_observations` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:cd745c8ad1051674",
+      "semantic_id": "b3:cd745c8ad1051674",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 312,
+      "column": 57,
+      "message": "non-trait import `Term` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:cdde4fdc7320aab9",
@@ -20755,7 +21483,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1619,
+      "line": 1620,
       "column": 35,
       "message": "function `save_source` has 0 assertion(s) in 35 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -20798,6 +21526,19 @@
       "column": 13,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_kernel"
+    },
+    {
+      "stable_id": "b3:cfdef5d8da400d8c",
+      "semantic_id": "b3:cfdef5d8da400d8c",
+      "identity_status": "computed",
+      "lint": "foreign_enum_catch_all",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 843,
+      "column": 9,
+      "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:cff208c1cce38df4",
@@ -21047,6 +21788,19 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:d26e2bfcec64492f",
+      "semantic_id": "b3:d26e2bfcec64492f",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 674,
+      "column": 79,
+      "message": "function `format_cell` has 0 assertion(s) in 35 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:d28b274863a3015c",
       "semantic_id": "b3:d28b274863a3015c",
       "identity_status": "computed",
@@ -21197,7 +21951,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2207,
+      "line": 2208,
       "column": 40,
       "message": "function `batch_fingerprint` has 0 assertion(s) in 30 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -21357,6 +22111,19 @@
       "column": 26,
       "message": "function `add_source` has 0 assertion(s) in 67 lines (need 2+)",
       "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:d6224482ac50870d",
+      "semantic_id": "b3:d6224482ac50870d",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 312,
+      "column": 31,
+      "message": "non-trait import `CompareOp` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:d67312b9cc05b133",
@@ -21574,7 +22341,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 676,
+      "line": 733,
       "column": 13,
       "message": "`markup_length` looks like a raw numeric quantity but has no unit suffix",
       "crate_name": "mneme_doc"
@@ -21626,7 +22393,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1355,
+      "line": 1356,
       "column": 21,
       "message": "function `recurse_include` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -21639,7 +22406,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1157,
+      "line": 1158,
       "column": 94,
       "message": "function `resolve_bytes` has 0 assertion(s) in 23 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -21834,7 +22601,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 963,
+      "line": 964,
       "column": 60,
       "message": "function `parse_include_map` has 0 assertion(s) in 40 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -21951,9 +22718,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 2965,
+      "line": 2966,
       "column": 26,
       "message": "function `document_anchor_payload` has 0 assertion(s) in 37 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:db7a2db64dbff703",
+      "semantic_id": "b3:db7a2db64dbff703",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 626,
+      "column": 61,
+      "message": "same-crate enum `preview::HostKind` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_doc"
     },
     {
@@ -22016,7 +22796,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 859,
+      "line": 916,
       "column": 5,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
@@ -22029,7 +22809,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 818,
+      "line": 875,
       "column": 7,
       "message": "function `render_include` has 0 assertion(s) in 39 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -22237,7 +23017,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1219,
+      "line": 1443,
       "column": 9,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -22614,7 +23394,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 241,
+      "line": 273,
       "column": 35,
       "message": "function `expired` has 0 assertion(s) in 20 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -22822,7 +23602,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 702,
+      "line": 703,
       "column": 13,
       "message": "foreign enum `mneme_memory::SourceStatus` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_doc"
@@ -23030,7 +23810,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3592,
+      "line": 3618,
       "column": 22,
       "message": "function `patch_entity_header` has 0 assertion(s) in 34 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -23127,6 +23907,19 @@
       "crate_name": "mneme_consolidation"
     },
     {
+      "stable_id": "b3:e741748b8b2346ea",
+      "semantic_id": "b3:e741748b8b2346ea",
+      "identity_status": "computed",
+      "lint": "assertion_density",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 311,
+      "column": 65,
+      "message": "function `builtin_auto_relations_bundle` has 0 assertion(s) in 111 lines (need 2+)",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:e74b146267d91954",
       "semantic_id": "b3:e74b146267d91954",
       "identity_status": "computed",
@@ -23177,6 +23970,19 @@
       "column": 13,
       "message": "same-crate enum `expansion::Order` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_recall"
+    },
+    {
+      "stable_id": "b3:e7ed6c7568ed4efd",
+      "semantic_id": "b3:e7ed6c7568ed4efd",
+      "identity_status": "computed",
+      "lint": "allocation_in_loop",
+      "group": "tigerstyle::performance",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 1058,
+      "column": 28,
+      "message": "String allocation constructor runs inside a loop",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:e7fb5eb76939a6cc",
@@ -23251,7 +24057,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 700,
+      "line": 757,
       "column": 5,
       "message": "2 `&str` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
@@ -23641,7 +24447,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 787,
+      "line": 844,
       "column": 15,
       "message": "function `render_list_line` has 0 assertion(s) in 25 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -23914,7 +24720,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3209,
+      "line": 3210,
       "column": 29,
       "message": "function `load_preview_sources` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -24050,19 +24856,6 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:f221b428df8496af",
-      "semantic_id": "b3:f221b428df8496af",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/preview.rs",
-      "line": 870,
-      "column": 9,
-      "message": "same-crate enum `asciidoc::BlockKind` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_doc"
-    },
-    {
       "stable_id": "b3:f245908f1739f3ed",
       "semantic_id": "b3:f245908f1739f3ed",
       "identity_status": "computed",
@@ -24187,7 +24980,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1847,
+      "line": 1848,
       "column": 90,
       "message": "function `patch_binding` has 0 assertion(s) in 56 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -24330,7 +25123,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/preview.rs",
-      "line": 1005,
+      "line": 1229,
       "column": 9,
       "message": "same-crate enum `preview::InlineMacroKind` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_doc"
@@ -24360,6 +25153,19 @@
       "column": 5,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:f62bb172adb6770a",
+      "semantic_id": "b3:f62bb172adb6770a",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 142,
+      "column": 1,
+      "message": "2 `&str` parameters are easy to swap by accident",
+      "crate_name": "mneme_doc"
     },
     {
       "stable_id": "b3:f630f1ddfd81a8e6",
@@ -24856,6 +25662,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:fa8b953943f557b6",
+      "semantic_id": "b3:fa8b953943f557b6",
+      "identity_status": "computed",
+      "lint": "ambiguous_params",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/preview.rs",
+      "line": 1018,
+      "column": 5,
+      "message": "3 `&str` parameters are easy to swap by accident",
+      "crate_name": "mneme_doc"
+    },
+    {
       "stable_id": "b3:fab262658503425d",
       "semantic_id": "b3:fab262658503425d",
       "identity_status": "computed",
@@ -24967,7 +25786,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 789,
+      "line": 790,
       "column": 58,
       "message": "function `list_documents` has 0 assertion(s) in 22 lines (need 2+)",
       "crate_name": "mneme_doc"
@@ -25305,7 +26124,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1185,
+      "line": 1186,
       "column": 56,
       "message": "function `check_limits` has 0 assertion(s) in 21 lines (need 2+)",
       "crate_name": "mneme_doc"
