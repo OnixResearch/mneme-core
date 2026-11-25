@@ -20,6 +20,9 @@ pub mod requests;
 pub mod timekeeper;
 
 pub use catalog::{Manifest, ManifestRecord};
+pub use coordinator::verify::{
+    IssueKind, OrphanBlob, OrphanReason, VerifyIssue, VerifyMode, VerifyReport, verify_workspace,
+};
 pub use coordinator::{
     CommitOutcome, FOLDER_WORKSPACE_DIRECTORY, JobClaim, LAYOUT_VERSION, LEDGER_FILE,
     ProjectionRegistration, ProjectionResolution, ProjectionState, PublicationOutcome,
