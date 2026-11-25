@@ -1620,12 +1620,38 @@ impl<'w> Documents<'w> {
         bytes: &[u8],
         derivation: &mneme_core::DerivedAcquisition,
     ) -> Result<DocumentRevision> {
-        validate_import_request(&request)?;
         derivation.validate().map_err(DocumentError::Invalid)?;
+        self.save_source_with_derivation(request, bytes, Some(derivation))
+    }
+
+    /// Save supplied source bytes and publish them to the managed working file.
+    pub fn save_source(
+        &mut self,
+        request: ImportRequest,
+        bytes: &[u8],
+    ) -> Result<DocumentRevision> {
+        self.save_source_with_derivation(request, bytes, None)
+    }
+
+    fn save_source_with_derivation(
+        &mut self,
+        request: ImportRequest,
+        bytes: &[u8],
+        derivation: Option<&mneme_core::DerivedAcquisition>,
+    ) -> Result<DocumentRevision> {
+        validate_import_request(&request)?;
+        debug_assert!(!request.path.is_empty());
+        debug_assert!(!request.actor.is_empty());
         let mut options = import_request_options(&request)?;
-        options.push(derivation.to_value());
+        let operation = match derivation {
+            Some(derivation) => {
+                options.push(derivation.to_value());
+                "document-save-derived"
+            }
+            None => "document-save",
+        };
         let fingerprint = document_request_fingerprint(&BoundDocumentRequest {
-            operation: "document-save-derived",
+            operation,
             scope: &request.scope,
             target: request.document_id,
             path: Some(&request.path),
@@ -1647,48 +1673,7 @@ impl<'w> Documents<'w> {
         }
         let context = DocumentContext::load(self.workspace, Some(request.base_revision))?;
         let prepared =
-            self.prepare_source_with_derivation(&context, &request, bytes, Some(derivation))?;
-        self.require_valid(&prepared)?;
-        self.commit_prepared(
-            request,
-            prepared,
-            PreparationOptions {
-                publish: true,
-                external_import: false,
-            },
-            fingerprint,
-        )
-    }
-
-    /// Save supplied source bytes and publish them to the managed working file.
-    pub fn save_source(
-        &mut self,
-        request: ImportRequest,
-        bytes: &[u8],
-    ) -> Result<DocumentRevision> {
-        validate_import_request(&request)?;
-        let fingerprint = document_request_fingerprint(&BoundDocumentRequest {
-            operation: "document-save",
-            scope: &request.scope,
-            target: request.document_id,
-            path: Some(&request.path),
-            source_digest: Some(mneme_core::ContentDigest::of_source_bytes(bytes)),
-            options: import_request_options(&request)?,
-        });
-        if let Some(outcome) = self.workspace.replay_outcome(
-            &request.actor,
-            &request.scope,
-            &request.idempotency_key,
-            &fingerprint,
-        )? {
-            return self.revision_from_outcome(
-                &request.scope,
-                request.document_id,
-                &request.path,
-                outcome,
-            );
-        }
-        let prepared = self.prepare_source(&request, bytes)?;
+            self.prepare_source_with_derivation(&context, &request, bytes, derivation)?;
         self.require_valid(&prepared)?;
         self.commit_prepared(
             request,
