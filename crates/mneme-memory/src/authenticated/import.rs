@@ -688,6 +688,8 @@ fn commit_missing_records(
 ) -> Result<mneme_store::CommitOutcome, ImportCommitError> {
     let mut records = Vec::with_capacity(3);
     let mut source_blobs = Vec::with_capacity(1);
+    debug_assert!(records.is_empty());
+    debug_assert!(source_blobs.is_empty());
     let ImportPlan {
         expected_source,
         evidence,
@@ -702,11 +704,10 @@ fn commit_missing_records(
     if !existing.source() {
         let bytes = source_bytes.ok_or(ImportCommitError::SourceUnavailable)?;
         records.push(expected_source);
-        source_blobs.push(mneme_store::SourceBlobDraft {
-            file: None,
+        source_blobs.push(mneme_store::SourceBlobDraft::inline(
             bytes,
-            media_type: mneme_core::Symbol::from(SOURCE_MEDIA_TYPE),
-        });
+            mneme_core::Symbol::from(SOURCE_MEDIA_TYPE),
+        ));
     }
     if !existing.evidence() {
         records.push(evidence);

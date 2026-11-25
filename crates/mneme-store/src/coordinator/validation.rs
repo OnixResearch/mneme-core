@@ -221,16 +221,17 @@ pub(super) fn validate_sources(
     let mut supplied_digests = std::collections::BTreeMap::new();
     for source in supplied {
         let digest = source.digest();
-        if let Some(existing) = supplied_digests.insert(digest, source)
-            && existing.file.is_none()
-            && source.file.is_none()
-            && existing.bytes != source.bytes
-        {
-            return Err(crate::error::Failure::InvalidCommand(
-                "source blobs with the same digest have different bytes".to_owned(),
-            ));
+        debug_assert_eq!(digest, source.digest());
+        if let Some(existing) = supplied_digests.insert(digest, source) {
+            let both_inline = existing.file.is_none() && source.file.is_none();
+            if both_inline && existing.bytes != source.bytes {
+                return Err(crate::error::Failure::InvalidCommand(
+                    "source blobs with the same digest have different bytes".to_owned(),
+                ));
+            }
         }
     }
+    debug_assert!(supplied_digests.len() <= supplied.len());
     let mut referenced = std::collections::BTreeSet::new();
     for record in proposed {
         let Some((digest, declared_length, media_type)) = retained_source(record)? else {

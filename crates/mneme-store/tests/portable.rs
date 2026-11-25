@@ -189,11 +189,10 @@ fn portable_backup_preserves_history_attachment_and_memory_records() {
                 IMAGE,
                 "images/diagram.png",
             )],
-            vec![mneme_store::SourceBlobDraft {
-                file: None,
-                bytes: IMAGE.to_vec(),
-                media_type: mneme_core::Symbol::from("image/png"),
-            }],
+            vec![mneme_store::SourceBlobDraft::inline(
+                IMAGE.to_vec(),
+                mneme_core::Symbol::from("image/png"),
+            )],
             Vec::new(),
         ))
         .expect("image");

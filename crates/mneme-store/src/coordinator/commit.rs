@@ -388,10 +388,12 @@ impl super::Workspace {
             let digest = source.digest();
             let staged_blob = match &source.file {
                 Some(file) => {
-                    crate::payload::stage_file(&self.root, digest, &file.path, file.byte_length)?
+                    crate::payload::stage_file(&self.root, digest, &file.path, file.size_bytes)?
                 }
                 None => crate::payload::stage(&self.root, digest, &source.bytes)?,
             };
+            debug_assert_eq!(staged_blob.digest, digest);
+            debug_assert_eq!(staged_blob.byte_length, source.byte_length());
             staged.insert(
                 *digest.as_bytes(),
                 (

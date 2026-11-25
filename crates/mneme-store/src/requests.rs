@@ -58,10 +58,10 @@ impl RecordDraft {
 /// The digest and length are taken by streaming the file once when the draft is
 /// built; staging streams it again and refuses a file that changed in between.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceFile {
+pub(crate) struct SourceFile {
     pub path: std::path::PathBuf,
     pub digest: mneme_core::ContentDigest,
-    pub byte_length: u64,
+    pub size_bytes: u64,
 }
 
 /// Exact source bytes supplied for a committed source revision.
@@ -72,10 +72,18 @@ pub struct SourceFile {
 pub struct SourceBlobDraft {
     pub bytes: Vec<u8>,
     pub media_type: mneme_core::Symbol,
-    pub file: Option<SourceFile>,
+    pub(crate) file: Option<SourceFile>,
 }
 
 impl SourceBlobDraft {
+    /// An inline source-blob draft backed by in-memory `bytes`.
+    pub fn inline(bytes: Vec<u8>, media_type: mneme_core::Symbol) -> Self {
+        Self {
+            bytes,
+            media_type,
+            file: None,
+        }
+    }
     /// A draft that streams the regular file at `path`, never loading it whole.
     pub fn from_file(
         path: &std::path::Path,
@@ -89,17 +97,19 @@ impl SourceBlobDraft {
                 path.display()
             )));
         }
+        debug_assert!(metadata.is_file());
         let mut reader =
             std::fs::File::open(path).map_err(|error| crate::error::Failure::io(path, error))?;
-        let (digest, byte_length) = mneme_core::ContentDigest::of_source_reader(&mut reader)
+        let (digest, size_bytes) = mneme_core::ContentDigest::of_source_reader(&mut reader)
             .map_err(|error| crate::error::Failure::io(path, error))?;
+        debug_assert_eq!(size_bytes, metadata.len());
         Ok(Self {
             bytes: Vec::new(),
             media_type,
             file: Some(SourceFile {
                 path: path.to_path_buf(),
                 digest,
-                byte_length,
+                size_bytes,
             }),
         })
     }
@@ -115,7 +125,7 @@ impl SourceBlobDraft {
     /// The number of source bytes, inline or streamed.
     pub fn byte_length(&self) -> u64 {
         match &self.file {
-            Some(file) => file.byte_length,
+            Some(file) => file.size_bytes,
             None => self.bytes.len() as u64,
         }
     }

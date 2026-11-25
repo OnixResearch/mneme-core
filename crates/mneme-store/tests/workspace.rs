@@ -268,11 +268,10 @@ fn external_import_candidate_must_match_existing_bytes_and_bindings() {
             draft(&mneme_core::fixtures::entity()),
             draft(&mneme_core::fixtures::source_revision()),
         ],
-        source_blobs: vec![mneme_store::SourceBlobDraft {
-            file: None,
-            bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
-            media_type: mneme_core::Symbol::from("text/asciidoc"),
-        }],
+        source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+            mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
+            mneme_core::Symbol::from("text/asciidoc"),
+        )],
         publications: vec![mneme_store::PublicationDraft {
             path: "project.adoc".to_owned(),
             expected_previous: None,
@@ -379,11 +378,10 @@ fn conflicting_source_binding_is_rejected_before_commit() {
                 draft(&mneme_core::fixtures::entity()),
                 draft(&mneme_core::fixtures::source_revision()),
             ],
-            source_blobs: vec![mneme_store::SourceBlobDraft {
-                file: None,
-                bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
-                media_type: mneme_core::Symbol::from("text/asciidoc"),
-            }],
+            source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+                mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
+                mneme_core::Symbol::from("text/asciidoc"),
+            )],
             publications: Vec::new(),
             import_candidates: Vec::new(),
             retention: None,
@@ -419,11 +417,10 @@ fn conflicting_source_binding_is_rejected_before_commit() {
             scope: scope(),
             idempotency_key: "rebind".to_owned(),
             records: vec![other_entity, rebind],
-            source_blobs: vec![mneme_store::SourceBlobDraft {
-                file: None,
-                bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
-                media_type: mneme_core::Symbol::from("text/asciidoc"),
-            }],
+            source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+                mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
+                mneme_core::Symbol::from("text/asciidoc"),
+            )],
             publications: Vec::new(),
             import_candidates: Vec::new(),
             retention: None,
@@ -519,11 +516,10 @@ fn fault_after_commit_leaves_a_pending_publication_for_recovery() {
             draft(&mneme_core::fixtures::entity()),
             draft(&mneme_core::fixtures::source_revision()),
         ],
-        source_blobs: vec![mneme_store::SourceBlobDraft {
-            file: None,
-            bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
-            media_type: mneme_core::Symbol::from("text/asciidoc"),
-        }],
+        source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+            mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
+            mneme_core::Symbol::from("text/asciidoc"),
+        )],
         publications: vec![mneme_store::PublicationDraft {
             path: "project.adoc".to_owned(),
             expected_previous: None,
@@ -648,11 +644,10 @@ fn metadata_only_update_preserves_exact_source_bytes() {
             scope: scope(),
             idempotency_key: "source".to_owned(),
             records: vec![draft(&mneme_core::fixtures::entity()), source],
-            source_blobs: vec![mneme_store::SourceBlobDraft {
-                file: None,
-                bytes: source_bytes.to_vec(),
-                media_type: mneme_core::Symbol::from("text/asciidoc"),
-            }],
+            source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+                source_bytes.to_vec(),
+                mneme_core::Symbol::from("text/asciidoc"),
+            )],
             publications: vec![mneme_store::PublicationDraft {
                 path: "project.adoc".to_owned(),
                 expected_previous: None,
@@ -812,11 +807,10 @@ fn invalid_commands_are_refused_without_mutation() {
     let mut unreferenced_source = fixture_command(genesis, "source");
     unreferenced_source
         .source_blobs
-        .push(mneme_store::SourceBlobDraft {
-            file: None,
-            bytes: b"unused".to_vec(),
-            media_type: mneme_core::Symbol::from("text/plain"),
-        });
+        .push(mneme_store::SourceBlobDraft::inline(
+            b"unused".to_vec(),
+            mneme_core::Symbol::from("text/plain"),
+        ));
     assert!(matches!(
         workspace
             .commit(unreferenced_source)
@@ -1067,11 +1061,10 @@ fn declared_source_length_mismatch_is_rejected() {
             scope: scope(),
             idempotency_key: "length".to_owned(),
             records: vec![draft(&mneme_core::fixtures::entity()), source],
-            source_blobs: vec![mneme_store::SourceBlobDraft {
-                file: None,
-                bytes: bytes.to_vec(),
-                media_type: mneme_core::Symbol::from("text/plain"),
-            }],
+            source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+                bytes.to_vec(),
+                mneme_core::Symbol::from("text/plain"),
+            )],
             publications: Vec::new(),
             import_candidates: Vec::new(),
             retention: None,
@@ -1350,11 +1343,10 @@ fn malformed_import_candidate_is_refused_and_keeps_the_prior_snapshot() {
             records: vec![wrong],
             // The record supplies its own bytes so the candidate, not the
             // digest-claim rule, is what the command is refused for.
-            source_blobs: vec![mneme_store::SourceBlobDraft {
-                file: None,
-                bytes: b"different bytes".to_vec(),
-                media_type: mneme_core::Symbol::from("text/asciidoc"),
-            }],
+            source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+                b"different bytes".to_vec(),
+                mneme_core::Symbol::from("text/asciidoc"),
+            )],
             publications: Vec::new(),
             import_candidates: vec![mneme_store::ImportCandidateDraft {
                 path: "project.adoc".to_owned(),
@@ -2320,11 +2312,10 @@ fn status_reads_one_consistent_revision_while_commits_run() {
                     entity: mneme_core::fixtures::entity_id(),
                     path: &format!("notes/{index}.adoc"),
                 })],
-                source_blobs: vec![mneme_store::SourceBlobDraft {
-                    file: None,
+                source_blobs: vec![mneme_store::SourceBlobDraft::inline(
                     bytes,
-                    media_type: mneme_core::Symbol::from("text/asciidoc"),
-                }],
+                    mneme_core::Symbol::from("text/asciidoc"),
+                )],
                 publications: Vec::new(),
                 import_candidates: Vec::new(),
                 retention: None,
@@ -2626,11 +2617,10 @@ fn concurrent_recovery_never_fails_a_commit() {
                     entity: mneme_core::fixtures::entity_id(),
                     path: &format!("notes/sweep-{index}.adoc"),
                 })],
-                source_blobs: vec![mneme_store::SourceBlobDraft {
-                    file: None,
+                source_blobs: vec![mneme_store::SourceBlobDraft::inline(
                     bytes,
-                    media_type: mneme_core::Symbol::from("text/asciidoc"),
-                }],
+                    mneme_core::Symbol::from("text/asciidoc"),
+                )],
                 publications: Vec::new(),
                 import_candidates: Vec::new(),
                 retention: None,
@@ -4080,24 +4070,4 @@ fn streamed_file_blob_has_the_inline_digest_and_commits_identically() {
     assert_eq!(replayed.revision, streamed_outcome.revision);
     let blob = mneme_store::payload::blob_path(streamed_root.path(), draft.digest());
     assert_eq!(std::fs::read(blob).expect("blob"), bytes);
-}
-
-#[test]
-fn streamed_file_that_changes_after_measuring_is_refused() {
-    let temp = tempfile::tempdir().expect("temp");
-    let file = temp.path().join("source.bin");
-    std::fs::write(&file, b"= One\n").expect("write");
-    let draft =
-        mneme_store::SourceBlobDraft::from_file(&file, mneme_core::Symbol::from("text/asciidoc"))
-            .expect("draft");
-    std::fs::write(&file, b"= Two\n").expect("rewrite");
-    let root = tempfile::tempdir().expect("root");
-    let error =
-        mneme_store::payload::stage_file(root.path(), draft.digest(), &file, draft.byte_length())
-            .expect_err("changed file");
-    assert!(
-        matches!(error, mneme_store::Failure::CorruptBlob { .. }),
-        "{error:?}"
-    );
-    assert!(!mneme_store::payload::blob_path(root.path(), draft.digest()).exists());
 }

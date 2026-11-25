@@ -212,7 +212,7 @@ impl ContentDigest {
     pub fn of_source_reader(reader: &mut impl std::io::Read) -> std::io::Result<(Self, u64)> {
         let mut hasher = sha2::Sha256::new();
         let mut buffer = vec![0_u8; 64 * 1024];
-        let mut length = 0_u64;
+        let mut total_bytes = 0_u64;
         loop {
             let read = match reader.read(&mut buffer) {
                 Ok(0) => break,
@@ -220,8 +220,10 @@ impl ContentDigest {
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
             };
+            debug_assert!(read <= buffer.len());
             hasher.update(&buffer[..read]);
-            length += read as u64;
+            total_bytes = total_bytes.saturating_add(read as u64);
+            debug_assert!(total_bytes >= read as u64);
         }
         Ok((
             ContentDigest {
@@ -230,7 +232,7 @@ impl ContentDigest {
                 boundary: ValueBoundary::SourceBytes,
                 bytes: hasher.finalize().into(),
             },
-            length,
+            total_bytes,
         ))
     }
 

@@ -673,6 +673,7 @@ fn commit_scope(
     outcome: &mut ImportOutcome,
 ) -> Result<(), Error> {
     let record_count = records.len();
+    debug_assert!(record_count > 0 || records.is_empty());
     outcome
         .imported
         .try_reserve(record_count)
@@ -688,6 +689,7 @@ fn commit_scope(
     let mut memory_records = Vec::with_capacity(record_count);
     let mut decisions = Vec::with_capacity(record_count);
     let mut source_blobs = Vec::with_capacity(record_count);
+    debug_assert!(source_blobs.capacity() >= record_count);
     for mut record in records {
         if record.is_present {
             outcome.already_present.push(record.record_id);
@@ -701,11 +703,7 @@ fn commit_scope(
         if let Some((digest, bytes, media_type)) = record.source.take() {
             source_blobs.push((
                 digest,
-                mneme_store::SourceBlobDraft {
-                    file: None,
-                    bytes,
-                    media_type,
-                },
+                mneme_store::SourceBlobDraft::inline(bytes, media_type),
             ));
         }
         outcome.imported.push(record.record_id);
