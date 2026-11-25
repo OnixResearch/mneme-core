@@ -75,13 +75,22 @@ impl Acquisition {
         value: &crate::typed::Value,
         path: &crate::problem::Path,
     ) -> Result<Self, crate::problem::Diagnostic> {
+        debug_assert!(!matches!(value, crate::typed::Value::Embedded(_)));
         if value.as_record().is_some() {
             return DerivedAcquisition::from_value(value, path).map(|_| Acquisition::Derived);
         }
         let Some(symbol) = value.as_symbol() else {
             return Err(type_error(path, "acquisition symbol"));
         };
-        match symbol.as_str() {
+        debug_assert!(!symbol.as_str().is_empty() || symbol.as_str().is_empty());
+        Self::from_symbol_str(symbol.as_str(), path)
+    }
+
+    fn from_symbol_str(
+        symbol: &str,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
+        match symbol {
             "authored" => Ok(Acquisition::Authored),
             "imported" | "authenticated-import-v1" => Ok(Acquisition::Imported),
             "captured" => Ok(Acquisition::Captured),

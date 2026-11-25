@@ -1881,7 +1881,9 @@ fn build_source_with_provenance_and_predecessor(
     provenance: SourceProvenance<'_>,
 ) -> crate::failure::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
     let payload = source_payload(options, provenance)?;
+    debug_assert!(!options.media_type.is_empty());
     let schema_version = if provenance.acquisition == mneme_core::Acquisition::Derived {
+        debug_assert!(provenance.derivation.is_some());
         mneme_core::DERIVED_ACQUISITION_SCHEMA_VERSION
     } else {
         5

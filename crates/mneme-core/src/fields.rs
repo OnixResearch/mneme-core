@@ -926,11 +926,8 @@ pub fn validate_field(
         }
         FieldType::Extraction => validate_extraction_field(value, path),
         FieldType::IncludeMap => validate_include_map_field(value, path, index),
-        FieldType::Acquisition => {
-            parsed(crate::lineage::Acquisition::from_symbol_value, value, path)
-        }
-        FieldType::DerivableAcquisition => {
-            parsed(crate::lineage::Acquisition::from_value, value, path)
+        FieldType::Acquisition | FieldType::DerivableAcquisition => {
+            validate_acquisition_field(ty, value, path)
         }
         FieldType::MediaExtent => parsed(crate::lineage::MediaExtent::from_value, value, path),
         FieldType::MediaTransform => {
@@ -1121,6 +1118,18 @@ fn validate_valid_time_field(
 }
 
 /// Diagnostics from parsing `value` as one typed field.
+fn validate_acquisition_field(
+    ty: FieldType,
+    value: &crate::typed::Value,
+    path: &crate::problem::Path,
+) -> Vec<crate::problem::Diagnostic> {
+    if matches!(ty, FieldType::Acquisition) {
+        parsed(crate::lineage::Acquisition::from_symbol_value, value, path)
+    } else {
+        parsed(crate::lineage::Acquisition::from_value, value, path)
+    }
+}
+
 fn parsed<T>(
     parse: fn(&crate::typed::Value, &crate::problem::Path) -> Result<T, crate::problem::Diagnostic>,
     value: &crate::typed::Value,
@@ -1436,16 +1445,16 @@ fn validate_derived_acquisition(
     payload: &std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
     path: &crate::problem::Path,
 ) -> Vec<crate::problem::Diagnostic> {
+    debug_assert!(payload.contains_key(&crate::typed::Symbol::from("acquisition")));
     let named = payload
         .get(&crate::typed::Symbol::from("acquisition"))
-        .and_then(|value| {
-            crate::lineage::DerivedAcquisition::from_value(value, &path.field("acquisition")).ok()
+        .and_then(|v| {
+            crate::lineage::DerivedAcquisition::from_value(v, &path.field("acquisition")).ok()
         });
     let pinned = payload
         .get(&crate::typed::Symbol::from("derived-from"))
-        .and_then(|value| {
-            crate::lineage::SourcePin::from_value(value, &path.field("derived-from")).ok()
-        });
+        .and_then(|v| crate::lineage::SourcePin::from_value(v, &path.field("derived-from")).ok());
+    debug_assert!(named.is_some());
     match (named, pinned) {
         (Some(named), Some(pinned)) if named.source() != pinned => vec![domain_error(
             &path.field("derived-from"),
