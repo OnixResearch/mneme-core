@@ -2903,3 +2903,421 @@ fn absence_is_established_only_for_a_complete_declared_current_answer() {
         Err(mneme_datalog::Error::UnknownPredicate(_))
     ));
 }
+
+fn typed_entity_payload(entity_type: &str, label: &str) -> mneme_core::Payload {
+    mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("entity-type"),
+            mneme_core::Value::symbol(entity_type),
+        ),
+        (
+            mneme_core::Symbol::from("label"),
+            mneme_core::Value::string(label.to_owned()),
+        ),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::dictionary([]),
+        ),
+    ])
+}
+
+fn typed_relation_payload(
+    relation_type: &str,
+    from: mneme_core::RecordId,
+    to: mneme_core::RecordId,
+) -> mneme_core::Payload {
+    mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("relation-type"),
+            mneme_core::Value::symbol(relation_type),
+        ),
+        (
+            mneme_core::Symbol::from("from"),
+            mneme_core::Reference::local(from, mneme_core::RecordKind::Entity).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("to"),
+            mneme_core::Reference::local(to, mneme_core::RecordKind::Entity).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::dictionary([]),
+        ),
+    ])
+}
+
+fn indexed_rid(tag: u16) -> mneme_core::RecordId {
+    let mut bytes = [0_u8; 16];
+    let [hi, lo] = tag.to_be_bytes();
+    bytes[0] = 0x55;
+    bytes[14] = hi;
+    bytes[15] = lo;
+    mneme_core::RecordId::from_bytes(bytes)
+}
+
+fn indexed_rev(tag: u16) -> mneme_core::RevisionId {
+    let mut bytes = [0_u8; 16];
+    let [hi, lo] = tag.to_be_bytes();
+    bytes[0] = 0x66;
+    bytes[14] = hi;
+    bytes[15] = lo;
+    mneme_core::RevisionId::from_bytes(bytes)
+}
+
+#[test]
+fn unfactored_five_atom_entity_relation_query_completes_under_default_limits() {
+    let mut harness = Harness::new();
+    let mut records = Vec::new();
+    let mut next_tag = 1_u16;
+
+    let mut push_entity = |entity_type: &str, label: String| -> mneme_core::RecordId {
+        let id = indexed_rid(next_tag);
+        let rev_id = indexed_rev(next_tag);
+        next_tag = next_tag.saturating_add(1);
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: id,
+            revision_id: rev_id,
+            predecessor: None,
+            scope: scope(),
+            payload: typed_entity_payload(entity_type, &label),
+        });
+        id
+    };
+
+    let papers = (0..25_usize)
+        .map(|idx| push_entity("paper", format!("Paper {idx}")))
+        .collect::<Vec<_>>();
+    let principles = (0..25_usize)
+        .map(|idx| push_entity("principle", format!("Principle {idx}")))
+        .collect::<Vec<_>>();
+    let classes = (0..10_usize)
+        .map(|idx| push_entity("problem_class", format!("Class {idx}")))
+        .collect::<Vec<_>>();
+    for idx in 0..20_usize {
+        push_entity("note", format!("Note {idx}"));
+    }
+
+    let mut push_relation =
+        |relation_type: &str, from: mneme_core::RecordId, to: mneme_core::RecordId| {
+            let id = indexed_rid(next_tag);
+            let rev_id = indexed_rev(next_tag);
+            next_tag = next_tag.saturating_add(1);
+            records.push(mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Relation,
+                record_id: id,
+                revision_id: rev_id,
+                predecessor: None,
+                scope: scope(),
+                payload: typed_relation_payload(relation_type, from, to),
+            });
+        };
+
+    for (idx, &paper) in papers.iter().enumerate() {
+        for offset in 0..2_usize {
+            push_relation("in_class", paper, classes[(idx + offset) % classes.len()]);
+        }
+    }
+    for (idx, &principle) in principles.iter().enumerate() {
+        for offset in 0..2_usize {
+            push_relation(
+                "in_class",
+                principle,
+                classes[(idx + offset) % classes.len()],
+            );
+        }
+    }
+    for idx in 0..14_usize {
+        push_relation("bridged", papers[idx], principles[idx]);
+    }
+    assert_eq!(records.len(), 194);
+    harness.commit("bridge-corpus", records, Vec::new());
+
+    let sym = |name: &str| constant(mneme_core::Value::symbol(name));
+    let unfactored = bundle(
+        vec![mneme_datalog::Rule::new(
+            "unbridged_candidate",
+            atom(
+                "unbridged_candidate",
+                vec![var("paper"), var("principle"), var("class")],
+            ),
+            vec![
+                mneme_datalog::Literal::Positive(atom(
+                    "entity",
+                    vec![var("paper"), sym("paper"), var("p_label")],
+                )),
+                mneme_datalog::Literal::Positive(atom(
+                    "entity",
+                    vec![var("principle"), sym("principle"), var("pr_label")],
+                )),
+                mneme_datalog::Literal::Positive(atom(
+                    "entity",
+                    vec![var("class"), sym("problem_class"), var("c_label")],
+                )),
+                mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("in_class"), var("paper"), var("class")],
+                )),
+                mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("in_class"), var("principle"), var("class")],
+                )),
+                mneme_datalog::Literal::Negative(atom(
+                    "relation",
+                    vec![sym("bridged"), var("paper"), var("principle")],
+                )),
+            ],
+        )],
+        &["relation"],
+    );
+
+    let factored = bundle(
+        vec![
+            mneme_datalog::Rule::new(
+                "paper_in_class",
+                atom("paper_in_class", vec![var("paper"), var("class")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "entity",
+                        vec![var("paper"), sym("paper"), var("p_label")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("in_class"), var("paper"), var("class")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "entity",
+                        vec![var("class"), sym("problem_class"), var("c_label")],
+                    )),
+                ],
+            ),
+            mneme_datalog::Rule::new(
+                "principle_in_class",
+                atom("principle_in_class", vec![var("principle"), var("class")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "entity",
+                        vec![var("principle"), sym("principle"), var("pr_label")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("in_class"), var("principle"), var("class")],
+                    )),
+                ],
+            ),
+            mneme_datalog::Rule::new(
+                "unbridged_candidate",
+                atom(
+                    "unbridged_candidate",
+                    vec![var("paper"), var("principle"), var("class")],
+                ),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "paper_in_class",
+                        vec![var("paper"), var("class")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "principle_in_class",
+                        vec![var("principle"), var("class")],
+                    )),
+                    mneme_datalog::Literal::Negative(atom(
+                        "relation",
+                        vec![sym("bridged"), var("paper"), var("principle")],
+                    )),
+                ],
+            ),
+        ],
+        &["relation"],
+    );
+
+    let default_limits = mneme_datalog::Limits::default();
+    let unfactored_build = harness.build_with_limits(unfactored, default_limits.clone());
+    assert_eq!(
+        unfactored_build.status(),
+        mneme_datalog::ExecutionStatus::Complete
+    );
+    assert!(!unfactored_build.limit_reached());
+    assert!(
+        unfactored_build.work() < 20_000,
+        "expected indexed unfactored build well under 100k default limit, got {}",
+        unfactored_build.work()
+    );
+
+    let factored_build = harness.build_with_limits(factored, default_limits);
+    assert_eq!(
+        factored_build.status(),
+        mneme_datalog::ExecutionStatus::Complete
+    );
+
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+    let unfactored_rows = service
+        .query_build(
+            &unfactored_build,
+            mneme_datalog::Query::all("unbridged_candidate", 500),
+        )
+        .expect("unfactored query");
+    let factored_rows = service
+        .query_build(
+            &factored_build,
+            mneme_datalog::Query::all("unbridged_candidate", 500),
+        )
+        .expect("factored query");
+
+    assert!(unfactored_rows.exhaustive);
+    assert!(factored_rows.exhaustive);
+    assert!(!unfactored_rows.rows.is_empty());
+    let unfactored_values = unfactored_rows
+        .rows
+        .iter()
+        .map(|row| row.values.clone())
+        .collect::<Vec<_>>();
+    let factored_values = factored_rows
+        .rows
+        .iter()
+        .map(|row| row.values.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(unfactored_values, factored_values);
+}
+
+#[test]
+fn cyclic_triangle_and_permuted_body_orders_complete_with_identical_results() {
+    let mut harness = Harness::new();
+    let mut records = Vec::new();
+    let mut next_tag = 1_u16;
+    let nodes = (0..12_usize)
+        .map(|idx| {
+            let id = indexed_rid(next_tag);
+            let rev_id = indexed_rev(next_tag);
+            next_tag = next_tag.saturating_add(1);
+            records.push(mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Entity,
+                record_id: id,
+                revision_id: rev_id,
+                predecessor: None,
+                scope: scope(),
+                payload: typed_entity_payload("node", &format!("N{idx}")),
+            });
+            id
+        })
+        .collect::<Vec<_>>();
+    for idx in 0..nodes.len() {
+        for step in [1_usize, 2, 4] {
+            let id = indexed_rid(next_tag);
+            let rev_id = indexed_rev(next_tag);
+            next_tag = next_tag.saturating_add(1);
+            records.push(mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Relation,
+                record_id: id,
+                revision_id: rev_id,
+                predecessor: None,
+                scope: scope(),
+                payload: typed_relation_payload(
+                    "depends",
+                    nodes[idx],
+                    nodes[(idx + step) % nodes.len()],
+                ),
+            });
+        }
+    }
+    let blocked_id = indexed_rid(next_tag);
+    let blocked_rev = indexed_rev(next_tag);
+    records.push(mneme_store::RecordDraft {
+        schema_version: 1,
+        kind: mneme_core::RecordKind::Relation,
+        record_id: blocked_id,
+        revision_id: blocked_rev,
+        predecessor: None,
+        scope: scope(),
+        payload: typed_relation_payload("blocked", nodes[0], nodes[1]),
+    });
+    harness.commit("cyclic-graph", records, Vec::new());
+
+    let sym = |name: &str| constant(mneme_core::Value::symbol(name));
+    let forward = bundle(
+        vec![mneme_datalog::Rule::new(
+            "triangle",
+            atom("triangle", vec![var("a"), var("b"), var("c")]),
+            vec![
+                mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("depends"), var("a"), var("b")],
+                )),
+                mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("depends"), var("b"), var("c")],
+                )),
+                mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("depends"), var("c"), var("a")],
+                )),
+                mneme_datalog::Literal::Negative(atom(
+                    "relation",
+                    vec![sym("blocked"), var("a"), var("b")],
+                )),
+            ],
+        )],
+        &["relation"],
+    );
+    let reversed = bundle(
+        vec![mneme_datalog::Rule::new(
+            "triangle",
+            atom("triangle", vec![var("a"), var("b"), var("c")]),
+            vec![
+                mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("depends"), var("c"), var("a")],
+                )),
+                mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("depends"), var("b"), var("c")],
+                )),
+                mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("depends"), var("a"), var("b")],
+                )),
+                mneme_datalog::Literal::Negative(atom(
+                    "relation",
+                    vec![sym("blocked"), var("a"), var("b")],
+                )),
+            ],
+        )],
+        &["relation"],
+    );
+
+    let forward_build = harness.build_with_limits(forward, mneme_datalog::Limits::default());
+    let reversed_build = harness.build_with_limits(reversed, mneme_datalog::Limits::default());
+    assert_eq!(
+        forward_build.status(),
+        mneme_datalog::ExecutionStatus::Complete
+    );
+    assert_eq!(
+        reversed_build.status(),
+        mneme_datalog::ExecutionStatus::Complete
+    );
+
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+    let forward_res = service
+        .query_build(&forward_build, mneme_datalog::Query::all("triangle", 500))
+        .expect("forward query");
+    let reversed_res = service
+        .query_build(&reversed_build, mneme_datalog::Query::all("triangle", 500))
+        .expect("reversed query");
+    assert!(forward_res.exhaustive);
+    assert!(reversed_res.exhaustive);
+    assert!(!forward_res.rows.is_empty());
+    let forward_values = forward_res
+        .rows
+        .iter()
+        .map(|row| row.values.clone())
+        .collect::<Vec<_>>();
+    let reversed_values = reversed_res
+        .rows
+        .iter()
+        .map(|row| row.values.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(forward_values, reversed_values);
+}
