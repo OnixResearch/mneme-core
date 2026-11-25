@@ -1,6 +1,6 @@
 //! Integration tests for read-only workspace integrity verification.
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/fixture code fails by panic, not a production path
 
 mod common;
 
@@ -23,7 +23,8 @@ fn populated_workspace(root: &std::path::Path) -> mneme_store::Workspace {
         bytes: b"retained source payload bytes for scrub test".to_vec(),
         media_type: mneme_core::Symbol::from("text/asciidoc"),
     }];
-    workspace.commit(command).expect("commit retained source");
+    let second = workspace.commit(command).expect("commit retained source");
+    assert_eq!(second.sequence, 2);
     workspace
 }
 
@@ -195,4 +196,36 @@ fn tampered_manifest_digest_fails_chain_verification() {
         "issues: {:?}",
         report.issues
     );
+}
+
+#[test]
+fn dangling_source_blob_is_detected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = populated_workspace(dir.path());
+    drop(workspace);
+
+    let source_digest =
+        mneme_core::ContentDigest::of_source_bytes(b"retained source payload bytes for scrub test");
+    let ledger = dir.path().join(mneme_store::LEDGER_FILE);
+    let conn = rusqlite::Connection::open(&ledger).expect("open sqlite");
+    conn.execute(
+        "DELETE FROM blobs WHERE digest = ?1",
+        rusqlite::params![source_digest.as_bytes().as_slice()],
+    )
+    .expect("delete source blob row");
+    drop(conn);
+
+    let report =
+        mneme_store::verify_workspace(dir.path(), mneme_store::VerifyMode::Full).expect("verify");
+    assert!(!report.is_healthy());
+    let issue = report
+        .issues
+        .iter()
+        .find(|issue| issue.kind == mneme_store::IssueKind::DanglingSourceBlob)
+        .expect("dangling source blob issue");
+    assert_eq!(
+        issue.digest.as_deref(),
+        Some(source_digest.to_hex().as_str())
+    );
+    assert!(!issue.records.is_empty());
 }

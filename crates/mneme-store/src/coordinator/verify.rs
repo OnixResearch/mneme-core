@@ -257,8 +257,7 @@ impl Scrub<'_> {
         self.check_records()?;
         self.check_blobs()?;
         self.check_source_references()?;
-        let head_blobs = self.check_revisions()?;
-        self.check_head_blobs(&head_blobs)?;
+        self.check_revisions()?;
         self.check_journal_digests()?;
         self.find_orphans()?;
         self.attach_owners();
@@ -464,6 +463,8 @@ impl Scrub<'_> {
         if self.mode != VerifyMode::Full {
             return Ok(());
         }
+        let forgotten = super::sweep::forgotten_suppressions_in(self.connection)?;
+        let active_head = self.active_head_records()?;
         let envelopes: Vec<([u8; 32], Vec<String>)> = self
             .record_owners
             .iter()
@@ -492,7 +493,24 @@ impl Scrub<'_> {
                         sources
                             .entry(*source.as_bytes())
                             .or_default()
-                            .extend(owners);
+                            .extend(owners.clone());
+                        let is_active =
+                            active_head.contains(&(record.record_id, record.revision_id));
+                        let is_forgotten = forgotten.matches(record.record_id, record.revision_id);
+                        if is_active
+                            && !is_forgotten
+                            && !self.blob_digests.contains(source.as_bytes())
+                        {
+                            let mut issue = blob_issue(
+                                IssueKind::DanglingSourceBlob,
+                                &source.to_hex(),
+                                Some(self.relative(&crate::payload::blob_path(self.root, source))),
+                                "active source-revision references a retained source blob the ledger does not hold"
+                                    .to_owned(),
+                            );
+                            issue.records = owners;
+                            self.push(issue);
+                        }
                     }
                 }
                 Err(reason) => {
@@ -511,6 +529,32 @@ impl Scrub<'_> {
             self.record_owners.entry(digest).or_default().extend(owners);
         }
         Ok(())
+    }
+
+    fn active_head_records(
+        &self,
+    ) -> crate::error::Result<
+        std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    > {
+        let context = mneme_core::WorkspaceRevisionId::from_bytes([0; 16]);
+        let mut statement = self.connection.prepare(
+            "SELECT record_id, revision_id FROM record_membership WHERE last_sequence IS NULL",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut active = std::collections::BTreeSet::new();
+        for (record_bytes, revision_bytes) in rows {
+            if let (Ok(record_id), Ok(revision_id)) = (
+                super::record_id_from_blob(&record_bytes, context),
+                super::revision_id_from_blob(&revision_bytes, context),
+            ) {
+                active.insert((record_id, revision_id));
+            }
+        }
+        Ok(active)
     }
 
     /// Check 3: the chain, every manifest, and the head's blob set.
@@ -645,7 +689,7 @@ impl Scrub<'_> {
     #[allow(clippy::type_complexity)] // one local row shape
     fn journal(&mut self) -> crate::error::Result<Vec<(i64, mneme_core::ContentDigest, String)>> {
         let mut statement = self.connection.prepare(
-            "SELECT c.revision_sequence, c.digest, b.profile, b.boundary, c.change
+            "SELECT c.revision_sequence, c.digest, b.algorithm, b.profile, b.boundary, c.change
              FROM revision_blob_changes c
              JOIN blobs b ON b.digest = c.digest
              ORDER BY c.revision_sequence, c.digest",
@@ -658,55 +702,39 @@ impl Scrub<'_> {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        let context = mneme_core::WorkspaceRevisionId::from_bytes([0; 16]);
         let mut journal = Vec::with_capacity(rows.len());
-        for (sequence, digest, profile, boundary, change) in rows {
-            match super::digest_with(&digest, &profile, &boundary, context) {
-                Ok(digest) => journal.push((sequence, digest, change)),
-                Err(error) => self.push(blob_issue(
+        for (sequence, digest, algorithm, profile, boundary, change) in rows {
+            let parsed = <[u8; 32]>::try_from(digest.as_slice())
+                .ok()
+                .and_then(|bytes| {
+                    parse_digest(
+                        &BlobRow {
+                            digest: Vec::new(),
+                            algorithm: algorithm.clone(),
+                            profile: profile.clone(),
+                            boundary: boundary.clone(),
+                            byte_length: 0,
+                        },
+                        bytes,
+                    )
+                });
+            match parsed {
+                Some(digest) => journal.push((sequence, digest, change)),
+                None => self.push(blob_issue(
                     IssueKind::UnsupportedBlob,
                     &hex(&digest),
                     None,
-                    format!("blob-set journal row at sequence {sequence}: {error}"),
+                    format!(
+                        "blob-set journal row at sequence {sequence} has unsupported algorithm {algorithm:?}, profile {profile:?}, or boundary {boundary:?}"
+                    ),
                 )),
             }
         }
         Ok(journal)
-    }
-
-    /// Check 2c: every blob the head manifest requires has a row, and a record
-    /// source the head requires is accounted for.
-    fn check_head_blobs(
-        &mut self,
-        head: &Option<std::collections::BTreeSet<mneme_core::ContentDigest>>,
-    ) -> crate::error::Result<()> {
-        let Some(required) = head else {
-            return Ok(());
-        };
-        let missing: Vec<mneme_core::ContentDigest> = required
-            .iter()
-            .filter(|digest| !self.blob_digests.contains(digest.as_bytes()))
-            .copied()
-            .collect();
-        for digest in missing {
-            let mut issue = blob_issue(
-                IssueKind::DanglingSourceBlob,
-                &digest.to_hex(),
-                Some(self.relative(&crate::payload::blob_path(self.root, digest))),
-                "the head manifest requires this blob but the ledger holds no row for it"
-                    .to_owned(),
-            );
-            issue.records = self
-                .record_owners
-                .get(digest.as_bytes())
-                .cloned()
-                .unwrap_or_default();
-            self.push(issue);
-        }
-        Ok(())
     }
 
     /// Journal rows whose digest has no ledger row would silently drop out of
