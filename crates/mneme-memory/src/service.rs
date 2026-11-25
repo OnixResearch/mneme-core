@@ -1812,6 +1812,7 @@ pub fn build_source(
             payload: mneme_core::Payload::new(entries),
         },
         mneme_store::SourceBlobDraft {
+            file: None,
             bytes: bytes.to_vec(),
             media_type: mneme_core::Symbol::from(media_type),
         },
@@ -1857,6 +1858,7 @@ fn build_source_with_provenance_and_predecessor(
             payload,
         },
         mneme_store::SourceBlobDraft {
+            file: None,
             bytes: options.bytes.to_vec(),
             media_type: mneme_core::Symbol::from(options.media_type),
         },

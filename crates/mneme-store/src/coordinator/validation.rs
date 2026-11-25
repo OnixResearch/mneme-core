@@ -222,6 +222,8 @@ pub(super) fn validate_sources(
     for source in supplied {
         let digest = source.digest();
         if let Some(existing) = supplied_digests.insert(digest, source)
+            && existing.file.is_none()
+            && source.file.is_none()
             && existing.bytes != source.bytes
         {
             return Err(crate::error::Failure::InvalidCommand(
@@ -236,11 +238,11 @@ pub(super) fn validate_sources(
         };
         referenced.insert(digest);
         if let Some(source) = supplied_digests.get(&digest) {
-            if source.bytes.len() as u64 != declared_length {
+            if source.byte_length() != declared_length {
                 return Err(crate::error::Failure::SourceLengthMismatch {
                     digest: digest.to_hex(),
                     declared: declared_length,
-                    supplied: source.bytes.len() as u64,
+                    supplied: source.byte_length(),
                 });
             }
             if source.media_type != media_type {

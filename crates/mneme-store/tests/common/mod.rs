@@ -43,6 +43,7 @@ pub fn fixture_command(
             .map(draft)
             .collect(),
         source_blobs: vec![mneme_store::SourceBlobDraft {
+            file: None,
             bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
             media_type: mneme_core::Symbol::from("text/asciidoc"),
         }],
@@ -144,6 +145,7 @@ pub fn record_command(
 
 pub fn source_blob(bytes: &[u8]) -> mneme_store::SourceBlobDraft {
     mneme_store::SourceBlobDraft {
+        file: None,
         bytes: bytes.to_vec(),
         media_type: mneme_core::Symbol::from("text/asciidoc"),
     }

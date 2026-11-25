@@ -158,6 +158,7 @@ fn source_blobs(
                 });
             }
             Ok(crate::SourceBlobDraft {
+                file: None,
                 bytes,
                 media_type: retained.media_type().clone(),
             })

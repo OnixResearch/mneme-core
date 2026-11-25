@@ -703,6 +703,7 @@ fn commit_missing_records(
         let bytes = source_bytes.ok_or(ImportCommitError::SourceUnavailable)?;
         records.push(expected_source);
         source_blobs.push(mneme_store::SourceBlobDraft {
+            file: None,
             bytes,
             media_type: mneme_core::Symbol::from(SOURCE_MEDIA_TYPE),
         });

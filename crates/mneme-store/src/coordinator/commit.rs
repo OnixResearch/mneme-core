@@ -386,7 +386,12 @@ impl super::Workspace {
     ) -> crate::error::Result<()> {
         for source in sources {
             let digest = source.digest();
-            let staged_blob = crate::payload::stage(&self.root, digest, &source.bytes)?;
+            let staged_blob = match &source.file {
+                Some(file) => {
+                    crate::payload::stage_file(&self.root, digest, &file.path, file.byte_length)?
+                }
+                None => crate::payload::stage(&self.root, digest, &source.bytes)?,
+            };
             staged.insert(
                 *digest.as_bytes(),
                 (

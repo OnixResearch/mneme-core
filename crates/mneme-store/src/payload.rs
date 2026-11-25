@@ -382,6 +382,94 @@ pub fn stage(
     })
 }
 
+/// Stream the file at `source` into the immutable blob store.
+///
+/// The digest is recomputed while copying and must equal `digest` and the
+/// declared length, so a file that changed after it was measured is refused and
+/// nothing is installed. Memory use is constant.
+pub fn stage_file(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    source: &std::path::Path,
+    byte_length: u64,
+) -> crate::error::Result<StagedBlob> {
+    let target = blob_path(root, digest);
+    if target.exists() {
+        verify(root, digest, byte_length)?;
+        if let Some(parent) = target.parent() {
+            flush_directory(parent)?;
+        }
+        return Ok(StagedBlob {
+            digest,
+            byte_length,
+        });
+    }
+    let parent = target.parent().ok_or_else(|| {
+        crate::error::Failure::InvalidCommand("blob path has no parent".to_owned())
+    })?;
+    create_directory_chain_flushed(parent)?;
+    let staging = root.join(STAGING_DIRECTORY);
+    create_directory_chain_flushed(&staging)?;
+    let temporary = staging.join(format!("{TEMP_PREFIX}{}", random_hex(8)?));
+    let copied = copy_hashed(source, &temporary);
+    let (actual, length) = match copied {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+    };
+    if actual != *digest.as_bytes() || length != byte_length {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "streamed source file does not match its declared digest and length".to_owned(),
+        });
+    }
+    std::fs::rename(&temporary, &target)
+        .map_err(|error| crate::error::Failure::io(&target, error))?;
+    flush_directory(parent)?;
+    Ok(StagedBlob {
+        digest,
+        byte_length,
+    })
+}
+
+/// Copy `source` to a new flushed file at `temporary`, hashing while copying.
+fn copy_hashed(
+    source: &std::path::Path,
+    temporary: &std::path::Path,
+) -> crate::error::Result<([u8; 32], u64)> {
+    use std::io::Read;
+    let mut input =
+        std::fs::File::open(source).map_err(|error| crate::error::Failure::io(source, error))?;
+    let mut output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(temporary)
+        .map_err(|error| crate::error::Failure::io(temporary, error))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut length = 0_u64;
+    loop {
+        let read = match input.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(crate::error::Failure::io(source, error)),
+        };
+        hasher.update(&buffer[..read]);
+        output
+            .write_all(&buffer[..read])
+            .map_err(|error| crate::error::Failure::io(temporary, error))?;
+        length += read as u64;
+    }
+    output
+        .sync_all()
+        .map_err(|error| crate::error::Failure::io(temporary, error))?;
+    Ok((hasher.finalize().into(), length))
+}
+
 /// Whether the blob file exists with the expected byte length.
 ///
 /// Presence is checked from directory metadata alone: a commit that runs inside

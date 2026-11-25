@@ -205,6 +205,35 @@ impl ContentDigest {
         Self::of_value(value, ValueBoundary::Payload)
     }
 
+    /// Digest exact source bytes read incrementally from `reader`.
+    ///
+    /// Memory use is constant; the digest equals [`Self::of_source_bytes`] of
+    /// the same bytes. Returns the digest and the number of bytes read.
+    pub fn of_source_reader(reader: &mut impl std::io::Read) -> std::io::Result<(Self, u64)> {
+        let mut hasher = sha2::Sha256::new();
+        let mut buffer = vec![0_u8; 64 * 1024];
+        let mut length = 0_u64;
+        loop {
+            let read = match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
+            hasher.update(&buffer[..read]);
+            length += read as u64;
+        }
+        Ok((
+            ContentDigest {
+                algorithm: HashAlgorithm::Sha256,
+                profile: EncodingProfile::RawBytesV1,
+                boundary: ValueBoundary::SourceBytes,
+                bytes: hasher.finalize().into(),
+            },
+            length,
+        ))
+    }
+
     /// Digest exact source bytes.
     pub fn of_source_bytes(bytes: &[u8]) -> Self {
         ContentDigest {

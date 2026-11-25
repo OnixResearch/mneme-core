@@ -2427,6 +2427,7 @@ fn invalid_utf8_document(input: InvalidUtf8DocumentInput<'_>) -> PreparedDocumen
         },
         records: Vec::new(),
         source_blob: mneme_store::SourceBlobDraft {
+            file: None,
             bytes: input.bytes.to_vec(),
             media_type: mneme_core::Symbol::from(source_media_type(&input.request.path)),
         },

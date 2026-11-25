@@ -40,6 +40,7 @@ fn fixture_command(
             .map(draft)
             .collect(),
         source_blobs: vec![crate::requests::SourceBlobDraft {
+            file: None,
             bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
             media_type: mneme_core::Symbol::from("text/asciidoc"),
         }],

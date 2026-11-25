@@ -699,7 +699,14 @@ fn commit_scope(
             continue;
         }
         if let Some((digest, bytes, media_type)) = record.source.take() {
-            source_blobs.push((digest, mneme_store::SourceBlobDraft { bytes, media_type }));
+            source_blobs.push((
+                digest,
+                mneme_store::SourceBlobDraft {
+                    file: None,
+                    bytes,
+                    media_type,
+                },
+            ));
         }
         outcome.imported.push(record.record_id);
         memory_records.push(record_to_draft(record));

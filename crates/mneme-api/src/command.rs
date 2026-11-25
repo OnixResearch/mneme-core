@@ -1094,6 +1094,7 @@ fn parse_sources(
                 .to_vec();
             let media_type = fields.text("media-type")?.to_owned();
             Ok(mneme_store::SourceBlobDraft {
+                file: None,
                 bytes,
                 media_type: media_type.as_str().into(),
             })
