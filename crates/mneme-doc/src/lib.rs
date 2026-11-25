@@ -1431,6 +1431,7 @@ struct SourcePreparation<'a> {
     source: SourcePin,
     digest: mneme_core::ContentDigest,
     candidate_id: String,
+    derivation: Option<&'a mneme_core::DerivedAcquisition>,
 }
 
 struct SourceAnalysis {
@@ -1609,6 +1610,54 @@ impl<'w> Documents<'w> {
             },
             fingerprint,
         )?)
+    }
+
+    /// Save supplied derived source bytes and publish them to the managed working file,
+    /// recording `acquisition: derived(source, backend, backend-version)` and `derived-from`.
+    pub fn save_derived_source(
+        &mut self,
+        request: ImportRequest,
+        bytes: &[u8],
+        derivation: &mneme_core::DerivedAcquisition,
+    ) -> Result<DocumentRevision> {
+        validate_import_request(&request)?;
+        derivation.validate().map_err(DocumentError::Invalid)?;
+        let mut options = import_request_options(&request)?;
+        options.push(derivation.to_value());
+        let fingerprint = document_request_fingerprint(&BoundDocumentRequest {
+            operation: "document-save-derived",
+            scope: &request.scope,
+            target: request.document_id,
+            path: Some(&request.path),
+            source_digest: Some(mneme_core::ContentDigest::of_source_bytes(bytes)),
+            options,
+        });
+        if let Some(outcome) = self.workspace.replay_outcome(
+            &request.actor,
+            &request.scope,
+            &request.idempotency_key,
+            &fingerprint,
+        )? {
+            return self.revision_from_outcome(
+                &request.scope,
+                request.document_id,
+                &request.path,
+                outcome,
+            );
+        }
+        let context = DocumentContext::load(self.workspace, Some(request.base_revision))?;
+        let prepared =
+            self.prepare_source_with_derivation(&context, &request, bytes, Some(derivation))?;
+        self.require_valid(&prepared)?;
+        self.commit_prepared(
+            request,
+            prepared,
+            PreparationOptions {
+                publish: true,
+                external_import: false,
+            },
+            fingerprint,
+        )
     }
 
     /// Save supplied source bytes and publish them to the managed working file.
@@ -1981,6 +2030,17 @@ impl<'w> Documents<'w> {
         request: &ImportRequest,
         bytes: &[u8],
     ) -> Result<PreparedDocument> {
+        self.prepare_source_with_derivation(context, request, bytes, None)
+    }
+
+    /// Prepare one candidate against an already loaded base context, with optional derivation.
+    fn prepare_source_with_derivation(
+        &self,
+        context: &DocumentContext,
+        request: &ImportRequest,
+        bytes: &[u8],
+        derivation: Option<&mneme_core::DerivedAcquisition>,
+    ) -> Result<PreparedDocument> {
         let existing = load_existing_document(request, context)?;
         // A dry run must name the identity a real run would use, and for a new
         // document that identity does not exist until the commit assigns it.
@@ -2032,6 +2092,7 @@ impl<'w> Documents<'w> {
             source,
             digest,
             candidate_id,
+            derivation,
         })
     }
 
@@ -2075,7 +2136,7 @@ impl<'w> Documents<'w> {
         Ok(PreparedDocument {
             validated,
             records,
-            source_blob: mneme_memory::build_source(
+            source_blob: build_document_source(
                 preparation.source_id,
                 preparation.source_revision,
                 &preparation.request.scope,
@@ -2085,6 +2146,7 @@ impl<'w> Documents<'w> {
                     entity: analysis.entity,
                     path_hint: Some(&preparation.request.path),
                 },
+                preparation.derivation,
             )?
             .1,
             document_id: preparation.document_id,
@@ -2626,12 +2688,36 @@ fn render_prepared_source(
     })
 }
 
+fn build_document_source(
+    source_id: mneme_core::RecordId,
+    source_revision: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    options: mneme_memory::SourceOptions<'_>,
+    derivation: Option<&mneme_core::DerivedAcquisition>,
+) -> Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
+    match derivation {
+        Some(derivation) => Ok(mneme_memory::build_derived_source(
+            source_id,
+            source_revision,
+            scope,
+            options,
+            derivation,
+        )?),
+        None => Ok(mneme_memory::build_source(
+            source_id,
+            source_revision,
+            scope,
+            options,
+        )?),
+    }
+}
+
 fn build_source_records(
     preparation: &SourcePreparation<'_>,
     analysis: &SourceAnalysis,
 ) -> Result<Vec<mneme_store::RecordDraft>> {
     let request = preparation.request;
-    let mut source_draft = mneme_memory::build_source(
+    let mut source_draft = build_document_source(
         preparation.source_id,
         preparation.source_revision,
         &request.scope,
@@ -2641,6 +2727,7 @@ fn build_source_records(
             entity: analysis.entity,
             path_hint: Some(&request.path),
         },
+        preparation.derivation,
     )?
     .0;
     if let Some(existing) = &preparation.existing {

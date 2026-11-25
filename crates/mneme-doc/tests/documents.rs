@@ -3160,3 +3160,80 @@ fn a_move_and_the_link_updates_it_needs_commit_in_one_revision() {
     assert!(harness.working_file("notes/alpha.md").is_none());
     assert!(harness.working_file("notes/beta.md").is_some());
 }
+
+#[test]
+fn save_derived_source_records_derivation_and_replays_idempotently() {
+    let mut harness = Harness::new();
+    let pdf_pin = mneme_core::SourcePin::new(
+        mneme_core::RecordId::from_bytes([0xd1; 16]),
+        mneme_core::RevisionId::from_bytes([0xe1; 16]),
+    );
+    let (pdf_record, pdf_blob) = mneme_memory::build_captured_source(
+        pdf_pin.source(),
+        pdf_pin.revision(),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"%PDF-1.4 fixture",
+            media_type: "application/pdf",
+            entity: None,
+            path_hint: Some("paper.pdf"),
+        },
+        mneme_core::MediaExtent::Pages { page_count: 1 },
+    )
+    .expect("pdf source");
+    let base = harness.workspace.current_revision().expect("base");
+    harness
+        .workspace
+        .commit(mneme_store::CommitCommand {
+            base,
+            actor: "doc-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "pdf-original".to_owned(),
+            records: vec![pdf_record],
+            source_blobs: vec![pdf_blob],
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit pdf");
+
+    let derivation =
+        mneme_core::DerivedAcquisition::new(pdf_pin, "pdftotext", "24.02.0").expect("derivation");
+    let adoc = b"= Derived Paper\n\n== Introduction\n\nBody text.\n";
+    let base_after_pdf = harness.workspace.current_revision().expect("base2");
+    let request = mneme_doc::ImportRequest {
+        actor: "doc-test".to_owned(),
+        scope: scope(),
+        base_revision: base_after_pdf,
+        idempotency_key: "derive-paper-adoc".to_owned(),
+        document_id: None,
+        path: "derived/paper.adoc".to_owned(),
+        title: Some("Derived Paper".to_owned()),
+        policy: mneme_doc::DocumentPolicy::default(),
+        render_config: mneme_doc::RenderConfig::default(),
+    };
+    let saved = mneme_doc::Documents::new(&mut harness.workspace)
+        .save_derived_source(request.clone(), adoc, &derivation)
+        .expect("save derived source");
+    assert_eq!(saved.path, "derived/paper.adoc");
+    assert_eq!(
+        harness.working_file("derived/paper.adoc").as_deref(),
+        Some(adoc.as_slice())
+    );
+
+    let view = mneme_memory::Engine::new(&mut harness.workspace, mneme_memory::Access::Operator)
+        .view()
+        .expect("memory view");
+    let source = view
+        .source_at(saved.source.source, saved.source.revision)
+        .expect("derived source");
+    assert_eq!(source.acquisition, mneme_core::Acquisition::Derived);
+    assert_eq!(source.derived_from, Some(pdf_pin));
+    assert_eq!(source.derivation.as_ref(), Some(&derivation));
+
+    let replayed = mneme_doc::Documents::new(&mut harness.workspace)
+        .save_derived_source(request, adoc, &derivation)
+        .expect("replay derived source");
+    assert_eq!(replayed.document_id, saved.document_id);
+    assert_eq!(replayed.source, saved.source);
+}
