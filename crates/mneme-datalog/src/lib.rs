@@ -11,6 +11,9 @@ pub const PROFILE_VERSION: &str = "mneme-datalog-profile/v1";
 /// The projection index version for full recomputation.
 pub const INDEX_VERSION: &str = "full-rebuild-v1";
 
+pub mod repl;
+pub use repl::{ReplLimits, ReplSession, ReplSessionRequest, ReplStepSummary};
+
 /// A Datalog term.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Term {
@@ -193,6 +196,8 @@ pub enum Error {
     Failed(String),
     #[error("datalog query is invalid: {0}")]
     InvalidQuery(&'static str),
+    #[error("datalog limit exceeded: {0}")]
+    LimitExceeded(String),
 }
 
 /// Execution status for a build or query.
@@ -350,20 +355,20 @@ pub struct Derivation {
 /// pinned fields against the workspace.
 #[derive(Clone, Debug)]
 pub struct Build {
-    context: BuildContext,
-    status: ExecutionStatus,
-    coverage: Vec<Coverage>,
-    limits: Limits,
-    work: u64,
-    support_truncated: bool,
-    limit_reached: bool,
-    declaration_valid: bool,
-    facts: std::collections::BTreeMap<
+    pub(crate) context: BuildContext,
+    pub(crate) status: ExecutionStatus,
+    pub(crate) coverage: Vec<Coverage>,
+    pub(crate) limits: Limits,
+    pub(crate) work: u64,
+    pub(crate) support_truncated: bool,
+    pub(crate) limit_reached: bool,
+    pub(crate) declaration_valid: bool,
+    pub(crate) facts: std::collections::BTreeMap<
         String,
         std::collections::BTreeMap<Vec<mneme_core::Value>, FactData>,
     >,
-    arities: std::collections::BTreeMap<String, usize>,
-    bundle: RuleBundle,
+    pub(crate) arities: std::collections::BTreeMap<String, usize>,
+    pub(crate) bundle: RuleBundle,
 }
 
 impl Build {
@@ -417,7 +422,7 @@ impl Build {
 }
 
 #[derive(Clone, Debug)]
-struct FactData {
+pub(crate) struct FactData {
     supports: Vec<Derivation>,
     sources: std::collections::BTreeSet<SourceKey>,
     truncated: bool,
@@ -807,7 +812,7 @@ impl<'w> Service<'w> {
             ));
         }
         let suppressions = self.workspace.active_suppressions()?;
-        let current_sources = self.source_availability_overlay(revision)?;
+        let current_sources = source_availability_overlay(self.workspace, revision)?;
         let view = mneme_memory::View::with_retention(
             snapshot,
             self.workspace.root(),
@@ -850,26 +855,6 @@ impl<'w> Service<'w> {
     /// A build of an earlier revision sees that revision's records, but pruning
     /// or erasure that happened afterwards still decides whether its bytes may
     /// be quoted. An empty overlay means the pinned revision is head.
-    fn source_availability_overlay(
-        &self,
-        pinned: mneme_core::WorkspaceRevisionId,
-    ) -> Result<engine::AvailabilityMap, Error> {
-        let mut overlay = engine::AvailabilityMap::new();
-        if self.workspace.current_revision()? == pinned {
-            return Ok(overlay);
-        }
-        let current = self.workspace.snapshot()?;
-        // One entry per snapshot record at most, so the overlay is bounded by
-        // the record count instead of growing per iteration.
-        overlay.extend(current.records.iter().filter_map(|record| {
-            let Ok(source) = mneme_memory::SourceView::parse(record.clone()) else {
-                return None;
-            };
-            Some((record.record_id, source.availability))
-        }));
-        Ok(overlay)
-    }
-
     /// Publish a previously built private projection after a fresh barrier
     /// check. A build whose eligibility generation is no longer current is
     /// rejected without replacing the registered projection.
@@ -1048,7 +1033,27 @@ impl<'w> Service<'w> {
 /// Projections are operational, so a hypothesis scope never widens the view even
 /// when the caller is authorized for it: an excluded record must not ground an
 /// in-scope fact, change a count, or leak its identity into support.
-fn visible_snapshot(
+pub(crate) fn source_availability_overlay(
+    workspace: &mneme_store::Workspace,
+    pinned: mneme_core::WorkspaceRevisionId,
+) -> Result<engine::AvailabilityMap, Error> {
+    let mut overlay = engine::AvailabilityMap::new();
+    if workspace.current_revision()? == pinned {
+        return Ok(overlay);
+    }
+    let current = workspace.snapshot()?;
+    // One entry per snapshot record at most, so the overlay is bounded by
+    // the record count instead of growing per iteration.
+    overlay.extend(current.records.iter().filter_map(|record| {
+        let Ok(source) = mneme_memory::SourceView::parse(record.clone()) else {
+            return None;
+        };
+        Some((record.record_id, source.availability))
+    }));
+    Ok(overlay)
+}
+
+pub(crate) fn visible_snapshot(
     mut snapshot: mneme_store::Snapshot,
     scope: &mneme_core::ScopeId,
     access: &mneme_memory::Access,
@@ -1065,7 +1070,7 @@ fn visible_snapshot(
 }
 
 /// A view-context refusal, with a store refusal kept on its own variant.
-fn view_context_error(error: mneme_memory::EvidenceError) -> Error {
+pub(crate) fn view_context_error(error: mneme_memory::EvidenceError) -> Error {
     match error {
         mneme_memory::EvidenceError::Store(error) => Error::Store(error),
         error @ mneme_memory::EvidenceError::InvalidRecord { .. }
@@ -1077,7 +1082,7 @@ fn view_context_error(error: mneme_memory::EvidenceError) -> Error {
     }
 }
 
-fn validate_query_arity(build: &Build, query: &Query) -> Result<(), Error> {
+pub(crate) fn validate_query_arity(build: &Build, query: &Query) -> Result<(), Error> {
     let arity = build
         .arities
         .get(&query.predicate)
@@ -1109,7 +1114,7 @@ fn validate_query_arity(build: &Build, query: &Query) -> Result<(), Error> {
 ///
 /// Reporting the whole build's coverage made every answer depend on unrelated
 /// extents and left the queried relation unnamed.
-fn dependency_coverage(build: &Build, predicate: &str) -> Vec<Coverage> {
+pub(crate) fn dependency_coverage(build: &Build, predicate: &str) -> Vec<Coverage> {
     let mut needed = std::collections::BTreeSet::new();
     let mut pending = vec![predicate.to_owned()];
     while let Some(current) = pending.pop() {
@@ -1148,7 +1153,7 @@ fn dependency_coverage(build: &Build, predicate: &str) -> Vec<Coverage> {
         .collect()
 }
 
-fn matching_query_rows(build: &Build, query: &Query) -> Vec<QueryRow> {
+pub(crate) fn matching_query_rows(build: &Build, query: &Query) -> Vec<QueryRow> {
     let mut rows = Vec::new();
     if let Some(facts) = build.facts.get(&query.predicate) {
         for (terms, data) in facts {
@@ -1176,7 +1181,7 @@ fn kernel_coverage(status: CoverageStatus) -> mneme_kernel::completeness::Covera
     }
 }
 
-fn query_result(
+pub(crate) fn query_result(
     build: &Build,
     query: &Query,
     coverage: Vec<Coverage>,

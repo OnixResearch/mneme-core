@@ -1462,7 +1462,8 @@ fn parse_base_predicate(
     Ok((name.to_owned(), arity))
 }
 
-fn parse_rule(
+/// Parse one structured Datalog rule from a decoded tagged-JSON value.
+pub fn parse_rule(
     value: &mneme_core::Value,
     path: &mneme_core::Path,
 ) -> crate::error::CallResult<mneme_datalog::Rule> {
