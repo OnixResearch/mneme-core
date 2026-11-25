@@ -10,7 +10,7 @@
     "profile_hash": "b3:0e2e26107a7d6b0042aac93f23a2dbfce2abd5c8943c7a997adac3b0a61dad29",
     "config_hash": "b3:b065a7ffe479551539355f2da753fdc11a7e39910ebdaa1a65a02093ce66d2b1"
   },
-  "baseline_hash": "b3:f5f6d50ce9f82719235e3a7adf3f3e980c79f5c24a825fe3a6fc53c850fc532e",
+  "baseline_hash": "b3:80b0a32d1a81a3228283cf77710c1dd038ef31954a75c3b5f760b1ea98c2d544",
   "findings": [
     {
       "stable_id": "b3:002cd10692d692b9",
@@ -3547,6 +3547,19 @@
       "column": 44,
       "message": "function `quarantine_workspace_file` has 0 assertion(s) in 28 lines (need 2+)",
       "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:224e12ad8da747d4",
+      "semantic_id": "b3:224e12ad8da747d4",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-core/src/lib.rs",
+      "line": 26,
+      "column": 1,
+      "message": "module exposes 25 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_core"
     },
     {
       "stable_id": "b3:2250103787034ecb",
@@ -10127,6 +10140,19 @@
       "crate_name": "mneme_core"
     },
     {
+      "stable_id": "b3:659c2909c706511d",
+      "semantic_id": "b3:659c2909c706511d",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-core/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 108 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_core"
+    },
+    {
       "stable_id": "b3:65a5291221323556",
       "semantic_id": "b3:65a5291221323556",
       "identity_status": "computed",
@@ -11152,19 +11178,6 @@
       "column": 5,
       "message": "2 `usize` parameters are easy to swap by accident",
       "crate_name": "mneme_doc"
-    },
-    {
-      "stable_id": "b3:6df6e3d8411821c0",
-      "semantic_id": "b3:6df6e3d8411821c0",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-core/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 107 public items (limit: 12) — split unrelated public surface into focused modules",
-      "crate_name": "mneme_core"
     },
     {
       "stable_id": "b3:6e43130a0de14fec",
