@@ -3160,3 +3160,232 @@ fn a_move_and_the_link_updates_it_needs_commit_in_one_revision() {
     assert!(harness.working_file("notes/alpha.md").is_none());
     assert!(harness.working_file("notes/beta.md").is_some());
 }
+
+fn commit_entity_record(
+    harness: &mut Harness,
+    id_byte: u8,
+    entity_type: &str,
+    label: &str,
+) -> mneme_core::RecordId {
+    let record_id = mneme_core::RecordId::from_bytes([id_byte; 16]);
+    let payload = mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("entity-type"),
+            mneme_core::Value::symbol(entity_type),
+        ),
+        (
+            mneme_core::Symbol::from("label"),
+            mneme_core::Value::string(label),
+        ),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::symbol_dictionary([]),
+        ),
+    ]);
+    let base = harness.workspace.current_revision().expect("head");
+    harness
+        .workspace
+        .commit(mneme_store::CommitCommand {
+            base,
+            actor: "test".to_owned(),
+            scope: scope(),
+            idempotency_key: format!("entity-{id_byte}"),
+            records: vec![mneme_store::RecordDraft {
+                record_id,
+                revision_id: rev(id_byte),
+                kind: mneme_core::RecordKind::Entity,
+                scope: scope(),
+                schema_version: 1,
+                payload,
+                predecessor: None,
+            }],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit entity");
+    record_id
+}
+
+fn commit_relation_record(
+    harness: &mut Harness,
+    id_byte: u8,
+    relation_type: &str,
+    from: mneme_core::RecordId,
+    to: mneme_core::RecordId,
+) -> mneme_core::WorkspaceRevisionId {
+    let record_id = mneme_core::RecordId::from_bytes([id_byte; 16]);
+    let ref_val = |id: mneme_core::RecordId| {
+        mneme_core::Reference::local(id, mneme_core::RecordKind::Entity).to_value()
+    };
+    let payload = mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("relation-type"),
+            mneme_core::Value::symbol(relation_type),
+        ),
+        (mneme_core::Symbol::from("from"), ref_val(from)),
+        (mneme_core::Symbol::from("to"), ref_val(to)),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::symbol_dictionary([]),
+        ),
+    ]);
+    let base = harness.workspace.current_revision().expect("head");
+    harness
+        .workspace
+        .commit(mneme_store::CommitCommand {
+            base,
+            actor: "test".to_owned(),
+            scope: scope(),
+            idempotency_key: format!("rel-{id_byte}"),
+            records: vec![mneme_store::RecordDraft {
+                record_id,
+                revision_id: rev(id_byte),
+                kind: mneme_core::RecordKind::Relation,
+                scope: scope(),
+                schema_version: 1,
+                payload,
+                predecessor: None,
+            }],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit relation")
+        .revision
+}
+
+#[test]
+fn inline_datalog_standing_query_renders_links_without_mutating_ledger() {
+    let mut harness = Harness::new();
+    let alpha = commit_entity_record(&mut harness, 0x11, "note", "Alpha Note");
+    let repo = commit_entity_record(&mut harness, 0x12, "repo", "mneme-core");
+    commit_relation_record(&mut harness, 0x21, "links_repo", alpha, repo);
+
+    harness.write_file(
+        "notes/moc.adoc",
+        b"= MOC\n\n[mneme-query, relation=proposed_links, limit=25]\n\nEnd of note.\n",
+    );
+    let moc = harness.import(harness.request("moc", None, "notes/moc.adoc", None));
+    let before_rev = harness.workspace.current_revision().expect("before");
+
+    let preview = mneme_doc::Documents::new(&mut harness.workspace)
+        .preview(moc.document_id, None, mneme_doc::RenderConfig::default())
+        .expect("preview");
+
+    assert_eq!(
+        harness.workspace.current_revision().expect("after"),
+        before_rev,
+        "query evaluation must be strictly read-only"
+    );
+    assert!(
+        preview.html.contains("data-relation=\"proposed_links\""),
+        "{}",
+        preview.html
+    );
+    assert!(
+        preview.html.contains("data-status=\"complete\""),
+        "{}",
+        preview.html
+    );
+    assert!(preview.html.contains("Alpha Note"), "{}", preview.html);
+    assert!(preview.html.contains("mneme-core"), "{}", preview.html);
+    assert!(
+        preview
+            .html
+            .contains(&format!("href=\"mneme://record/{}\"", alpha.to_hex())),
+        "{}",
+        preview.html
+    );
+    assert!(preview.html.contains("End of note."), "{}", preview.html);
+}
+
+#[test]
+fn inline_datalog_rule_block_pins_historical_revision_and_negation() {
+    let mut harness = Harness::new();
+    let a = commit_entity_record(&mut harness, 0x31, "note", "Note A");
+    let b = commit_entity_record(&mut harness, 0x32, "note", "Note B");
+    let c = commit_entity_record(&mut harness, 0x33, "note", "Note C");
+    let repo = commit_entity_record(&mut harness, 0x34, "repo", "octet");
+    commit_relation_record(&mut harness, 0x41, "links_repo", a, repo);
+    commit_relation_record(&mut harness, 0x42, "links_repo", b, repo);
+
+    harness.write_file(
+        "notes/query.adoc",
+        b"= Shared\n\n[mneme-query, relation=shared_repo, limit=10]\n----\nshared_repo(X, Y) :- relation(:links_repo, X, T), relation(:links_repo, Y, T), X != Y, not relation(:muted, X, Y).\n----\n",
+    );
+    let doc = harness.import(harness.request("query", None, "notes/query.adoc", None));
+    let rev_at_two = harness.workspace.current_revision().expect("rev1");
+
+    // Add a third entity sharing the same repo at a later revision.
+    commit_relation_record(&mut harness, 0x43, "links_repo", c, repo);
+
+    let historical = mneme_doc::Documents::new(&mut harness.workspace)
+        .preview(
+            doc.document_id,
+            Some(rev_at_two),
+            mneme_doc::RenderConfig::default(),
+        )
+        .expect("historical preview");
+    assert!(historical.html.contains("Note A"), "{}", historical.html);
+    assert!(historical.html.contains("Note B"), "{}", historical.html);
+    assert!(
+        !historical.html.contains("Note C"),
+        "historical preview must not see later revision: {}",
+        historical.html
+    );
+
+    let current = mneme_doc::Documents::new(&mut harness.workspace)
+        .preview(doc.document_id, None, mneme_doc::RenderConfig::default())
+        .expect("current preview");
+    assert!(
+        current.html.contains("Note C"),
+        "current preview should see Note C: {}",
+        current.html
+    );
+}
+
+#[test]
+fn inline_datalog_over_budget_and_invalid_queries_render_non_fatal_diagnostics() {
+    let mut harness = Harness::new();
+    let a = commit_entity_record(&mut harness, 0x51, "note", "One");
+    let b = commit_entity_record(&mut harness, 0x52, "note", "Two");
+    commit_relation_record(&mut harness, 0x61, "links_repo", a, b);
+
+    harness.write_file(
+        "notes/diag.adoc",
+        b"= Diagnostics\n\n[mneme-query, relation=proposed_links, work=1]\n\n[mneme-query, bogus=1]\n\nAfter query.\n",
+    );
+    let doc = harness.import(harness.request("diag", None, "notes/diag.adoc", None));
+
+    let preview = mneme_doc::Documents::new(&mut harness.workspace)
+        .preview(doc.document_id, None, mneme_doc::RenderConfig::default())
+        .expect("preview should not fail");
+
+    assert!(
+        preview.html.contains("mneme-query-diagnostic"),
+        "{}",
+        preview.html
+    );
+    assert!(
+        preview.html.contains("After query."),
+        "rest of document must still render: {}",
+        preview.html
+    );
+    assert!(
+        preview
+            .diagnostics
+            .iter()
+            .any(|d| !d.fatal && d.code == "datalog-query-invalid"),
+        "{:?}",
+        preview.diagnostics
+    );
+    assert!(
+        preview.diagnostics.iter().any(|d| !d.fatal
+            && (d.code == "datalog-query-budget-exceeded" || d.code == "datalog-query-timeout")),
+        "{:?}",
+        preview.diagnostics
+    );
+}

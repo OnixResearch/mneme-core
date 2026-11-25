@@ -420,6 +420,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "mneme-core",
+ "mneme-datalog",
  "mneme-kernel",
  "mneme-memory",
  "mneme-store",

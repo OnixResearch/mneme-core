@@ -47,11 +47,29 @@ struct EncodedImage {
     base64: String,
 }
 
-type ImageLoader<'a> = dyn FnMut(
+pub(crate) type ImageLoader<'a> = dyn FnMut(
         &mneme_core::ScopeId,
         crate::SourcePin,
     ) -> Option<(crate::images::Loaded, crate::images::Decoded)>
     + 'a;
+
+pub(crate) trait PreviewHost {
+    fn load_image(
+        &mut self,
+        scope: &mneme_core::ScopeId,
+        pin: crate::SourcePin,
+    ) -> Option<(crate::images::Loaded, crate::images::Decoded)>;
+
+    fn run_query(
+        &mut self,
+        prepared: &crate::datalog::PreparedQuery,
+    ) -> crate::datalog::QueryOutcome;
+}
+
+enum HostKind<'a> {
+    Full(&'a mut dyn PreviewHost),
+    Images(&'a mut ImageLoader<'a>),
+}
 
 pub(crate) struct Renderer<'a> {
     sources: &'a std::collections::BTreeMap<String, RenderSource>,
@@ -67,8 +85,9 @@ pub(crate) struct Renderer<'a> {
     expanded_bytes: u64,
     include_count: u64,
     inline_bytes: u64,
+    query_count: usize,
     stack: std::collections::BTreeSet<String>,
-    image_loader: Option<&'a mut ImageLoader<'a>>,
+    host: Option<HostKind<'a>>,
     image_cache:
         std::collections::BTreeMap<(mneme_core::ScopeId, crate::SourcePin), Option<EncodedImage>>,
 }
@@ -87,6 +106,7 @@ impl<'a> Renderer<'a> {
         output
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn new(
         sources: &'a std::collections::BTreeMap<String, RenderSource>,
         config: &'a crate::RenderConfig,
@@ -106,8 +126,9 @@ impl<'a> Renderer<'a> {
             expanded_bytes: 0,
             include_count: 0,
             inline_bytes: 0,
+            query_count: 0,
             stack: std::collections::BTreeSet::new(),
-            image_loader: None,
+            host: None,
             image_cache: std::collections::BTreeMap::new(),
         }
     }
@@ -119,7 +140,18 @@ impl<'a> Renderer<'a> {
         image_loader: &'a mut ImageLoader<'a>,
     ) -> Self {
         let mut renderer = Self::new(sources, config, deadline);
-        renderer.image_loader = Some(image_loader);
+        renderer.host = Some(HostKind::Images(image_loader));
+        renderer
+    }
+
+    pub(crate) fn new_with_host(
+        sources: &'a std::collections::BTreeMap<String, RenderSource>,
+        config: &'a crate::RenderConfig,
+        deadline: Option<std::time::Instant>,
+        host: &'a mut dyn PreviewHost,
+    ) -> Self {
+        let mut renderer = Self::new(sources, config, deadline);
+        renderer.host = Some(HostKind::Full(host));
         renderer
     }
 
@@ -433,6 +465,13 @@ impl<'a> Renderer<'a> {
         if cursor.state.apply(line.text) {
             cursor.block_start = line.number;
             cursor.block_buffer.clear();
+            if cursor.pending_query.is_some()
+                && cursor.state.kind() == Some(crate::asciidoc::BlockKind::Listing)
+            {
+                cursor.in_query_block = true;
+            } else if let Some(pending) = cursor.pending_query.take() {
+                self.render_datalog_query(pending, None);
+            }
             return;
         }
         self.render_normal_line(line_context, directives, cursor);
@@ -467,6 +506,24 @@ impl<'a> Renderer<'a> {
         if trimmed.starts_with("//") {
             self.flush_paragraph(cursor);
             return;
+        }
+        if let Some(parsed) = crate::datalog::parse_attribute_line(trimmed) {
+            if let Some(pending) = cursor.pending_query.take() {
+                self.render_datalog_query(pending, None);
+            }
+            self.flush_paragraph(cursor);
+            self.flush_pending_anchor(cursor);
+            cursor.pending_query = Some(PendingQuery {
+                line: line.number,
+                span: line.span(),
+                parsed,
+            });
+            return;
+        }
+        if let Some(pending) = cursor.pending_query.take() {
+            self.flush_paragraph(cursor);
+            self.flush_pending_anchor(cursor);
+            self.render_datalog_query(pending, None);
         }
         if directives.is_header_attribute(line.number, trimmed) {
             self.flush_paragraph(cursor);
@@ -566,10 +623,10 @@ impl<'a> Renderer<'a> {
                 self.unavailable_image(caption, line);
                 return;
             }
-            let loaded = self
-                .image_loader
-                .as_deref_mut()
-                .and_then(|loader| loader(&source.scope, pin));
+            let loaded = self.host.as_mut().and_then(|host| match host {
+                HostKind::Full(h) => h.load_image(&source.scope, pin),
+                HostKind::Images(loader) => loader(&source.scope, pin),
+            });
             let Some((loaded, decoded)) = loaded else {
                 self.image_cache.insert(key.clone(), None);
                 self.unavailable_image(caption, line);
@@ -868,7 +925,17 @@ impl<'a> Renderer<'a> {
         let buffer = std::mem::take(&mut cursor.block_buffer);
         let start = cursor.block_start;
         match kind {
-            crate::asciidoc::BlockKind::Listing | crate::asciidoc::BlockKind::Literal => {
+            crate::asciidoc::BlockKind::Listing => {
+                if cursor.in_query_block {
+                    cursor.in_query_block = false;
+                    if let Some(pending) = cursor.pending_query.take() {
+                        self.render_datalog_query(pending, Some(&buffer));
+                        return;
+                    }
+                }
+                self.push_pre("listing", &buffer);
+            }
+            crate::asciidoc::BlockKind::Literal => {
                 self.push_pre("listing", &buffer);
             }
             crate::asciidoc::BlockKind::Passthrough => {
@@ -901,18 +968,196 @@ impl<'a> Renderer<'a> {
     /// the buffered content is kept and the missing delimiter is reported
     /// instead of dropping the rest of the document without a signal.
     fn close_source_block(&mut self, cursor: &mut SourceCursor<'_>) {
-        let Some(kind) = cursor.state.kind() else {
+        if let Some(kind) = cursor.state.kind() {
+            self.note(crate::asciidoc::Diagnostic::warning(
+                "unterminated-block",
+                "delimited block is not closed; it extends to the end of the source",
+                cursor.block_start,
+                1,
+                None,
+            ));
+            self.finish_block(kind, cursor);
+            cursor.state = crate::asciidoc::BlockState::default();
+        }
+        if let Some(pending) = cursor.pending_query.take() {
+            self.render_datalog_query(pending, None);
+        }
+    }
+
+    fn render_datalog_query(&mut self, pending: PendingQuery, body: Option<&str>) {
+        if self.query_count >= crate::datalog::MAX_INLINE_QUERIES_PER_PREVIEW {
+            let msg = format!(
+                "inline Datalog query limit ({}) reached for this preview",
+                crate::datalog::MAX_INLINE_QUERIES_PER_PREVIEW
+            );
+            self.record_query_error(
+                pending.line,
+                pending.span,
+                "unknown",
+                "datalog-query-limit",
+                &msg,
+            );
+            return;
+        }
+        self.query_count = self.query_count.saturating_add(1);
+        let Ok(spec) = pending.parsed else {
+            let msg = pending.parsed.err().unwrap_or_default();
+            self.record_query_error(
+                pending.line,
+                pending.span,
+                "unknown",
+                "datalog-query-invalid",
+                &msg,
+            );
             return;
         };
+        let prepared = match crate::datalog::prepare(&spec, body) {
+            Ok(prepared) => prepared,
+            Err(msg) => {
+                let rel = spec.relation.as_deref().unwrap_or("unknown");
+                self.record_query_error(
+                    pending.line,
+                    pending.span,
+                    rel,
+                    "datalog-query-invalid",
+                    &msg,
+                );
+                return;
+            }
+        };
+        self.execute_and_render_query(pending.line, pending.span, &prepared);
+    }
+
+    fn record_query_error(
+        &mut self,
+        line: usize,
+        span: Option<mneme_core::SourceSpan>,
+        relation: &str,
+        code: &'static str,
+        message: &str,
+    ) {
         self.note(crate::asciidoc::Diagnostic::warning(
-            "unterminated-block",
-            "delimited block is not closed; it extends to the end of the source",
-            cursor.block_start,
+            code,
+            message.to_owned(),
+            line,
             1,
-            None,
+            span,
         ));
-        self.finish_block(kind, cursor);
-        cursor.state = crate::asciidoc::BlockState::default();
+        self.render_query_diagnostic_html(relation, code, message);
+    }
+
+    fn execute_and_render_query(
+        &mut self,
+        line: usize,
+        span: Option<mneme_core::SourceSpan>,
+        prepared: &crate::datalog::PreparedQuery,
+    ) {
+        let Some(HostKind::Full(host)) = self.host.as_mut() else {
+            let msg = "Datalog query evaluation is unavailable in this preview context";
+            self.record_query_error(
+                line,
+                span,
+                &prepared.relation,
+                "datalog-query-unavailable",
+                msg,
+            );
+            return;
+        };
+        let outcome = host.run_query(prepared);
+        if let Some(mut diag) = outcome.diagnostic.clone() {
+            diag.line = line;
+            diag.span = span;
+            self.note(diag);
+        }
+        self.render_query_outcome_html(&outcome);
+    }
+
+    fn render_query_diagnostic_html(&mut self, relation: &str, code: &str, message: &str) {
+        let rel = escape_html(relation);
+        let code = escape_html(code);
+        let msg = escape_html(message);
+        self.html.push_str(&format!(
+            "<section class=\"mneme-query\" data-relation=\"{rel}\" data-status=\"failed\"><div class=\"mneme-query-diagnostic\" data-code=\"{code}\">{msg}</div></section>"
+        ));
+    }
+
+    fn render_query_outcome_html(&mut self, outcome: &crate::datalog::QueryOutcome) {
+        debug_assert!(!outcome.relation.is_empty());
+        let rel = escape_html(&outcome.relation);
+        let status = escape_html(outcome.status.name());
+        let rev = escape_html(&outcome.revision.to_hex());
+        self.html.push_str(&format!(
+            "<section class=\"mneme-query\" data-relation=\"{rel}\" data-status=\"{status}\" data-revision=\"{rev}\">"
+        ));
+        if let Some(diag) = &outcome.diagnostic {
+            let code = escape_html(diag.code);
+            let msg = escape_html(&diag.message);
+            self.html.push_str(&format!(
+                "<div class=\"mneme-query-diagnostic\" data-code=\"{code}\">{msg}</div>"
+            ));
+        }
+        if outcome.rows.is_empty() {
+            self.html
+                .push_str("<p class=\"mneme-query-empty\">No matching rows.</p></section>");
+            return;
+        }
+        match outcome.layout {
+            crate::datalog::QueryLayout::Table => self.render_query_table_html(outcome),
+            crate::datalog::QueryLayout::List => self.render_query_list_html(outcome),
+        }
+        self.html.push_str("</section>");
+    }
+
+    fn render_query_table_html(&mut self, outcome: &crate::datalog::QueryOutcome) {
+        debug_assert!(!outcome.rows.is_empty());
+        self.html.push_str("<table class=\"mneme-query-table\">");
+        if !outcome.columns.is_empty() {
+            self.html.push_str("<thead><tr>");
+            for col in &outcome.columns {
+                self.html
+                    .push_str(&format!("<th>{}</th>", escape_html(col)));
+            }
+            self.html.push_str("</tr></thead>");
+        }
+        self.html.push_str("<tbody>");
+        for row in &outcome.rows {
+            self.html.push_str("<tr>");
+            for cell in row {
+                self.html.push_str("<td>");
+                self.render_query_cell_html(cell);
+                self.html.push_str("</td>");
+            }
+            self.html.push_str("</tr>");
+        }
+        self.html.push_str("</tbody></table>");
+    }
+
+    fn render_query_list_html(&mut self, outcome: &crate::datalog::QueryOutcome) {
+        debug_assert!(!outcome.rows.is_empty());
+        self.html.push_str("<ul class=\"mneme-query-list\">");
+        for row in &outcome.rows {
+            self.html.push_str("<li>");
+            for (idx, cell) in row.iter().enumerate() {
+                if idx > 0 {
+                    self.html.push_str(" | ");
+                }
+                self.render_query_cell_html(cell);
+            }
+            self.html.push_str("</li>");
+        }
+        self.html.push_str("</ul>");
+    }
+
+    fn render_query_cell_html(&mut self, cell: &crate::datalog::QueryCell) {
+        let display = escape_html(&cell.display);
+        if let Some(target_id) = cell.document_id.or(cell.record_id) {
+            let hex = escape_html(&target_id.to_hex());
+            self.html.push_str(&format!(
+                "<a class=\"mneme-record-link\" href=\"mneme://record/{hex}\" data-record-id=\"{hex}\">{display}</a>"
+            ));
+        } else {
+            self.html.push_str(&display);
+        }
     }
 
     fn flush_pending_anchor(&mut self, cursor: &mut SourceCursor<'_>) {
@@ -1318,9 +1563,17 @@ impl LineDirectives {
     }
 }
 
+struct PendingQuery {
+    line: usize,
+    span: Option<mneme_core::SourceSpan>,
+    parsed: Result<crate::datalog::QuerySpec, String>,
+}
+
 #[derive(Default)]
 struct SourceCursor<'a> {
     pending_anchor: Option<String>,
+    pending_query: Option<PendingQuery>,
+    in_query_block: bool,
     paragraph: Vec<&'a str>,
     skip_before: usize,
     state: crate::asciidoc::BlockState,
