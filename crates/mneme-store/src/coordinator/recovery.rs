@@ -2,6 +2,8 @@
 //! exporting and applying a ledger, its decoding, and the per-revision source
 //! bindings a read or a purge consults.
 
+use rusqlite::OptionalExtension;
+
 impl super::Workspace {
     /// A digest over the current minimal suppression state.
     pub fn suppression_state_digest(&self) -> crate::error::Result<mneme_core::ContentDigest> {
@@ -1141,6 +1143,8 @@ pub(super) fn scope_from_text(text: &str) -> crate::error::Result<mneme_core::Sc
 }
 
 pub(super) fn digest_from_locator(
+    connection: &rusqlite::Connection,
+    root: &std::path::Path,
     kind: &str,
     locator: &str,
 ) -> crate::error::Result<mneme_core::ContentDigest> {
@@ -1154,13 +1158,56 @@ pub(super) fn digest_from_locator(
             )));
         }
     };
+    let algorithm = resolve_locator_algorithm(connection, root, &bytes)?;
     super::digest_with(
         &bytes,
-        mneme_core::HashAlgorithm::default().symbol(),
+        algorithm.symbol(),
         profile,
         boundary,
         mneme_core::WorkspaceRevisionId::from_bytes([0; 16]),
     )
+}
+
+fn resolve_locator_algorithm(
+    connection: &rusqlite::Connection,
+    root: &std::path::Path,
+    digest: &[u8],
+) -> crate::error::Result<mneme_core::HashAlgorithm> {
+    let recorded: Option<String> = connection
+        .query_row(
+            "SELECT algorithm FROM blobs WHERE digest = ?1",
+            rusqlite::params![digest],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(text) = recorded {
+        return mneme_core::HashAlgorithm::parse(&text).ok_or_else(|| {
+            crate::error::Failure::UnsupportedLayout(format!("unknown blob algorithm {text}"))
+        });
+    }
+    if let Ok(key) = super::digest_32(digest) {
+        let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+        let shard = &hex[0..2];
+        if root
+            .join(crate::payload::BLOB_DIRECTORY)
+            .join(mneme_core::hashing::ALGORITHM_SHA256)
+            .join(shard)
+            .join(&hex)
+            .exists()
+        {
+            return Ok(mneme_core::HashAlgorithm::Sha256);
+        }
+        if root
+            .join(crate::payload::BLOB_DIRECTORY)
+            .join(mneme_core::hashing::ALGORITHM_BLAKE3)
+            .join(shard)
+            .join(&hex)
+            .exists()
+        {
+            return Ok(mneme_core::HashAlgorithm::Blake3);
+        }
+    }
+    Ok(mneme_core::HashAlgorithm::Sha256)
 }
 
 pub(super) fn decode_hex(text: &str) -> crate::error::Result<Vec<u8>> {

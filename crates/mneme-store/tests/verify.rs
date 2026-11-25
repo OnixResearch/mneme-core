@@ -656,3 +656,122 @@ fn mixed_sha256_and_blake3_workspace_catches_corruption_in_both_algorithms() {
             && issue.digest.as_deref() == Some(blake3_source.to_hex().as_str())
     }));
 }
+
+#[test]
+fn legacy_sha256_workspace_retention_purge_deletes_sha256_blob() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut workspace = mneme_store::Workspace::create(dir.path(), test_config()).expect("create");
+    let genesis = workspace.current_revision().expect("genesis");
+    let first = source_commit(genesis, "first", 21, b"legacy sha256 source bytes");
+    workspace.commit(first).expect("commit");
+    let record = workspace.snapshot().expect("snap").records[0].clone();
+    drop(workspace);
+
+    let sha_full = convert_workspace_to_legacy_sha256(dir.path(), record.clone());
+    let sha_path = mneme_store::payload::blob_path(dir.path(), sha_full);
+    assert!(sha_path.exists());
+
+    let mut reopened = mneme_store::Workspace::open(dir.path(), test_config()).expect("reopen");
+    let head = reopened.current_revision().expect("head");
+    let sha_source = mneme_core::ContentDigest::of_source_bytes_with(
+        b"legacy sha256 source bytes",
+        mneme_core::HashAlgorithm::Sha256,
+    );
+    let operation_id = "op-forget-legacy";
+    let location_id = "loc-forget-legacy".to_owned();
+    let generation = reopened
+        .snapshot()
+        .expect("reopened snap")
+        .eligibility_generation;
+    reopened
+        .commit(mneme_store::CommitCommand {
+            base: head,
+            actor: "test-author".to_owned(),
+            scope: test_scope(),
+            idempotency_key: "forget-legacy".to_owned(),
+            records: Vec::new(),
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: Some(mneme_store::RetentionCommit {
+                operation_id: operation_id.to_owned(),
+                operation_kind: "forget".to_owned(),
+                policy_version: "1".to_owned(),
+                selectors: Vec::new(),
+                suppressions: vec![mneme_store::RetentionSuppression {
+                    operation_id: operation_id.to_owned(),
+                    target: record.record_id,
+                    revision: None,
+                    target_kind: "source-revision".to_owned(),
+                    mode: mneme_store::SuppressionMode::Forgotten,
+                    content_digest: Some(sha_source),
+                    generation: generation.saturating_add(1),
+                }],
+                locations: vec![mneme_store::RetentionLocationPlan {
+                    location_id: location_id.clone(),
+                    location_kind: "record-blob".to_owned(),
+                    locator: sha_full.to_hex(),
+                }],
+                retained_metadata: Vec::new(),
+            }),
+        })
+        .expect("forget legacy");
+
+    let outcome = reopened
+        .purge_retention_blob(
+            operation_id,
+            &location_id,
+            "record-blob",
+            &sha_full.to_hex(),
+        )
+        .expect("purge legacy");
+    assert_eq!(outcome, mneme_store::BlobPurgeOutcome::Purged);
+    assert!(!sha_path.exists(), "legacy sha256 blob must be deleted");
+}
+
+#[test]
+fn legacy_sha256_working_file_publishes_and_updates_to_blake3() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut workspace = mneme_store::Workspace::create(dir.path(), test_config()).expect("create");
+    let genesis = workspace.current_revision().expect("genesis");
+    let first = source_commit(genesis, "first", 21, b"legacy sha256 source bytes");
+    workspace.commit(first).expect("commit");
+    let record = workspace.snapshot().expect("snap").records[0].clone();
+    drop(workspace);
+
+    let _sha_full = convert_workspace_to_legacy_sha256(dir.path(), record);
+    let legacy_bytes = b"legacy sha256 source bytes";
+    let sha_source = mneme_core::ContentDigest::of_source_bytes_with(
+        legacy_bytes,
+        mneme_core::HashAlgorithm::Sha256,
+    );
+    let working_path = dir.path().join("working").join("notes").join("legacy.adoc");
+    std::fs::create_dir_all(working_path.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&working_path, legacy_bytes).expect("write legacy working file");
+
+    let mut reopened = mneme_store::Workspace::open(dir.path(), test_config()).expect("reopen");
+    let head = reopened.current_revision().expect("head");
+    let updated_bytes = b"updated blake3 content";
+    let cmd = mneme_store::CommitCommand {
+        base: head,
+        actor: "test-author".to_owned(),
+        scope: test_scope(),
+        idempotency_key: "publish-over-legacy".to_owned(),
+        records: Vec::new(),
+        source_blobs: Vec::new(),
+        publications: vec![mneme_store::PublicationDraft {
+            path: "notes/legacy.adoc".to_owned(),
+            expected_previous: Some(sha_source),
+            bytes: updated_bytes.to_vec(),
+        }],
+        import_candidates: Vec::new(),
+        retention: None,
+    };
+    let outcome = reopened.commit(cmd).expect("publish over legacy");
+    assert_eq!(outcome.publications.len(), 1);
+    assert_eq!(
+        outcome.publications[0].state,
+        mneme_store::PublicationState::Published
+    );
+    assert_eq!(std::fs::read(&working_path).expect("read"), updated_bytes);
+}

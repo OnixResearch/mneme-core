@@ -863,10 +863,12 @@ CREATE TABLE IF NOT EXISTS publication_intents (
     revision_sequence INTEGER NOT NULL,
     target_path TEXT NOT NULL,
     expected_digest BLOB,
+    expected_algorithm TEXT,
     desired_digest BLOB NOT NULL,
     eligibility_generation INTEGER NOT NULL,
     state TEXT NOT NULL,
     observed_digest BLOB,
+    observed_algorithm TEXT,
     detail TEXT,
     updated_at_ns INTEGER NOT NULL
 );
@@ -3359,6 +3361,7 @@ fn open_connection(root: &std::path::Path) -> crate::error::Result<rusqlite::Con
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     add_command_fingerprint_column(&connection)?;
     add_revision_manifest_algorithm_column(&connection)?;
+    add_publication_intent_algorithm_columns(&connection)?;
     Ok(connection)
 }
 
@@ -3414,6 +3417,35 @@ fn add_revision_manifest_algorithm_column(
     if !has_column(connection, "revisions", "manifest_algorithm")? {
         connection.execute(
             "ALTER TABLE revisions ADD COLUMN manifest_algorithm TEXT",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// Add algorithm columns to `publication_intents` written before BLAKE3 support.
+///
+/// Additive and nullable so legacy rows default to `sha256` without changing
+/// `LAYOUT_VERSION`.
+fn add_publication_intent_algorithm_columns(
+    connection: &rusqlite::Connection,
+) -> crate::error::Result<()> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version != LAYOUT_VERSION {
+        return Ok(());
+    }
+    if !table_exists(connection, "publication_intents")? {
+        return Ok(());
+    }
+    if !has_column(connection, "publication_intents", "expected_algorithm")? {
+        connection.execute(
+            "ALTER TABLE publication_intents ADD COLUMN expected_algorithm TEXT",
+            [],
+        )?;
+    }
+    if !has_column(connection, "publication_intents", "observed_algorithm")? {
+        connection.execute(
+            "ALTER TABLE publication_intents ADD COLUMN observed_algorithm TEXT",
             [],
         )?;
     }

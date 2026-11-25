@@ -190,7 +190,12 @@ impl super::Workspace {
         location_kind: &str,
         locator: &str,
     ) -> crate::error::Result<crate::lifecycle::BlobPurgeOutcome> {
-        let digest = super::recovery::digest_from_locator(location_kind, locator)?;
+        let digest = super::recovery::digest_from_locator(
+            &self.connection,
+            &self.root,
+            location_kind,
+            locator,
+        )?;
         let path = crate::payload::blob_path(&self.root, digest);
         let now_ns = self.clock.now().nanos();
         let _sweep = self.exclusive_sweep_lock()?;
@@ -251,7 +256,12 @@ impl super::Workspace {
         })?;
         let relative = crate::payload::validate_relative_path(relative)?;
         let relative_text = relative.to_string_lossy().into_owned();
-        let digest = super::recovery::digest_from_locator("source-blob", digest_hex)?;
+        let digest = super::recovery::digest_from_locator(
+            &self.connection,
+            &self.root,
+            "source-blob",
+            digest_hex,
+        )?;
         if self.working_file_required(&relative_text, digest)? {
             self.update_retention_location(
                 operation_id,
@@ -346,12 +356,13 @@ impl super::Workspace {
         location_id: &str,
         locator: &str,
     ) -> crate::error::Result<crate::lifecycle::BlobPurgeOutcome> {
-        let (relative, planned) = match parse_participant_locator(locator) {
-            Ok(parsed) => parsed,
-            Err(detail) => {
-                return self.retain_participant_file(operation_id, location_id, detail);
-            }
-        };
+        let (relative, planned) =
+            match parse_participant_locator(&self.connection, &self.root, locator) {
+                Ok(parsed) => parsed,
+                Err(detail) => {
+                    return self.retain_participant_file(operation_id, location_id, detail);
+                }
+            };
         if crate::payload::validate_relative_path(relative).is_err() {
             return self.retain_participant_file(
                 operation_id,
@@ -1583,13 +1594,15 @@ fn purge_decided_blob(
 }
 
 /// Split the optional digest binding from a participant file locator.
-fn parse_participant_locator(
-    locator: &str,
-) -> std::result::Result<(&str, Option<mneme_core::ContentDigest>), &'static str> {
+fn parse_participant_locator<'a>(
+    connection: &rusqlite::Connection,
+    root: &std::path::Path,
+    locator: &'a str,
+) -> std::result::Result<(&'a str, Option<mneme_core::ContentDigest>), &'static str> {
     let Some((path, hex)) = locator.rsplit_once('#') else {
         return Ok((locator, None));
     };
-    let digest = super::recovery::digest_from_locator("source-blob", hex)
+    let digest = super::recovery::digest_from_locator(connection, root, "source-blob", hex)
         .map_err(|_| "participant-locator-invalid")?;
     Ok((path, Some(digest)))
 }

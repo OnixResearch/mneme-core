@@ -899,9 +899,9 @@ impl super::Workspace {
             let intent_id = crate::payload::random_hex(16)?;
             transaction.execute(
                 "INSERT INTO publication_intents (intent_id, revision_sequence, target_path,
-                     expected_digest, desired_digest, eligibility_generation, state, observed_digest,
-                     detail, updated_at_ns)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', NULL, NULL, ?7)",
+                     expected_digest, expected_algorithm, desired_digest, eligibility_generation,
+                     state, observed_digest, observed_algorithm, detail, updated_at_ns)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, NULL, NULL, ?8)",
                 rusqlite::params![
                     intent_id,
                     super::db_i64(prepared.next_sequence, "sequence")?,
@@ -909,6 +909,9 @@ impl super::Workspace {
                     publication
                         .expected_previous
                         .map(|digest| digest.as_bytes().to_vec()),
+                    publication
+                        .expected_previous
+                        .map(|digest| digest.algorithm().symbol()),
                     publication.desired_digest().as_bytes().as_slice(),
                     super::db_i64(prepared.generation, "generation")?,
                     prepared.recorded.at().nanos(),
