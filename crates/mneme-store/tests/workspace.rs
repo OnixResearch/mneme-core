@@ -3982,3 +3982,242 @@ fn a_job_claim_excludes_only_its_job_and_binds_one_destination() {
         "claims are store-owned state"
     );
 }
+
+#[test]
+fn workspace_zstd_compression_preserves_digests_and_reads_legacy_blobs() {
+    let text_bytes = b"= Compressed Note\n\nBody text repeated for zstd.\n".repeat(20);
+    let binary_bytes = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\nbinary pdf bytes".to_vec();
+    let legacy_text = b"= Legacy Uncompressed Note\n\nWritten before zstd.\n".repeat(10);
+
+    let text_digest = mneme_core::ContentDigest::of_source_bytes(&text_bytes);
+    let binary_digest = mneme_core::ContentDigest::of_source_bytes(&binary_bytes);
+    let legacy_digest = mneme_core::ContentDigest::of_source_bytes(&legacy_text);
+
+    let scope_id = scope();
+    let mut entity_envelope = mneme_core::fixtures::entity();
+    entity_envelope.record_id = mneme_core::RecordId::from_bytes([0x11; 16]);
+    entity_envelope.revision_id = mneme_core::RevisionId::from_bytes([0x12; 16]);
+    entity_envelope.scope = scope_id.clone();
+    let entity = entity_envelope.record_id;
+    let entity_record = mneme_store::RecordDraft {
+        schema_version: entity_envelope.schema_version,
+        kind: entity_envelope.kind,
+        record_id: entity_envelope.record_id,
+        revision_id: entity_envelope.revision_id,
+        predecessor: entity_envelope.predecessor,
+        scope: entity_envelope.scope,
+        payload: entity_envelope.payload,
+    };
+    let s0_record = source_draft(SourceDraftInput {
+        bytes: &legacy_text,
+        record_id: mneme_core::RecordId::from_bytes([0x20; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([0x30; 16]),
+        predecessor: None,
+        entity,
+        path: "legacy.adoc",
+    });
+    let s1_record = source_draft(SourceDraftInput {
+        bytes: &text_bytes,
+        record_id: mneme_core::RecordId::from_bytes([0x21; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([0x31; 16]),
+        predecessor: None,
+        entity,
+        path: "note.adoc",
+    });
+    let mut s2_record = source_draft(SourceDraftInput {
+        bytes: &binary_bytes,
+        record_id: mneme_core::RecordId::from_bytes([0x22; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([0x32; 16]),
+        predecessor: None,
+        entity,
+        path: "doc.pdf",
+    });
+    let pdf_retained = mneme_core::RetainedSource::new(
+        binary_digest,
+        binary_bytes.len() as u64,
+        "application/pdf",
+    )
+    .expect("pdf retained");
+    s2_record.payload.insert(
+        mneme_core::Symbol::from("content"),
+        mneme_core::SourceContent::Retained(pdf_retained).to_value(),
+    );
+    let s3_record = source_draft(SourceDraftInput {
+        bytes: &text_bytes,
+        record_id: mneme_core::RecordId::from_bytes([0x23; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([0x33; 16]),
+        predecessor: None,
+        entity,
+        path: "note-copy.adoc",
+    });
+
+    // 1. Baseline workspace without compression: record/manifest digests.
+    let baseline_dir = tempfile::tempdir().expect("baseline temp");
+    let mut baseline =
+        mneme_store::Workspace::create(baseline_dir.path(), config(1_000)).expect("create");
+    let baseline_commit = baseline
+        .commit(common::record_command(
+            baseline.status().expect("status").revision,
+            &scope_id,
+            "k1",
+            vec![entity_record.clone(), s1_record.clone()],
+            vec![mneme_store::SourceBlobDraft {
+                bytes: text_bytes.clone(),
+                media_type: mneme_core::Symbol::from("text/asciidoc"),
+            }],
+            Vec::new(),
+        ))
+        .expect("baseline commit");
+
+    // 1b. Fresh workspace with zstd enabled produces identical record digests.
+    let zstd_fresh_dir = tempfile::tempdir().expect("zstd fresh temp");
+    let mut zstd_fresh = mneme_store::Workspace::create(zstd_fresh_dir.path(), config(1_000))
+        .expect("create")
+        .with_blob_compression(mneme_store::BlobCompression::Zstd);
+    let zstd_fresh_commit = zstd_fresh
+        .commit(common::record_command(
+            zstd_fresh.status().expect("status").revision,
+            &scope_id,
+            "k1",
+            vec![entity_record.clone(), s1_record.clone()],
+            vec![mneme_store::SourceBlobDraft {
+                bytes: text_bytes.clone(),
+                media_type: mneme_core::Symbol::from("text/asciidoc"),
+            }],
+            Vec::new(),
+        ))
+        .expect("zstd fresh commit");
+    assert_eq!(baseline_commit.sequence, zstd_fresh_commit.sequence);
+    let base_digests: Vec<_> = baseline
+        .snapshot()
+        .expect("base snap")
+        .records
+        .iter()
+        .map(|record| record.full_digest())
+        .collect();
+    let fresh_digests: Vec<_> = zstd_fresh
+        .snapshot()
+        .expect("fresh snap")
+        .records
+        .iter()
+        .map(|record| record.full_digest())
+        .collect();
+    assert_eq!(base_digests, fresh_digests);
+
+    // 2. Compressed workspace: first commit legacy uncompressed, then enable zstd.
+    let zstd_dir = tempfile::tempdir().expect("zstd temp");
+    let mut workspace =
+        mneme_store::Workspace::create(zstd_dir.path(), config(1_000)).expect("create");
+    workspace
+        .commit(common::record_command(
+            workspace.status().expect("status").revision,
+            &scope_id,
+            "legacy",
+            vec![entity_record, s0_record],
+            vec![mneme_store::SourceBlobDraft {
+                bytes: legacy_text.clone(),
+                media_type: mneme_core::Symbol::from("text/asciidoc"),
+            }],
+            Vec::new(),
+        ))
+        .expect("legacy commit");
+    let legacy_on_disk = std::fs::read(mneme_store::payload::blob_path(
+        zstd_dir.path(),
+        legacy_digest,
+    ))
+    .expect("legacy disk");
+    assert_eq!(legacy_on_disk, legacy_text);
+
+    workspace.set_blob_compression(mneme_store::BlobCompression::Zstd);
+    let s1_id = s1_record.record_id;
+    let zstd_commit_s1 = workspace
+        .commit(common::record_command(
+            workspace.status().expect("status").revision,
+            &scope_id,
+            "k1",
+            vec![s1_record],
+            vec![mneme_store::SourceBlobDraft {
+                bytes: text_bytes.clone(),
+                media_type: mneme_core::Symbol::from("text/asciidoc"),
+            }],
+            Vec::new(),
+        ))
+        .expect("zstd commit s1");
+    let base_s1 = baseline
+        .snapshot()
+        .expect("base snap")
+        .records
+        .into_iter()
+        .find(|r| r.record_id == s1_id)
+        .expect("base s1");
+    let zstd_s1 = workspace
+        .snapshot()
+        .expect("zstd snap")
+        .records
+        .into_iter()
+        .find(|r| r.record_id == s1_id)
+        .expect("zstd s1");
+    assert_eq!(base_s1.payload_digest(), zstd_s1.payload_digest());
+    assert_ne!(
+        baseline_commit.manifest_digest,
+        zstd_commit_s1.manifest_digest
+    );
+
+    workspace
+        .commit(common::record_command(
+            workspace.status().expect("status").revision,
+            &scope_id,
+            "k2",
+            vec![s2_record],
+            vec![mneme_store::SourceBlobDraft {
+                bytes: binary_bytes.clone(),
+                media_type: mneme_core::Symbol::from("application/pdf"),
+            }],
+            Vec::new(),
+        ))
+        .expect("zstd commit s2");
+
+    // On-disk: text/asciidoc is compressed, application/pdf is uncompressed.
+    let text_on_disk = std::fs::read(mneme_store::payload::blob_path(
+        zstd_dir.path(),
+        text_digest,
+    ))
+    .expect("text disk");
+    assert!(text_on_disk.len() < text_bytes.len());
+    let binary_on_disk = std::fs::read(mneme_store::payload::blob_path(
+        zstd_dir.path(),
+        binary_digest,
+    ))
+    .expect("binary disk");
+    assert_eq!(binary_on_disk, binary_bytes);
+
+    // Transparent reads return byte-identical uncompressed bytes for all three.
+    assert_eq!(
+        mneme_store::payload::read(zstd_dir.path(), text_digest).expect("read text"),
+        text_bytes
+    );
+    assert_eq!(
+        mneme_store::payload::read(zstd_dir.path(), binary_digest).expect("read binary"),
+        binary_bytes
+    );
+    assert_eq!(
+        mneme_store::payload::read(zstd_dir.path(), legacy_digest).expect("read legacy"),
+        legacy_text
+    );
+
+    // Reopen workspace and commit again referencing existing compressed blob.
+    drop(workspace);
+    let mut reopened = mneme_store::Workspace::open(zstd_dir.path(), config(2_000))
+        .expect("reopen")
+        .with_blob_compression(mneme_store::BlobCompression::Zstd);
+    reopened
+        .commit(common::record_command(
+            reopened.status().expect("status").revision,
+            &scope_id,
+            "k3",
+            vec![s3_record],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .expect("commit referencing existing compressed blob");
+}

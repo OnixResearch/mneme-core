@@ -13,9 +13,43 @@
 //! from cannot change between the check and the install or delete.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
+use std::io::Read;
 use std::io::Write;
 
 use sha2::Digest;
+
+const ZSTD_FRAME_MAGIC: &[u8; 8] = b"MNZSTD01";
+const ZSTD_HEADER_LEN: usize = 16;
+const ZSTD_COMPRESSION_LEVEL: i32 = 3;
+const MAX_DECOMPRESSED_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+
+/// On-disk compression policy for newly staged `source-bytes` blobs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BlobCompression {
+    /// Store blobs uncompressed (default).
+    #[default]
+    None,
+    /// Compress compressible `source-bytes` blobs (`text/*`,
+    /// `application/json`, `application/xml`) with zstd on disk while
+    /// preserving uncompressed SHA-256 content identity.
+    Zstd,
+}
+
+/// Whether `media_type` names a compressible text or structured-text format.
+pub fn is_compressible_media_type(media_type: &str) -> bool {
+    let mime = media_type
+        .split(';')
+        .next()
+        .map_or(media_type, str::trim)
+        .trim();
+    if mime.len() >= 5 && mime[..5].eq_ignore_ascii_case("text/") {
+        return true;
+    }
+    mime.eq_ignore_ascii_case("application/json")
+        || mime.eq_ignore_ascii_case("application/xml")
+        || (mime.len() >= 5 && mime[mime.len().saturating_sub(5)..].eq_ignore_ascii_case("+json"))
+        || (mime.len() >= 4 && mime[mime.len().saturating_sub(4)..].eq_ignore_ascii_case("+xml"))
+}
 
 /// Directory holding immutable blobs.
 pub const BLOB_DIRECTORY: &str = "blobs";
@@ -276,6 +310,10 @@ pub fn read_range(
             crate::error::Failure::io(&path, error)
         }
     })?;
+    if file_has_zstd_magic(&mut file, &path)? {
+        let decompressed = read(root, digest)?;
+        return slice_range(digest, &decompressed, offset, length);
+    }
     std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(offset))
         .map_err(|error| crate::error::Failure::io(&path, error))?;
     let mut bytes = vec![0; length];
@@ -290,6 +328,49 @@ pub fn read_range(
         }
     })?;
     Ok(bytes)
+}
+
+fn file_has_zstd_magic(
+    file: &mut std::fs::File,
+    path: &std::path::Path,
+) -> crate::error::Result<bool> {
+    let mut prefix = [0_u8; 8];
+    let mut read_so_far = 0_usize;
+    while read_so_far < prefix.len() {
+        let count = file
+            .read(&mut prefix[read_so_far..])
+            .map_err(|error| crate::error::Failure::io(path, error))?;
+        if count == 0 {
+            return Ok(false);
+        }
+        read_so_far = read_so_far.saturating_add(count);
+    }
+    Ok(&prefix == ZSTD_FRAME_MAGIC)
+}
+
+fn slice_range(
+    digest: mneme_core::ContentDigest,
+    bytes: &[u8],
+    offset_bytes: u64,
+    length_bytes: usize,
+) -> crate::error::Result<Vec<u8>> {
+    let start = usize::try_from(offset_bytes).map_err(|_| crate::error::Failure::CorruptBlob {
+        digest: digest.to_hex(),
+        reason: "stored bytes end before the requested range".to_owned(),
+    })?;
+    let Some(end) = start.checked_add(length_bytes) else {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored bytes end before the requested range".to_owned(),
+        });
+    };
+    let Some(slice) = bytes.get(start..end) else {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored bytes end before the requested range".to_owned(),
+        });
+    };
+    Ok(slice.to_vec())
 }
 
 /// Remove every pending transfer of a targeted digest, whichever device sent
@@ -346,25 +427,67 @@ pub fn stage(
     digest: mneme_core::ContentDigest,
     bytes: &[u8],
 ) -> crate::error::Result<StagedBlob> {
+    stage_with_compression(root, digest, bytes, BlobCompression::None, "")
+}
+
+/// Stage exact bytes into the immutable blob store, optionally compressing
+/// eligible `text/*` and structured-text payloads on disk while preserving the
+/// uncompressed content-addressed digest.
+pub fn stage_with_compression(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    bytes: &[u8],
+    compression: BlobCompression,
+    media_type: &str,
+) -> crate::error::Result<StagedBlob> {
     if sha256(bytes) != *digest.as_bytes() {
         return Err(crate::error::Failure::CorruptBlob {
             digest: digest.to_hex(),
             reason: "staged bytes do not hash to the declared digest".to_owned(),
         });
     }
+    let uncompressed_len =
+        u64::try_from(bytes.len()).map_err(|_| crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "staged blob length exceeds u64".to_owned(),
+        })?;
     let target = blob_path(root, digest);
     if target.exists() {
-        verify(root, digest, bytes.len() as u64)?;
-        // An earlier try may have renamed the file into place and stopped
-        // before the directory entry was durable; this path is the retry.
-        if let Some(parent) = target.parent() {
-            flush_directory(parent)?;
-        }
-        return Ok(StagedBlob {
-            digest,
-            byte_length: bytes.len() as u64,
-        });
+        return finish_existing_stage(&target, root, digest, uncompressed_len);
     }
+    if matches!(compression, BlobCompression::Zstd) && is_compressible_media_type(media_type) {
+        let framed = encode_zstd_frame(digest, bytes, uncompressed_len)?;
+        write_staged_blob(root, &target, &framed)?;
+    } else {
+        write_staged_blob(root, &target, bytes)?;
+    }
+    Ok(StagedBlob {
+        digest,
+        byte_length: uncompressed_len,
+    })
+}
+
+fn finish_existing_stage(
+    target: &std::path::Path,
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    uncompressed_len: u64,
+) -> crate::error::Result<StagedBlob> {
+    verify(root, digest, uncompressed_len)?;
+    if let Some(parent) = target.parent() {
+        flush_directory(parent)?;
+    }
+    Ok(StagedBlob {
+        digest,
+        byte_length: uncompressed_len,
+    })
+}
+
+fn write_staged_blob(
+    root: &std::path::Path,
+    target: &std::path::Path,
+    disk_bytes: &[u8],
+) -> crate::error::Result<()> {
     let parent = target.parent().ok_or_else(|| {
         crate::error::Failure::InvalidCommand("blob path has no parent".to_owned())
     })?;
@@ -372,33 +495,159 @@ pub fn stage(
     let staging = root.join(STAGING_DIRECTORY);
     create_directory_chain_flushed(&staging)?;
     let temporary = staging.join(format!("{TEMP_PREFIX}{}", random_hex(8)?));
-    write_flushed(&temporary, bytes)?;
-    std::fs::rename(&temporary, &target)
-        .map_err(|error| crate::error::Failure::io(&target, error))?;
-    flush_directory(parent)?;
-    Ok(StagedBlob {
-        digest,
-        byte_length: bytes.len() as u64,
-    })
+    write_flushed(&temporary, disk_bytes)?;
+    std::fs::rename(&temporary, target)
+        .map_err(|error| crate::error::Failure::io(target, error))?;
+    flush_directory(parent)
 }
 
-/// Whether the blob file exists with the expected byte length.
+fn encode_zstd_frame(
+    digest: mneme_core::ContentDigest,
+    bytes: &[u8],
+    uncompressed_len: u64,
+) -> crate::error::Result<Vec<u8>> {
+    let compressed = zstd::stream::encode_all(bytes, ZSTD_COMPRESSION_LEVEL).map_err(|error| {
+        crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: format!("zstd compression failed: {error}"),
+        }
+    })?;
+    let mut framed = Vec::with_capacity(ZSTD_HEADER_LEN.saturating_add(compressed.len()));
+    framed.extend_from_slice(ZSTD_FRAME_MAGIC);
+    framed.extend_from_slice(&uncompressed_len.to_le_bytes());
+    framed.extend_from_slice(&compressed);
+    Ok(framed)
+}
+
+fn parse_zstd_header(
+    digest: mneme_core::ContentDigest,
+    disk_bytes: &[u8],
+) -> crate::error::Result<(u64, &[u8])> {
+    let Some(header) = disk_bytes.get(..ZSTD_HEADER_LEN) else {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "compressed blob header is truncated".to_owned(),
+        });
+    };
+    if &header[..ZSTD_FRAME_MAGIC.len()] != ZSTD_FRAME_MAGIC {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored bytes do not hash to the committed digest".to_owned(),
+        });
+    }
+    let Ok(length_bytes) = <[u8; 8]>::try_from(&header[ZSTD_FRAME_MAGIC.len()..ZSTD_HEADER_LEN])
+    else {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "compressed blob header is truncated".to_owned(),
+        });
+    };
+    let expected_len = u64::from_le_bytes(length_bytes);
+    if expected_len > MAX_DECOMPRESSED_BLOB_BYTES {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "compressed blob header exceeds maximum supported size".to_owned(),
+        });
+    }
+    Ok((expected_len, &disk_bytes[ZSTD_HEADER_LEN..]))
+}
+
+fn decode_zstd_frame(
+    digest: mneme_core::ContentDigest,
+    disk_bytes: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    let (expected_len, payload) = parse_zstd_header(digest, disk_bytes)?;
+    let decoder = zstd::stream::read::Decoder::new(payload).map_err(|error| {
+        crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: format!("invalid zstd blob stream: {error}"),
+        }
+    })?;
+    let mut decompressed = Vec::new();
+    decoder
+        .take(expected_len.saturating_add(1))
+        .read_to_end(&mut decompressed)
+        .map_err(|error| crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: format!("zstd decompression failed: {error}"),
+        })?;
+    verify_decompressed(digest, &decompressed, expected_len)?;
+    Ok(decompressed)
+}
+
+fn verify_decompressed(
+    digest: mneme_core::ContentDigest,
+    decompressed: &[u8],
+    expected_len: u64,
+) -> crate::error::Result<()> {
+    if u64::try_from(decompressed.len()).ok() != Some(expected_len) {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "decompressed blob length does not match header".to_owned(),
+        });
+    }
+    if sha256(decompressed) != *digest.as_bytes() {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "decompressed bytes do not hash to the committed digest".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Whether the blob file exists with the expected uncompressed byte length.
 ///
-/// Presence is checked from directory metadata alone: a commit that runs inside
-/// its ledger transaction must not re-read and re-hash every payload it names.
-/// A file with a different length is reported as absent so the caller's staging
-/// path re-verifies it and fails closed on real corruption.
+/// Uncompressed blobs are checked from directory metadata alone. Compressed
+/// blobs carry the uncompressed length in their 16-byte frame header, so only
+/// that header is read. A file with a different length is reported as absent so
+/// the caller's staging path re-verifies it and fails closed on real
+/// corruption.
 pub fn blob_is_present(
     root: &std::path::Path,
     digest: mneme_core::ContentDigest,
     expected_length: u64,
 ) -> crate::error::Result<bool> {
     let path = blob_path(root, digest);
-    match std::fs::metadata(&path) {
-        Ok(metadata) => Ok(metadata.is_file() && metadata.len() == expected_length),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(crate::error::Failure::io(&path, error)),
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(crate::error::Failure::io(&path, error)),
+    };
+    if !metadata.is_file() {
+        return Ok(false);
     }
+    if metadata.len() == expected_length {
+        return Ok(true);
+    }
+    let header_len = u64::try_from(ZSTD_HEADER_LEN).unwrap_or(16);
+    if metadata.len() < header_len {
+        return Ok(false);
+    }
+    read_zstd_header_length(&path).map(|length| length == Some(expected_length))
+}
+
+fn read_zstd_header_length(path: &std::path::Path) -> crate::error::Result<Option<u64>> {
+    let mut file =
+        std::fs::File::open(path).map_err(|error| crate::error::Failure::io(path, error))?;
+    let mut header = [0_u8; ZSTD_HEADER_LEN];
+    let mut read_so_far = 0_usize;
+    while read_so_far < ZSTD_HEADER_LEN {
+        let count = file
+            .read(&mut header[read_so_far..])
+            .map_err(|error| crate::error::Failure::io(path, error))?;
+        if count == 0 {
+            return Ok(None);
+        }
+        read_so_far = read_so_far.saturating_add(count);
+    }
+    if &header[..ZSTD_FRAME_MAGIC.len()] != ZSTD_FRAME_MAGIC {
+        return Ok(None);
+    }
+    Ok(
+        <[u8; 8]>::try_from(&header[ZSTD_FRAME_MAGIC.len()..ZSTD_HEADER_LEN])
+            .ok()
+            .map(u64::from_le_bytes),
+    )
 }
 
 /// Create `path` and flush the parent of every directory the call creates.
@@ -444,7 +693,7 @@ pub fn create_directory_chain_flushed(path: &std::path::Path) -> crate::error::R
     Ok(())
 }
 
-/// Read a blob and verify its exact bytes.
+/// Read a blob and verify its exact uncompressed bytes.
 pub fn read(
     root: &std::path::Path,
     digest: mneme_core::ContentDigest,
@@ -459,13 +708,16 @@ pub fn read(
             crate::error::Failure::io(&path, error)
         }
     })?;
-    if sha256(&bytes) != *digest.as_bytes() {
-        return Err(crate::error::Failure::CorruptBlob {
-            digest: digest.to_hex(),
-            reason: "stored bytes do not hash to the committed digest".to_owned(),
-        });
+    if sha256(&bytes) == *digest.as_bytes() {
+        return Ok(bytes);
     }
-    Ok(bytes)
+    if bytes.starts_with(ZSTD_FRAME_MAGIC) {
+        return decode_zstd_frame(digest, &bytes);
+    }
+    Err(crate::error::Failure::CorruptBlob {
+        digest: digest.to_hex(),
+        reason: "stored bytes do not hash to the committed digest".to_owned(),
+    })
 }
 
 /// Verify a blob's presence, length, and hash.
@@ -1432,5 +1684,121 @@ mod tests {
             cleanup_working_temporaries(root.path()).expect("cleanup"),
             0
         );
+    }
+
+    #[test]
+    fn text_blob_is_stored_compressed_and_reads_back_byte_identical() {
+        let root = tempfile::tempdir().expect("temp");
+        let bytes = b"= Heading\n\nRepeated paragraph for zstd compression.\n".repeat(32);
+        let digest = mneme_core::ContentDigest::of_source_bytes(&bytes);
+        let staged = stage_with_compression(
+            root.path(),
+            digest,
+            &bytes,
+            BlobCompression::Zstd,
+            "text/asciidoc",
+        )
+        .expect("stage compressed");
+        assert_eq!(staged.byte_length, bytes.len() as u64);
+
+        let on_disk = std::fs::read(blob_path(root.path(), digest)).expect("disk bytes");
+        assert!(on_disk.starts_with(ZSTD_FRAME_MAGIC));
+        assert!(on_disk.len() < bytes.len());
+
+        assert!(
+            blob_is_present(root.path(), digest, bytes.len() as u64).expect("present"),
+            "compressed blob must report present against uncompressed length"
+        );
+        verify(root.path(), digest, bytes.len() as u64).expect("verify");
+        assert_eq!(read(root.path(), digest).expect("read"), bytes);
+        assert_eq!(
+            read_range(root.path(), digest, 10, 18).expect("read_range"),
+            &bytes[10..28]
+        );
+    }
+
+    #[test]
+    fn binary_and_already_compressed_blobs_are_stored_uncompressed() {
+        let root = tempfile::tempdir().expect("temp");
+        for media_type in [
+            "application/pdf",
+            "application/epub+zip",
+            "image/png",
+            "image/jpeg",
+            "application/octet-stream",
+        ] {
+            let bytes = format!("binary payload for {media_type} ").repeat(16);
+            let raw = bytes.as_bytes();
+            let digest = mneme_core::ContentDigest::of_source_bytes(raw);
+            stage_with_compression(root.path(), digest, raw, BlobCompression::Zstd, media_type)
+                .expect("stage binary");
+            let on_disk = std::fs::read(blob_path(root.path(), digest)).expect("disk bytes");
+            assert_eq!(
+                on_disk, raw,
+                "{media_type} must remain uncompressed on disk"
+            );
+            assert_eq!(read(root.path(), digest).expect("read"), raw);
+        }
+    }
+
+    #[test]
+    fn legacy_uncompressed_blob_reads_cleanly_even_with_zstd_magic_prefix() {
+        let root = tempfile::tempdir().expect("temp");
+        let mut legacy = ZSTD_FRAME_MAGIC.to_vec();
+        legacy.extend_from_slice(b"legacy uncompressed payload");
+        let digest = mneme_core::ContentDigest::of_source_bytes(&legacy);
+        stage(root.path(), digest, &legacy).expect("stage legacy");
+
+        assert_eq!(read(root.path(), digest).expect("read legacy"), legacy);
+        assert_eq!(
+            read_range(root.path(), digest, 8, 6).expect("range legacy"),
+            b"legacy"
+        );
+    }
+
+    #[test]
+    fn corrupted_compressed_blob_fails_closed() {
+        let root = tempfile::tempdir().expect("temp");
+        let bytes = b"{\"key\": \"value\"}\n".repeat(24);
+        let digest = mneme_core::ContentDigest::of_source_bytes(&bytes);
+        stage_with_compression(
+            root.path(),
+            digest,
+            &bytes,
+            BlobCompression::Zstd,
+            "application/json",
+        )
+        .expect("stage json");
+
+        let path = blob_path(root.path(), digest);
+        let original_disk = std::fs::read(&path).expect("disk");
+
+        // Flip a byte in the compressed zstd payload.
+        let mut flipped = original_disk.clone();
+        let last = flipped.len() - 1;
+        flipped[last] ^= 0xff;
+        std::fs::write(&path, &flipped).expect("write flipped");
+        assert!(matches!(
+            read(root.path(), digest),
+            Err(crate::error::Failure::CorruptBlob { .. })
+        ));
+
+        // Truncate the compressed file.
+        std::fs::write(&path, &original_disk[..ZSTD_HEADER_LEN + 2]).expect("write truncated");
+        assert!(matches!(
+            read(root.path(), digest),
+            Err(crate::error::Failure::CorruptBlob { .. })
+        ));
+
+        // Tamper with the uncompressed length in the header.
+        let mut wrong_len = original_disk;
+        let bogus_len = (bytes.len() as u64) + 1;
+        wrong_len[ZSTD_FRAME_MAGIC.len()..ZSTD_HEADER_LEN]
+            .copy_from_slice(&bogus_len.to_le_bytes());
+        std::fs::write(&path, &wrong_len).expect("write wrong len");
+        assert!(matches!(
+            read(root.path(), digest),
+            Err(crate::error::Failure::CorruptBlob { .. })
+        ));
     }
 }

@@ -33,6 +33,7 @@ pub use lifecycle::{
     RetentionLocationState, RetentionLocationStateRecord, RetentionOperation, RetentionParticipant,
     RetentionSelector, RetentionSuppression, SuppressionMode,
 };
+pub use payload::BlobCompression;
 pub use requests::{
     CommitCommand, ImportCandidateDraft, PublicationDraft, RecordDraft, SourceBlobDraft,
 };

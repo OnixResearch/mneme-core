@@ -1207,6 +1207,7 @@ pub struct Workspace {
     connection: rusqlite::Connection,
     clock: Box<dyn Clock>,
     faults: Box<dyn FaultInjector>,
+    blob_compression: crate::payload::BlobCompression,
     is_restore_required: bool,
     /// Required-digest and path-binding sets, keyed by the revision and
     /// generation they were computed for.
@@ -1565,11 +1566,30 @@ impl Workspace {
             connection,
             clock: config.clock,
             faults: config.faults,
+            blob_compression: crate::payload::BlobCompression::default(),
             is_restore_required,
             requirements: std::cell::RefCell::new(None),
             records: std::cell::RefCell::new(RecordCache::default()),
             shared,
         })
+    }
+
+    /// The on-disk compression policy for newly staged `source-bytes` blobs.
+    pub fn blob_compression(&self) -> crate::payload::BlobCompression {
+        self.blob_compression
+    }
+
+    /// Configure the on-disk compression policy for newly staged `source-bytes`
+    /// blobs.
+    pub fn set_blob_compression(&mut self, compression: crate::payload::BlobCompression) {
+        self.blob_compression = compression;
+    }
+
+    /// Return this workspace handle configured with `compression` for newly
+    /// staged `source-bytes` blobs.
+    pub fn with_blob_compression(mut self, compression: crate::payload::BlobCompression) -> Self {
+        self.blob_compression = compression;
+        self
     }
 
     /// Open a workspace produced by an application-supported restore. Until
