@@ -3997,7 +3997,7 @@ fn a_job_claim_excludes_only_its_job_and_binds_one_destination() {
 fn streamed_file_blob_has_the_inline_digest_and_commits_identically() {
     // 21 MiB of non-repeating bytes, larger than any read buffer.
     let bytes: Vec<u8> = (0_u32..21 * 1024 * 1024)
-        .map(|index| (index.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .map(|index| (index.wrapping_mul(2_654_435_761) >> 13).to_le_bytes()[0])
         .collect();
     let temp = tempfile::tempdir().expect("temp");
     let file = temp.path().join("source.bin");
