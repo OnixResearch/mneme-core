@@ -52,6 +52,7 @@ mod commit;
 pub(crate) mod custody;
 mod history;
 mod jobs;
+mod metadata;
 mod publishing;
 mod recovery;
 mod sweep;
@@ -59,6 +60,10 @@ mod sweep;
 mod tests;
 
 pub use jobs::JobClaim;
+pub use metadata::{
+    DocumentMetadata, DocumentQuery, EntityMetadata, EntityQuery, MAX_METADATA_PAGE_SIZE,
+    MetadataPage, RelationMetadata, RelationQuery,
+};
 mod validation;
 
 /// The ledger file name inside a workspace root.
@@ -93,6 +98,10 @@ const META_RETENTION_FORMAT: &str = "retention_format";
 /// the product of revisions and records; [`migrate_membership_format`] rewrites
 /// such a ledger in place and writes this marker last.
 const META_MEMBERSHIP_FORMAT: &str = "membership_format";
+
+/// Durable marker for the SQLite metadata projection tables (`entities`,
+/// `relations`, `documents`).
+const META_METADATA_PROJECTION_FORMAT: &str = "metadata_projection_format";
 
 /// Durable marker written by [`Workspace::open_restored`].
 ///
@@ -1450,6 +1459,7 @@ impl Workspace {
         transaction.execute_batch(DDL)?;
         transaction.execute_batch(MEMBERSHIP_DDL)?;
         transaction.execute_batch(RETENTION_DDL)?;
+        transaction.execute_batch(metadata::METADATA_PROJECTION_DDL)?;
         let revision = mneme_core::WorkspaceRevisionId::from_bytes(crate::payload::random_bytes()?);
         let manifest = crate::catalog::Manifest::genesis(revision);
         let manifest_digest = manifest.digest();
@@ -1473,6 +1483,7 @@ impl Workspace {
         set_meta(&transaction, META_LAYOUT, b"1")?;
         set_meta(&transaction, META_RETENTION_FORMAT, b"1")?;
         set_meta(&transaction, META_MEMBERSHIP_FORMAT, b"2")?;
+        set_meta(&transaction, META_METADATA_PROJECTION_FORMAT, b"1")?;
         set_meta(&transaction, META_CURRENT_REVISION, revision.as_bytes())?;
         set_meta_u64(&transaction, META_CURRENT_SEQUENCE, 0)?;
         set_meta_u64(&transaction, META_GENERATION, 1)?;
@@ -1546,6 +1557,7 @@ impl Workspace {
         // is refused untouched, so the open fails closed instead of serving
         // unverified membership.
         history::migrate_membership_format(&mut connection)?;
+        metadata::migrate_metadata_projection(&root, &mut connection)?;
         // A restore that was interrupted before its ledger was applied leaves
         // this marker behind; every later open refuses to serve until the
         // marker and the ledger state are written together.

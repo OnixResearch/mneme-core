@@ -77,6 +77,7 @@ impl super::Workspace {
         };
         let temporaries = crate::payload::cleanup_working_temporaries(&self.root)?;
         let snapshot = self.snapshot_from_disk()?;
+        self.rebuild_metadata_projection(&snapshot)?;
         let publications = self.publish_pending()?;
         Ok(super::RecoveryReport {
             staged_files_removed: staged,

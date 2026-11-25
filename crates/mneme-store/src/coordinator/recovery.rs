@@ -126,6 +126,7 @@ impl super::Workspace {
         };
         let job_state =
             purge_restored_ledger(&transaction, &self.root, facts, &ledger, &application)?;
+        super::metadata::apply_suppressions(&transaction, &ledger.suppressions)?;
         transaction.execute(
             "UPDATE retention_operations SET state = ?1, updated_at_ns = ?2
              WHERE operation_id = ?3",

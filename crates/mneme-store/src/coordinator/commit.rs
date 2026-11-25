@@ -663,13 +663,19 @@ impl super::Workspace {
         Self::insert_revision_row(transaction, command, prepared)?;
         Self::insert_blob_rows(transaction, &prepared.staged)?;
         Self::insert_record_rows(transaction, &prepared.new_records)?;
-        Self::insert_membership(transaction, prepared)?;
+        let dropped = Self::insert_membership(transaction, prepared)?;
         Self::insert_blob_set_changes(transaction, prepared)?;
         let intent_ids = Self::insert_publication_intents(transaction, command, prepared)?;
         Self::insert_command_row(transaction, command, prepared)?;
         if command.retention.is_some() {
             Self::insert_retention_commit(transaction, command, prepared)?;
         }
+        super::metadata::apply_commit(
+            transaction,
+            &prepared.new_records,
+            &dropped,
+            command.retention.as_ref(),
+        )?;
         super::set_meta(
             transaction,
             super::META_CURRENT_REVISION,
@@ -797,7 +803,7 @@ impl super::Workspace {
     fn insert_membership(
         transaction: &rusqlite::Transaction<'_>,
         prepared: &super::PreparedCommit,
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<Vec<mneme_core::RecordId>> {
         let mut statement = transaction.prepare(
             "SELECT record_id, revision_id FROM record_membership WHERE last_sequence IS NULL",
         )?;
@@ -817,6 +823,7 @@ impl super::Workspace {
             })
             .collect::<crate::error::Result<std::collections::BTreeMap<_, _>>>()?;
         let closing = super::db_i64(prepared.next_sequence.saturating_sub(1), "sequence")?;
+        let mut dropped = Vec::new();
         for (record_id, revision_id) in &open {
             let is_kept = prepared
                 .snapshot_records
@@ -824,6 +831,9 @@ impl super::Workspace {
                 .is_some_and(|record| record.revision_id == *revision_id);
             if is_kept {
                 continue;
+            }
+            if !prepared.snapshot_records.contains_key(record_id) {
+                dropped.push(*record_id);
             }
             transaction.execute(
                 "UPDATE record_membership SET last_sequence = ?1
@@ -846,7 +856,7 @@ impl super::Workspace {
                 ],
             )?;
         }
-        Ok(())
+        Ok(dropped)
     }
 
     /// Record how this revision's required-digest set differs from its parent's.
