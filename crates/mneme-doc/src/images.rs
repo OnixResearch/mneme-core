@@ -285,30 +285,8 @@ pub fn import(
     let decoded = decode(bytes)?;
     let source_id = mneme_core::RecordId::from_bytes(mneme_store::payload::random_bytes()?);
     let source_revision = mneme_core::RevisionId::from_bytes(mneme_store::payload::random_bytes()?);
-    let (source, source_blob) = mneme_memory::build_source_with_provenance(
-        source_id,
-        source_revision,
-        &request.scope,
-        mneme_memory::SourceOptions {
-            bytes,
-            media_type: decoded.media_type,
-            entity: None,
-            path_hint: None,
-        },
-        mneme_memory::SourceProvenance {
-            acquisition: mneme_core::Acquisition::Imported,
-            derived_from: None,
-            media_extent: Some(mneme_core::MediaExtent::Pages { page_count: 1 }),
-            media_transform: None,
-            // Regions on the image are checked against its decoded size.
-            media_frame: Some(mneme_core::CoordinateFrame::Pixels {
-                width: decoded.width,
-                height: decoded.height,
-            }),
-            ink_inventory: None,
-            correction: None,
-        },
-    )?;
+    let (source, source_blob) =
+        build_imported_image_source(source_id, source_revision, &request.scope, bytes, &decoded)?;
     let outcome = workspace.commit_bound(
         mneme_store::CommitCommand {
             base: request.base,
@@ -347,6 +325,44 @@ pub fn import(
         height: decoded.height,
         workspace_revision: outcome.revision,
     })
+}
+
+fn build_imported_image_source(
+    source_id: mneme_core::RecordId,
+    source_revision: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    bytes: &[u8],
+    decoded: &Decoded,
+) -> crate::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
+    debug_assert!(decoded.width > 0 && decoded.height > 0);
+    debug_assert!(!bytes.is_empty());
+    let options = mneme_memory::SourceOptions {
+        bytes,
+        media_type: decoded.media_type,
+        entity: None,
+        path_hint: None,
+    };
+    let frame = mneme_core::CoordinateFrame::Pixels {
+        width: decoded.width,
+        height: decoded.height,
+    };
+    let provenance = mneme_memory::SourceProvenance {
+        derivation: None,
+        acquisition: mneme_core::Acquisition::Imported,
+        derived_from: None,
+        media_extent: Some(mneme_core::MediaExtent::Pages { page_count: 1 }),
+        media_transform: None,
+        media_frame: Some(frame),
+        ink_inventory: None,
+        correction: None,
+    };
+    Ok(mneme_memory::build_source_with_provenance(
+        source_id,
+        source_revision,
+        scope,
+        options,
+        provenance,
+    )?)
 }
 
 fn replay_import(

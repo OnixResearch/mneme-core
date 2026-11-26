@@ -1155,6 +1155,14 @@ fn validate_source_acquisition(
         mneme_core::Acquisition::Corrected => {
             validate_corrected_source(source, pin, envelope, context)?
         }
+        mneme_core::Acquisition::Derived => {
+            if source.correction.is_some() {
+                return Err(crate::failure::EvidenceError::policy(
+                    "correction provenance requires corrected acquisition",
+                ));
+            }
+            validate_derived_source(source, envelope)?;
+        }
         _ => {
             if source.correction.is_some() {
                 return Err(crate::failure::EvidenceError::policy(
@@ -1170,6 +1178,31 @@ fn validate_source_acquisition(
     {
         return Err(crate::failure::EvidenceError::policy(
             "reprocessing must create a separate recognition output and never overwrite text",
+        ));
+    }
+    Ok(())
+}
+
+/// A derived source names an upstream source revision that is not itself and
+/// matches its `derived-from` pin. Existence, scope and availability of that
+/// revision are checked with the other source parents.
+fn validate_derived_source(
+    source: &crate::model::SourceView,
+    envelope: &mneme_core::RecordEnvelope,
+) -> crate::failure::Result<()> {
+    let Some(derivation) = &source.derivation else {
+        return Err(crate::failure::EvidenceError::policy(
+            "derived acquisition requires source, backend and backend-version",
+        ));
+    };
+    if source.derived_from != Some(derivation.source()) {
+        return Err(crate::failure::EvidenceError::policy(
+            "derived acquisition source must equal the derived-from pin",
+        ));
+    }
+    if derivation.source().source() == envelope.record_id {
+        return Err(crate::failure::EvidenceError::policy(
+            "a derived source cannot be a revision of its own upstream source",
         ));
     }
     Ok(())
@@ -1688,6 +1721,8 @@ pub struct SourceOptions<'a> {
 #[derive(Clone, Copy)]
 pub struct SourceProvenance<'a> {
     pub acquisition: mneme_core::Acquisition,
+    /// Required exactly when `acquisition` is [`mneme_core::Acquisition::Derived`].
+    pub derivation: Option<&'a mneme_core::DerivedAcquisition>,
     pub derived_from: Option<mneme_core::SourcePin>,
     pub media_extent: Option<mneme_core::MediaExtent>,
     pub media_transform: Option<mneme_core::MediaTransform>,
@@ -1845,9 +1880,16 @@ fn build_source_with_provenance_and_predecessor(
     provenance: SourceProvenance<'_>,
 ) -> crate::failure::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
     let payload = source_payload(options, provenance)?;
+    debug_assert!(!options.media_type.is_empty());
+    let schema_version = if provenance.acquisition == mneme_core::Acquisition::Derived {
+        debug_assert!(provenance.derivation.is_some());
+        mneme_core::DERIVED_ACQUISITION_SCHEMA_VERSION
+    } else {
+        5
+    };
     Ok((
         mneme_store::RecordDraft {
-            schema_version: 5,
+            schema_version,
             kind: mneme_core::RecordKind::SourceRevision,
             record_id: identity.record_id,
             revision_id: identity.revision_id,
@@ -1894,7 +1936,7 @@ fn source_payload(
     ));
     entries.push((
         mneme_core::Symbol::from("acquisition"),
-        provenance.acquisition.to_value(),
+        source_acquisition_value(provenance)?,
     ));
     if let Some(entity) = options.entity {
         entries.push((
@@ -1938,6 +1980,59 @@ fn source_payload(
     Ok(mneme_core::Payload::new(entries))
 }
 
+fn source_acquisition_value(
+    provenance: SourceProvenance<'_>,
+) -> crate::failure::Result<mneme_core::Value> {
+    match (provenance.acquisition, provenance.derivation) {
+        (mneme_core::Acquisition::Derived, Some(derivation)) => {
+            derivation
+                .validate()
+                .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+            if provenance.derived_from != Some(derivation.source()) {
+                return Err(crate::failure::EvidenceError::policy(
+                    "derived acquisition source must equal the derived-from pin",
+                ));
+            }
+            Ok(derivation.to_value())
+        }
+        (mneme_core::Acquisition::Derived, None) => Err(crate::failure::EvidenceError::policy(
+            "derived acquisition requires source, backend and backend-version",
+        )),
+        (acquisition, None) => Ok(acquisition.to_value()),
+        (_, Some(_)) => Err(crate::failure::EvidenceError::policy(
+            "only a derived acquisition carries a derivation",
+        )),
+    }
+}
+
+/// Build a derived source: reproducible output of `backend` run over the exact
+/// upstream source revision `source`. The upstream is also recorded as the
+/// `derived-from` pin so lineage walks reach it.
+pub fn build_derived_source(
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    options: SourceOptions<'_>,
+    derivation: &mneme_core::DerivedAcquisition,
+) -> crate::failure::Result<(mneme_store::RecordDraft, mneme_store::SourceBlobDraft)> {
+    build_source_with_provenance(
+        record_id,
+        revision_id,
+        scope,
+        options,
+        SourceProvenance {
+            acquisition: mneme_core::Acquisition::Derived,
+            derivation: Some(derivation),
+            derived_from: Some(derivation.source()),
+            media_extent: None,
+            media_transform: None,
+            media_frame: None,
+            ink_inventory: None,
+            correction: None,
+        },
+    )
+}
+
 /// Build an explicitly captured media source with a declared typed extent.
 pub fn build_captured_source(
     record_id: mneme_core::RecordId,
@@ -1952,6 +2047,7 @@ pub fn build_captured_source(
         scope,
         options,
         SourceProvenance {
+            derivation: None,
             acquisition: mneme_core::Acquisition::Captured,
             derived_from: None,
             media_extent: Some(extent),
@@ -1993,6 +2089,7 @@ pub fn build_recognized_source(
             path_hint,
         },
         SourceProvenance {
+            derivation: None,
             acquisition: mneme_core::Acquisition::MachineRecognized,
             derived_from: Some(input),
             media_extent: None,
@@ -2026,6 +2123,7 @@ pub fn build_corrected_source(
         scope,
         options,
         SourceProvenance {
+            derivation: None,
             acquisition: mneme_core::Acquisition::Corrected,
             derived_from: Some(predecessor),
             media_extent: None,
@@ -2416,7 +2514,11 @@ pub fn build_unavailable_source_preserving(
         ));
     }
     mneme_store::RecordDraft {
-        schema_version: 5,
+        schema_version: if source.derivation.is_some() {
+            mneme_core::DERIVED_ACQUISITION_SCHEMA_VERSION
+        } else {
+            5
+        },
         kind: mneme_core::RecordKind::SourceRevision,
         record_id: source.record.record_id,
         revision_id,

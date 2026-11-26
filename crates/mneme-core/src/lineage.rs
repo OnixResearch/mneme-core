@@ -7,6 +7,17 @@
 /// [`Acquisition`] classes. Earlier versions declared any symbol.
 pub const ACQUISITION_SCHEMA_VERSION: u32 = 5;
 
+/// The first schema version whose sources may declare the structured
+/// [`Acquisition::Derived`] class, naming their upstream source revision and
+/// the converter that produced them. Versions 1-5 stay readable unchanged.
+pub const DERIVED_ACQUISITION_SCHEMA_VERSION: u32 = 6;
+
+/// The longest derived backend symbol, in bytes.
+const MAX_DERIVED_BACKEND_BYTES: usize = 128;
+
+/// The longest derived backend version string, in bytes.
+const MAX_DERIVED_BACKEND_VERSION_BYTES: usize = 256;
+
 /// The most segments one recognition run may name.
 pub const MAX_RECOGNITION_SEGMENTS: usize = 4096;
 
@@ -27,6 +38,11 @@ pub enum Acquisition {
     Captured,
     MachineRecognized,
     Corrected,
+    /// A reproducible derivative of another source revision. The upstream
+    /// pin and converter identity live in [`DerivedAcquisition`]; the stored
+    /// value is `derived(source, backend, backend-version)`, never the bare
+    /// symbol.
+    Derived,
 }
 
 impl Acquisition {
@@ -38,30 +54,159 @@ impl Acquisition {
             Acquisition::Captured => "captured",
             Acquisition::MachineRecognized => "machine-recognized",
             Acquisition::Corrected => "corrected",
+            Acquisition::Derived => "derived",
         }
     }
 
-    /// Encode as a schema symbol.
+    /// Whether the class names reproducible output rather than an
+    /// irreplaceable canonical original.
+    pub const fn is_reproducible(self) -> bool {
+        matches!(self, Acquisition::Derived)
+    }
+
+    /// Encode as a schema symbol. A derived acquisition carries data, so
+    /// encode it with [`DerivedAcquisition::to_value`] instead.
     pub fn to_value(self) -> crate::typed::Value {
         crate::typed::Value::symbol(self.symbol())
     }
 
-    /// Decode a known acquisition label.
+    /// Decode a known acquisition label, or a structured derived acquisition.
     pub fn from_value(
         value: &crate::typed::Value,
         path: &crate::problem::Path,
     ) -> Result<Self, crate::problem::Diagnostic> {
+        debug_assert!(!matches!(value, crate::typed::Value::Embedded(_)));
+        if value.as_record().is_some() {
+            return DerivedAcquisition::from_value(value, path).map(|_| Acquisition::Derived);
+        }
         let Some(symbol) = value.as_symbol() else {
             return Err(type_error(path, "acquisition symbol"));
         };
-        match symbol.as_str() {
+        debug_assert!(!symbol.as_str().is_empty() || symbol.as_str().is_empty());
+        Self::from_symbol_str(symbol.as_str(), path)
+    }
+
+    fn from_symbol_str(
+        symbol: &str,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
+        match symbol {
             "authored" => Ok(Acquisition::Authored),
             "imported" | "authenticated-import-v1" => Ok(Acquisition::Imported),
             "captured" => Ok(Acquisition::Captured),
             "machine-recognized" => Ok(Acquisition::MachineRecognized),
             "corrected" => Ok(Acquisition::Corrected),
+            "derived" => Err(type_error(
+                path,
+                "derived(source, backend, backend-version) record",
+            )),
             _ => Err(type_error(path, "declared acquisition symbol")),
         }
+    }
+
+    /// Decode an acquisition as schema versions 5 and earlier allow it:
+    /// a symbol only, never a structured derived record.
+    pub fn from_symbol_value(
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
+        if value.as_record().is_some() {
+            return Err(type_error(path, "acquisition symbol"));
+        }
+        Acquisition::from_value(value, path)
+    }
+}
+
+/// The upstream source revision and converter behind a derived source.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DerivedAcquisition {
+    source: SourcePin,
+    backend: crate::typed::Symbol,
+    backend_version: String,
+}
+
+impl DerivedAcquisition {
+    /// Construct a validated derived acquisition.
+    pub fn new(
+        source: SourcePin,
+        backend: impl Into<crate::typed::Symbol>,
+        backend_version: impl Into<String>,
+    ) -> Result<Self, &'static str> {
+        let derived = DerivedAcquisition {
+            source,
+            backend: backend.into(),
+            backend_version: backend_version.into(),
+        };
+        derived.validate()?;
+        Ok(derived)
+    }
+
+    /// Check the converter identity is bounded, non-empty and printable.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let backend = self.backend.as_str();
+        if backend.is_empty()
+            || backend.len() > MAX_DERIVED_BACKEND_BYTES
+            || backend.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err("derived backend must be a non-empty symbol without whitespace");
+        }
+        if self.backend_version.is_empty()
+            || self.backend_version.len() > MAX_DERIVED_BACKEND_VERSION_BYTES
+            || self.backend_version.chars().any(char::is_control)
+        {
+            return Err("derived backend-version must be non-empty printable text");
+        }
+        Ok(())
+    }
+
+    /// The exact upstream source revision.
+    pub const fn source(&self) -> SourcePin {
+        self.source
+    }
+
+    /// The converter that produced the derivative.
+    pub fn backend(&self) -> &crate::typed::Symbol {
+        &self.backend
+    }
+
+    /// The converter version.
+    pub fn backend_version(&self) -> &str {
+        &self.backend_version
+    }
+
+    /// Encode as `derived(source, backend, backend-version)`.
+    pub fn to_value(&self) -> crate::typed::Value {
+        crate::typed::Value::record_named(
+            "derived",
+            vec![
+                self.source.to_value(),
+                crate::typed::Value::symbol(self.backend.as_str()),
+                crate::typed::Value::string(self.backend_version.clone()),
+            ],
+        )
+    }
+
+    /// Decode and validate a derived acquisition.
+    pub fn from_value(
+        value: &crate::typed::Value,
+        path: &crate::problem::Path,
+    ) -> Result<Self, crate::problem::Diagnostic> {
+        let record = expect_record(value, "derived", path)?;
+        let [source, backend, version] = record.fields() else {
+            return Err(type_error(
+                path,
+                "derived(source, backend, backend-version)",
+            ));
+        };
+        let source = SourcePin::from_value(source, path)?;
+        let backend = backend
+            .as_symbol()
+            .ok_or_else(|| type_error(path, "derived backend symbol"))?;
+        let version = version
+            .as_string()
+            .ok_or_else(|| type_error(path, "derived backend-version string"))?;
+        DerivedAcquisition::new(source, backend.clone(), version)
+            .map_err(|message| invalid_interval(path, message))
     }
 }
 

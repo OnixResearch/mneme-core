@@ -40,6 +40,8 @@ pub struct SourceView {
     /// [`mneme_core::ACQUISITION_SCHEMA_VERSION`] may hold a symbol outside the
     /// closed classes; it reads as [`mneme_core::Acquisition::Imported`].
     pub acquisition_value: mneme_core::Value,
+    /// The upstream revision and converter of a derived source.
+    pub derivation: Option<mneme_core::DerivedAcquisition>,
     pub derived_from: Option<mneme_core::SourcePin>,
     pub media_extent: Option<mneme_core::MediaExtent>,
     pub media_transform: Option<mneme_core::MediaTransform>,
@@ -64,6 +66,7 @@ impl SourceView {
         let media_type = retained_media_type(&content);
         let prior_digest = source_prior_digest(&record)?;
         let (acquisition, acquisition_value) = source_acquisition(&record)?;
+        let derivation = source_derivation(&record, &acquisition_value)?;
         let derived_from = optional_source_pin(&record, "derived-from")?;
         let media_extent = optional_media_extent(&record)?;
         let media_transform = optional_media_transform(&record)?;
@@ -81,6 +84,7 @@ impl SourceView {
         Ok(SourceView {
             acquisition,
             acquisition_value,
+            derivation,
             derived_from,
             media_extent,
             media_transform,
@@ -139,6 +143,21 @@ fn source_acquisition(
         }
         Err(diagnostic) => Err(source_parse_error(record, diagnostic)),
     }
+}
+
+fn source_derivation(
+    record: &mneme_core::RecordEnvelope,
+    value: &mneme_core::Value,
+) -> crate::failure::Result<Option<mneme_core::DerivedAcquisition>> {
+    if value.as_record().is_none() {
+        return Ok(None);
+    }
+    mneme_core::DerivedAcquisition::from_value(
+        value,
+        &mneme_core::Path::root().field("acquisition"),
+    )
+    .map(Some)
+    .map_err(|diagnostic| source_parse_error(record, diagnostic))
 }
 
 fn source_prior_digest(
