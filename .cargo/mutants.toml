@@ -1,0 +1,51 @@
+# Scoped cargo-mutants configuration for Mneme's shell<->kernel boundary adapters.
+#
+# Layer B mutation testing complements Layer A (Lean formal-spec mutation audit
+# on crates/mneme-kernel) by auditing the imperative Rust shell adapters that
+# assemble *Facts structs and dispatch *Decision values outside Lean's sight.
+#
+# Run locally via: `just audit-mutants`
+# Scheduled CI enforces a >=90% non-equivalent kill-rate ratchet.
+
+examine_globs = [
+  # Store coordinator: commit admission, retention sweep, working-file publication,
+  # crash recovery, validation, and lifecycle dispatch.
+  "crates/mneme-store/src/coordinator/commit.rs",
+  "crates/mneme-store/src/coordinator/sweep.rs",
+  "crates/mneme-store/src/coordinator/publishing.rs",
+  "crates/mneme-store/src/coordinator/recovery.rs",
+  "crates/mneme-store/src/coordinator/validation.rs",
+  "crates/mneme-store/src/coordinator/mod.rs",
+  "crates/mneme-store/src/lifecycle.rs",
+  # Memory service, belief projection, and scope authorization gates.
+  "crates/mneme-memory/src/service.rs",
+  "crates/mneme-memory/src/beliefs.rs",
+  "crates/mneme-memory/src/authorization.rs",
+  # Datalog completeness / absence-establishment adapter.
+  "crates/mneme-datalog/src/lib.rs",
+  # Sync protocol authorization, isolation, and erasure-fence adapter.
+  "crates/mneme-sync/src/protocol.rs",
+  # Recall, retention, document, and Prolog boundary adapters.
+  "crates/mneme-recall/src/engine.rs",
+  "crates/mneme-retention/src/lib.rs",
+  "crates/mneme-doc/src/lib.rs",
+  "crates/mneme-prolog/src/lib.rs",
+]
+
+exclude_globs = [
+  "**/tests/**",
+  "**/tests.rs",
+]
+
+# Skip formatting/display boilerplate that does not affect authorization,
+# isolation, admission, or erasure semantics.
+exclude_re = [
+  "impl.*Display for",
+  "impl.*Debug for",
+  "fn fmt\\(",
+]
+
+additional_cargo_test_args = ["--locked"]
+timeout_multiplier = 3.0
+minimum_test_timeout = 60
+cap_lints = true

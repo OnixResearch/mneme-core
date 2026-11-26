@@ -1,0 +1,160 @@
+# Scheduled & on-demand dual-layer mutation auditing.
+#
+# Runs two independent mutation gates on a weekly schedule and on demand:
+#   - `kernel-spec-audit` (Layer A): injects first-order Rust mutants into
+#     crates/mneme-kernel/src/*.rs, re-extracts with Charon/Aeneas + Lean, and
+#     requires 0 non-equivalent surviving mutants.
+#   - `shell-kernel-mutants` (Layer B): runs scoped `cargo-mutants` over the
+#     shell<->kernel adapter files configured in `.cargo/mutants.toml` and
+#     enforces a >=90% non-equivalent kill-rate ratchet.
+#
+# No repository secret is used. Every job needs only the default read-only
+# workflow token and public inputs.
+name: mutants
+
+on:
+  schedule:
+    - cron: '17 5 * * 0' # Weekly Sunday 05:17 UTC
+  workflow_dispatch:
+    inputs:
+      kernel_sample:
+        description: 'Optional sample size for kernel spec audit (empty = full run)'
+        required: false
+        default: ''
+      min_kill_rate:
+        description: 'Minimum shell<->kernel kill-rate threshold (default 0.90)'
+        required: false
+        default: '0.90'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutants-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kernel-spec-audit:
+    name: kernel proof-spec mutation audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out the revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Refuse credential-bearing flake inputs
+        run: |
+          if grep -n 'ssh://' flake.lock; then
+            echo "::error::flake.lock pins an SSH input and this job has no credentials"
+            exit 1
+          fi
+
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          df -h / /tmp
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.36.0/install
+
+      - name: Fetch the public bounded-exec source without an SSH key
+        run: |
+          git config --global url."https://github.com/OnixResearch/bounded-exec.git".insteadOf \
+            "ssh://git@github.com/OnixResearch/bounded-exec.git"
+
+      - name: Cache Lean Lake build directory
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: proofs/kernel/.lake
+          key: lake-${{ runner.os }}-${{ hashFiles('proofs/kernel/lakefile.toml', 'proofs/kernel/lake-manifest.json', 'proofs/kernel/lean-toolchain', 'flake.lock') }}
+          restore-keys: |
+            lake-${{ runner.os }}-
+
+      - name: Run kernel mutation auditor unit tests
+        run: nix develop --no-update-lock-file --command node --test scripts/test-audit-kernel-spec-strength.mjs
+
+      - name: Run kernel proof-spec mutation audit
+        env:
+          KERNEL_SAMPLE: ${{ github.event.inputs.kernel_sample }}
+        run: |
+          args=(--jobs 2)
+          if [ -n "${KERNEL_SAMPLE}" ]; then
+            args+=(--sample "${KERNEL_SAMPLE}")
+          fi
+          nix develop --no-update-lock-file --command node scripts/audit-kernel-spec-strength.mjs "${args[@]}"
+
+  shell-kernel-mutants:
+    name: shell-kernel cargo-mutants (>=90% ratchet)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Check out the revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Refuse credential-bearing flake inputs
+        run: |
+          if grep -n 'ssh://' flake.lock; then
+            echo "::error::flake.lock pins an SSH input and this job has no credentials"
+            exit 1
+          fi
+
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          df -h / /tmp
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.36.0/install
+
+      - name: Fetch the public bounded-exec source without an SSH key
+        run: |
+          git config --global url."https://github.com/OnixResearch/bounded-exec.git".insteadOf \
+            "ssh://git@github.com/OnixResearch/bounded-exec.git"
+
+      - name: Cache Cargo registry and git dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install cargo-mutants
+        run: |
+          nix develop --no-update-lock-file --command cargo install --locked cargo-mutants --version 26.2.0
+
+      - name: Run scoped shell<->kernel mutation audit (>=90% kill-rate ratchet)
+        env:
+          MNEME_MUTANTS_MIN_KILL_RATE: ${{ github.event.inputs.min_kill_rate || '0.90' }}
+          MNEME_MUTANTS_OUT: mutants.out
+        run: |
+          nix develop --no-update-lock-file --command just audit-mutants --jobs 2 --in-place=false
+
+      - name: Upload mutation outcomes artifact
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: shell-kernel-mutants-out
+          path: mutants.out
+          if-no-files-found: ignore
