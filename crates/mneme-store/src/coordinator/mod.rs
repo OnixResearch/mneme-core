@@ -3271,6 +3271,258 @@ impl Workspace {
         };
         Ok(Some(revision_from_blob(&bytes)?))
     }
+
+    /// Compute the exact record-level difference between two committed revisions.
+    ///
+    /// Reads only the membership intervals that open or close between `from` and
+    /// `to`, and verifies/decodes only the newly added record envelopes instead
+    /// of reloading unchanged records.
+    pub fn revision_delta(
+        &self,
+        from: mneme_core::WorkspaceRevisionId,
+        to: mneme_core::WorkspaceRevisionId,
+        pinned_generation: Option<u64>,
+    ) -> crate::error::Result<RevisionDelta> {
+        self.require_restore_suppression()?;
+        let row_from = require_revision_row(&self.connection, from)?;
+        let row_to = require_revision_row(&self.connection, to)?;
+        let generation = self.eligibility_generation()?;
+        if let Some(pinned) = pinned_generation
+            && pinned != generation
+        {
+            return Err(crate::error::Failure::BarrierAdvanced {
+                pinned,
+                current: generation,
+            });
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        let delta = self
+            .build_revision_delta_in(&transaction, &row_from, &row_to, generation)
+            .map_err(|error| self.explain_barrier(error, generation));
+        let delta = match delta {
+            Ok(delta) => {
+                transaction.commit()?;
+                delta
+            }
+            Err(error) => {
+                drop(transaction);
+                return Err(error);
+            }
+        };
+        let after = self.eligibility_generation()?;
+        if after != generation {
+            return Err(crate::error::Failure::BarrierAdvanced {
+                pinned: generation,
+                current: after,
+            });
+        }
+        debug_assert_eq!(delta.from_revision, from);
+        debug_assert_eq!(delta.to_revision, to);
+        Ok(delta)
+    }
+
+    fn build_revision_delta_in(
+        &self,
+        connection: &rusqlite::Connection,
+        row_from: &RevisionRow,
+        row_to: &RevisionRow,
+        generation: u64,
+    ) -> crate::error::Result<RevisionDelta> {
+        self.facts().align(generation);
+        let forgotten = sweep::forgotten_suppressions_in(connection)?;
+        let (removed_entries, added_entries) = differential_membership_entries(
+            connection,
+            SequenceWindow {
+                earlier: row_from.sequence,
+                later: row_to.sequence,
+            },
+        )?;
+        let mut removed = Vec::with_capacity(removed_entries.len());
+        for entry in &removed_entries {
+            let (record_id, revision_id, kind) = membership_record(entry, row_from.revision)?;
+            removed.push(crate::catalog::ManifestRecord {
+                record_id,
+                revision_id,
+                kind,
+            });
+        }
+        let added = self.load_delta_envelopes(
+            connection,
+            &added_entries,
+            &forgotten,
+            row_to.revision,
+            generation,
+        )?;
+        if row_from.sequence == row_to.sequence {
+            debug_assert!(removed.is_empty());
+        }
+        debug_assert!(removed.len() <= removed_entries.len());
+        Ok(RevisionDelta {
+            from_revision: row_from.revision,
+            to_revision: row_to.revision,
+            from_sequence: row_from.sequence,
+            to_sequence: row_to.sequence,
+            to_parent: row_to.parent,
+            to_manifest_digest: row_to.manifest_digest,
+            eligibility_generation: generation,
+            removed,
+            added,
+            forgotten_identities: forgotten.identities,
+            forgotten_revisions: forgotten.revisions,
+        })
+    }
+
+    fn load_delta_envelopes(
+        &self,
+        connection: &rusqlite::Connection,
+        added_entries: &[MembershipEntry],
+        forgotten: &sweep::ForgottenSuppressions,
+        revision: mneme_core::WorkspaceRevisionId,
+        generation: u64,
+    ) -> crate::error::Result<Vec<mneme_core::RecordEnvelope>> {
+        let mut visible = Vec::with_capacity(added_entries.len());
+        let mut keys = std::collections::BTreeSet::new();
+        for entry in added_entries {
+            let (record_id, revision_id, kind) = membership_record(entry, revision)?;
+            if forgotten.matches(record_id, revision_id) {
+                continue;
+            }
+            keys.insert(digest_32(&entry.3)?);
+            visible.push((record_id, revision_id, kind, entry));
+        }
+        let lengths = if keys.is_empty() {
+            BlobIndex::new()
+        } else {
+            publishing::blob_lengths_for(connection, &keys)?
+        };
+        let mut added = Vec::with_capacity(visible.len());
+        for (record_id, revision_id, kind, entry) in visible {
+            added.push(self.load_verified_record_envelope(
+                VerifiedRecordEnvelopeInput {
+                    record_id,
+                    revision_id,
+                    kind,
+                    envelope_digest: &entry.3,
+                    payload_digest: &entry.4,
+                    full_digest: &entry.5,
+                    revision,
+                    generation,
+                    lengths: &lengths,
+                },
+                PayloadCheck::Cached,
+            )?);
+        }
+        debug_assert!(added.len() <= added_entries.len());
+        debug_assert_eq!(added.is_empty(), keys.is_empty());
+        Ok(added)
+    }
+}
+
+/// Exact record-level difference between two committed workspace revisions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevisionDelta {
+    pub from_revision: mneme_core::WorkspaceRevisionId,
+    pub to_revision: mneme_core::WorkspaceRevisionId,
+    pub from_sequence: u64,
+    pub to_sequence: u64,
+    pub to_parent: Option<mneme_core::WorkspaceRevisionId>,
+    pub to_manifest_digest: mneme_core::ContentDigest,
+    pub eligibility_generation: u64,
+    pub removed: Vec<crate::catalog::ManifestRecord>,
+    pub added: Vec<mneme_core::RecordEnvelope>,
+    pub forgotten_identities: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub forgotten_revisions:
+        std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+}
+
+fn require_revision_row(
+    connection: &rusqlite::Connection,
+    revision: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<RevisionRow> {
+    revision_row_by_id(connection, revision)?.ok_or_else(|| crate::error::Failure::Integrity {
+        revision,
+        reason: "revision is not present in the ledger".to_owned(),
+    })
+}
+
+struct SequenceWindow {
+    earlier: u64,
+    later: u64,
+}
+
+const SQL_MEMBERSHIP_CLOSED_BETWEEN: &str =
+    "SELECT r.record_id, r.revision_id, r.kind, r.envelope_digest, r.payload_digest,
+        r.full_digest
+ FROM record_membership m
+ JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
+ WHERE m.first_sequence <= ?1
+   AND m.last_sequence IS NOT NULL
+   AND m.last_sequence >= ?1
+   AND m.last_sequence < ?2
+ ORDER BY r.record_id";
+
+const SQL_MEMBERSHIP_OPENED_BETWEEN: &str =
+    "SELECT r.record_id, r.revision_id, r.kind, r.envelope_digest, r.payload_digest,
+        r.full_digest
+ FROM record_membership m
+ JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
+ WHERE m.first_sequence > ?1
+   AND m.first_sequence <= ?2
+   AND (m.last_sequence IS NULL OR m.last_sequence >= ?2)
+ ORDER BY r.record_id";
+
+fn differential_membership_entries(
+    connection: &rusqlite::Connection,
+    window: SequenceWindow,
+) -> crate::error::Result<(Vec<MembershipEntry>, Vec<MembershipEntry>)> {
+    if window.earlier == window.later {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    if window.earlier < window.later {
+        let removed = query_membership_entries(connection, SQL_MEMBERSHIP_CLOSED_BETWEEN, &window)?;
+        let added = query_membership_entries(connection, SQL_MEMBERSHIP_OPENED_BETWEEN, &window)?;
+        debug_assert!(window.earlier < window.later);
+        debug_assert!(removed.len().saturating_add(added.len()) < usize::MAX);
+        return Ok((removed, added));
+    }
+    let reverse = SequenceWindow {
+        earlier: window.later,
+        later: window.earlier,
+    };
+    let removed = query_membership_entries(connection, SQL_MEMBERSHIP_OPENED_BETWEEN, &reverse)?;
+    let added = query_membership_entries(connection, SQL_MEMBERSHIP_CLOSED_BETWEEN, &reverse)?;
+    debug_assert!(reverse.earlier < reverse.later);
+    debug_assert!(removed.len().saturating_add(added.len()) < usize::MAX);
+    Ok((removed, added))
+}
+
+fn query_membership_entries(
+    connection: &rusqlite::Connection,
+    sql: &str,
+    window: &SequenceWindow,
+) -> crate::error::Result<Vec<MembershipEntry>> {
+    assert!(window.earlier < window.later);
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![
+                db_i64(window.earlier, "sequence")?,
+                db_i64(window.later, "sequence")?,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                ))
+            },
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    debug_assert!(rows.len() < usize::MAX);
+    Ok(rows)
 }
 
 /// Named revisions one lookup statement answers.

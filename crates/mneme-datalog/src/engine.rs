@@ -1,8 +1,8 @@
 //! Snapshot fact loading, bounded fixpoint evaluation, and coverage.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
-type FactKey = Vec<mneme_core::Value>;
-pub(super) type Binding = std::collections::BTreeMap<String, mneme_core::Value>;
+pub(crate) type FactKey = Vec<mneme_core::Value>;
+pub(crate) type Binding = std::collections::BTreeMap<String, mneme_core::Value>;
 pub(crate) type AvailabilityMap =
     std::collections::BTreeMap<mneme_core::RecordId, mneme_memory::SourceAvailability>;
 
@@ -23,6 +23,17 @@ pub(crate) struct FactStore {
     pub truncated: bool,
     indexes: std::collections::BTreeMap<(usize, Vec<usize>), FactColumnIndex>,
     pub(super) tries: std::collections::BTreeMap<(usize, Vec<usize>), crate::freejoin::FactTrie>,
+}
+
+impl FactStore {
+    pub(crate) fn from_rows(
+        rows: std::collections::BTreeMap<FactKey, crate::FactData>,
+    ) -> Self {
+        Self {
+            rows,
+            ..Self::default()
+        }
+    }
 }
 
 pub(crate) struct BuildFacts {
@@ -68,19 +79,19 @@ struct PremiseSupport {
 ///
 /// Kept apart from the fact store so a join can charge while it holds a shared
 /// borrow of the store: the two are disjoint fields of [`Evaluation`].
-pub(super) struct Budget<'a> {
-    pub(super) limits: &'a crate::Limits,
-    work: u64,
-    stored_rows: u64,
-    start: std::time::Instant,
-    cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    status: crate::ExecutionStatus,
-    limit_reached: bool,
-    support_truncated: bool,
+pub(crate) struct Budget<'a> {
+    pub limits: &'a crate::Limits,
+    pub work: u64,
+    pub stored_rows: u64,
+    pub start: std::time::Instant,
+    pub cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub status: crate::ExecutionStatus,
+    pub limit_reached: bool,
+    pub support_truncated: bool,
 }
 
 impl<'a> Budget<'a> {
-    fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.status == crate::ExecutionStatus::Complete
     }
 
@@ -90,7 +101,7 @@ impl<'a> Budget<'a> {
             .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
     }
 
-    fn stop(&mut self, status: crate::ExecutionStatus) {
+    pub(crate) fn stop(&mut self, status: crate::ExecutionStatus) {
         self.limit_reached = true;
         if self.status == crate::ExecutionStatus::Complete {
             self.status = status;
@@ -99,7 +110,7 @@ impl<'a> Budget<'a> {
 
     /// Charge work before it is spent, and notice cancellation and the clock.
     #[allow(unknown_lints, ambient_clock)] // wall-clock budget is the evaluation shell
-    pub(super) fn charge(&mut self, amount: u64) -> bool {
+    pub(crate) fn charge(&mut self, amount: u64) -> bool {
         if self.cancelled() {
             self.stop(crate::ExecutionStatus::Cancelled);
             return false;
@@ -123,7 +134,7 @@ impl<'a> Budget<'a> {
     }
 
     /// Charge one materialized row against the stored-row bound.
-    fn charge_row(&mut self) -> bool {
+    pub(crate) fn charge_row(&mut self) -> bool {
         let Ok(limit) = u64::try_from(self.limits.max_result_rows) else {
             self.stop(crate::ExecutionStatus::Partial);
             return false;
@@ -155,6 +166,7 @@ pub(super) struct Evaluation<'a> {
         mneme_core::RecordId,
         std::collections::BTreeSet<mneme_core::RecordId>,
     >,
+    record_contributions: std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
 }
 
 impl Evaluation<'_> {
@@ -255,6 +267,7 @@ pub(crate) fn build_federated(
         participating_vaults,
         at: request.at,
         derivation_eligibility: std::collections::BTreeMap::new(),
+        record_contributions: std::collections::BTreeMap::new(),
     };
     initialize_base_coverage(&mut evaluation, &request.incomplete_extents);
     load_base_facts(sources, &mut evaluation);
@@ -273,8 +286,31 @@ pub(crate) fn build_federated(
 }
 
 /// Cached canonical base extents and availability for one pinned REPL session.
+#[derive(Clone)]
 pub(crate) struct BaseSnapshot {
+    pub revision: mneme_core::WorkspaceRevisionId,
+    pub sequence: u64,
+    pub scope: mneme_core::ScopeId,
+    pub access: mneme_memory::Access,
+    pub records: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    pub history: std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+    pub revision_sequences: std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
+    pub suppressions: Vec<mneme_store::RetentionSuppression>,
     pub facts: std::collections::BTreeMap<String, FactStore>,
+    pub record_contributions:
+        std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
+    pub key_contributors: std::collections::BTreeMap<
+        (String, FactKey),
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+    pub reverse_deps: std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+    pub derivation_ids: std::collections::BTreeSet<mneme_core::RecordId>,
     pub base_coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
     pub coverage_reasons: std::collections::BTreeMap<String, String>,
     pub current_sources: AvailabilityMap,
@@ -296,6 +332,12 @@ pub(crate) struct BaseLoadRequest<'a> {
     pub limits: &'a crate::Limits,
     pub incomplete_extents: &'a std::collections::BTreeSet<String>,
     pub current_sources: AvailabilityMap,
+    pub history: std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+    pub revision_sequences: std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
+    pub suppressions: Vec<mneme_store::RetentionSuppression>,
     pub at: Option<mneme_core::Timestamp>,
     pub start: std::time::Instant,
 }
@@ -305,58 +347,112 @@ pub(crate) fn load_base_snapshot(
     view: &mneme_memory::View,
     request: BaseLoadRequest<'_>,
 ) -> BaseSnapshot {
-    let BaseLoadRequest {
-        bundle,
-        context,
-        limits,
-        incomplete_extents,
-        current_sources,
-        at,
-        start,
-    } = request;
+    assert!(request.limits.max_work > 0);
+    assert!(request.history.len() <= 1_000_000);
     let mut evaluation = Evaluation {
-        bundle,
-        context,
-        budget: Budget {
-            limits,
-            work: 0,
-            stored_rows: 0,
-            start,
-            cancellation: None,
-            status: crate::ExecutionStatus::Complete,
-            limit_reached: false,
-            support_truncated: false,
-        },
+        bundle: request.bundle,
+        context: request.context,
+        budget: new_budget(request.limits, request.start, false),
         facts: std::collections::BTreeMap::new(),
         coverage: std::collections::BTreeMap::new(),
         base_coverage: std::collections::BTreeMap::new(),
         coverage_reasons: std::collections::BTreeMap::new(),
-        current_sources: &current_sources,
-        at,
+        participating_vaults: std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()]),
+        at: request.at,
         derivation_eligibility: std::collections::BTreeMap::new(),
+        record_contributions: std::collections::BTreeMap::new(),
     };
-    initialize_base_coverage(&mut evaluation, incomplete_extents);
-    load_base_facts(view, &mut evaluation);
+    initialize_base_coverage(&mut evaluation, request.incomplete_extents);
+    let sources = [VaultSource {
+        alias: crate::PRIMARY_VAULT_ALIAS,
+        served_revision: request.context.served_revision,
+        view,
+        current_sources: &request.current_sources,
+    }];
+    load_base_facts(&sources, &mut evaluation);
     let coverage = final_coverage(&evaluation);
     let status = overall_status(evaluation.budget.status, &coverage);
-    let work = evaluation.budget.work;
-    let support_truncated = evaluation.budget.support_truncated;
-    let limit_reached = evaluation.budget.limit_reached;
-    let facts = evaluation.facts;
-    let base_coverage = evaluation.base_coverage;
-    let coverage_reasons = evaluation.coverage_reasons;
-    let derivation_eligibility = evaluation.derivation_eligibility;
-    BaseSnapshot {
-        facts,
-        base_coverage,
-        coverage_reasons,
-        current_sources,
-        derivation_eligibility,
+    let parts = LoadedBaseParts {
+        facts: evaluation.facts,
+        record_contributions: evaluation.record_contributions,
+        base_coverage: evaluation.base_coverage,
+        coverage_reasons: evaluation.coverage_reasons,
+        derivation_eligibility: evaluation.derivation_eligibility,
         coverage,
         status,
-        work,
+        work: evaluation.budget.work,
+        support_truncated: evaluation.budget.support_truncated,
+        limit_reached: evaluation.budget.limit_reached,
+    };
+    finish_base_snapshot(view, request, parts)
+}
+
+struct LoadedBaseParts {
+    facts: std::collections::BTreeMap<String, FactStore>,
+    record_contributions: std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
+    base_coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
+    coverage_reasons: std::collections::BTreeMap<String, String>,
+    derivation_eligibility: std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+    coverage: Vec<crate::Coverage>,
+    status: crate::ExecutionStatus,
+    work: u64,
+    support_truncated: bool,
+    limit_reached: bool,
+}
+
+fn new_budget<'a>(
+    limits: &'a crate::Limits,
+    start: std::time::Instant,
+    support_truncated: bool,
+) -> Budget<'a> {
+    Budget {
+        limits,
+        work: 0,
+        stored_rows: 0,
+        start,
+        cancellation: None,
+        status: crate::ExecutionStatus::Complete,
+        limit_reached: false,
         support_truncated,
-        limit_reached,
+    }
+}
+
+fn finish_base_snapshot(
+    view: &mneme_memory::View,
+    request: BaseLoadRequest<'_>,
+    parts: LoadedBaseParts,
+) -> BaseSnapshot {
+    assert!(request.limits.max_work > 0);
+    assert!(request.history.len() <= 1_000_000);
+    let snapshot = view.snapshot();
+    let (records, key_contributors, reverse_deps, derivation_ids) =
+        index_snapshot_records(&snapshot.records, &parts.record_contributions);
+    BaseSnapshot {
+        revision: snapshot.revision,
+        sequence: snapshot.sequence,
+        scope: request.context.scope.clone(),
+        access: view.access().clone(),
+        records,
+        history: request.history,
+        revision_sequences: request.revision_sequences,
+        suppressions: request.suppressions,
+        facts: parts.facts,
+        record_contributions: parts.record_contributions,
+        key_contributors,
+        reverse_deps,
+        derivation_ids,
+        base_coverage: parts.base_coverage,
+        coverage_reasons: parts.coverage_reasons,
+        current_sources: request.current_sources,
+        derivation_eligibility: parts.derivation_eligibility,
+        coverage: parts.coverage,
+        status: parts.status,
+        work: parts.work,
+        support_truncated: parts.support_truncated,
+        limit_reached: parts.limit_reached,
     }
 }
 
@@ -404,9 +500,10 @@ pub(crate) fn evaluate_incremental(
         coverage: base.base_coverage.clone(),
         base_coverage: base.base_coverage.clone(),
         coverage_reasons: base.coverage_reasons.clone(),
-        current_sources: &base.current_sources,
+        participating_vaults: std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()]),
         at,
         derivation_eligibility: base.derivation_eligibility.clone(),
+        record_contributions: std::collections::BTreeMap::new(),
     };
     let mut strata: std::collections::BTreeMap<usize, Vec<&crate::Rule>> =
         std::collections::BTreeMap::new();
@@ -1112,6 +1209,11 @@ fn add_canonical_fact(
     let support = canonical_support(&row, evaluation.context);
     let record_id = row.record.record_id;
     let vaults = std::collections::BTreeSet::from([row.vault_alias.to_owned()]);
+    evaluation
+        .record_contributions
+        .entry(record_id)
+        .or_default()
+        .push((predicate.to_owned(), terms.clone()));
     add_fact(
         evaluation,
         predicate,
@@ -3014,6 +3116,7 @@ mod tests {
             participating_vaults: std::collections::BTreeSet::new(),
             at: None,
             derivation_eligibility: std::collections::BTreeMap::new(),
+            record_contributions: std::collections::BTreeMap::new(),
         };
         for predicate in fixture.bundle.base_predicates.keys() {
             evaluation
@@ -4481,4 +4584,1181 @@ mod tests {
             assert_equivalent_to_binary_and_naive(&bundle, &base_facts, &limits);
         }
     }
+}
+
+pub(crate) fn compare_values_crate(
+    op: crate::CompareOp,
+    left: &mneme_core::Value,
+    right: &mneme_core::Value,
+) -> bool {
+    compare_values(op, left, right)
+}
+
+pub(crate) fn aggregate_value_crate(
+    function: crate::AggregateFunction,
+    values: Vec<mneme_core::Value>,
+) -> Result<mneme_core::Value, &'static str> {
+    aggregate_value(function, values)
+}
+
+pub(crate) fn aggregate_group_variables_crate(
+    head: &crate::Atom,
+    output: &str,
+) -> std::collections::BTreeSet<String> {
+    aggregate_group_variables(head, output)
+}
+
+pub(crate) fn term_value_crate(term: &crate::Term, binding: &Binding) -> Option<mneme_core::Value> {
+    term_value(term, binding)
+}
+
+pub(crate) fn head_terms_crate(
+    head: &crate::Atom,
+    binding: &Binding,
+) -> Option<Vec<mneme_core::Value>> {
+    head_terms(head, binding)
+}
+
+pub(crate) fn record_dependencies(
+    record: &mneme_core::RecordEnvelope,
+) -> Vec<mneme_core::RecordId> {
+    let mut deps = Vec::new();
+    match record.kind {
+        mneme_core::RecordKind::Relation => collect_relation_deps(record, &mut deps),
+        mneme_core::RecordKind::Document => {
+            if let Some(entity) = reference_target(record, "entity") {
+                deps.push(entity);
+            }
+        }
+        mneme_core::RecordKind::Evidence => collect_evidence_deps(record, &mut deps),
+        mneme_core::RecordKind::Assertion => collect_assertion_deps(record, &mut deps),
+        mneme_core::RecordKind::Derivation => collect_derivation_deps(record, &mut deps),
+        mneme_core::RecordKind::Entity
+        | mneme_core::RecordKind::SourceRevision
+        | mneme_core::RecordKind::Episode
+        | mneme_core::RecordKind::Checkpoint
+        | mneme_core::RecordKind::Proposal
+        | mneme_core::RecordKind::Decision
+        | mneme_core::RecordKind::RetentionDirective
+        | mneme_core::RecordKind::DocumentBinding
+        | mneme_core::RecordKind::DocumentAnchor
+        | mneme_core::RecordKind::Comment
+        | mneme_core::RecordKind::RecognitionRun
+        | mneme_core::RecordKind::RecognitionSegment => {}
+    }
+    debug_assert!(deps.len() < usize::MAX);
+    debug_assert!(record.schema_version > 0);
+    deps
+}
+
+fn collect_relation_deps(
+    record: &mneme_core::RecordEnvelope,
+    deps: &mut Vec<mneme_core::RecordId>,
+) {
+    if let Some(from) = reference_target(record, "from") {
+        deps.push(from);
+    }
+    if let Some(to) = reference_target(record, "to") {
+        deps.push(to);
+    }
+}
+
+fn collect_evidence_deps(
+    record: &mneme_core::RecordEnvelope,
+    deps: &mut Vec<mneme_core::RecordId>,
+) {
+    if let Ok(evidence) = mneme_memory::EvidenceView::parse(record.clone()) {
+        deps.push(evidence.assertion);
+        deps.push(evidence.source);
+    }
+}
+
+fn collect_assertion_deps(
+    record: &mneme_core::RecordEnvelope,
+    deps: &mut Vec<mneme_core::RecordId>,
+) {
+    if let Ok(assertion) = mneme_memory::AssertionView::parse(record.clone()) {
+        deps.push(assertion.subject);
+        if let Some(decision) = assertion.decision {
+            deps.push(decision);
+        }
+        deps.extend(assertion.evidence);
+    }
+}
+
+fn collect_derivation_deps(
+    record: &mneme_core::RecordEnvelope,
+    deps: &mut Vec<mneme_core::RecordId>,
+) {
+    if let Ok(derivation) = mneme_memory::DerivationView::parse(record.clone()) {
+        deps.push(derivation.conclusion);
+        deps.extend(derivation.premises);
+    }
+}
+
+type SnapshotIndexTuple = (
+    std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    std::collections::BTreeMap<(String, FactKey), std::collections::BTreeSet<mneme_core::RecordId>>,
+    std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+    std::collections::BTreeSet<mneme_core::RecordId>,
+);
+
+fn index_snapshot_records(
+    snapshot_records: &[mneme_core::RecordEnvelope],
+    record_contributions: &std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
+) -> SnapshotIndexTuple {
+    let records: std::collections::BTreeMap<_, _> = snapshot_records
+        .iter()
+        .map(|record| (record.record_id, record.clone()))
+        .collect();
+    let derivation_ids: std::collections::BTreeSet<_> = snapshot_records
+        .iter()
+        .filter(|record| record.kind == mneme_core::RecordKind::Derivation)
+        .map(|record| record.record_id)
+        .collect();
+    let mut reverse_deps: std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    > = std::collections::BTreeMap::new();
+    for record in snapshot_records {
+        add_reverse_dep_edges(record, &mut reverse_deps);
+    }
+    let key_contributors = build_key_contributors(record_contributions);
+    debug_assert!(records.len() <= snapshot_records.len());
+    debug_assert!(derivation_ids.len() <= records.len());
+    (records, key_contributors, reverse_deps, derivation_ids)
+}
+
+fn build_key_contributors(
+    record_contributions: &std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
+) -> std::collections::BTreeMap<(String, FactKey), std::collections::BTreeSet<mneme_core::RecordId>>
+{
+    let mut key_contributors: std::collections::BTreeMap<
+        (String, FactKey),
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    > = std::collections::BTreeMap::new();
+    for (record_id, entries) in record_contributions {
+        for key in entries {
+            key_contributors
+                .entry(key.clone())
+                .or_default()
+                .insert(*record_id);
+        }
+    }
+    key_contributors
+}
+
+fn add_reverse_dep_edges(
+    record: &mneme_core::RecordEnvelope,
+    reverse_deps: &mut std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+) {
+    for dep in record_dependencies(record) {
+        reverse_deps
+            .entry(dep)
+            .or_default()
+            .insert(record.record_id);
+    }
+    if record.kind == mneme_core::RecordKind::Derivation
+        && let Ok(derivation) = mneme_memory::DerivationView::parse(record.clone())
+    {
+        reverse_deps
+            .entry(record.record_id)
+            .or_default()
+            .insert(derivation.conclusion);
+    }
+}
+
+fn remove_reverse_dep_edges(
+    record: &mneme_core::RecordEnvelope,
+    reverse_deps: &mut std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+) {
+    for dep in record_dependencies(record) {
+        if let Some(set) = reverse_deps.get_mut(&dep) {
+            set.remove(&record.record_id);
+            if set.is_empty() {
+                reverse_deps.remove(&dep);
+            }
+        }
+    }
+    if record.kind == mneme_core::RecordKind::Derivation
+        && let Ok(derivation) = mneme_memory::DerivationView::parse(record.clone())
+        && let Some(set) = reverse_deps.get_mut(&record.record_id)
+    {
+        set.remove(&derivation.conclusion);
+        if set.is_empty() {
+            reverse_deps.remove(&record.record_id);
+        }
+    }
+}
+
+pub(crate) struct BaseAdvanceRequest<'a> {
+    pub workspace: &'a mneme_store::Workspace,
+    pub target_revision: mneme_core::WorkspaceRevisionId,
+    pub next_context: &'a crate::BuildContext,
+    pub bundle: &'a crate::RuleBundle,
+    pub limits: &'a crate::Limits,
+    pub incomplete_extents: &'a std::collections::BTreeSet<String>,
+    pub at: Option<mneme_core::Timestamp>,
+    pub start: std::time::Instant,
+}
+
+pub(crate) struct BaseAdvanceResult {
+    pub next_base: BaseSnapshot,
+    pub eligibility_generation: u64,
+    pub base_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    pub dirty_provenance: std::collections::BTreeSet<(String, FactKey)>,
+    pub work: u64,
+    pub limit_reached: bool,
+    pub status: crate::ExecutionStatus,
+}
+
+struct SnapshotDeltaState {
+    records: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    history: std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+    revision_sequences: std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
+    reverse_deps: std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+    derivation_ids: std::collections::BTreeSet<mneme_core::RecordId>,
+    seed_changed: std::collections::BTreeSet<mneme_core::RecordId>,
+}
+
+impl SnapshotDeltaState {
+    fn from_base(base: &BaseSnapshot) -> Self {
+        Self {
+            records: base.records.clone(),
+            history: base.history.clone(),
+            revision_sequences: base.revision_sequences.clone(),
+            reverse_deps: base.reverse_deps.clone(),
+            derivation_ids: base.derivation_ids.clone(),
+            seed_changed: std::collections::BTreeSet::new(),
+        }
+    }
+}
+
+pub(crate) fn advance_base_snapshot(
+    base: &BaseSnapshot,
+    request: BaseAdvanceRequest<'_>,
+) -> Result<BaseAdvanceResult, crate::Error> {
+    assert!(request.limits.max_work > 0);
+    let delta = request
+        .workspace
+        .revision_delta(base.revision, request.target_revision, None)?;
+    let suppressions = request.workspace.active_suppressions()?;
+    let current_sources =
+        crate::source_availability_overlay(request.workspace, request.target_revision)?;
+    let mut state = SnapshotDeltaState::from_base(base);
+
+    collect_removed_seeds(base, &delta, &mut state);
+    let added_visible = filter_visible_records(&delta.added, &base.scope, &base.access);
+    apply_added_records(request.workspace, &delta, &added_visible, &mut state)?;
+    collect_overlay_changed_seeds(
+        base,
+        &suppressions,
+        &current_sources,
+        delta.to_sequence,
+        &mut state,
+    );
+
+    let impacted =
+        bfs_impacted_records(&state.seed_changed, &base.reverse_deps, &state.reverse_deps);
+    let (old_rows, eval_ids, next_facts, next_contribs, next_key_contribs) =
+        detach_impacted_contributions(base, &impacted, &state.records);
+    let view = build_delta_view(base, request.workspace, &delta, &state, &suppressions);
+    let mut reconciled = ReconciledFacts {
+        next_facts,
+        next_contribs,
+        next_key_contribs,
+    };
+    let eval_parts = evaluate_delta_parts(
+        DeltaEvalInput {
+            base,
+            request: &request,
+            view: &view,
+            records: &state.records,
+            eval_ids: &eval_ids,
+            current_sources: &current_sources,
+            old_rows: &old_rows,
+        },
+        &mut reconciled,
+    )?;
+    debug_assert_eq!(delta.to_revision, request.target_revision);
+    Ok(finish_base_advance(FinishBaseAdvance {
+        base,
+        delta: &delta,
+        state,
+        suppressions,
+        current_sources,
+        reconciled,
+        eval_parts,
+        max_work: request.limits.max_work,
+    }))
+}
+
+struct DeltaEvalInput<'a> {
+    base: &'a BaseSnapshot,
+    request: &'a BaseAdvanceRequest<'a>,
+    view: &'a mneme_memory::View,
+    records: &'a std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    eval_ids: &'a std::collections::BTreeSet<mneme_core::RecordId>,
+    current_sources: &'a AvailabilityMap,
+    old_rows: &'a std::collections::BTreeMap<(String, FactKey), crate::FactData>,
+}
+
+fn evaluate_delta_parts(
+    input: DeltaEvalInput<'_>,
+    reconciled: &mut ReconciledFacts,
+) -> Result<DeltaEvalParts, crate::Error> {
+    let DeltaEvalInput {
+        base,
+        request,
+        view,
+        records,
+        eval_ids,
+        current_sources,
+        old_rows,
+    } = input;
+    assert!(request.limits.max_work > 0);
+    let mut evaluation = Evaluation {
+        bundle: request.bundle,
+        context: request.next_context,
+        budget: new_budget(request.limits, request.start, base.support_truncated),
+        facts: std::collections::BTreeMap::new(),
+        coverage: std::collections::BTreeMap::new(),
+        base_coverage: std::collections::BTreeMap::new(),
+        coverage_reasons: std::collections::BTreeMap::new(),
+        participating_vaults: std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()]),
+        at: request.at,
+        derivation_eligibility: std::collections::BTreeMap::new(),
+        record_contributions: std::collections::BTreeMap::new(),
+    };
+    initialize_base_coverage(&mut evaluation, request.incomplete_extents);
+    evaluate_impacted_records(view, records, current_sources, eval_ids, &mut evaluation);
+    let (base_deltas, dirty_provenance) = reconcile_delta_facts(
+        ReconcileDeltaInput {
+            old_rows,
+            temp_facts: &evaluation.facts,
+            temp_contribs: &evaluation.record_contributions,
+            target_revision: request.target_revision,
+        },
+        reconciled,
+    )?;
+    let coverage = final_coverage(&evaluation);
+    let status = overall_status(evaluation.budget.status, &coverage);
+    debug_assert!(
+        evaluation.budget.work <= request.limits.max_work || evaluation.budget.limit_reached
+    );
+    Ok(DeltaEvalParts {
+        coverage,
+        status,
+        work: evaluation.budget.work,
+        is_support_truncated: evaluation.budget.support_truncated,
+        is_limit_reached: evaluation.budget.limit_reached,
+        base_coverage: evaluation.base_coverage,
+        coverage_reasons: evaluation.coverage_reasons,
+        derivation_eligibility: evaluation.derivation_eligibility,
+        base_deltas,
+        dirty_provenance,
+    })
+}
+
+struct ReconciledFacts {
+    next_facts: std::collections::BTreeMap<String, FactStore>,
+    next_contribs: std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
+    next_key_contribs: std::collections::BTreeMap<
+        (String, FactKey),
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+}
+
+struct DeltaEvalParts {
+    coverage: Vec<crate::Coverage>,
+    status: crate::ExecutionStatus,
+    work: u64,
+    is_support_truncated: bool,
+    is_limit_reached: bool,
+    base_coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
+    coverage_reasons: std::collections::BTreeMap<String, String>,
+    derivation_eligibility: std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+    base_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    dirty_provenance: std::collections::BTreeSet<(String, FactKey)>,
+}
+
+struct FinishBaseAdvance<'a> {
+    base: &'a BaseSnapshot,
+    delta: &'a mneme_store::RevisionDelta,
+    state: SnapshotDeltaState,
+    suppressions: Vec<mneme_store::RetentionSuppression>,
+    current_sources: AvailabilityMap,
+    reconciled: ReconciledFacts,
+    eval_parts: DeltaEvalParts,
+    max_work: u64,
+}
+
+fn finish_base_advance(args: FinishBaseAdvance<'_>) -> BaseAdvanceResult {
+    let FinishBaseAdvance {
+        base,
+        delta,
+        state,
+        suppressions,
+        current_sources,
+        reconciled,
+        eval_parts,
+        max_work,
+    } = args;
+    assert!(max_work > 0);
+    debug_assert!(eval_parts.work <= max_work || eval_parts.is_limit_reached);
+    let next_base = BaseSnapshot {
+        revision: delta.to_revision,
+        sequence: delta.to_sequence,
+        scope: base.scope.clone(),
+        access: base.access.clone(),
+        records: state.records,
+        history: state.history,
+        revision_sequences: state.revision_sequences,
+        suppressions,
+        facts: reconciled.next_facts,
+        record_contributions: reconciled.next_contribs,
+        key_contributors: reconciled.next_key_contribs,
+        reverse_deps: state.reverse_deps,
+        derivation_ids: state.derivation_ids,
+        base_coverage: eval_parts.base_coverage,
+        coverage_reasons: eval_parts.coverage_reasons,
+        current_sources,
+        derivation_eligibility: eval_parts.derivation_eligibility,
+        coverage: eval_parts.coverage,
+        status: eval_parts.status,
+        work: eval_parts.work,
+        support_truncated: eval_parts.is_support_truncated,
+        limit_reached: eval_parts.is_limit_reached,
+    };
+    BaseAdvanceResult {
+        next_base,
+        eligibility_generation: delta.eligibility_generation,
+        base_deltas: eval_parts.base_deltas,
+        dirty_provenance: eval_parts.dirty_provenance,
+        work: eval_parts.work,
+        limit_reached: eval_parts.is_limit_reached,
+        status: eval_parts.status,
+    }
+}
+
+fn collect_removed_seeds(
+    base: &BaseSnapshot,
+    delta: &mneme_store::RevisionDelta,
+    state: &mut SnapshotDeltaState,
+) {
+    assert_eq!(delta.from_revision, base.revision);
+    let mut to_remove = std::collections::BTreeSet::new();
+    for removed in &delta.removed {
+        if state.records.contains_key(&removed.record_id) {
+            to_remove.insert(removed.record_id);
+        }
+    }
+    for (record_id, envelope) in &base.records {
+        if delta.forgotten_identities.contains(record_id)
+            || delta
+                .forgotten_revisions
+                .contains(&(*record_id, envelope.revision_id))
+        {
+            to_remove.insert(*record_id);
+        }
+    }
+    debug_assert!(to_remove.len() <= base.records.len());
+    for record_id in to_remove {
+        state.seed_changed.insert(record_id);
+        if let Some(old_record) = state.records.remove(&record_id) {
+            remove_reverse_dep_edges(&old_record, &mut state.reverse_deps);
+        }
+        state.derivation_ids.remove(&record_id);
+        state.history.retain(|(id, _), _| *id != record_id);
+    }
+}
+
+fn filter_visible_records(
+    added: &[mneme_core::RecordEnvelope],
+    scope: &mneme_core::ScopeId,
+    access: &mneme_memory::Access,
+) -> Vec<mneme_core::RecordEnvelope> {
+    added
+        .iter()
+        .filter(|record| {
+            mneme_kernel::isolation::record_visible(&mneme_kernel::isolation::VisibilityFacts {
+                same_scope: record.scope == *scope,
+                record_class: record.scope.class().to_kernel(),
+                include_hypothetical: false,
+                record_scope_authorized: access.allows(&record.scope),
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn apply_added_records(
+    workspace: &mneme_store::Workspace,
+    delta: &mneme_store::RevisionDelta,
+    added_visible: &[mneme_core::RecordEnvelope],
+    state: &mut SnapshotDeltaState,
+) -> Result<(), crate::Error> {
+    assert!(added_visible.len() <= delta.added.len());
+    let mut added_ids = std::collections::BTreeSet::new();
+    for record in added_visible {
+        state.seed_changed.insert(record.record_id);
+        added_ids.insert(record.record_id);
+        if let Some(previous) = state.records.insert(record.record_id, record.clone()) {
+            remove_reverse_dep_edges(&previous, &mut state.reverse_deps);
+        }
+        add_reverse_dep_edges(record, &mut state.reverse_deps);
+        if record.kind == mneme_core::RecordKind::Derivation {
+            state.derivation_ids.insert(record.record_id);
+        }
+    }
+    let mut wanted_revisions = std::collections::BTreeSet::from([delta.to_revision]);
+    fetch_added_histories(
+        workspace,
+        delta,
+        AddedHistoryInputs {
+            visible: added_visible,
+            ids: &added_ids,
+        },
+        state,
+        &mut wanted_revisions,
+    )?;
+    for record in added_visible {
+        collect_wanted_revisions(record, &mut wanted_revisions)?;
+    }
+    wanted_revisions.retain(|rev| !state.revision_sequences.contains_key(rev));
+    if !wanted_revisions.is_empty() {
+        let seqs = workspace.revision_sequences_for(&wanted_revisions)?;
+        state.revision_sequences.extend(seqs);
+    }
+    debug_assert!(state.revision_sequences.contains_key(&delta.to_revision));
+    Ok(())
+}
+
+struct AddedHistoryInputs<'a> {
+    visible: &'a [mneme_core::RecordEnvelope],
+    ids: &'a std::collections::BTreeSet<mneme_core::RecordId>,
+}
+
+fn fetch_added_histories(
+    workspace: &mneme_store::Workspace,
+    delta: &mneme_store::RevisionDelta,
+    inputs: AddedHistoryInputs<'_>,
+    state: &mut SnapshotDeltaState,
+    wanted_revisions: &mut std::collections::BTreeSet<mneme_core::WorkspaceRevisionId>,
+) -> Result<(), crate::Error> {
+    if inputs.ids.is_empty() {
+        return Ok(());
+    }
+    assert!(!inputs.visible.is_empty());
+    let temp_snapshot = mneme_store::Snapshot {
+        revision: delta.to_revision,
+        sequence: delta.to_sequence,
+        parent: delta.to_parent,
+        manifest_digest: delta.to_manifest_digest,
+        eligibility_generation: delta.eligibility_generation,
+        records: inputs.visible.to_vec(),
+        index: mneme_core::SnapshotIndex::new(),
+    };
+    let fetched = workspace.record_histories_of(&temp_snapshot, inputs.ids)?;
+    for envelopes in fetched.into_values() {
+        for envelope in envelopes {
+            collect_wanted_revisions(&envelope, wanted_revisions)?;
+            state
+                .history
+                .insert((envelope.record_id, envelope.revision_id), envelope);
+        }
+    }
+    debug_assert!(state.history.len() >= inputs.ids.len());
+    Ok(())
+}
+
+fn collect_wanted_revisions(
+    record: &mneme_core::RecordEnvelope,
+    wanted: &mut std::collections::BTreeSet<mneme_core::WorkspaceRevisionId>,
+) -> Result<(), crate::Error> {
+    if record.kind == mneme_core::RecordKind::Decision {
+        let decision =
+            mneme_memory::DecisionView::parse(record.clone()).map_err(crate::Error::Engine)?;
+        wanted.insert(decision.input_revision);
+    } else if record.kind == mneme_core::RecordKind::Derivation {
+        let derivation =
+            mneme_memory::DerivationView::parse(record.clone()).map_err(crate::Error::Engine)?;
+        wanted.insert(derivation.evaluation_revision);
+    }
+    Ok(())
+}
+
+fn collect_overlay_changed_seeds(
+    base: &BaseSnapshot,
+    new_suppressions: &[mneme_store::RetentionSuppression],
+    new_sources: &AvailabilityMap,
+    new_sequence: u64,
+    state: &mut SnapshotDeltaState,
+) {
+    assert!(new_sequence < u64::MAX);
+    let old_sup = suppression_key_set(&base.suppressions);
+    let new_sup = suppression_key_set(new_suppressions);
+    for (target, _, _) in old_sup.symmetric_difference(&new_sup) {
+        state.seed_changed.insert(*target);
+    }
+    for (source_id, avail) in &base.current_sources {
+        if new_sources.get(source_id) != Some(avail) {
+            state.seed_changed.insert(*source_id);
+        }
+    }
+    for (source_id, avail) in new_sources {
+        if base.current_sources.get(source_id) != Some(avail) {
+            state.seed_changed.insert(*source_id);
+        }
+    }
+    if new_sequence < base.sequence {
+        state
+            .seed_changed
+            .extend(state.derivation_ids.iter().copied());
+    }
+    debug_assert!(new_sources.len() < usize::MAX);
+}
+
+fn suppression_key_set(
+    suppressions: &[mneme_store::RetentionSuppression],
+) -> std::collections::BTreeSet<(
+    mneme_core::RecordId,
+    Option<mneme_core::RevisionId>,
+    &'static str,
+)> {
+    suppressions
+        .iter()
+        .map(|s| (s.target, s.revision, s.mode.as_str()))
+        .collect()
+}
+
+fn bfs_impacted_records(
+    seeds: &std::collections::BTreeSet<mneme_core::RecordId>,
+    old_reverse: &std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+    new_reverse: &std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+) -> std::collections::BTreeSet<mneme_core::RecordId> {
+    let mut visited = std::collections::BTreeSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    for id in seeds {
+        if visited.insert(*id) {
+            queue.push_back(*id);
+        }
+    }
+    while let Some(current) = queue.pop_front() {
+        for map in [old_reverse, new_reverse] {
+            if let Some(dependents) = map.get(&current) {
+                for dependent in dependents {
+                    if visited.insert(*dependent) {
+                        queue.push_back(*dependent);
+                    }
+                }
+            }
+        }
+    }
+    debug_assert!(visited.len() >= seeds.len());
+    debug_assert!(queue.is_empty());
+    visited
+}
+
+type DetachedState = (
+    std::collections::BTreeMap<(String, FactKey), crate::FactData>,
+    std::collections::BTreeSet<mneme_core::RecordId>,
+    std::collections::BTreeMap<String, FactStore>,
+    std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
+    std::collections::BTreeMap<(String, FactKey), std::collections::BTreeSet<mneme_core::RecordId>>,
+);
+
+fn detach_impacted_contributions(
+    base: &BaseSnapshot,
+    impacted: &std::collections::BTreeSet<mneme_core::RecordId>,
+    new_records: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+) -> DetachedState {
+    assert!(impacted.len() < usize::MAX);
+    let mut next_facts = base.facts.clone();
+    let mut next_contribs = base.record_contributions.clone();
+    let mut next_key_contribs = base.key_contributors.clone();
+    let mut eval_ids = impacted.clone();
+    let mut touched_keys = std::collections::BTreeSet::new();
+
+    let old_rows = collect_detached_old_rows(
+        impacted,
+        &next_facts,
+        &mut next_contribs,
+        &mut next_key_contribs,
+        &mut touched_keys,
+    );
+    for (pred, key) in &touched_keys {
+        if let Some(remaining) = next_key_contribs.get(&(pred.clone(), key.clone())) {
+            for other_id in remaining {
+                if new_records.contains_key(other_id) {
+                    eval_ids.insert(*other_id);
+                }
+            }
+        }
+        if let Some(store) = next_facts.get_mut(pred) {
+            store.rows.remove(key);
+        }
+    }
+    for id in &eval_ids {
+        if !impacted.contains(id)
+            && let Some(entries) = next_contribs.remove(id)
+        {
+            for (pred, key) in entries {
+                if let Some(set) = next_key_contribs.get_mut(&(pred, key)) {
+                    set.remove(id);
+                }
+            }
+        }
+    }
+    next_key_contribs.retain(|_, set| !set.is_empty());
+    debug_assert!(eval_ids.len() >= impacted.len());
+    (
+        old_rows,
+        eval_ids,
+        next_facts,
+        next_contribs,
+        next_key_contribs,
+    )
+}
+
+fn collect_detached_old_rows(
+    impacted: &std::collections::BTreeSet<mneme_core::RecordId>,
+    next_facts: &std::collections::BTreeMap<String, FactStore>,
+    next_contribs: &mut std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
+    next_key_contribs: &mut std::collections::BTreeMap<
+        (String, FactKey),
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+    touched_keys: &mut std::collections::BTreeSet<(String, FactKey)>,
+) -> std::collections::BTreeMap<(String, FactKey), crate::FactData> {
+    assert!(impacted.len() < usize::MAX);
+    let mut old_row_entries = Vec::with_capacity(impacted.len());
+    for id in impacted {
+        if let Some(entries) = next_contribs.remove(id) {
+            for (pred, key) in entries {
+                if let Some(data) = next_facts.get(&pred).and_then(|s| s.rows.get(&key)) {
+                    old_row_entries.push(((pred.clone(), key.clone()), data.clone()));
+                }
+                if let Some(set) = next_key_contribs.get_mut(&(pred.clone(), key.clone())) {
+                    set.remove(id);
+                }
+                touched_keys.insert((pred, key));
+            }
+        }
+    }
+    let old_rows: std::collections::BTreeMap<_, _> = old_row_entries.into_iter().collect();
+    debug_assert!(old_rows.len() <= touched_keys.len());
+    old_rows
+}
+
+fn build_delta_view(
+    base: &BaseSnapshot,
+    workspace: &mneme_store::Workspace,
+    delta: &mneme_store::RevisionDelta,
+    state: &SnapshotDeltaState,
+    suppressions: &[mneme_store::RetentionSuppression],
+) -> mneme_memory::View {
+    let snapshot = mneme_store::Snapshot {
+        revision: delta.to_revision,
+        sequence: delta.to_sequence,
+        parent: delta.to_parent,
+        manifest_digest: delta.to_manifest_digest,
+        eligibility_generation: delta.eligibility_generation,
+        records: state.records.values().cloned().collect(),
+        index: mneme_core::SnapshotIndex::new(),
+    };
+    mneme_memory::View::with_retention(
+        snapshot,
+        workspace.root(),
+        state.history.clone(),
+        state.revision_sequences.clone(),
+        suppressions.to_vec(),
+    )
+    .with_access(base.access.clone())
+}
+
+fn evaluate_impacted_records(
+    view: &mneme_memory::View,
+    records: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    current_sources: &AvailabilityMap,
+    eval_ids: &std::collections::BTreeSet<mneme_core::RecordId>,
+    evaluation: &mut Evaluation<'_>,
+) {
+    assert!(evaluation.budget.limits.max_work > 0);
+    let all_views = [view];
+    let vault_ctx = LoadVaultContext {
+        alias: crate::PRIMARY_VAULT_ALIAS,
+        served_revision: evaluation.context.served_revision,
+        view,
+        current_sources,
+        all_views: &all_views,
+    };
+    for id in eval_ids {
+        let Some(record) = records.get(id) else {
+            continue;
+        };
+        if record.scope != evaluation.context.scope {
+            continue;
+        }
+        if !evaluation.budget.charge(1) {
+            stop_loading(evaluation);
+            return;
+        }
+        load_record_facts(&vault_ctx, record, evaluation);
+        if !evaluation.budget.is_active() {
+            stop_loading(evaluation);
+            return;
+        }
+    }
+    debug_assert!(evaluation.budget.is_active());
+}
+
+type ReconciledDeltaOutput = (
+    std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    std::collections::BTreeSet<(String, FactKey)>,
+);
+
+struct ReconcileDeltaInput<'a> {
+    old_rows: &'a std::collections::BTreeMap<(String, FactKey), crate::FactData>,
+    temp_facts: &'a std::collections::BTreeMap<String, FactStore>,
+    temp_contribs: &'a std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
+    target_revision: mneme_core::WorkspaceRevisionId,
+}
+
+fn reconcile_delta_facts(
+    input: ReconcileDeltaInput<'_>,
+    reconciled: &mut ReconciledFacts,
+) -> Result<ReconciledDeltaOutput, crate::Error> {
+    assert!(input.old_rows.len() < usize::MAX);
+    let mut base_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> =
+        std::collections::BTreeMap::new();
+    let mut dirty_provenance = std::collections::BTreeSet::new();
+
+    for store in reconciled.next_facts.values_mut() {
+        for data in store.rows.values_mut() {
+            for support in &mut data.supports {
+                support.revision = input.target_revision;
+            }
+        }
+    }
+    for ((pred, key), old_data) in input.old_rows {
+        if let Some(new_data) = input.temp_facts.get(pred).and_then(|s| s.rows.get(key)) {
+            if !same_semantic_fact_data(old_data, new_data) {
+                dirty_provenance.insert((pred.clone(), key.clone()));
+            }
+            reconciled
+                .next_facts
+                .entry(pred.clone())
+                .or_default()
+                .rows
+                .insert(key.clone(), new_data.clone());
+        } else {
+            base_deltas
+                .entry(pred.clone())
+                .or_default()
+                .insert_weighted(key.clone(), -1)?;
+        }
+    }
+    for (pred, store) in input.temp_facts {
+        for (key, new_data) in &store.rows {
+            if !input.old_rows.contains_key(&(pred.clone(), key.clone())) {
+                reconciled
+                    .next_facts
+                    .entry(pred.clone())
+                    .or_default()
+                    .rows
+                    .insert(key.clone(), new_data.clone());
+                base_deltas
+                    .entry(pred.clone())
+                    .or_default()
+                    .insert_weighted(key.clone(), 1)?;
+            }
+        }
+    }
+    for (record_id, entries) in input.temp_contribs {
+        for (pred, key) in entries {
+            reconciled
+                .next_key_contribs
+                .entry((pred.clone(), key.clone()))
+                .or_default()
+                .insert(*record_id);
+        }
+        reconciled.next_contribs.insert(*record_id, entries.clone());
+    }
+    debug_assert!(dirty_provenance.len() <= input.old_rows.len());
+    Ok((base_deltas, dirty_provenance))
+}
+
+fn same_semantic_fact_data(left: &crate::FactData, right: &crate::FactData) -> bool {
+    left.sources == right.sources
+        && left.canonical == right.canonical
+        && left.canonical_roots == right.canonical_roots
+        && left.vaults == right.vaults
+        && left.temporal == right.temporal
+        && left.epistemic == right.epistemic
+        && left.truncated == right.truncated
+        && left.supports.len() == right.supports.len()
+        && left.supports.iter().zip(&right.supports).all(|(a, b)| {
+            a.rule_id == b.rule_id
+                && a.rule_version == b.rule_version
+                && a.premises == b.premises
+                && a.sources == b.sources
+                && a.temporal_parameters == b.temporal_parameters
+                && a.scope == b.scope
+                && a.truncated == b.truncated
+        })
+}
+
+pub(crate) struct FactDataBuildRequest<'a> {
+    pub rule: &'a crate::Rule,
+    pub context: &'a crate::BuildContext,
+    pub limits: &'a crate::Limits,
+    pub facts: &'a std::collections::BTreeMap<String, FactStore>,
+    pub coverage_map: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
+    pub current_sources: &'a AvailabilityMap,
+    pub at: Option<mneme_core::Timestamp>,
+    pub start: std::time::Instant,
+    pub bindings: &'a [Binding],
+    pub target_terms: &'a FactKey,
+}
+
+pub(crate) fn build_ordinary_fact_data_from_bindings(
+    request: FactDataBuildRequest<'_>,
+    target_store: &mut FactStore,
+) -> bool {
+    build_fact_data_with(
+        &request,
+        target_store,
+        |rule, evaluation, target_terms, temp| {
+            for binding in request.bindings {
+                let contents =
+                    instantiated_support(rule, evaluation, binding, target_terms.clone());
+                merge_fact_contents(
+                    temp,
+                    &rule.head.predicate,
+                    contents,
+                    request.limits.max_supports_per_fact,
+                );
+            }
+        },
+    )
+}
+
+pub(crate) fn build_aggregate_fact_data_from_bindings(
+    request: FactDataBuildRequest<'_>,
+    target_store: &mut FactStore,
+) -> bool {
+    build_fact_data_with(
+        &request,
+        target_store,
+        |rule, evaluation, target_terms, temp| {
+            let binding_indices: Vec<usize> = (0..request.bindings.len()).collect();
+            let row = AggregateRow {
+                head_terms: target_terms.clone(),
+                binding_indices,
+            };
+            let contents = aggregate_support(rule, evaluation, request.bindings, &row);
+            merge_fact_contents(
+                temp,
+                &rule.head.predicate,
+                contents,
+                request.limits.max_supports_per_fact,
+            );
+        },
+    )
+}
+
+fn build_fact_data_with<F>(
+    request: &FactDataBuildRequest<'_>,
+    target_store: &mut FactStore,
+    build: F,
+) -> bool
+where
+    F: FnOnce(
+        &crate::Rule,
+        &mut Evaluation<'_>,
+        &FactKey,
+        &mut std::collections::BTreeMap<String, FactStore>,
+    ),
+{
+    assert!(!request.rule.head.predicate.is_empty());
+    let empty_bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
+        id: request.context.rule_bundle_id.clone(),
+        version: request.context.rule_bundle_version.clone(),
+        schema_version: request.context.schema_version,
+        base_predicates: std::collections::BTreeMap::new(),
+        complete_predicates: std::collections::BTreeSet::new(),
+        rules: Vec::new(),
+    });
+    let mut evaluation = Evaluation {
+        bundle: &empty_bundle,
+        context: request.context,
+        budget: new_budget(request.limits, request.start, false),
+        facts: request.facts.clone(),
+        coverage: request.coverage_map.clone(),
+        base_coverage: request.coverage_map.clone(),
+        coverage_reasons: std::collections::BTreeMap::new(),
+        participating_vaults: std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()]),
+        at: request.at,
+        derivation_eligibility: std::collections::BTreeMap::new(),
+        record_contributions: std::collections::BTreeMap::new(),
+    };
+    let _ = request.current_sources;
+    let mut temp = std::collections::BTreeMap::new();
+    if let Some(existing) = target_store.rows.get(request.target_terms) {
+        let mut s = FactStore::default();
+        s.rows
+            .insert(request.target_terms.clone(), existing.clone());
+        temp.insert(request.rule.head.predicate.clone(), s);
+    }
+    build(
+        request.rule,
+        &mut evaluation,
+        request.target_terms,
+        &mut temp,
+    );
+    debug_assert!(request.limits.max_supports_per_fact > 0);
+    if let Some(updated) = temp
+        .get(&request.rule.head.predicate)
+        .and_then(|s| s.rows.get(request.target_terms))
+    {
+        let is_truncated = updated.truncated;
+        target_store
+            .rows
+            .insert(request.target_terms.clone(), updated.clone());
+        if is_truncated {
+            target_store.truncated = true;
+        }
+        return is_truncated;
+    }
+    false
+}
+
+fn merge_fact_contents(
+    temp_facts: &mut std::collections::BTreeMap<String, FactStore>,
+    predicate: &str,
+    contents: FactContents,
+    max_supports: usize,
+) {
+    assert!(!predicate.is_empty());
+    assert!(max_supports > 0);
+    let FactContents {
+        terms,
+        support,
+        sources,
+        canonical,
+        canonical_roots,
+        vaults,
+        temporal,
+        epistemic,
+    } = contents;
+    let store = temp_facts.entry(predicate.to_owned()).or_default();
+    if let Some(data) = store.rows.get_mut(&terms) {
+        data.epistemic = data.epistemic.union(epistemic);
+        if let Some(existing) = data
+            .supports
+            .iter_mut()
+            .find(|existing| same_proof(existing, &support))
+        {
+            merge_premises(existing, &support);
+            data.sources.extend(sources);
+            data.canonical_roots.extend(canonical_roots);
+            data.vaults.extend(vaults);
+            merge_strings(&mut data.temporal, temporal);
+            return;
+        }
+        if data.supports.len() >= max_supports {
+            data.truncated = true;
+            store.truncated = true;
+            return;
+        }
+        data.supports.push(support);
+        data.sources.extend(sources);
+        data.canonical_roots.extend(canonical_roots);
+        data.vaults.extend(vaults);
+        merge_strings(&mut data.temporal, temporal);
+        return;
+    }
+    store.rows.insert(
+        terms,
+        crate::FactData {
+            supports: vec![support],
+            sources,
+            truncated: false,
+            canonical,
+            canonical_roots,
+            vaults,
+            temporal,
+            epistemic,
+        },
+    );
+}
+
+pub(crate) struct CoverageCheckRequest<'a> {
+    pub base: &'a BaseSnapshot,
+    pub bundle: &'a crate::RuleBundle,
+    pub context: &'a crate::BuildContext,
+    pub limits: &'a crate::Limits,
+    pub fact_predicates: &'a std::collections::BTreeSet<String>,
+    pub coverage_reasons: &'a std::collections::BTreeMap<String, String>,
+    pub at: Option<mneme_core::Timestamp>,
+    pub start: std::time::Instant,
+}
+
+pub(crate) fn compute_coverage_for_facts(
+    request: CoverageCheckRequest<'_>,
+) -> (
+    std::collections::BTreeMap<String, crate::CoverageStatus>,
+    Vec<crate::Coverage>,
+    crate::ExecutionStatus,
+) {
+    assert!(request.limits.max_work > 0);
+    let stub_facts: std::collections::BTreeMap<_, _> = request
+        .fact_predicates
+        .iter()
+        .map(|predicate| (predicate.clone(), FactStore::default()))
+        .collect();
+    debug_assert_eq!(stub_facts.len(), request.fact_predicates.len());
+    let mut evaluation = Evaluation {
+        bundle: request.bundle,
+        context: request.context,
+        budget: new_budget(request.limits, request.start, false),
+        facts: stub_facts,
+        coverage: request.base.base_coverage.clone(),
+        base_coverage: request.base.base_coverage.clone(),
+        coverage_reasons: request.coverage_reasons.clone(),
+        participating_vaults: std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()]),
+        at: request.at,
+        derivation_eligibility: request.base.derivation_eligibility.clone(),
+        record_contributions: std::collections::BTreeMap::new(),
+    };
+    let _ = request.base.current_sources;
+    update_derived_coverage(&mut evaluation);
+    let coverage = final_coverage(&evaluation);
+    let status = overall_status(evaluation.budget.status, &coverage);
+    (evaluation.coverage, coverage, status)
 }

@@ -84,7 +84,9 @@ pub fn validate_vault_alias(alias: &str) -> Result<(), Error> {
 }
 
 pub mod repl;
+pub mod zset;
 pub use repl::{ReplLimits, ReplSession, ReplSessionRequest, ReplStepSummary};
+pub use zset::{BilinearJoin, IndexedZSet, ZSet, delta_join};
 
 /// A Datalog term.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -808,6 +810,7 @@ struct QueryCacheKey {
 
 mod engine;
 mod freejoin;
+mod ivm;
 mod provenance;
 mod rules;
 

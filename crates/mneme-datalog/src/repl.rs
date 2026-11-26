@@ -67,12 +67,19 @@ pub struct ReplStepSummary {
 /// A bounded, read-only, revision-pinned Dynamic Datalog REPL session.
 pub struct ReplSession {
     base: crate::engine::BaseSnapshot,
+    ivm: crate::ivm::ViewState,
     build: crate::Build,
     program: crate::RuleProgram,
     repl_limits: ReplLimits,
     total_work: u64,
     incomplete_extents: std::collections::BTreeSet<String>,
     at: Option<mneme_core::Timestamp>,
+}
+
+struct PreparedAdvance {
+    target_revision: mneme_core::WorkspaceRevisionId,
+    step_limits: crate::Limits,
+    next_context: crate::BuildContext,
 }
 
 impl ReplSession {
@@ -102,6 +109,7 @@ impl ReplSession {
                 "session row limit exceeded while loading base extents".to_owned(),
             ));
         }
+        let ivm = crate::ivm::ViewState::from_base_facts(&base.facts)?;
         let build = crate::Build {
             context,
             status: base.status,
@@ -120,6 +128,7 @@ impl ReplSession {
         debug_assert!(initial_rows <= request.limits.max_total_rows);
         Ok(ReplSession {
             base,
+            ivm,
             build,
             program,
             repl_limits: request.limits,
@@ -387,10 +396,7 @@ impl ReplSession {
             if is_base || (is_still_defined && !affected.contains(predicate)) {
                 kept_facts.insert(
                     predicate.clone(),
-                    crate::engine::FactStore {
-                        rows: rows.clone(),
-                        truncated: false,
-                    },
+                    crate::engine::FactStore::from_rows(rows.clone()),
                 );
             }
         }
@@ -439,6 +445,14 @@ impl ReplSession {
         let mut next_context = self.build.context.clone();
         next_context.projection_build_id = next_build_id;
 
+        let next_facts = unwrap_fact_stores(&evaluated.facts);
+        self.ivm.sync_after_rule_change(
+            &candidate_program,
+            &self.base.facts,
+            &next_facts,
+            &affected,
+        )?;
+
         self.build = crate::Build {
             context: next_context.clone(),
             status: evaluated.status,
@@ -448,7 +462,7 @@ impl ReplSession {
             support_truncated: evaluated.support_truncated,
             limit_reached: evaluated.limit_reached,
             declaration_valid: evaluated.declaration_valid,
-            facts: unwrap_fact_stores(&evaluated.facts),
+            facts: next_facts,
             arities: candidate_program.arities.clone(),
             bundle: candidate_program.bundle.clone(),
         };
@@ -475,6 +489,201 @@ impl ReplSession {
             reused_predicates,
         })
     }
+
+    /// Step this session to `revision` (or current workspace head when `None`)
+    /// using DBSP Z-set delta maintenance without reloading unchanged base facts.
+    pub fn advance_to_revision(
+        &mut self,
+        workspace: &mut mneme_store::Workspace,
+        revision: Option<mneme_core::WorkspaceRevisionId>,
+    ) -> Result<ReplStepSummary, crate::Error> {
+        let remaining_work = self.remaining_total_work()?;
+        let start = crate::engine::evaluation_start();
+        let mut prepared = self.prepare_advance(workspace, revision, remaining_work)?;
+        let base_advance = crate::engine::advance_base_snapshot(
+            &self.base,
+            crate::engine::BaseAdvanceRequest {
+                workspace,
+                target_revision: prepared.target_revision,
+                next_context: &prepared.next_context,
+                bundle: &self.program.bundle,
+                limits: &prepared.step_limits,
+                incomplete_extents: &self.incomplete_extents,
+                at: self.at,
+                start,
+            },
+        )?;
+        self.sync_advance_generation(
+            &mut prepared.next_context,
+            base_advance.eligibility_generation,
+        );
+        if base_advance.limit_reached {
+            self.total_work = self.total_work.saturating_add(base_advance.work);
+            return Err(crate::Error::LimitExceeded(format!(
+                "advance base delta limit reached ({})",
+                base_advance.status.name()
+            )));
+        }
+
+        let ivm_result = self.run_advance_ivm(&base_advance, &prepared, start)?;
+        self.commit_advance_state(base_advance.next_base, ivm_result, prepared.next_context)
+    }
+
+    fn remaining_total_work(&self) -> Result<u64, crate::Error> {
+        let remaining_work = self
+            .repl_limits
+            .max_total_work
+            .saturating_sub(self.total_work);
+        if remaining_work == 0 {
+            return Err(crate::Error::LimitExceeded(
+                "session total work budget exhausted".to_owned(),
+            ));
+        }
+        Ok(remaining_work)
+    }
+
+    fn prepare_advance(
+        &self,
+        workspace: &mneme_store::Workspace,
+        revision: Option<mneme_core::WorkspaceRevisionId>,
+        remaining_work: u64,
+    ) -> Result<PreparedAdvance, crate::Error> {
+        assert!(remaining_work > 0);
+        assert!(self.repl_limits.max_total_rows > 0);
+        let target_revision = match revision {
+            Some(rev) => rev,
+            None => workspace.current_revision()?,
+        };
+        let was_head_requested = revision.is_none();
+        let generation = workspace.eligibility_generation()?;
+        let mut step_limits = self.repl_limits.per_step.clone();
+        step_limits.max_work = step_limits.max_work.min(remaining_work);
+        let max_total_rows = usize::try_from(self.repl_limits.max_total_rows).map_err(|_| {
+            crate::Error::LimitExceeded("max_total_rows exceeds platform range".to_owned())
+        })?;
+        step_limits.max_result_rows = max_total_rows.max(step_limits.max_result_rows);
+
+        let mut next_context = self.build.context.clone();
+        next_context.requested_revision = target_revision;
+        next_context.served_revision = target_revision;
+        next_context.eligibility_generation = generation;
+        next_context.requested_was_head = was_head_requested;
+        next_context.projection_build_id = self.advance_build_id(target_revision, generation);
+        Ok(PreparedAdvance {
+            target_revision,
+            step_limits,
+            next_context,
+        })
+    }
+
+    fn advance_build_id(
+        &self,
+        revision: mneme_core::WorkspaceRevisionId,
+        generation: u64,
+    ) -> String {
+        crate::rules::build_id(crate::rules::BuildIdContext {
+            revision,
+            scope: &self.build.context.scope,
+            generation,
+            bundle: &self.program.bundle,
+            limits: &self.repl_limits.per_step,
+            incomplete_extents: &self.incomplete_extents,
+            at: self.at,
+        })
+    }
+
+    fn sync_advance_generation(&self, next_context: &mut crate::BuildContext, generation: u64) {
+        if next_context.eligibility_generation != generation {
+            next_context.eligibility_generation = generation;
+            next_context.projection_build_id =
+                self.advance_build_id(next_context.served_revision, generation);
+        }
+    }
+
+    fn run_advance_ivm(
+        &mut self,
+        base_advance: &crate::engine::BaseAdvanceResult,
+        prepared: &PreparedAdvance,
+        start: std::time::Instant,
+    ) -> Result<crate::ivm::AdvanceViewResult, crate::Error> {
+        assert!(prepared.step_limits.max_work > 0);
+        let ivm_result = crate::ivm::advance_view(
+            &self.ivm,
+            crate::ivm::AdvanceViewRequest {
+                program: &self.program,
+                base_deltas: base_advance.base_deltas.clone(),
+                dirty_provenance: base_advance.dirty_provenance.clone(),
+                next_base: &base_advance.next_base,
+                next_context: &prepared.next_context,
+                limits: &prepared.step_limits,
+                initial_work: base_advance.work,
+                current_facts: &self.build.facts,
+                at: self.at,
+                start,
+            },
+        )?;
+        self.total_work = self.total_work.saturating_add(ivm_result.work);
+        debug_assert!(ivm_result.work >= base_advance.work);
+        if ivm_result.limit_reached {
+            return Err(crate::Error::LimitExceeded(format!(
+                "advance incremental limit reached ({})",
+                ivm_result.status.name()
+            )));
+        }
+        Ok(ivm_result)
+    }
+
+    fn commit_advance_state(
+        &mut self,
+        next_base: crate::engine::BaseSnapshot,
+        ivm_result: crate::ivm::AdvanceViewResult,
+        next_context: crate::BuildContext,
+    ) -> Result<ReplStepSummary, crate::Error> {
+        let next_total_rows = count_fact_rows(&ivm_result.next_facts)?;
+        if next_total_rows > self.repl_limits.max_total_rows {
+            return Err(crate::Error::LimitExceeded(format!(
+                "session total row limit ({}) exceeded",
+                self.repl_limits.max_total_rows
+            )));
+        }
+
+        self.base = next_base;
+        self.ivm = ivm_result.next_view;
+        self.build = crate::Build {
+            context: next_context.clone(),
+            status: ivm_result.status,
+            coverage: ivm_result.coverage,
+            limits: self.repl_limits.per_step.clone(),
+            work: ivm_result.work,
+            support_truncated: ivm_result.support_truncated,
+            limit_reached: false,
+            declaration_valid: true,
+            facts: ivm_result.next_facts,
+            arities: self.program.arities.clone(),
+            bundle: self.program.bundle.clone(),
+        };
+
+        let rule_count = u32::try_from(self.build.bundle.rules.len())
+            .map_err(|_| crate::Error::LimitExceeded("session rule count overflow".to_owned()))?;
+        debug_assert!(self.total_work <= self.repl_limits.max_total_work);
+        debug_assert!(next_total_rows <= self.repl_limits.max_total_rows);
+        Ok(ReplStepSummary {
+            context: next_context,
+            status: self.build.status,
+            step_work: ivm_result.work,
+            total_work: self.total_work,
+            remaining_work: self
+                .repl_limits
+                .max_total_work
+                .saturating_sub(self.total_work),
+            total_rows: next_total_rows,
+            rule_count,
+            limit_reached: false,
+            support_truncated: self.build.support_truncated,
+            affected_predicates: ivm_result.affected_predicates,
+            reused_predicates: ivm_result.reused_predicates,
+        })
+    }
 }
 
 fn build_session_context(
@@ -484,6 +693,8 @@ fn build_session_context(
     bundle: &crate::RuleBundle,
     requested_was_head: bool,
 ) -> crate::BuildContext {
+    assert!(!bundle.id.is_empty());
+    assert!(bundle.schema_version > 0);
     let build_id = crate::rules::build_id(crate::rules::BuildIdContext {
         revision,
         scope: &request.scope,
@@ -503,6 +714,7 @@ fn build_session_context(
         projection_build_id: build_id,
         eligibility_generation: generation,
         requested_was_head,
+        vaults: Vec::new(),
     }
 }
 
@@ -513,6 +725,8 @@ fn load_session_base(
     context: &crate::BuildContext,
     start: std::time::Instant,
 ) -> Result<crate::engine::BaseSnapshot, crate::Error> {
+    assert!(request.limits.max_total_work > 0);
+    assert!(request.limits.max_total_rows > 0);
     let revision = context.served_revision;
     let snapshot = workspace.snapshot_at(revision, None)?;
     let snapshot = crate::visible_snapshot(snapshot, &request.scope, &request.access);
@@ -528,9 +742,9 @@ fn load_session_base(
     let view = mneme_memory::View::with_retention(
         snapshot,
         workspace.root(),
-        loaded.history,
-        loaded.revision_sequences,
-        suppressions,
+        loaded.history.clone(),
+        loaded.revision_sequences.clone(),
+        suppressions.clone(),
     )
     .with_access(request.access.clone());
 
@@ -549,6 +763,9 @@ fn load_session_base(
             limits: &load_limits,
             incomplete_extents: &request.incomplete_extents,
             current_sources,
+            history: loaded.history,
+            revision_sequences: loaded.revision_sequences,
+            suppressions,
             at: request.at,
             start,
         },

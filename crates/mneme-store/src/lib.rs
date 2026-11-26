@@ -30,8 +30,8 @@ pub use coordinator::{
     FOLDER_WORKSPACE_DIRECTORY, JobClaim, LAYOUT_VERSION, LEDGER_FILE, MAX_METADATA_PAGE_SIZE,
     MetadataPage, ProjectionRegistration, ProjectionResolution, ProjectionState,
     PublicationOutcome, PublicationState, RecordRevisionCommit, RecordRevisionCommitPage,
-    RecoveryReport, RelationMetadata, RelationQuery, RevisionCommit, SharedRecordCache, Snapshot,
-    Workspace, WorkspaceConfig, WorkspaceStatus,
+    RecoveryReport, RelationMetadata, RelationQuery, RevisionCommit, RevisionDelta,
+    SharedRecordCache, Snapshot, Workspace, WorkspaceConfig, WorkspaceStatus,
 };
 pub use dedup::{BlobChunking, FastCdcConfig};
 pub use error::{Failure, Result};

@@ -654,3 +654,127 @@ fn a_snapshot_load_keeps_one_revision_while_another_handle_commits() {
             .all(|record| record.record_id != mneme_core::fixtures::assertion_id())
     );
 }
+
+#[test]
+fn revision_delta_tracks_inserts_replacements_reverse_steps_and_forgets() {
+    let temp = tempfile::tempdir().expect("temp");
+    let mut workspace = committed_workspace(temp.path());
+    let rev1 = workspace.current_revision().expect("rev1");
+    let gen1 = workspace.eligibility_generation().expect("gen1");
+    let old_entity_rev = mneme_core::fixtures::entity().revision_id;
+
+    // Replace entity and insert a new entity in rev2.
+    let updated_entity = crate::requests::RecordDraft {
+        schema_version: 1,
+        kind: mneme_core::RecordKind::Entity,
+        record_id: mneme_core::fixtures::entity_id(),
+        revision_id: mneme_core::RevisionId::from_bytes([0x99; 16]),
+        predecessor: Some(old_entity_rev),
+        scope: scope(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("entity-type"),
+                mneme_core::Value::symbol("concept"),
+            ),
+            (
+                mneme_core::Symbol::from("label"),
+                mneme_core::Value::string("Updated Label".to_owned()),
+            ),
+            (
+                mneme_core::Symbol::from("properties"),
+                mneme_core::Value::dictionary([]),
+            ),
+        ]),
+    };
+    let extra_id = mneme_core::RecordId::from_bytes([0x88; 16]);
+    let extra_rev = mneme_core::RevisionId::from_bytes([0x89; 16]);
+    let extra_entity = crate::requests::RecordDraft {
+        schema_version: 1,
+        kind: mneme_core::RecordKind::Entity,
+        record_id: extra_id,
+        revision_id: extra_rev,
+        predecessor: None,
+        scope: scope(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("entity-type"),
+                mneme_core::Value::symbol("paper"),
+            ),
+            (
+                mneme_core::Symbol::from("label"),
+                mneme_core::Value::string("Inserted Paper".to_owned()),
+            ),
+            (
+                mneme_core::Symbol::from("properties"),
+                mneme_core::Value::dictionary([]),
+            ),
+        ]),
+    };
+    let rev2 = workspace
+        .commit(crate::requests::CommitCommand {
+            base: rev1,
+            actor: "delta-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "rev2-delta".to_owned(),
+            records: vec![updated_entity, extra_entity],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit rev2")
+        .revision;
+
+    let forward = workspace
+        .revision_delta(rev1, rev2, Some(gen1))
+        .expect("forward delta");
+    assert_eq!(forward.removed.len(), 1);
+    assert_eq!(
+        forward.removed[0].record_id,
+        mneme_core::fixtures::entity_id()
+    );
+    assert_eq!(forward.removed[0].revision_id, old_entity_rev);
+    assert_eq!(forward.added.len(), 2);
+    assert!(
+        forward
+            .added
+            .iter()
+            .any(|r| r.record_id == mneme_core::fixtures::entity_id()
+                && r.revision_id == mneme_core::RevisionId::from_bytes([0x99; 16]))
+    );
+    assert!(
+        forward
+            .added
+            .iter()
+            .any(|r| r.record_id == extra_id && r.revision_id == extra_rev)
+    );
+
+    // Reverse delta rev2 -> rev1 restores the prior revision of entity and drops extra_id.
+    let reverse = workspace
+        .revision_delta(rev2, rev1, Some(gen1))
+        .expect("reverse delta");
+    assert_eq!(reverse.removed.len(), 2);
+    assert_eq!(reverse.added.len(), 1);
+    assert_eq!(
+        reverse.added[0].record_id,
+        mneme_core::fixtures::entity_id()
+    );
+    assert_eq!(reverse.added[0].revision_id, old_entity_rev);
+
+    // Forget the assertion in rev3; pinned gen1 fails closed, unpinned succeeds with forgotten set.
+    let forget_cmd = forget_assertion_command(&workspace, gen1.saturating_add(1));
+    let rev3 = workspace.commit(forget_cmd).expect("forget").revision;
+    assert!(matches!(
+        workspace.revision_delta(rev2, rev3, Some(gen1)),
+        Err(crate::error::Failure::BarrierAdvanced { .. })
+    ));
+    let forget_delta = workspace
+        .revision_delta(rev2, rev3, None)
+        .expect("unpinned forget delta");
+    assert_eq!(forget_delta.eligibility_generation, gen1.saturating_add(1));
+    assert!(
+        forget_delta
+            .forgotten_identities
+            .contains(&mneme_core::fixtures::assertion_id())
+    );
+}
