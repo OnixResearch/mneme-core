@@ -246,6 +246,7 @@ struct GoalFrame<'a> {
     next_rule: usize,
     any_head_matched: bool,
     head_mismatches: Vec<MissingReason>,
+    pending_subgoals: Vec<(GoalKey, String)>,
     branches: Vec<BodyBranch>,
     aggregate_bindings: Vec<Binding>,
     active_rule: Option<&'a crate::Rule>,
@@ -369,10 +370,10 @@ fn check_present(
     context: &ExplainContext<'_>,
 ) -> Option<MissingExplanation> {
     let data = build.facts.get(predicate)?.get(terms)?;
-    if data.supports.is_empty() {
+    if !data.is_active() {
         return None;
     }
-    assert!(!data.supports.is_empty());
+    assert!(data.is_active());
     assert!(!predicate.is_empty());
     let is_deps_complete = coverage
         .iter()
@@ -591,6 +592,7 @@ fn make_goal_frame<'a>(
         next_rule: 0,
         any_head_matched: false,
         head_mismatches: Vec::new(),
+        pending_subgoals: Vec::new(),
         branches: Vec::new(),
         aggregate_bindings: Vec::new(),
         active_rule: None,
@@ -630,8 +632,20 @@ fn step_top_frame<'a>(
         }
         state.visiting.insert(frame.goal.clone());
     }
-    if state.truncated || state.at_reason_limit(frame.reasons.len()) {
+    let has_remaining_work = !frame.pending_subgoals.is_empty()
+        || !frame.branches.is_empty()
+        || frame.active_rule.is_some()
+        || frame.next_rule < frame.rules.len();
+    if state.truncated || (has_remaining_work && state.at_reason_limit(frame.reasons.len())) {
         return finish_truncated_frame(state, stack);
+    }
+    if let Some((subgoal, rule_id)) = frame.pending_subgoals.pop() {
+        return Some(FrameStep::PushChild(make_goal_frame(
+            state.build,
+            subgoal,
+            frame.depth.saturating_add(1),
+            Some(rule_id),
+        )));
     }
     if let Some(branch) = frame.branches.pop() {
         return step_branch(state, frame, branch).map(FrameStep::PushChild);
@@ -657,8 +671,8 @@ fn finish_truncated_frame<'a>(
     stack: &mut Vec<GoalFrame<'a>>,
 ) -> Option<FrameStep<'a>> {
     let frame = stack.last_mut()?;
+    state.truncated = true;
     if !state.at_reason_limit(frame.reasons.len()) {
-        state.truncated = true;
         frame.reasons.push(budget_cutoff_reason(
             &frame.goal,
             "explanation reason bound reached",
@@ -799,7 +813,11 @@ fn finish_active_rule(state: &mut ExplainState<'_>, frame: &mut GoalFrame<'_>, r
     }) else {
         return;
     };
-    if frame.aggregate_bindings.is_empty() || state.at_reason_limit(frame.reasons.len()) {
+    if frame.aggregate_bindings.is_empty() {
+        return;
+    }
+    if state.at_reason_limit(frame.reasons.len()) {
+        state.truncated = true;
         return;
     }
     let detail = describe_aggregate_mismatch(
@@ -880,12 +898,17 @@ fn step_branch<'a>(
     }
     let rule = frame.active_rule?;
     assert_eq!(rule.head.predicate, frame.goal.0);
-    let (is_failed, pending_derived, still_remaining) =
+    let (is_failed, missing_derived, still_remaining) =
         partition_branch_literals(state, frame, rule, &branch);
-    if let Some(subgoal) = pending_derived {
+    let mut derived_iter = missing_derived.into_iter();
+    if let Some(first_subgoal) = derived_iter.next() {
+        let rest = derived_iter.collect::<Vec<_>>();
+        for subgoal in rest.into_iter().rev() {
+            frame.pending_subgoals.push((subgoal, rule.id.clone()));
+        }
         return Some(make_goal_frame(
             state.build,
-            subgoal,
+            first_subgoal,
             frame.depth.saturating_add(1),
             Some(rule.id.clone()),
         ));
@@ -907,10 +930,10 @@ fn partition_branch_literals(
     frame: &mut GoalFrame<'_>,
     rule: &crate::Rule,
     branch: &BodyBranch,
-) -> (bool, Option<GoalKey>, Vec<usize>) {
+) -> (bool, Vec<GoalKey>, Vec<usize>) {
     assert!(branch.remaining.iter().all(|&idx| idx < rule.body.len()));
     let mut is_failed = false;
-    let mut pending_derived: Option<GoalKey> = None;
+    let mut missing_derived: Vec<GoalKey> = Vec::with_capacity(branch.remaining.len());
     let mut still_remaining = Vec::with_capacity(branch.remaining.len());
     for &idx in &branch.remaining {
         let literal = &rule.body[idx];
@@ -924,13 +947,13 @@ fn partition_branch_literals(
             record_branch_reason(state, frame, reason);
         } else if let GroundCheck::MissingDerived(subgoal) = check {
             is_failed = true;
-            if pending_derived.is_none() {
-                pending_derived = Some(subgoal);
+            if !missing_derived.contains(&subgoal) {
+                missing_derived.push(subgoal);
             }
         }
     }
     assert!(still_remaining.len() <= branch.remaining.len());
-    (is_failed, pending_derived, still_remaining)
+    (is_failed, missing_derived, still_remaining)
 }
 
 fn record_branch_reason(
@@ -982,7 +1005,7 @@ fn check_ground_positive(
         .facts
         .get(&atom.predicate)
         .and_then(|rows| rows.get(&terms))
-        .is_some_and(|data| !data.supports.is_empty());
+        .is_some_and(crate::FactData::is_active);
     if is_present {
         return GroundCheck::Satisfied;
     }
@@ -1031,7 +1054,7 @@ fn check_ground_negative(
         .facts
         .get(&atom.predicate)
         .and_then(|rows| rows.get(&terms))
-        .filter(|data| !data.supports.is_empty())
+        .filter(|data| data.is_active())
     else {
         return GroundCheck::Satisfied;
     };
@@ -1155,13 +1178,17 @@ fn expand_existential_literal(
 }
 
 fn record_missing_existential(
-    state: &ExplainState<'_>,
+    state: &mut ExplainState<'_>,
     frame: &mut GoalFrame<'_>,
     rule: &crate::Rule,
     atom: &crate::Atom,
     binding: &Binding,
 ) {
-    if state.truncated || state.at_reason_limit(frame.reasons.len()) {
+    if state.truncated {
+        return;
+    }
+    if state.at_reason_limit(frame.reasons.len()) {
+        state.truncated = true;
         return;
     }
     let terms = instantiate_terms(atom, binding);
@@ -1258,7 +1285,7 @@ fn unify_atom(
     binding: &Binding,
     data: &crate::FactData,
 ) -> Option<Binding> {
-    if data.supports.is_empty() || terms.len() != atom.terms.len() {
+    if !data.is_active() || terms.len() != atom.terms.len() {
         return None;
     }
     let mut extended = binding.clone();

@@ -38,6 +38,7 @@ pub(crate) struct RuleState {
     agg_groups: crate::zset::IndexedZSet<JoinKey, Binding>,
     agg_group_outputs: std::collections::BTreeMap<JoinKey, FactKey>,
     head_bindings: std::collections::BTreeMap<FactKey, std::collections::BTreeSet<Binding>>,
+    is_unit_seeded: bool,
     pub(crate) output: crate::zset::ZSet<FactKey>,
 }
 
@@ -95,6 +96,7 @@ impl RuleState {
             agg_groups: crate::zset::IndexedZSet::new(),
             agg_group_outputs: std::collections::BTreeMap::new(),
             head_bindings: std::collections::BTreeMap::new(),
+            is_unit_seeded: false,
             output: crate::zset::ZSet::new(),
         }
     }
@@ -103,6 +105,9 @@ impl RuleState {
         &self,
         input_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
     ) -> bool {
+        if self.positive_atoms.is_empty() && !self.is_unit_seeded {
+            return true;
+        }
         let is_pos_dirty = self.positive_atoms.iter().any(|atom| {
             input_deltas
                 .get(&atom.predicate)
@@ -120,16 +125,36 @@ impl RuleState {
     pub(crate) fn step_delta(
         &mut self,
         input_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+        coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
         budget: &mut crate::engine::Budget<'_>,
         coverage_reasons: &mut std::collections::BTreeMap<String, String>,
     ) -> Result<crate::zset::ZSet<FactKey>, crate::Error> {
+        let is_non_monotonic = !self.negatives.is_empty() || self.aggregate.is_some();
+        if is_non_monotonic && !is_rule_body_complete(&self.rule, coverage) {
+            return self.retract_output_for_incomplete();
+        }
         if !self.references_any_delta(input_deltas) {
             return Ok(crate::zset::ZSet::new());
         }
         let mut delta_cur = self.step_positive_joins(input_deltas, budget)?;
         delta_cur = self.step_compares(&delta_cur, budget)?;
-        delta_cur = self.step_negatives(input_deltas, delta_cur, budget)?;
-        self.step_head(&delta_cur, budget, coverage_reasons)
+        delta_cur = self.step_negatives(input_deltas, coverage, delta_cur, budget)?;
+        self.step_head(&delta_cur, coverage, budget, coverage_reasons)
+    }
+
+    fn retract_output_for_incomplete(
+        &mut self,
+    ) -> Result<crate::zset::ZSet<FactKey>, crate::Error> {
+        debug_assert!(!self.negatives.is_empty() || self.aggregate.is_some());
+        if self.output.is_empty() {
+            return Ok(crate::zset::ZSet::new());
+        }
+        let retraction = crate::zset::ZSet::new().subtract(&self.output)?;
+        self.output = crate::zset::ZSet::new();
+        self.head_bindings.clear();
+        self.agg_group_outputs.clear();
+        self.agg_groups = crate::zset::IndexedZSet::new();
+        Ok(retraction)
     }
 
     fn step_positive_joins(
@@ -140,6 +165,12 @@ impl RuleState {
         assert_eq!(self.atom_bindings.len(), self.positive_atoms.len());
         assert_eq!(self.join_steps.len(), self.positive_atoms.len());
         if self.positive_atoms.is_empty() {
+            if !self.is_unit_seeded {
+                self.is_unit_seeded = true;
+                let mut unit = crate::zset::ZSet::new();
+                unit.insert_weighted(Binding::new(), 1)?;
+                return Ok(unit);
+            }
             return Ok(crate::zset::ZSet::new());
         }
         let mut delta_join = crate::zset::ZSet::new();
@@ -205,13 +236,21 @@ impl RuleState {
     fn step_negatives(
         &mut self,
         input_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+        coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
         mut delta_cur: crate::zset::ZSet<Binding>,
         budget: &mut crate::engine::Budget<'_>,
     ) -> Result<crate::zset::ZSet<Binding>, crate::Error> {
         assert_eq!(self.neg_steps.len(), self.negatives.len());
         assert_eq!(self.neg_left_indexes.len(), self.negatives.len());
+        if !self.negatives.is_empty() && !is_rule_body_complete(&self.rule, coverage) {
+            return Ok(crate::zset::ZSet::new());
+        }
         for index in 0..self.negatives.len() {
             let neg_atom = &self.negatives[index];
+            if coverage_status_of(coverage, &neg_atom.predicate) != crate::CoverageStatus::Complete
+            {
+                return Ok(crate::zset::ZSet::new());
+            }
             let delta_neg_raw =
                 filter_optional_neg(neg_atom, input_deltas.get(&neg_atom.predicate), budget)?;
             if delta_cur.is_empty() && delta_neg_raw.is_empty() {
@@ -248,6 +287,7 @@ impl RuleState {
     fn step_head(
         &mut self,
         delta_bindings: &crate::zset::ZSet<Binding>,
+        coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
         budget: &mut crate::engine::Budget<'_>,
         coverage_reasons: &mut std::collections::BTreeMap<String, String>,
     ) -> Result<crate::zset::ZSet<FactKey>, crate::Error> {
@@ -256,7 +296,13 @@ impl RuleState {
             return Ok(crate::zset::ZSet::new());
         }
         if let Some(agg) = self.aggregate.clone() {
-            return self.step_aggregate_head(&agg, delta_bindings, budget, coverage_reasons);
+            return self.step_aggregate_head(
+                &agg,
+                delta_bindings,
+                coverage,
+                budget,
+                coverage_reasons,
+            );
         }
         let mut delta_out = crate::zset::ZSet::new();
         for (binding, weight) in delta_bindings.iter() {
@@ -275,7 +321,7 @@ impl RuleState {
             delta_out.insert_weighted(terms, weight)?;
         }
         self.output.add_in_place(&delta_out)?;
-        debug_assert!(!self.output.is_empty() || delta_out.is_empty());
+        debug_assert!(self.output.iter().all(|(_, weight)| weight > 0));
         Ok(delta_out)
     }
 
@@ -283,10 +329,14 @@ impl RuleState {
         &mut self,
         agg: &AggSpec,
         delta_bindings: &crate::zset::ZSet<Binding>,
+        coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
         budget: &mut crate::engine::Budget<'_>,
         coverage_reasons: &mut std::collections::BTreeMap<String, String>,
     ) -> Result<crate::zset::ZSet<FactKey>, crate::Error> {
         assert!(self.aggregate.is_some());
+        if !is_rule_body_complete(&self.rule, coverage) {
+            return Ok(crate::zset::ZSet::new());
+        }
         let affected_groups: std::collections::BTreeSet<JoinKey> = delta_bindings
             .iter()
             .filter_map(|(binding, _)| aggregate_group_key(&agg.group_vars, binding))
@@ -322,7 +372,7 @@ impl RuleState {
             }
         }
         self.output.add_in_place(&delta_out)?;
-        debug_assert!(!self.output.is_empty() || delta_out.is_empty());
+        debug_assert!(self.output.iter().all(|(_, weight)| weight > 0));
         Ok(delta_out)
     }
 
@@ -442,6 +492,20 @@ pub(crate) struct ViewState {
     pub(crate) components: Vec<ComponentState>,
 }
 
+pub(crate) struct SyncRuleChangeRequest<'a> {
+    pub(crate) program: &'a crate::RuleProgram,
+    pub(crate) build_facts: &'a std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<FactKey, crate::FactData>,
+    >,
+    pub(crate) affected: &'a std::collections::BTreeSet<String>,
+    pub(crate) base_coverage: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
+    pub(crate) coverage_reasons: &'a std::collections::BTreeMap<String, String>,
+    pub(crate) limits: &'a crate::Limits,
+    pub(crate) initial_work: u64,
+    pub(crate) start: std::time::Instant,
+}
+
 impl ViewState {
     /// Initialize DBSP state from loaded base facts with no derived rules.
     pub(crate) fn from_base_facts(
@@ -450,8 +514,12 @@ impl ViewState {
         let pairs = facts
             .iter()
             .map(|(predicate, store)| {
-                let entries: Vec<(FactKey, i64)> =
-                    store.rows.keys().map(|key| (key.clone(), 1)).collect();
+                let entries: Vec<(FactKey, i64)> = store
+                    .rows
+                    .iter()
+                    .filter(|(_, data)| data.is_active())
+                    .map(|(key, _)| (key.clone(), 1))
+                    .collect();
                 Ok((predicate.clone(), crate::zset::ZSet::from_entries(entries)?))
             })
             .collect::<Result<Vec<_>, crate::Error>>()?;
@@ -464,26 +532,41 @@ impl ViewState {
         })
     }
 
-    /// Synchronize DBSP component states after `add_rule` or `retract_rule`.
+    /// Synchronize DBSP component states after `add_rule` or `retract_rule`,
+    /// enforcing `request.limits` and reporting work spent via `work_charged`.
     pub(crate) fn sync_after_rule_change(
         &mut self,
-        program: &crate::RuleProgram,
-        _base_facts: &std::collections::BTreeMap<String, crate::engine::FactStore>,
-        build_facts: &std::collections::BTreeMap<
-            String,
-            std::collections::BTreeMap<FactKey, crate::FactData>,
-        >,
-        affected: &std::collections::BTreeSet<String>,
+        request: SyncRuleChangeRequest<'_>,
+        work_charged: &mut u64,
     ) -> Result<(), crate::Error> {
-        let next_relations = build_relations_map(build_facts)?;
-        let specs = partition_program_components(program);
-        let existing_by_key: std::collections::BTreeMap<(usize, String), ComponentState> = self
+        assert!(request.limits.max_work > 0);
+        let next_relations = build_relations_map(request.build_facts)?;
+        let specs = partition_program_components(request.program);
+        let existing_by_key: std::collections::BTreeMap<(usize, String), &ComponentState> = self
             .components
-            .drain(..)
+            .iter()
             .map(|comp| ((comp.stratum, comp.id.clone()), comp))
             .collect();
-        let next_components =
-            rebuild_components(program, specs, &existing_by_key, &next_relations, affected)?;
+        let mut budget = crate::engine::Budget {
+            limits: request.limits,
+            work: request.initial_work,
+            stored_rows: 0,
+            start: request.start,
+            cancellation: None,
+            status: crate::ExecutionStatus::Complete,
+            limit_reached: false,
+            support_truncated: false,
+        };
+        let rebuild_result = rebuild_components(
+            &request,
+            specs,
+            &existing_by_key,
+            &next_relations,
+            &mut budget,
+        );
+        *work_charged = budget.work.saturating_sub(request.initial_work);
+        debug_assert!(budget.work >= request.initial_work);
+        let next_components = rebuild_result?;
         self.relations = next_relations;
         self.components = next_components;
         Ok(())
@@ -500,7 +583,11 @@ fn build_relations_map(
     let pairs = build_facts
         .iter()
         .map(|(predicate, rows)| {
-            let entries: Vec<(FactKey, i64)> = rows.keys().map(|key| (key.clone(), 1)).collect();
+            let entries: Vec<(FactKey, i64)> = rows
+                .iter()
+                .filter(|(_, data)| data.is_active())
+                .map(|(key, _)| (key.clone(), 1))
+                .collect();
             Ok((predicate.clone(), crate::zset::ZSet::from_entries(entries)?))
         })
         .collect::<Result<Vec<_>, crate::Error>>()?;
@@ -510,7 +597,7 @@ fn build_relations_map(
 }
 
 fn can_reuse_component(
-    existing: Option<&ComponentState>,
+    existing: Option<&&ComponentState>,
     spec: &ComponentSpec,
     has_affected: bool,
 ) -> bool {
@@ -524,42 +611,30 @@ fn can_reuse_component(
 }
 
 fn rebuild_components(
-    program: &crate::RuleProgram,
+    request: &SyncRuleChangeRequest<'_>,
     specs: Vec<ComponentSpec>,
-    existing_by_key: &std::collections::BTreeMap<(usize, String), ComponentState>,
+    existing_by_key: &std::collections::BTreeMap<(usize, String), &ComponentState>,
     next_relations: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
-    affected: &std::collections::BTreeSet<String>,
+    budget: &mut crate::engine::Budget<'_>,
 ) -> Result<Vec<ComponentState>, crate::Error> {
-    assert!(specs.len() <= program.bundle.rules.len());
+    assert!(specs.len() <= request.program.bundle.rules.len());
     let mut next_components = Vec::with_capacity(specs.len());
-    let unlimited = crate::Limits {
-        max_work: u64::MAX,
-        max_time_ms: u128::from(u64::MAX),
-        max_result_rows: usize::MAX,
-        max_supports_per_fact: usize::MAX,
-        max_recursion_depth: usize::MAX / 2,
-    };
-    let start = crate::engine::evaluation_start();
-    let mut noop_budget = crate::engine::Budget {
-        limits: &unlimited,
-        work: 0,
-        stored_rows: 0,
-        start,
-        cancellation: None,
-        status: crate::ExecutionStatus::Complete,
-        limit_reached: false,
-        support_truncated: false,
-    };
-    let mut noop_reasons = std::collections::BTreeMap::new();
+    let mut coverage_reasons = request.coverage_reasons.clone();
+    let mut coverage_map = crate::engine::compute_derived_coverage(
+        &request.program.bundle,
+        request.base_coverage,
+        &coverage_reasons,
+        budget.status,
+    );
     for spec in specs {
         let has_affected = spec
             .predicates
             .iter()
-            .any(|predicate| affected.contains(predicate));
+            .any(|predicate| request.affected.contains(predicate));
         let existing = existing_by_key.get(&(spec.stratum, spec.id.clone()));
         if can_reuse_component(existing, &spec, has_affected) {
             if let Some(comp) = existing {
-                next_components.push(comp.clone());
+                next_components.push((*comp).clone());
             }
             continue;
         }
@@ -571,17 +646,29 @@ fn rebuild_components(
             is_recursive: spec.is_recursive,
             rounds: Vec::new(),
         };
-        let initial_deltas = external_inputs_for_component(program, &comp, next_relations);
+        let initial_deltas = external_inputs_for_component(request.program, &comp, next_relations);
+        let prev_reasons_len = coverage_reasons.len();
         let _ = comp.step_component_delta(
-            program,
-            &initial_deltas,
-            &mut noop_budget,
-            &mut noop_reasons,
-            usize::MAX / 4,
+            ComponentStepContext {
+                program: request.program,
+                external_deltas: &initial_deltas,
+                coverage: &coverage_map,
+                max_recursion_depth: request.limits.max_recursion_depth,
+            },
+            budget,
+            &mut coverage_reasons,
         )?;
+        if coverage_reasons.len() != prev_reasons_len {
+            coverage_map = crate::engine::compute_derived_coverage(
+                &request.program.bundle,
+                request.base_coverage,
+                &coverage_reasons,
+                budget.status,
+            );
+        }
         next_components.push(comp);
     }
-    debug_assert!(next_components.len() <= program.bundle.rules.len());
+    debug_assert!(next_components.len() <= request.program.bundle.rules.len());
     Ok(next_components)
 }
 
@@ -632,12 +719,30 @@ pub(crate) fn advance_view(
         support_truncated: request.next_base.support_truncated,
     };
     let mut coverage_reasons = request.next_base.coverage_reasons.clone();
-    let is_ok = state.step_all_components(&request, &mut budget, &mut coverage_reasons)?;
-    if !is_ok || budget.limit_reached {
+    let mut coverage_map = crate::engine::compute_derived_coverage(
+        &request.program.bundle,
+        &request.next_base.base_coverage,
+        &coverage_reasons,
+        budget.status,
+    );
+    let is_ok = state.step_all_components(
+        &request,
+        &mut coverage_map,
+        &mut budget,
+        &mut coverage_reasons,
+    )?;
+    if !is_ok || budget.limit_reached || !budget.is_active() {
         return Ok(limit_reached_result(state.next_view, &budget));
     }
     debug_assert!(!budget.limit_reached);
-    finish_advance_view(state, &request, &budget, &coverage_reasons)
+    finish_advance_view(state, &request, &mut budget, &coverage_reasons)
+}
+
+struct ComponentStepRecord {
+    comp_idx: usize,
+    comp_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    comp_multiset_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    max_recursion_depth: usize,
 }
 
 struct AdvanceAccumulator {
@@ -695,6 +800,7 @@ impl AdvanceAccumulator {
     fn step_all_components(
         &mut self,
         request: &AdvanceViewRequest<'_>,
+        coverage_map: &mut std::collections::BTreeMap<String, crate::CoverageStatus>,
         budget: &mut crate::engine::Budget<'_>,
         coverage_reasons: &mut std::collections::BTreeMap<String, String>,
     ) -> Result<bool, crate::Error> {
@@ -704,30 +810,48 @@ impl AdvanceAccumulator {
             if !budget.is_active() {
                 break;
             }
+            let prev_reasons_len = coverage_reasons.len();
             let step_result = self.next_view.components[idx].step_component_delta(
-                request.program,
-                &self.all_deltas,
+                ComponentStepContext {
+                    program: request.program,
+                    external_deltas: &self.all_deltas,
+                    coverage: coverage_map,
+                    max_recursion_depth: request.limits.max_recursion_depth,
+                },
                 budget,
                 coverage_reasons,
-                request.limits.max_recursion_depth,
             );
             let (comp_deltas, comp_multiset_deltas) = match step_result {
                 Ok(res) => res,
                 Err(crate::Error::LimitExceeded(_)) => return Ok(false),
                 Err(err) => return Err(err),
             };
-            self.record_component_step(idx, comp_deltas, comp_multiset_deltas)?;
+            if coverage_reasons.len() != prev_reasons_len {
+                *coverage_map = crate::engine::compute_derived_coverage(
+                    &request.program.bundle,
+                    &request.next_base.base_coverage,
+                    coverage_reasons,
+                    budget.status,
+                );
+            }
+            self.record_component_step(ComponentStepRecord {
+                comp_idx: idx,
+                comp_deltas,
+                comp_multiset_deltas,
+                max_recursion_depth: request.limits.max_recursion_depth,
+            })?;
         }
         debug_assert!(self.reused_predicates.len() < usize::MAX);
         Ok(true)
     }
 
-    fn record_component_step(
-        &mut self,
-        comp_idx: usize,
-        comp_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
-        comp_multiset_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
-    ) -> Result<(), crate::Error> {
+    fn record_component_step(&mut self, record: ComponentStepRecord) -> Result<(), crate::Error> {
+        let ComponentStepRecord {
+            comp_idx,
+            comp_deltas,
+            comp_multiset_deltas,
+            max_recursion_depth,
+        } = record;
         let component = &self.next_view.components[comp_idx];
         assert!(!component.predicates.is_empty());
         let mut is_component_affected = false;
@@ -756,7 +880,7 @@ impl AdvanceAccumulator {
             }
             self.multiset_deltas.insert(pred, m_delta);
         }
-        propagate_component_dirty_heads(component, &mut self.dirty_by_pred);
+        propagate_component_dirty_heads(component, &mut self.dirty_by_pred, max_recursion_depth);
         if !is_component_affected {
             for pred in &component.predicates {
                 let is_clean = self
@@ -778,12 +902,17 @@ impl AdvanceAccumulator {
 fn propagate_component_dirty_heads(
     component: &ComponentState,
     dirty_by_pred: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
+    max_recursion_depth: usize,
 ) {
     assert!(!component.predicates.is_empty());
     let Some(last_round) = component.rounds.last() else {
         return;
     };
-    let max_passes = component.rounds.len().saturating_add(1);
+    let max_passes = component
+        .rounds
+        .len()
+        .max(max_recursion_depth)
+        .saturating_add(1);
     debug_assert!(max_passes > 0);
     for _ in 0..max_passes {
         let mut new_dirty = std::collections::BTreeMap::new();
@@ -827,7 +956,7 @@ fn limit_reached_result(
 fn finish_advance_view(
     mut state: AdvanceAccumulator,
     request: &AdvanceViewRequest<'_>,
-    budget: &crate::engine::Budget<'_>,
+    budget: &mut crate::engine::Budget<'_>,
     coverage_reasons: &std::collections::BTreeMap<String, String>,
 ) -> Result<AdvanceViewResult, crate::Error> {
     assert!(!budget.limit_reached);
@@ -856,15 +985,16 @@ fn finish_advance_view(
             all_deltas: &state.all_deltas,
             multiset_deltas: &state.multiset_deltas,
             dirty_by_pred: &state.dirty_by_pred,
-            next_base: request.next_base,
             next_context: request.next_context,
             limits: request.limits,
             coverage_map: &coverage_map,
-            at: request.at,
-            start: request.start,
         },
+        budget,
         &mut next_facts,
     );
+    if !budget.is_active() || budget.limit_reached {
+        return Ok(limit_reached_result(state.next_view, budget));
+    }
     let is_support_truncated = budget.support_truncated || is_truncated;
     let status = if budget.status != crate::ExecutionStatus::Complete {
         budget.status
@@ -920,16 +1050,14 @@ struct RefreshFactDataRequest<'a> {
     all_deltas: &'a std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
     multiset_deltas: &'a std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
     dirty_by_pred: &'a std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
-    next_base: &'a crate::engine::BaseSnapshot,
     next_context: &'a crate::BuildContext,
     limits: &'a crate::Limits,
     coverage_map: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
-    at: Option<mneme_core::Timestamp>,
-    start: std::time::Instant,
 }
 
 fn refresh_derived_fact_data(
     request: RefreshFactDataRequest<'_>,
+    budget: &mut crate::engine::Budget<'_>,
     next_facts: &mut std::collections::BTreeMap<
         String,
         std::collections::BTreeMap<FactKey, crate::FactData>,
@@ -946,12 +1074,23 @@ fn refresh_derived_fact_data(
         .collect();
     let mut is_any_truncated = false;
     for component in &request.view.components {
+        if !budget.is_active() {
+            break;
+        }
         remove_retracted_rows(component, request.all_deltas, &mut store_map);
         let keys_to_refresh = collect_keys_to_refresh(component, &request, &mut store_map);
-        if populate_refreshed_component_rows(component, &request, &keys_to_refresh, &mut store_map)
-        {
+        if populate_refreshed_component_rows(
+            component,
+            &request,
+            &keys_to_refresh,
+            budget,
+            &mut store_map,
+        ) {
             is_any_truncated = true;
         }
+    }
+    if !budget.is_active() {
+        return is_any_truncated;
     }
     *next_facts = store_map
         .into_iter()
@@ -1025,45 +1164,120 @@ fn collect_keys_to_refresh(
     keys_to_refresh
 }
 
+struct RoundRefreshTarget<'a> {
+    component: &'a ComponentState,
+    round: &'a ComponentRoundState,
+    keys_to_refresh: &'a std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
+}
+
 fn populate_refreshed_component_rows(
     component: &ComponentState,
     request: &RefreshFactDataRequest<'_>,
     keys_to_refresh: &std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
+    budget: &mut crate::engine::Budget<'_>,
     store_map: &mut std::collections::BTreeMap<String, crate::engine::FactStore>,
 ) -> bool {
     assert!(request.limits.max_supports_per_fact > 0);
     let mut is_any_truncated = false;
-    let mut populated = std::collections::BTreeSet::new();
     for round in &component.rounds {
-        for pred in &component.predicates {
-            let Some(keys) = keys_to_refresh.get(pred) else {
-                continue;
+        if !budget.is_active() {
+            return is_any_truncated;
+        }
+        let target = RoundRefreshTarget {
+            component,
+            round,
+            keys_to_refresh,
+        };
+        let (is_round_truncated, _) = refresh_round_keys(&target, request, budget, store_map);
+        is_any_truncated = is_any_truncated || is_round_truncated;
+    }
+    if component.is_recursive
+        && budget.is_active()
+        && let Some(last_round) = component.rounds.last()
+    {
+        for _ in 0..request.limits.max_recursion_depth {
+            if !budget.is_active() {
+                break;
+            }
+            let target = RoundRefreshTarget {
+                component,
+                round: last_round,
+                keys_to_refresh,
             };
-            let Some(round_set) = round.derived_sets.get(pred) else {
-                continue;
-            };
-            for key in keys {
-                if round_set.weight(key) <= 0 || populated.contains(&(pred.clone(), key.clone())) {
-                    continue;
-                }
-                if rebuild_fact_key_from_round(
-                    RoundKeyTarget {
-                        component,
-                        round,
-                        pred,
-                        key,
-                    },
-                    request,
-                    store_map,
-                ) {
-                    is_any_truncated = true;
-                }
-                populated.insert((pred.clone(), key.clone()));
+            let (is_round_truncated, is_any_upgraded) =
+                refresh_round_keys(&target, request, budget, store_map);
+            is_any_truncated = is_any_truncated || is_round_truncated;
+            if !is_any_upgraded {
+                break;
             }
         }
     }
-    debug_assert!(populated.len() < usize::MAX);
+    debug_assert!(component.rounds.len() < usize::MAX);
     is_any_truncated
+}
+
+fn refresh_round_keys(
+    target: &RoundRefreshTarget<'_>,
+    request: &RefreshFactDataRequest<'_>,
+    budget: &mut crate::engine::Budget<'_>,
+    store_map: &mut std::collections::BTreeMap<String, crate::engine::FactStore>,
+) -> (bool, bool) {
+    assert!(!target.component.predicates.is_empty());
+    debug_assert!(request.limits.max_supports_per_fact > 0);
+    let mut is_any_truncated = false;
+    let mut is_any_upgraded = false;
+    for pred in &target.component.predicates {
+        if !budget.is_active() {
+            break;
+        }
+        let Some(keys) = target.keys_to_refresh.get(pred) else {
+            continue;
+        };
+        let Some(round_set) = target.round.derived_sets.get(pred) else {
+            continue;
+        };
+        for key in keys {
+            if !budget.is_active() {
+                break;
+            }
+            if round_set.weight(key) <= 0 {
+                continue;
+            }
+            let prev_epistemic = store_map
+                .get(pred)
+                .and_then(|s| s.rows.get(key))
+                .map(|data| data.epistemic);
+            let prev_supports = store_map
+                .get(pred)
+                .and_then(|s| s.rows.get(key))
+                .map_or(0, |data| data.supports.len());
+            if rebuild_fact_key_from_round(
+                RoundKeyTarget {
+                    component: target.component,
+                    round: target.round,
+                    pred,
+                    key,
+                },
+                request,
+                budget,
+                store_map,
+            ) {
+                is_any_truncated = true;
+            }
+            let next_epistemic = store_map
+                .get(pred)
+                .and_then(|s| s.rows.get(key))
+                .map(|data| data.epistemic);
+            let next_supports = store_map
+                .get(pred)
+                .and_then(|s| s.rows.get(key))
+                .map_or(0, |data| data.supports.len());
+            if next_epistemic != prev_epistemic || next_supports != prev_supports {
+                is_any_upgraded = true;
+            }
+        }
+    }
+    (is_any_truncated, is_any_upgraded)
 }
 
 struct RoundKeyTarget<'a> {
@@ -1076,6 +1290,7 @@ struct RoundKeyTarget<'a> {
 fn rebuild_fact_key_from_round(
     target: RoundKeyTarget<'_>,
     request: &RefreshFactDataRequest<'_>,
+    budget: &mut crate::engine::Budget<'_>,
     store_map: &mut std::collections::BTreeMap<String, crate::engine::FactStore>,
 ) -> bool {
     let RoundKeyTarget {
@@ -1085,9 +1300,15 @@ fn rebuild_fact_key_from_round(
         key,
     } = target;
     assert!(!pred.is_empty());
+    if !budget.is_active() {
+        return false;
+    }
     let mut is_any_truncated = false;
     let mut target_store = store_map.get(pred).cloned().unwrap_or_default();
     for rule_id in &component.rule_ids {
+        if !budget.is_active() {
+            return is_any_truncated;
+        }
         let Some(rule_state) = round.rule_states.get(rule_id) else {
             continue;
         };
@@ -1105,23 +1326,30 @@ fn rebuild_fact_key_from_round(
         let build_req = crate::engine::FactDataBuildRequest {
             rule: &rule_state.rule,
             context: request.next_context,
-            limits: request.limits,
             facts: store_map,
             coverage_map: request.coverage_map,
-            current_sources: &request.next_base.current_sources,
-            at: request.at,
-            start: request.start,
             bindings: &bindings,
             target_terms: key,
         };
         let is_truncated = if rule_state.aggregate.is_some() {
-            crate::engine::build_aggregate_fact_data_from_bindings(build_req, &mut target_store)
+            crate::engine::build_aggregate_fact_data_from_bindings(
+                build_req,
+                budget,
+                &mut target_store,
+            )
         } else {
-            crate::engine::build_ordinary_fact_data_from_bindings(build_req, &mut target_store)
+            crate::engine::build_ordinary_fact_data_from_bindings(
+                build_req,
+                budget,
+                &mut target_store,
+            )
         };
         if is_truncated {
             is_any_truncated = true;
         }
+    }
+    if !budget.is_active() {
+        return is_any_truncated;
     }
     store_map.insert(pred.to_owned(), target_store);
     debug_assert!(store_map.contains_key(pred));
@@ -1133,9 +1361,17 @@ type ComponentStepDelta = (
     std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
 );
 
+struct ComponentStepContext<'a> {
+    program: &'a crate::RuleProgram,
+    external_deltas: &'a std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    coverage: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
+    max_recursion_depth: usize,
+}
+
 struct ComponentLoopState<'a> {
     program: &'a crate::RuleProgram,
     external_deltas: &'a std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    coverage: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
     prev_round_new_sets: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
     prev_round_delta_x: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
     next_rounds: Vec<ComponentRoundState>,
@@ -1144,16 +1380,22 @@ struct ComponentLoopState<'a> {
 impl ComponentState {
     fn step_component_delta(
         &mut self,
-        program: &crate::RuleProgram,
-        external_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+        ctx: ComponentStepContext<'_>,
         budget: &mut crate::engine::Budget<'_>,
         coverage_reasons: &mut std::collections::BTreeMap<String, String>,
-        max_recursion_depth: usize,
     ) -> Result<ComponentStepDelta, crate::Error> {
+        let ComponentStepContext {
+            program,
+            external_deltas,
+            coverage,
+            max_recursion_depth,
+        } = ctx;
         let prev_sets = last_derived_sets(&self.rounds);
         let prev_multisets = last_derived_multisets(&self.rounds);
         let has_ext_delta = component_has_external_delta(program, self, external_deltas);
-        if !self.rounds.is_empty() && !has_ext_delta {
+        let has_incomplete_non_monotonic =
+            component_has_incomplete_non_monotonic(program, self, coverage);
+        if !self.rounds.is_empty() && !has_ext_delta && !has_incomplete_non_monotonic {
             return Ok((
                 std::collections::BTreeMap::new(),
                 std::collections::BTreeMap::new(),
@@ -1168,6 +1410,7 @@ impl ComponentState {
         let mut loop_state = ComponentLoopState {
             program,
             external_deltas,
+            coverage,
             prev_round_new_sets: self
                 .predicates
                 .iter()
@@ -1224,9 +1467,12 @@ impl ComponentState {
             &loop_state.prev_round_delta_x,
         );
         let round_m_deltas = step_round_rules(
-            &self.rule_ids,
+            RoundStepInput {
+                rule_ids: &self.rule_ids,
+                input_deltas: &round_input_deltas,
+                coverage: loop_state.coverage,
+            },
             &mut round,
-            &round_input_deltas,
             budget,
             coverage_reasons,
         )?;
@@ -1309,13 +1555,23 @@ fn build_round_inputs(
     round_input_deltas
 }
 
+struct RoundStepInput<'a> {
+    rule_ids: &'a [String],
+    input_deltas: &'a std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    coverage: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
+}
+
 fn step_round_rules(
-    rule_ids: &[String],
+    input: RoundStepInput<'_>,
     round: &mut ComponentRoundState,
-    round_input_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
     budget: &mut crate::engine::Budget<'_>,
     coverage_reasons: &mut std::collections::BTreeMap<String, String>,
 ) -> Result<std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>, crate::Error> {
+    let RoundStepInput {
+        rule_ids,
+        input_deltas,
+        coverage,
+    } = input;
     assert!(!rule_ids.is_empty());
     let mut round_m_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> =
         std::collections::BTreeMap::new();
@@ -1323,7 +1579,7 @@ fn step_round_rules(
         let Some(rule_state) = round.rule_states.get_mut(rule_id) else {
             continue;
         };
-        let delta_out = rule_state.step_delta(round_input_deltas, budget, coverage_reasons)?;
+        let delta_out = rule_state.step_delta(input_deltas, coverage, budget, coverage_reasons)?;
         if !delta_out.is_empty() {
             round_m_deltas
                 .entry(rule_state.rule.head.predicate.clone())
@@ -1333,6 +1589,52 @@ fn step_round_rules(
     }
     debug_assert!(round_m_deltas.len() <= rule_ids.len());
     Ok(round_m_deltas)
+}
+
+fn coverage_status_of(
+    coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
+    predicate: &str,
+) -> crate::CoverageStatus {
+    coverage
+        .get(predicate)
+        .copied()
+        .unwrap_or(crate::CoverageStatus::Unknown)
+}
+
+fn is_rule_body_complete(
+    rule: &crate::Rule,
+    coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
+) -> bool {
+    assert!(!rule.head.predicate.is_empty());
+    rule.body.iter().all(|literal| {
+        if let crate::Literal::Positive(atom) | crate::Literal::Negative(atom) = literal {
+            coverage_status_of(coverage, &atom.predicate) == crate::CoverageStatus::Complete
+        } else {
+            !matches!(literal, crate::Literal::Forbidden(_))
+        }
+    })
+}
+
+fn component_has_incomplete_non_monotonic(
+    program: &crate::RuleProgram,
+    comp: &ComponentState,
+    coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
+) -> bool {
+    assert!(!comp.predicates.is_empty());
+    program
+        .bundle
+        .rules
+        .iter()
+        .filter(|rule| comp.predicates.contains(&rule.head.predicate))
+        .any(|rule| {
+            let is_non_monotonic = rule.body.iter().any(|literal| {
+                matches!(
+                    literal,
+                    crate::Literal::Negative(_) | crate::Literal::Aggregate { .. }
+                )
+            });
+            is_non_monotonic && !is_rule_body_complete(rule, coverage)
+        })
 }
 
 fn apply_round_distinct_deltas(

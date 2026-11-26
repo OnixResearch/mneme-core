@@ -130,6 +130,8 @@ fn relation(
             .map(|values| mneme_prolog::snapshot::SelectedRow {
                 values,
                 supports: Vec::new(),
+                epistemic: mneme_datalog::EpistemicStatus::Accepted,
+                support_truncated: false,
             })
             .collect(),
         coverage: mneme_prolog::InputCoverage {
@@ -1598,4 +1600,94 @@ fn federated_prolog_query_joins_across_two_vaults_with_real_engine() {
     assert_eq!(bound_string(&sols[0], "Paper"), subject(0x22).to_hex());
     assert_eq!(bound_string(&sols[0], "Principle"), subject(0x11).to_hex());
     assert_eq!(bound_string(&sols[0], "Label"), "shared-concept");
+}
+
+#[test]
+fn proposed_and_rejected_datalog_rows_are_never_promoted_to_unqualified_relation() {
+    let rel = mneme_prolog::snapshot::SelectedRelation {
+        predicate: "verdict".to_owned(),
+        rows: vec![
+            mneme_prolog::snapshot::SelectedRow {
+                values: vec![string("accepted-item")],
+                supports: Vec::new(),
+                epistemic: mneme_datalog::EpistemicStatus::Accepted,
+                support_truncated: false,
+            },
+            mneme_prolog::snapshot::SelectedRow {
+                values: vec![string("proposed-item")],
+                supports: Vec::new(),
+                epistemic: mneme_datalog::EpistemicStatus::Proposed,
+                support_truncated: false,
+            },
+            mneme_prolog::snapshot::SelectedRow {
+                values: vec![string("rejected-item")],
+                supports: Vec::new(),
+                epistemic: mneme_datalog::EpistemicStatus::Rejected,
+                support_truncated: false,
+            },
+        ],
+        coverage: mneme_prolog::InputCoverage {
+            complete: true,
+            reason: None,
+        },
+    };
+    let image = input_image(Vec::new(), vec![rel]);
+
+    // 1. Unqualified `relation("verdict", [Item])` must ONLY return Accepted rows.
+    let mut md = metadata();
+    md.allowed_predicates
+        .insert(mneme_prolog::snapshot::SelectedRow::EPISTEMIC_RELATION.to_owned());
+    let req_unqualified = request_for(
+        &image,
+        atom(
+            mneme_prolog::RELATION_RELATION,
+            vec![
+                mneme_prolog::Term::String("verdict".to_owned()),
+                mneme_prolog::Term::List(vec![mneme_prolog::Term::Variable("Item".to_owned())]),
+            ],
+        ),
+        Vec::new(),
+    );
+    let out_unqualified = run(&md, &image, &req_unqualified, limits()).expect("unqualified query");
+    assert_eq!(
+        out_unqualified.status,
+        mneme_prolog::ExecutionStatus::Complete
+    );
+    let unqualified_items: Vec<String> = solutions(&out_unqualified)
+        .iter()
+        .map(|sol| bound_string(sol, "Item"))
+        .collect();
+    assert_eq!(
+        unqualified_items,
+        vec!["accepted-item".to_owned()],
+        "Proposed and Rejected rows must never be silently promoted into unqualified relation/2"
+    );
+
+    // 2. Tagged `relation_epistemic("verdict", [Item], Status)` exposes Accepted + Proposed
+    // with their exact epistemic tags and excludes Rejected.
+    let req_tagged = request_for(
+        &image,
+        atom(
+            mneme_prolog::snapshot::SelectedRow::EPISTEMIC_RELATION,
+            vec![
+                mneme_prolog::Term::String("verdict".to_owned()),
+                mneme_prolog::Term::List(vec![mneme_prolog::Term::Variable("Item".to_owned())]),
+                mneme_prolog::Term::Variable("Status".to_owned()),
+            ],
+        ),
+        Vec::new(),
+    );
+    let out_tagged = run(&md, &image, &req_tagged, limits()).expect("tagged query");
+    assert_eq!(out_tagged.status, mneme_prolog::ExecutionStatus::Complete);
+    let tagged_pairs: Vec<(String, String)> = solutions(&out_tagged)
+        .iter()
+        .map(|sol| (bound_string(sol, "Item"), bound_string(sol, "Status")))
+        .collect();
+    assert_eq!(
+        tagged_pairs,
+        vec![
+            ("accepted-item".to_owned(), "accepted".to_owned()),
+            ("proposed-item".to_owned(), "proposed".to_owned()),
+        ]
+    );
 }

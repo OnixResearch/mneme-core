@@ -671,24 +671,7 @@ fn program_clauses(
         };
         push_clause(&mut groups, &atom, metadata.terms, budget)?;
     }
-    for relation in &image.relations {
-        for row in &relation.rows {
-            let atom = crate::Atom {
-                predicate: crate::RELATION_RELATION.to_owned(),
-                terms: vec![
-                    crate::Term::String(relation.predicate.clone()),
-                    crate::Term::List(
-                        row.values
-                            .iter()
-                            .map(crate::snapshot::value_term)
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(|_| unrepresentable_image())?,
-                    ),
-                ],
-            };
-            push_clause(&mut groups, &atom, metadata.terms, budget)?;
-        }
-    }
+    push_selected_relation_clauses(&image.relations, metadata.terms, budget, &mut groups)?;
     if let Some(federated) = source.federated {
         push_federated_clauses(federated, request, metadata, &mut groups)?;
     }
@@ -722,6 +705,79 @@ fn program_clauses(
         assert!(!groups.is_empty());
     }
     Ok(groups.into_values().flatten().collect())
+}
+
+struct RelationClauseContext {
+    rel_pred: String,
+    tagged_pred: String,
+    accepted_tag: String,
+    proposed_tag: String,
+    terms_profile: crate::TermProfile,
+    budget_bytes: usize,
+}
+
+fn push_selected_relation_clauses(
+    relations: &[crate::snapshot::SelectedRelation],
+    terms_profile: crate::TermProfile,
+    budget_bytes: usize,
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) -> Result<(), crate::CapabilityError> {
+    assert!(budget_bytes > 0);
+    let ctx = RelationClauseContext {
+        rel_pred: crate::RELATION_RELATION.to_owned(),
+        tagged_pred: crate::snapshot::SelectedRow::EPISTEMIC_RELATION.to_owned(),
+        accepted_tag: mneme_datalog::EpistemicStatus::Accepted.name().to_owned(),
+        proposed_tag: mneme_datalog::EpistemicStatus::Proposed.name().to_owned(),
+        terms_profile,
+        budget_bytes,
+    };
+    for relation in relations {
+        for row in &relation.rows {
+            push_selected_relation_row(&relation.predicate, row, &ctx, groups)?;
+        }
+    }
+    debug_assert!(!ctx.rel_pred.is_empty());
+    Ok(())
+}
+
+fn push_selected_relation_row(
+    predicate: &str,
+    row: &crate::snapshot::SelectedRow,
+    ctx: &RelationClauseContext,
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) -> Result<(), crate::CapabilityError> {
+    assert!(!predicate.is_empty());
+    assert!(ctx.budget_bytes > 0);
+    let status_tag = match row.epistemic {
+        mneme_datalog::EpistemicStatus::Rejected => return Ok(()),
+        mneme_datalog::EpistemicStatus::Accepted => &ctx.accepted_tag,
+        mneme_datalog::EpistemicStatus::Proposed => &ctx.proposed_tag,
+    };
+    let value_terms = row
+        .values
+        .iter()
+        .map(crate::snapshot::value_term)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| unrepresentable_image())?;
+    if row.epistemic == mneme_datalog::EpistemicStatus::Accepted {
+        let atom = crate::Atom {
+            predicate: ctx.rel_pred.clone(),
+            terms: vec![
+                crate::Term::String(predicate.to_owned()),
+                crate::Term::List(value_terms.clone()),
+            ],
+        };
+        push_clause(groups, &atom, ctx.terms_profile, ctx.budget_bytes)?;
+    }
+    let tagged_atom = crate::Atom {
+        predicate: ctx.tagged_pred.clone(),
+        terms: vec![
+            crate::Term::String(predicate.to_owned()),
+            crate::Term::List(value_terms),
+            crate::Term::String(status_tag.clone()),
+        ],
+    };
+    push_clause(groups, &tagged_atom, ctx.terms_profile, ctx.budget_bytes)
 }
 
 fn extend_federated_referenced_predicates(referenced: &mut Vec<(String, usize)>) {

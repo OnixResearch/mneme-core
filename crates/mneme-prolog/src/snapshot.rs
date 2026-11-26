@@ -33,6 +33,14 @@ pub struct SelectedRelation {
 pub struct SelectedRow {
     pub values: Vec<mneme_core::Value>,
     pub supports: Vec<mneme_datalog::Derivation>,
+    pub epistemic: mneme_datalog::EpistemicStatus,
+    pub support_truncated: bool,
+}
+
+impl SelectedRow {
+    /// Prolog predicate carrying selected Datalog rows with their explicit epistemic status:
+    /// `relation_epistemic(Name, [Value, …], Status)`.
+    pub const EPISTEMIC_RELATION: &'static str = "relation_epistemic";
 }
 
 /// One immutable input image.
@@ -257,6 +265,7 @@ pub fn build_input_image(
     expected_generation: u64,
     results: Vec<mneme_datalog::QueryResult>,
 ) -> Result<InputImage, ImageError> {
+    debug_assert!(results.len() < usize::MAX);
     if view.revision() != expected_revision {
         return Err(ImageError::RevisionMismatch {
             expected: expected_revision,
@@ -273,7 +282,7 @@ pub fn build_input_image(
             actual: view_generation,
         });
     }
-    let canonical = canonical_facts(view, scope)?;
+    let canonical = canonical_facts(view, &[view], scope)?;
     let mut relations = Vec::with_capacity(results.len());
     let mut validation = ResultContextValidation::default();
     let mut is_all_complete = true;
@@ -310,6 +319,7 @@ pub fn build_input_image(
         },
     };
     image.seal();
+    assert!(!image.context.image_digest.is_empty());
     Ok(image)
 }
 
@@ -409,7 +419,7 @@ fn collect_federated_vault_data(
         .collect::<Vec<_>>();
     let canonical_chunks = all_inputs
         .iter()
-        .map(|input| canonical_facts(input.view, scope))
+        .map(|input| canonical_facts(input.view, &all_views, scope))
         .collect::<Result<Vec<_>, _>>()?;
     let total_canonical: usize = canonical_chunks.iter().map(Vec::len).sum();
     if total_canonical > MAX_FEDERATED_CANONICAL_FACTS {
@@ -588,10 +598,21 @@ fn selected_relation_value(relation: &SelectedRelation) -> mneme_core::Value {
                 relation
                     .rows
                     .iter()
-                    .map(|row| mneme_core::Value::sequence(row.values.clone()))
+                    .map(selected_row_value)
                     .collect::<Vec<_>>(),
             ),
             coverage_value(&relation.coverage),
+        ],
+    )
+}
+
+fn selected_row_value(row: &SelectedRow) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "selected-row",
+        vec![
+            mneme_core::Value::sequence(row.values.clone()),
+            mneme_core::Value::symbol(row.epistemic.name()),
+            mneme_core::Value::Boolean(row.support_truncated),
         ],
     )
 }
@@ -863,18 +884,66 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
+fn is_suppressed(view: &mneme_memory::View, record: &mneme_core::RecordEnvelope) -> bool {
+    view.suppression_for(record)
+        .is_some_and(|suppression| matches!(suppression.mode.as_str(), "withdrawn" | "forgotten"))
+}
+
+fn record_epistemic_status(record: &mneme_core::RecordEnvelope) -> mneme_datalog::EpistemicStatus {
+    debug_assert!(record.schema_version > 0);
+    let Some(properties) = record
+        .payload
+        .get("properties")
+        .and_then(mneme_core::Value::as_dictionary)
+    else {
+        return mneme_datalog::EpistemicStatus::Accepted;
+    };
+    let status = properties
+        .get(&mneme_core::Value::symbol("status"))
+        .or_else(|| properties.get(&mneme_core::Value::string("status")))
+        .and_then(|value| {
+            value
+                .as_symbol()
+                .map(mneme_core::Symbol::as_str)
+                .or_else(|| value.as_string())
+        })
+        .and_then(mneme_datalog::EpistemicStatus::parse)
+        .unwrap_or(mneme_datalog::EpistemicStatus::Accepted);
+    debug_assert!(!status.name().is_empty());
+    status
+}
+
+fn is_assertion_admissible(
+    view: &mneme_memory::View,
+    all_views: &[&mneme_memory::View],
+    scope: &mneme_core::ScopeId,
+    assertion: &mneme_memory::AssertionView,
+) -> bool {
+    assert!(!all_views.is_empty());
+    assertion.lifecycle == mneme_core::Lifecycle::Accepted
+        && &assertion.record.scope == scope
+        && !is_suppressed(view, &assertion.record)
+        && view.accepted_decision(assertion).unwrap_or(false)
+        && view.assertion_has_current_basis(assertion)
+        && view_has_record(all_views, assertion.subject)
+}
+
 fn canonical_facts(
     view: &mneme_memory::View,
+    all_views: &[&mneme_memory::View],
     scope: &mneme_core::ScopeId,
 ) -> Result<Vec<CanonicalFact>, ImageError> {
+    assert!(!all_views.is_empty());
     let assertions = view
         .assertions()
         .map_err(|error| ImageError::Invalid(error.to_string()))?;
     let mut canonical = Vec::with_capacity(assertions.len());
+    let total_assertions = assertions.len();
     for assertion in assertions {
-        if assertion.lifecycle != mneme_core::Lifecycle::Accepted
-            || &assertion.record.scope != scope
-            || assertion.stance != mneme_memory::Stance::Affirm
+        if assertion.stance != mneme_memory::Stance::Affirm
+            || !is_assertion_admissible(view, all_views, scope, &assertion)
+            || record_epistemic_status(&assertion.record)
+                != mneme_datalog::EpistemicStatus::Accepted
         {
             continue;
         }
@@ -888,7 +957,15 @@ fn canonical_facts(
             valid_time: assertion.valid_time,
         });
     }
+    debug_assert!(canonical.len() <= total_assertions);
     Ok(canonical)
+}
+
+struct VaultCollectContext<'a> {
+    alias: &'a str,
+    view: &'a mneme_memory::View,
+    all_views: &'a [&'a mneme_memory::View],
+    scope: &'a mneme_core::ScopeId,
 }
 
 fn collect_vault_facts(
@@ -900,29 +977,36 @@ fn collect_vault_facts(
 ) -> Result<(), ImageError> {
     assert!(!alias.is_empty());
     assert!(!all_views.is_empty());
+    let ctx = VaultCollectContext {
+        alias,
+        view,
+        all_views,
+        scope,
+    };
     for record in &view.snapshot().records {
-        if &record.scope != scope {
+        if &record.scope != scope
+            || is_suppressed(view, record)
+            || record_epistemic_status(record) == mneme_datalog::EpistemicStatus::Rejected
+        {
             continue;
         }
-        collect_record_vault_fact(alias, record, all_views, scope, facts);
+        collect_record_vault_fact(&ctx, record, facts);
     }
     Ok(())
 }
 
 fn collect_record_vault_fact(
-    alias: &str,
+    ctx: &VaultCollectContext<'_>,
     record: &mneme_core::RecordEnvelope,
-    all_views: &[&mneme_memory::View],
-    scope: &mneme_core::ScopeId,
     facts: &mut Vec<VaultFact>,
 ) {
     match record.kind {
-        mneme_core::RecordKind::Entity => push_entity_vault_fact(alias, record, facts),
+        mneme_core::RecordKind::Entity => push_entity_vault_fact(ctx.alias, record, facts),
         mneme_core::RecordKind::Relation => {
-            push_relation_vault_fact(alias, record, all_views, facts);
+            push_relation_vault_fact(ctx.alias, record, ctx.all_views, facts);
         }
         mneme_core::RecordKind::Assertion => {
-            push_assertion_vault_fact(alias, record, all_views, scope, facts);
+            push_assertion_vault_fact(ctx, record, facts);
         }
         mneme_core::RecordKind::Document
         | mneme_core::RecordKind::SourceRevision
@@ -986,30 +1070,37 @@ fn push_relation_vault_fact(
 }
 
 fn push_assertion_vault_fact(
-    alias: &str,
+    ctx: &VaultCollectContext<'_>,
     record: &mneme_core::RecordEnvelope,
-    all_views: &[&mneme_memory::View],
-    scope: &mneme_core::ScopeId,
     facts: &mut Vec<VaultFact>,
 ) {
-    assert!(!alias.is_empty());
+    assert!(!ctx.alias.is_empty());
     assert_eq!(record.kind, mneme_core::RecordKind::Assertion);
     let Ok(assertion) = mneme_memory::AssertionView::parse(record.clone()) else {
         return;
     };
-    if assertion.lifecycle != mneme_core::Lifecycle::Accepted
-        || &assertion.record.scope != scope
-        || !view_has_record(all_views, assertion.subject)
-    {
+    if !is_assertion_admissible(ctx.view, ctx.all_views, ctx.scope, &assertion) {
+        return;
+    }
+    let epistemic = record_epistemic_status(&assertion.record);
+    if epistemic == mneme_datalog::EpistemicStatus::Rejected {
         return;
     }
     match assertion.stance {
-        mneme_memory::Stance::Affirm => facts.push(VaultFact::assertion(alias, &assertion)),
-        mneme_memory::Stance::Deny => facts.push(VaultFact::denial(alias, &assertion)),
-        mneme_memory::Stance::Hypothesis if scope.class() == mneme_core::ScopeClass::Hypothesis => {
-            facts.push(VaultFact::hypothesis(alias, &assertion));
+        mneme_memory::Stance::Affirm if epistemic == mneme_datalog::EpistemicStatus::Accepted => {
+            facts.push(VaultFact::assertion(ctx.alias, &assertion));
         }
-        mneme_memory::Stance::Hypothesis => {}
+        mneme_memory::Stance::Deny if epistemic == mneme_datalog::EpistemicStatus::Accepted => {
+            facts.push(VaultFact::denial(ctx.alias, &assertion));
+        }
+        mneme_memory::Stance::Hypothesis
+            if ctx.scope.class() == mneme_core::ScopeClass::Hypothesis =>
+        {
+            facts.push(VaultFact::hypothesis(ctx.alias, &assertion));
+        }
+        mneme_memory::Stance::Affirm
+        | mneme_memory::Stance::Deny
+        | mneme_memory::Stance::Hypothesis => {}
     }
 }
 
@@ -1104,6 +1195,9 @@ fn selected_rows_in_views(
     assert!(!expected_revisions.is_empty());
     let mut rows = Vec::with_capacity(result.rows.len());
     for row in &result.rows {
+        if row.epistemic == mneme_datalog::EpistemicStatus::Rejected {
+            continue;
+        }
         for support in &row.supports {
             if !expected_revisions.contains(&support.revision) || &support.scope != scope {
                 return Err(ImageError::ContextMismatch(
@@ -1126,6 +1220,8 @@ fn selected_rows_in_views(
         rows.push(SelectedRow {
             values: row.values.clone(),
             supports: row.supports.clone(),
+            epistemic: row.epistemic,
+            support_truncated: row.support_truncated,
         });
     }
     Ok(rows)
@@ -1525,5 +1621,454 @@ mod tests {
             value_term(&mneme_core::Value::embedded(mneme_core::Value::integer(1))),
             Err(ImageError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn canonical_facts_and_vault_facts_enforce_datalog_admission_parity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut workspace = mneme_store::Workspace::create(
+            temp.path(),
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
+        )
+        .expect("workspace");
+        let subj = mneme_core::RecordId::from_bytes([0x10; 16]);
+        let hidden_subj = mneme_core::RecordId::from_bytes([0x70; 16]);
+        commit_entity(&mut workspace, &scope(), 0x10, "subject").expect("commit entity");
+        commit_entity(&mut workspace, &other_scope(), 0x70, "other-subject")
+            .expect("commit other entity");
+
+        // Commit a retained source for backing valid evidence.
+        let src_id = mneme_core::RecordId::from_bytes([0x20; 16]);
+        let src_rev = mneme_core::RevisionId::from_bytes([0x21; 16]);
+        let (src_rec, src_blob) = mneme_memory::build_source(
+            src_id,
+            src_rev,
+            &scope(),
+            mneme_memory::SourceOptions {
+                media_type: "text/plain",
+                bytes: b"supporting text",
+                entity: None,
+                path_hint: None,
+            },
+        )
+        .expect("source");
+        let base = workspace.current_revision().expect("base");
+        workspace
+            .commit(mneme_store::CommitCommand {
+                base,
+                actor: "prolog-test".to_owned(),
+                scope: scope(),
+                idempotency_key: "source".to_owned(),
+                records: vec![src_rec],
+                source_blobs: vec![src_blob],
+                publications: Vec::new(),
+                import_candidates: Vec::new(),
+                retention: None,
+            })
+            .expect("commit source");
+
+        let span = mneme_core::SourceSpan::new(0, 8).expect("span");
+        let ev_valid = mneme_memory::build_evidence(
+            mneme_core::RecordId::from_bytes([0x30; 16]),
+            mneme_core::RevisionId::from_bytes([0x31; 16]),
+            &scope(),
+            mneme_memory::EvidenceOptions {
+                assertion: mneme_core::RecordId::from_bytes([0x40; 16]),
+                source: src_id,
+                source_revision: src_rev,
+                span: Some(span),
+                anchor: None,
+                relation: mneme_memory::SupportRelation::Supports,
+                origin: mneme_core::Origin::AuthoredStatement,
+                ancestry: &[],
+            },
+        );
+        let ev_suppressed = mneme_memory::build_evidence(
+            mneme_core::RecordId::from_bytes([0x32; 16]),
+            mneme_core::RevisionId::from_bytes([0x33; 16]),
+            &scope(),
+            mneme_memory::EvidenceOptions {
+                assertion: mneme_core::RecordId::from_bytes([0x44; 16]),
+                source: src_id,
+                source_revision: src_rev,
+                span: Some(span),
+                anchor: None,
+                relation: mneme_memory::SupportRelation::Supports,
+                origin: mneme_core::Origin::AuthoredStatement,
+                ancestry: &[],
+            },
+        );
+        let ev_orphan = mneme_memory::build_evidence(
+            mneme_core::RecordId::from_bytes([0x34; 16]),
+            mneme_core::RevisionId::from_bytes([0x35; 16]),
+            &scope(),
+            mneme_memory::EvidenceOptions {
+                assertion: mneme_core::RecordId::from_bytes([0x46; 16]),
+                source: src_id,
+                source_revision: src_rev,
+                span: Some(span),
+                anchor: None,
+                relation: mneme_memory::SupportRelation::Supports,
+                origin: mneme_core::Origin::AuthoredStatement,
+                ancestry: &[],
+            },
+        );
+        let prop_valid = mneme_memory::build_proposed_assertion(
+            mneme_core::RecordId::from_bytes([0x40; 16]),
+            mneme_core::RevisionId::from_bytes([0x41; 16]),
+            &scope(),
+            mneme_memory::ProposedAssertionOptions {
+                subject: subj,
+                predicate: "admitted",
+                value: mneme_core::Value::string("yes"),
+                stance: mneme_memory::Stance::Affirm,
+                origin: mneme_core::Origin::AuthoredStatement,
+                asserted_by: "author",
+                valid_time: mneme_core::ValidTime::always(),
+                evidence: &[mneme_core::Reference::local(
+                    ev_valid.record_id,
+                    mneme_core::RecordKind::Evidence,
+                )],
+                extraction: None,
+                superseded_by: None,
+            },
+        );
+        let prop_no_basis = mneme_memory::build_proposed_assertion(
+            mneme_core::RecordId::from_bytes([0x42; 16]),
+            mneme_core::RevisionId::from_bytes([0x43; 16]),
+            &scope(),
+            mneme_memory::ProposedAssertionOptions {
+                subject: subj,
+                predicate: "unbacked",
+                value: mneme_core::Value::string("no"),
+                stance: mneme_memory::Stance::Affirm,
+                origin: mneme_core::Origin::AuthoredStatement,
+                asserted_by: "author",
+                valid_time: mneme_core::ValidTime::always(),
+                evidence: &[],
+                extraction: None,
+                superseded_by: None,
+            },
+        );
+        let prop_suppressed = mneme_memory::build_proposed_assertion(
+            mneme_core::RecordId::from_bytes([0x44; 16]),
+            mneme_core::RevisionId::from_bytes([0x45; 16]),
+            &scope(),
+            mneme_memory::ProposedAssertionOptions {
+                subject: subj,
+                predicate: "suppressed",
+                value: mneme_core::Value::string("no"),
+                stance: mneme_memory::Stance::Affirm,
+                origin: mneme_core::Origin::AuthoredStatement,
+                asserted_by: "author",
+                valid_time: mneme_core::ValidTime::always(),
+                evidence: &[mneme_core::Reference::local(
+                    ev_suppressed.record_id,
+                    mneme_core::RecordKind::Evidence,
+                )],
+                extraction: None,
+                superseded_by: None,
+            },
+        );
+        let prop_orphan = mneme_memory::build_proposed_assertion(
+            mneme_core::RecordId::from_bytes([0x46; 16]),
+            mneme_core::RevisionId::from_bytes([0x47; 16]),
+            &scope(),
+            mneme_memory::ProposedAssertionOptions {
+                subject: hidden_subj,
+                predicate: "orphan",
+                value: mneme_core::Value::string("no"),
+                stance: mneme_memory::Stance::Affirm,
+                origin: mneme_core::Origin::AuthoredStatement,
+                asserted_by: "author",
+                valid_time: mneme_core::ValidTime::always(),
+                evidence: &[mneme_core::Reference::local(
+                    ev_orphan.record_id,
+                    mneme_core::RecordKind::Evidence,
+                )],
+                extraction: None,
+                superseded_by: None,
+            },
+        );
+        let prop_no_dec = mneme_memory::build_proposed_assertion(
+            mneme_core::RecordId::from_bytes([0x48; 16]),
+            mneme_core::RevisionId::from_bytes([0x49; 16]),
+            &scope(),
+            mneme_memory::ProposedAssertionOptions {
+                subject: subj,
+                predicate: "no_decision",
+                value: mneme_core::Value::string("no"),
+                stance: mneme_memory::Stance::Affirm,
+                origin: mneme_core::Origin::AuthoredStatement,
+                asserted_by: "author",
+                valid_time: mneme_core::ValidTime::always(),
+                evidence: &[mneme_core::Reference::local(
+                    ev_valid.record_id,
+                    mneme_core::RecordKind::Evidence,
+                )],
+                extraction: None,
+                superseded_by: None,
+            },
+        );
+        let base = workspace.current_revision().expect("base");
+        workspace
+            .commit(mneme_store::CommitCommand {
+                base,
+                actor: "prolog-test".to_owned(),
+                scope: scope(),
+                idempotency_key: "props".to_owned(),
+                records: vec![
+                    ev_valid.clone(),
+                    ev_suppressed.clone(),
+                    ev_orphan.clone(),
+                    prop_valid.clone(),
+                    prop_no_basis.clone(),
+                    prop_suppressed.clone(),
+                    prop_orphan.clone(),
+                    prop_no_dec.clone(),
+                ],
+                source_blobs: Vec::new(),
+                publications: Vec::new(),
+                import_candidates: Vec::new(),
+                retention: None,
+            })
+            .expect("commit props");
+
+        let input_rev = workspace.current_revision().expect("input rev");
+        let accept_pair = |ws: &mneme_store::Workspace,
+                           prop_id: mneme_core::RecordId,
+                           dec_id: mneme_core::RecordId,
+                           dec_rev: mneme_core::RevisionId,
+                           acc_rev: mneme_core::RevisionId| {
+            let env = ws
+                .record_revisions(prop_id)
+                .expect("prop revs")
+                .into_iter()
+                .last()
+                .expect("last rev");
+            let dec = mneme_memory::build_decision(
+                dec_id,
+                dec_rev,
+                &scope(),
+                mneme_memory::DecisionOptions {
+                    kind: mneme_memory::DecisionKind::Acceptance,
+                    target: prop_id,
+                    actor: "prolog-test",
+                    policy: "prolog-policy/v1",
+                    input_revision: input_rev,
+                    outcome: "accepted",
+                    rationale: "accept",
+                    evidence: &[],
+                    related: &[],
+                },
+            );
+            let acc = mneme_memory::build_assertion_revision(
+                &env,
+                acc_rev,
+                mneme_core::Lifecycle::Accepted,
+                mneme_core::Reference::local(dec_id, mneme_core::RecordKind::Decision),
+                None,
+            );
+            (dec, acc)
+        };
+        let (dec_valid, acc_valid) = accept_pair(
+            &workspace,
+            prop_valid.record_id,
+            mneme_core::RecordId::from_bytes([0x50; 16]),
+            mneme_core::RevisionId::from_bytes([0x51; 16]),
+            mneme_core::RevisionId::from_bytes([0x60; 16]),
+        );
+        let (dec_no_basis, acc_no_basis) = accept_pair(
+            &workspace,
+            prop_no_basis.record_id,
+            mneme_core::RecordId::from_bytes([0x52; 16]),
+            mneme_core::RevisionId::from_bytes([0x53; 16]),
+            mneme_core::RevisionId::from_bytes([0x61; 16]),
+        );
+        let (dec_suppressed, acc_suppressed) = accept_pair(
+            &workspace,
+            prop_suppressed.record_id,
+            mneme_core::RecordId::from_bytes([0x54; 16]),
+            mneme_core::RevisionId::from_bytes([0x55; 16]),
+            mneme_core::RevisionId::from_bytes([0x62; 16]),
+        );
+        let (dec_orphan, acc_orphan) = accept_pair(
+            &workspace,
+            prop_orphan.record_id,
+            mneme_core::RecordId::from_bytes([0x56; 16]),
+            mneme_core::RevisionId::from_bytes([0x57; 16]),
+            mneme_core::RevisionId::from_bytes([0x63; 16]),
+        );
+        let prop_no_dec_env = workspace
+            .record_revisions(prop_no_dec.record_id)
+            .expect("no_dec revs")
+            .into_iter()
+            .last()
+            .expect("no_dec env");
+        // Decision with non-accepted outcome ("rejected") so `accepted_decision` is false.
+        let dec_rejected = mneme_memory::build_decision(
+            mneme_core::RecordId::from_bytes([0x58; 16]),
+            mneme_core::RevisionId::from_bytes([0x59; 16]),
+            &scope(),
+            mneme_memory::DecisionOptions {
+                kind: mneme_memory::DecisionKind::Acceptance,
+                target: prop_no_dec.record_id,
+                actor: "prolog-test",
+                policy: "prolog-policy/v1",
+                input_revision: input_rev,
+                outcome: "rejected",
+                rationale: "not accepted",
+                evidence: &[],
+                related: &[],
+            },
+        );
+        let acc_no_dec = mneme_memory::build_assertion_revision(
+            &prop_no_dec_env,
+            mneme_core::RevisionId::from_bytes([0x64; 16]),
+            mneme_core::Lifecycle::Accepted,
+            mneme_core::Reference::local(dec_rejected.record_id, mneme_core::RecordKind::Decision),
+            None,
+        );
+        workspace
+            .commit(mneme_store::CommitCommand {
+                base: input_rev,
+                actor: "prolog-test".to_owned(),
+                scope: scope(),
+                idempotency_key: "accept".to_owned(),
+                records: vec![
+                    dec_valid,
+                    dec_no_basis,
+                    dec_suppressed,
+                    dec_orphan,
+                    dec_rejected,
+                    acc_valid.clone(),
+                    acc_no_basis,
+                    acc_suppressed.clone(),
+                    acc_orphan,
+                    acc_no_dec,
+                ],
+                source_blobs: Vec::new(),
+                publications: Vec::new(),
+                import_candidates: Vec::new(),
+                retention: None,
+            })
+            .expect("commit accepted");
+
+        let revision = workspace.current_revision().expect("rev");
+        let generation = workspace.eligibility_generation().expect("gen");
+        let access = mneme_memory::Access::Scopes(std::collections::BTreeSet::from([scope()]));
+        let snapshot = mneme_datalog::filter_visible_snapshot(
+            workspace.snapshot().expect("snapshot"),
+            &scope(),
+            &access,
+        );
+        let ctx = mneme_memory::view_context(&workspace, &snapshot).expect("view context");
+        let suppressions = vec![mneme_store::RetentionSuppression {
+            operation_id: "op-withdraw-1".to_owned(),
+            target: acc_suppressed.record_id,
+            target_kind: mneme_core::RecordKind::Assertion.symbol().to_owned(),
+            revision: Some(acc_suppressed.revision_id),
+            content_digest: None,
+            mode: mneme_store::SuppressionMode::Withdrawn,
+            generation,
+        }];
+        let view = mneme_memory::View::with_retention(
+            snapshot,
+            workspace.root(),
+            ctx.history,
+            ctx.revision_sequences,
+            suppressions,
+        );
+
+        let image = build_input_image(&view, &scope(), revision, generation, Vec::new())
+            .expect("input image");
+        let preds: Vec<&str> = image
+            .canonical
+            .iter()
+            .map(|fact| fact.predicate.as_str())
+            .collect();
+        assert_eq!(
+            preds,
+            vec!["admitted"],
+            "only accepted, decision-backed, current-basis, unsuppressed, live-subject assertions are admitted"
+        );
+
+        let federated = build_federated_input_image(
+            FederatedVaultInput {
+                alias: "primary",
+                root: workspace.root(),
+                view: &view,
+                requested_revision: revision,
+                served_revision: revision,
+                eligibility_generation: generation,
+            },
+            &[],
+            &scope(),
+            Vec::new(),
+        )
+        .expect("federated image");
+        let vault_assertion_preds: Vec<&str> = federated
+            .facts
+            .iter()
+            .filter(|fact| fact.predicate == "vault_assertion")
+            .filter_map(|fact| fact.leading_strings.get(2).map(String::as_str))
+            .collect();
+        assert_eq!(vault_assertion_preds, vec!["admitted"]);
+    }
+
+    #[test]
+    fn selected_rows_carry_epistemic_and_truncation_in_digest_and_exclude_rejected() {
+        let (_temp, view, revision, generation) = setup().expect("setup");
+        let canonical = mneme_core::RecordId::from_bytes([0x10; 16]);
+
+        let mut accepted_res = result(revision, generation, canonical);
+        accepted_res.rows[0].values = vec![mneme_core::Value::string("ok")];
+
+        let mut proposed_res = accepted_res.clone();
+        proposed_res.rows[0].epistemic = mneme_datalog::EpistemicStatus::Proposed;
+
+        let mut truncated_res = accepted_res.clone();
+        truncated_res.rows[0].support_truncated = true;
+
+        let mut rejected_res = accepted_res.clone();
+        rejected_res.rows[0].epistemic = mneme_datalog::EpistemicStatus::Rejected;
+
+        let img_acc = build_input_image(&view, &scope(), revision, generation, vec![accepted_res])
+            .expect("acc image");
+        let img_prop = build_input_image(&view, &scope(), revision, generation, vec![proposed_res])
+            .expect("prop image");
+        let img_trunc =
+            build_input_image(&view, &scope(), revision, generation, vec![truncated_res])
+                .expect("trunc image");
+        let img_rej = build_input_image(&view, &scope(), revision, generation, vec![rejected_res])
+            .expect("rej image");
+
+        assert_eq!(
+            img_acc.relations[0].rows[0].epistemic,
+            mneme_datalog::EpistemicStatus::Accepted
+        );
+        assert!(!img_acc.relations[0].rows[0].support_truncated);
+        assert_eq!(
+            img_prop.relations[0].rows[0].epistemic,
+            mneme_datalog::EpistemicStatus::Proposed
+        );
+        assert!(img_trunc.relations[0].rows[0].support_truncated);
+        assert!(
+            img_rej.relations[0].rows.is_empty(),
+            "Rejected Datalog rows must never be admitted into Prolog SelectedRow"
+        );
+        assert_ne!(
+            img_acc.content_digest(),
+            img_prop.content_digest(),
+            "InputImage content_digest must distinguish Accepted vs Proposed rows"
+        );
+        assert_ne!(
+            img_acc.content_digest(),
+            img_trunc.content_digest(),
+            "InputImage content_digest must distinguish support_truncated"
+        );
     }
 }

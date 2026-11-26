@@ -82,6 +82,11 @@ struct PreparedAdvance {
     next_context: crate::BuildContext,
 }
 
+struct IncrementalStepContext {
+    step_limits: crate::Limits,
+    start: std::time::Instant,
+}
+
 impl ReplSession {
     /// Open a new REPL session pinned to one workspace revision and scope.
     pub fn open(
@@ -122,6 +127,7 @@ impl ReplSession {
             facts: unwrap_fact_stores(&base.facts),
             arities: program.arities.clone(),
             bundle: program.bundle.clone(),
+            vault_barriers: Vec::new(),
         };
         let total_work = base.work;
         debug_assert!(total_work <= request.limits.max_total_work);
@@ -353,6 +359,8 @@ impl ReplSession {
         let start = crate::engine::evaluation_start();
         let mut step_limits = self.repl_limits.per_step.clone();
         step_limits.max_work = step_limits.max_work.min(remaining_work);
+        debug_assert!(step_limits.max_work > 0);
+        debug_assert!(step_limits.max_work <= remaining_work);
         let kept_facts = self.kept_facts(&candidate_program, &affected);
         let reused_predicates: Vec<String> = kept_facts
             .keys()
@@ -378,7 +386,13 @@ impl ReplSession {
                 start,
             },
         );
-        self.commit_incremental(candidate_program, affected, reused_predicates, evaluated)
+        self.commit_incremental(
+            candidate_program,
+            affected,
+            reused_predicates,
+            evaluated,
+            IncrementalStepContext { step_limits, start },
+        )
     }
 
     fn kept_facts(
@@ -414,6 +428,7 @@ impl ReplSession {
         affected: std::collections::BTreeSet<String>,
         reused_predicates: Vec<String>,
         evaluated: crate::engine::BuildFacts,
+        step_ctx: IncrementalStepContext,
     ) -> Result<ReplStepSummary, crate::Error> {
         // Charge work even if the step hit a limit, so repeated failing steps
         // cannot bypass the cumulative session work budget.
@@ -446,25 +461,28 @@ impl ReplSession {
         next_context.projection_build_id = next_build_id;
 
         let next_facts = unwrap_fact_stores(&evaluated.facts);
-        self.ivm.sync_after_rule_change(
+        let sync_work = self.sync_ivm_after_rule_change(
             &candidate_program,
-            &self.base.facts,
             &next_facts,
             &affected,
+            evaluated.work,
+            &step_ctx,
         )?;
+        let step_work = evaluated.work.saturating_add(sync_work);
 
         self.build = crate::Build {
             context: next_context.clone(),
             status: evaluated.status,
             coverage: evaluated.coverage,
             limits: self.repl_limits.per_step.clone(),
-            work: evaluated.work,
+            work: step_work,
             support_truncated: evaluated.support_truncated,
             limit_reached: evaluated.limit_reached,
             declaration_valid: evaluated.declaration_valid,
             facts: next_facts,
             arities: candidate_program.arities.clone(),
             bundle: candidate_program.bundle.clone(),
+            vault_barriers: Vec::new(),
         };
         self.program = candidate_program;
 
@@ -475,7 +493,7 @@ impl ReplSession {
         Ok(ReplStepSummary {
             context: next_context,
             status: self.build.status,
-            step_work: evaluated.work,
+            step_work,
             total_work: self.total_work,
             remaining_work: self
                 .repl_limits
@@ -488,6 +506,38 @@ impl ReplSession {
             affected_predicates: affected.into_iter().collect(),
             reused_predicates,
         })
+    }
+
+    fn sync_ivm_after_rule_change(
+        &mut self,
+        candidate_program: &crate::RuleProgram,
+        next_facts: &std::collections::BTreeMap<
+            String,
+            std::collections::BTreeMap<Vec<mneme_core::Value>, crate::FactData>,
+        >,
+        affected: &std::collections::BTreeSet<String>,
+        evaluated_work: u64,
+        step_ctx: &IncrementalStepContext,
+    ) -> Result<u64, crate::Error> {
+        debug_assert!(step_ctx.step_limits.max_work > 0);
+        let mut sync_work = 0_u64;
+        let sync_result = self.ivm.sync_after_rule_change(
+            crate::ivm::SyncRuleChangeRequest {
+                program: candidate_program,
+                build_facts: next_facts,
+                affected,
+                base_coverage: &self.base.base_coverage,
+                coverage_reasons: &self.base.coverage_reasons,
+                limits: &step_ctx.step_limits,
+                initial_work: evaluated_work,
+                start: step_ctx.start,
+            },
+            &mut sync_work,
+        );
+        self.total_work = self.total_work.saturating_add(sync_work);
+        debug_assert!(self.total_work <= self.repl_limits.max_total_work);
+        sync_result?;
+        Ok(sync_work)
     }
 
     /// Step this session to `revision` (or current workspace head when `None`)
@@ -661,6 +711,7 @@ impl ReplSession {
             facts: ivm_result.next_facts,
             arities: self.program.arities.clone(),
             bundle: self.program.bundle.clone(),
+            vault_barriers: Vec::new(),
         };
 
         let rule_count = u32::try_from(self.build.bundle.rules.len())

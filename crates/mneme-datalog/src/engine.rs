@@ -813,6 +813,7 @@ fn load_assertion_fact(
     record: &mneme_core::RecordEnvelope,
     evaluation: &mut Evaluation<'_>,
 ) {
+    assert_eq!(record.kind, mneme_core::RecordKind::Assertion);
     let Ok(assertion) = mneme_memory::AssertionView::parse(record.clone()) else {
         return;
     };
@@ -836,10 +837,11 @@ fn load_assertion_fact(
         return;
     }
     let (sources, availability) = assertion_sources(ctx.view, &assertion, ctx.current_sources);
+    let record_epistemic = crate::provenance::record_epistemic_status(record);
     let epistemic = if assertion.stance == mneme_memory::Stance::Hypothesis {
-        crate::EpistemicStatus::Proposed
+        record_epistemic.join(crate::EpistemicStatus::Proposed)
     } else {
-        crate::EpistemicStatus::Accepted
+        record_epistemic
     };
     let terms = vec![
         assertion.subject.to_value(),
@@ -847,6 +849,7 @@ fn load_assertion_fact(
         assertion.value.clone(),
         assertion.record_id().to_value(),
     ];
+    debug_assert_eq!(terms.len(), 4);
     let temporal = temporal_parameters(assertion.valid_time);
     let predicates = match extent {
         "assertion" => PredicatePair {
@@ -932,7 +935,7 @@ fn load_evidence_fact(
             sources,
             availability,
             temporal: Vec::new(),
-            epistemic: crate::EpistemicStatus::Accepted,
+            epistemic: crate::provenance::record_epistemic_status(record),
             vault_alias: ctx.alias,
             vault_revision: ctx.served_revision,
         },
@@ -1013,7 +1016,7 @@ fn load_source_fact(
             sources,
             availability: None,
             temporal: Vec::new(),
-            epistemic: crate::EpistemicStatus::Accepted,
+            epistemic: crate::provenance::record_epistemic_status(record),
             vault_alias: ctx.alias,
             vault_revision: ctx.served_revision,
         },
@@ -1309,7 +1312,9 @@ fn merge_existing_fact(
         return false;
     };
     let prev_epistemic = data.epistemic;
+    let was_active = data.is_active();
     data.epistemic = data.epistemic.union(epistemic);
+    let is_now_active = data.is_active();
     let is_upgraded = data.epistemic > prev_epistemic;
     if let Some(existing) = data
         .supports
@@ -1321,12 +1326,18 @@ fn merge_existing_fact(
         data.canonical_roots.extend(canonical_roots);
         data.vaults.extend(vaults);
         merge_strings(&mut data.temporal, temporal);
+        if !was_active && is_now_active {
+            index_active_terms(store, &terms);
+        }
         return is_upgraded;
     }
     if data.supports.len() >= max_supports {
         data.truncated = true;
         store.truncated = true;
         budget.support_truncated = true;
+        if !was_active && is_now_active {
+            index_active_terms(store, &terms);
+        }
         return is_upgraded;
     }
     data.supports.push(support);
@@ -1334,7 +1345,33 @@ fn merge_existing_fact(
     data.canonical_roots.extend(canonical_roots);
     data.vaults.extend(vaults);
     merge_strings(&mut data.temporal, temporal);
+    if !was_active && is_now_active {
+        index_active_terms(store, &terms);
+    }
     is_upgraded
+}
+
+fn index_active_terms(store: &mut FactStore, terms: &FactKey) {
+    debug_assert!(store.rows.len() < usize::MAX);
+    debug_assert!(store.indexes.len() < usize::MAX);
+    if !store.indexes.is_empty() {
+        for ((arity, cols), index) in &mut store.indexes {
+            if terms.len() == *arity {
+                let key = project_key(terms, cols);
+                let bucket = index.buckets.entry(key).or_default();
+                if let Err(pos) = bucket.binary_search(terms) {
+                    bucket.insert(pos, terms.clone());
+                }
+            }
+        }
+    }
+    if !store.tries.is_empty() {
+        for ((arity, cols), trie) in &mut store.tries {
+            if terms.len() == *arity {
+                trie.insert(terms, cols);
+            }
+        }
+    }
 }
 
 fn insert_new_fact(store: &mut FactStore, contents: FactContents) {
@@ -1350,23 +1387,8 @@ fn insert_new_fact(store: &mut FactStore, contents: FactContents) {
     } = contents;
     assert!(!support.rule_id.is_empty());
     assert_eq!(support.epistemic, epistemic);
-    if !store.indexes.is_empty() {
-        for ((arity, cols), index) in &mut store.indexes {
-            if terms.len() == *arity {
-                let key = project_key(&terms, cols);
-                let bucket = index.buckets.entry(key).or_default();
-                if let Err(pos) = bucket.binary_search(&terms) {
-                    bucket.insert(pos, terms.clone());
-                }
-            }
-        }
-    }
-    if !store.tries.is_empty() {
-        for ((arity, cols), trie) in &mut store.tries {
-            if terms.len() == *arity {
-                trie.insert(&terms, cols);
-            }
-        }
+    if epistemic != crate::EpistemicStatus::Rejected {
+        index_active_terms(store, &terms);
     }
     store.rows.insert(
         terms,
@@ -1909,6 +1931,8 @@ fn evaluate_aggregate_rule(
     aggregate: &AggregateSpec,
     bindings: &RuleBindings,
 ) -> RuleOutcome {
+    assert!(!rule.head.predicate.is_empty());
+    debug_assert!(bindings.len() < usize::MAX);
     let grouped = match aggregate_rows(&rule.head, aggregate, bindings) {
         Ok(grouped) => grouped,
         Err(reason) => return fail_relation(evaluation, &rule.head.predicate, reason),
@@ -1918,7 +1942,27 @@ fn evaluate_aggregate_rule(
         if !evaluation.budget.is_active() {
             break;
         }
-        let contents = aggregate_support(rule, evaluation, bindings, &aggregate_row);
+        let support_ctx = SupportContext {
+            context: evaluation.context,
+            facts: &evaluation.facts,
+            coverage: &evaluation.coverage,
+            participating_vaults: &evaluation.participating_vaults,
+        };
+        let Some(contents) = aggregate_support(
+            rule,
+            &support_ctx,
+            &mut evaluation.budget,
+            bindings,
+            &aggregate_row,
+        ) else {
+            if !evaluation.budget.is_active() {
+                break;
+            }
+            continue;
+        };
+        if contents.epistemic == crate::EpistemicStatus::Rejected {
+            continue;
+        }
         if add_fact(evaluation, &rule.head.predicate, contents) {
             is_changed = true;
         }
@@ -1935,6 +1979,8 @@ fn evaluate_ordinary_rule(
     rule: &crate::Rule,
     bindings: &RuleBindings,
 ) -> RuleOutcome {
+    assert!(!rule.head.predicate.is_empty());
+    debug_assert!(bindings.len() < usize::MAX);
     let mut is_changed = false;
     for binding in bindings {
         if !evaluation.budget.is_active() {
@@ -1949,7 +1995,23 @@ fn evaluate_ordinary_rule(
                 "rule head has an unbound variable",
             );
         };
-        let contents = instantiated_support(rule, evaluation, binding, terms);
+        let support_ctx = SupportContext {
+            context: evaluation.context,
+            facts: &evaluation.facts,
+            coverage: &evaluation.coverage,
+            participating_vaults: &evaluation.participating_vaults,
+        };
+        let Some(contents) =
+            instantiated_support(rule, &support_ctx, &mut evaluation.budget, binding, terms)
+        else {
+            if !evaluation.budget.is_active() {
+                break;
+            }
+            continue;
+        };
+        if contents.epistemic == crate::EpistemicStatus::Rejected {
+            continue;
+        }
         if add_fact(evaluation, &rule.head.predicate, contents) {
             is_changed = true;
         }
@@ -2006,6 +2068,8 @@ fn ensure_column_index(
     arity: usize,
     bound_cols: &[usize],
 ) -> Result<IndexState, RuleOutcome> {
+    assert!(!predicate.is_empty());
+    assert!(!bound_cols.is_empty());
     let Some(store) = evaluation.facts.get(predicate) else {
         return Ok(IndexState::Empty);
     };
@@ -2017,11 +2081,11 @@ fn ensure_column_index(
         return Ok(IndexState::Ready);
     }
     let mut index = FactColumnIndex::default();
-    for terms in store.rows.keys() {
+    for (terms, data) in &store.rows {
         if !evaluation.budget.charge(1) {
             return Err(RuleOutcome::Skipped);
         }
-        if terms.len() != arity {
+        if terms.len() != arity || !data.is_active() {
             continue;
         }
         let key = project_key(terms, bound_cols);
@@ -2109,6 +2173,8 @@ fn join_all_bound(
     bindings: &[Binding],
     atom: &crate::Atom,
 ) -> Result<RuleBindings, RuleOutcome> {
+    assert!(!atom.predicate.is_empty());
+    debug_assert!(bindings.len() < usize::MAX);
     let arity = atom.terms.len();
     let binding_limit = evaluation.budget.limits.max_result_rows;
     let mut output = Vec::with_capacity(bindings.len().min(binding_limit));
@@ -2135,7 +2201,7 @@ fn join_all_bound(
             continue;
         }
         if let Some(data) = store.rows.get(&probe_key)
-            && !data.supports.is_empty()
+            && data.is_active()
         {
             push_extended_binding(
                 &mut output,
@@ -2203,6 +2269,8 @@ pub(super) fn matches_atom(
     atom: &crate::Atom,
     binding: &Binding,
 ) -> Result<bool, RuleOutcome> {
+    assert!(!atom.predicate.is_empty());
+    debug_assert!(binding.len() < usize::MAX);
     let arity = atom.terms.len();
     let has_rows = evaluation
         .facts
@@ -2230,7 +2298,7 @@ pub(super) fn matches_atom(
             .facts
             .get(&atom.predicate)
             .and_then(|store| store.rows.get(&ground_key))
-            .is_some_and(|data| !data.supports.is_empty());
+            .is_some_and(crate::FactData::is_active);
         return Ok(is_matched);
     }
 
@@ -2247,11 +2315,11 @@ pub(super) fn matches_atom(
     let Some(store) = evaluation.facts.get(&atom.predicate) else {
         return Ok(false);
     };
-    for terms in store.rows.keys() {
+    for (terms, data) in &store.rows {
         if !evaluation.budget.charge(1) {
             return Err(RuleOutcome::Skipped);
         }
-        if terms.len() == arity && atom_matches_row(atom, terms, binding) {
+        if data.is_active() && terms.len() == arity && atom_matches_row(atom, terms, binding) {
             return Ok(true);
         }
     }
@@ -2264,6 +2332,8 @@ fn matches_atom_indexed(
     binding: &Binding,
     bound_cols: &[usize],
 ) -> Result<bool, RuleOutcome> {
+    assert!(!atom.predicate.is_empty());
+    assert!(!bound_cols.is_empty());
     let arity = atom.terms.len();
     if ensure_column_index(evaluation, &atom.predicate, arity, bound_cols)? == IndexState::Empty {
         return Ok(false);
@@ -2289,7 +2359,12 @@ fn matches_atom_indexed(
         if !evaluation.budget.charge(1) {
             return Err(RuleOutcome::Skipped);
         }
-        if atom_matches_row(atom, terms, binding) {
+        if store
+            .rows
+            .get(terms)
+            .is_some_and(crate::FactData::is_active)
+            && atom_matches_row(atom, terms, binding)
+        {
             return Ok(true);
         }
     }
@@ -2314,7 +2389,9 @@ fn unify(
     binding: &Binding,
     data: &crate::FactData,
 ) -> Option<Binding> {
-    if data.supports.is_empty() {
+    assert!(!atom.predicate.is_empty());
+    debug_assert_eq!(atom.terms.len(), terms.len());
+    if !data.is_active() {
         return None;
     }
     let mut extended = binding.clone();
@@ -2648,19 +2725,45 @@ fn aggregate_head_row(
     })
 }
 
+/// Read-only evaluation context needed to instantiate premises and derivations.
+struct SupportContext<'a> {
+    context: &'a crate::BuildContext,
+    facts: &'a std::collections::BTreeMap<String, FactStore>,
+    coverage: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
+    participating_vaults: &'a std::collections::BTreeSet<String>,
+}
+
+impl SupportContext<'_> {
+    fn coverage_status(&self, predicate: &str) -> crate::CoverageStatus {
+        self.coverage
+            .get(predicate)
+            .copied()
+            .unwrap_or(crate::CoverageStatus::Unknown)
+    }
+}
+
 fn instantiated_support(
     rule: &crate::Rule,
-    evaluation: &mut Evaluation<'_>,
+    support_ctx: &SupportContext<'_>,
+    budget: &mut Budget<'_>,
     binding: &Binding,
     terms: FactKey,
-) -> FactContents {
+) -> Option<FactContents> {
+    assert!(!rule.id.is_empty());
+    debug_assert_eq!(terms.len(), rule.head.terms.len());
+    if !budget.is_active() {
+        return None;
+    }
     let PremiseSet {
         premises,
         sources,
         roots,
         vaults,
         temporal,
-    } = premises_for_binding(rule, evaluation, binding);
+    } = premises_for_binding(rule, support_ctx, budget, binding)?;
+    if !budget.is_active() {
+        return None;
+    }
     let epistemic = premises
         .iter()
         .fold(crate::EpistemicStatus::ONE, |acc, premise| {
@@ -2669,17 +2772,17 @@ fn instantiated_support(
     let temporal = temporal.into_iter().collect::<Vec<_>>();
     let support = crate::Derivation {
         rule_id: rule.id.clone(),
-        rule_version: evaluation.context.rule_bundle_version.clone(),
+        rule_version: support_ctx.context.rule_bundle_version.clone(),
         premises,
         sources: sources.clone(),
         vaults: vaults.clone(),
         temporal_parameters: temporal.clone(),
-        revision: evaluation.context.served_revision,
-        scope: evaluation.context.scope.clone(),
+        revision: support_ctx.context.served_revision,
+        scope: support_ctx.context.scope.clone(),
         truncated: false,
         epistemic,
     };
-    FactContents {
+    Some(FactContents {
         terms,
         support,
         sources,
@@ -2688,15 +2791,48 @@ fn instantiated_support(
         vaults,
         temporal,
         epistemic,
+    })
+}
+
+type PremiseIdentity = (
+    String,
+    Vec<mneme_core::Value>,
+    Option<String>,
+    std::collections::BTreeSet<String>,
+    bool,
+);
+
+fn extend_unique_premises(
+    incoming: Vec<crate::Premise>,
+    seen: &mut std::collections::BTreeSet<PremiseIdentity>,
+    premises: &mut Vec<crate::Premise>,
+) {
+    for premise in incoming {
+        let key = (
+            premise.predicate.clone(),
+            premise.terms.clone(),
+            premise.vault.clone(),
+            premise.vaults.clone(),
+            premise.absent,
+        );
+        if seen.insert(key) {
+            premises.push(premise);
+        }
     }
 }
 
 fn aggregate_support(
     rule: &crate::Rule,
-    evaluation: &mut Evaluation<'_>,
+    support_ctx: &SupportContext<'_>,
+    budget: &mut Budget<'_>,
     bindings: &[Binding],
     row: &AggregateRow,
-) -> FactContents {
+) -> Option<FactContents> {
+    assert!(!rule.id.is_empty());
+    debug_assert_eq!(row.head_terms.len(), rule.head.terms.len());
+    if !budget.is_active() {
+        return None;
+    }
     let mut premises = Vec::with_capacity(row.binding_indices.len());
     let mut seen = std::collections::BTreeSet::new();
     let mut sources = std::collections::BTreeSet::new();
@@ -2705,10 +2841,13 @@ fn aggregate_support(
     let mut temporal = std::collections::BTreeSet::new();
     let mut epistemic = crate::EpistemicStatus::ONE;
     for index in &row.binding_indices {
+        if !budget.is_active() {
+            return None;
+        }
         let Some(binding) = bindings.get(*index) else {
             continue;
         };
-        let premise_set = premises_for_binding(rule, evaluation, binding);
+        let premise_set = premises_for_binding(rule, support_ctx, budget, binding)?;
         sources.extend(premise_set.sources);
         roots.extend(premise_set.roots);
         vaults.extend(premise_set.vaults);
@@ -2720,37 +2859,27 @@ fn aggregate_support(
                 acc.join(premise.epistemic)
             });
         epistemic = epistemic.join(binding_epistemic);
-        // De-duplicate by identity instead of a linear scan over every premise
-        // already collected: a group can hold thousands of bindings.
-        for premise in premise_set.premises {
-            let key = (
-                premise.predicate.clone(),
-                premise.terms.clone(),
-                premise.vault.clone(),
-                premise.vaults.clone(),
-                premise.absent,
-            );
-            if seen.insert(key) {
-                premises.push(premise);
-            }
-        }
+        extend_unique_premises(premise_set.premises, &mut seen, &mut premises);
+    }
+    if !budget.is_active() {
+        return None;
     }
     let is_truncated = premises.len() > 64;
     premises.truncate(64);
     let temporal = temporal.into_iter().collect::<Vec<_>>();
     let support = crate::Derivation {
         rule_id: rule.id.clone(),
-        rule_version: evaluation.context.rule_bundle_version.clone(),
+        rule_version: support_ctx.context.rule_bundle_version.clone(),
         premises,
         sources: sources.clone(),
         vaults: vaults.clone(),
         temporal_parameters: temporal.clone(),
-        revision: evaluation.context.served_revision,
-        scope: evaluation.context.scope.clone(),
+        revision: support_ctx.context.served_revision,
+        scope: support_ctx.context.scope.clone(),
         truncated: is_truncated,
         epistemic,
     };
-    FactContents {
+    Some(FactContents {
         terms: row.head_terms.clone(),
         support,
         sources,
@@ -2759,7 +2888,7 @@ fn aggregate_support(
         vaults,
         temporal,
         epistemic,
-    }
+    })
 }
 
 /// Instantiate every premise a binding relies on.
@@ -2767,12 +2896,16 @@ fn aggregate_support(
 /// A negated literal never has a matching row, so it is recorded as an explicit
 /// absence premise together with the relation coverage the rule required;
 /// otherwise a derivation that rests on negation would look like it rested on
-/// the positive body alone.
+/// the positive body alone. Returns `None` if budget expires or any required
+/// positive premise cannot be resolved to an active row, preventing silent
+/// promotion of a truncated premise set to `EpistemicStatus::Accepted`.
 fn premises_for_binding(
     rule: &crate::Rule,
-    evaluation: &mut Evaluation<'_>,
+    support_ctx: &SupportContext<'_>,
+    budget: &mut Budget<'_>,
     binding: &Binding,
-) -> PremiseSet {
+) -> Option<PremiseSet> {
+    assert!(!rule.id.is_empty());
     let mut premises = Vec::with_capacity(rule.body.len());
     let mut support = PremiseSupport {
         sources: std::collections::BTreeSet::new(),
@@ -2783,38 +2916,41 @@ fn premises_for_binding(
     for literal in &rule.body {
         match literal {
             crate::Literal::Positive(atom) => {
-                if let Some(premise) = positive_premise(evaluation, atom, binding, &mut support) {
-                    premises.push(premise);
-                }
+                let premise = positive_premise(support_ctx, budget, atom, binding, &mut support)?;
+                premises.push(premise);
             }
             crate::Literal::Negative(atom) => {
-                if let Some(premise) = negative_premise(evaluation, atom, binding, &mut support) {
-                    premises.push(premise);
-                }
+                let premise = negative_premise(support_ctx, budget, atom, binding, &mut support)?;
+                premises.push(premise);
             }
             _ => {}
         }
     }
-    PremiseSet {
+    if !budget.is_active() {
+        return None;
+    }
+    debug_assert!(premises.len() <= rule.body.len());
+    Some(PremiseSet {
         premises,
         sources: support.sources,
         roots: support.roots,
         vaults: support.vaults,
         temporal: support.temporal,
-    }
+    })
 }
 
-/// Instantiate one positive literal against the fact it matches.
+/// Instantiate one positive literal against the active fact it matches.
 ///
-/// Charges the budget first; `None` means the charge failed or no row matched,
-/// so the literal contributes no premise.
+/// Charges the budget first; `None` means the charge failed or no active row matched.
 fn positive_premise(
-    evaluation: &mut Evaluation<'_>,
+    support_ctx: &SupportContext<'_>,
+    budget: &mut Budget<'_>,
     atom: &crate::Atom,
     binding: &Binding,
     support: &mut PremiseSupport,
 ) -> Option<crate::Premise> {
-    if !evaluation.budget.charge(1) {
+    assert!(!atom.predicate.is_empty());
+    if !budget.charge(1) {
         return None;
     }
     let terms = atom
@@ -2822,10 +2958,12 @@ fn positive_premise(
         .iter()
         .filter_map(|term| term_value(term, binding))
         .collect::<Vec<_>>();
-    let data = evaluation
+    let data = support_ctx
         .facts
         .get(&atom.predicate)
-        .and_then(|store| store.rows.get(&terms))?;
+        .and_then(|store| store.rows.get(&terms))
+        .filter(|data| data.is_active())?;
+    debug_assert!(data.epistemic != crate::EpistemicStatus::Rejected);
     support.sources.extend(data.sources.iter().copied());
     support.roots.extend(data.canonical_roots.iter().copied());
     support.vaults.extend(data.vaults.iter().cloned());
@@ -2857,12 +2995,13 @@ fn positive_premise(
 
 /// Record one negated literal as an explicit absence premise.
 fn negative_premise(
-    evaluation: &mut Evaluation<'_>,
+    support_ctx: &SupportContext<'_>,
+    budget: &mut Budget<'_>,
     atom: &crate::Atom,
     binding: &Binding,
     support: &mut PremiseSupport,
 ) -> Option<crate::Premise> {
-    if !evaluation.budget.charge(1) {
+    if !budget.charge(1) {
         return None;
     }
     let terms = atom
@@ -2878,12 +3017,12 @@ fn negative_premise(
             std::collections::BTreeSet::from([alias.to_owned()]),
         )
     } else {
-        let single = if evaluation.participating_vaults.len() == 1 {
-            evaluation.participating_vaults.iter().next().cloned()
+        let single = if support_ctx.participating_vaults.len() == 1 {
+            support_ctx.participating_vaults.iter().next().cloned()
         } else {
             None
         };
-        (single, evaluation.participating_vaults.clone())
+        (single, support_ctx.participating_vaults.clone())
     };
     assert!(!atom.predicate.is_empty());
     support.vaults.extend(vaults.iter().cloned());
@@ -2899,7 +3038,7 @@ fn negative_premise(
         vaults,
         absent: true,
         coverage: Some(
-            evaluation
+            support_ctx
                 .coverage_status(&atom.predicate)
                 .name()
                 .to_owned(),
@@ -2919,37 +3058,64 @@ fn reference_target(
         .and_then(|reference| reference.target())
 }
 
-fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
-    let heads = evaluation
-        .bundle
+pub(crate) fn compute_derived_coverage(
+    bundle: &crate::RuleBundle,
+    base_coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
+    coverage_reasons: &std::collections::BTreeMap<String, String>,
+    budget_status: crate::ExecutionStatus,
+) -> std::collections::BTreeMap<String, crate::CoverageStatus> {
+    let heads = bundle
         .rules
         .iter()
         .map(|rule| rule.head.predicate.clone())
         .collect::<std::collections::BTreeSet<_>>();
+    let mut current = base_coverage.clone();
     let passes = heads.len().saturating_add(2);
+    debug_assert!(passes >= 2);
+    debug_assert!(current.len() >= base_coverage.len());
     for _ in 0..passes {
-        let mut next = evaluation.base_coverage.clone();
+        let mut next = base_coverage.clone();
         for head in &heads {
-            next.insert(head.clone(), head_coverage(evaluation, head));
+            next.insert(
+                head.clone(),
+                head_coverage_from(bundle, &current, budget_status, head),
+            );
         }
         // A relation that failed with a type or binding error stays incomplete
         // even when its inputs happen to be complete.
-        for predicate in evaluation.coverage_reasons.keys() {
+        for predicate in coverage_reasons.keys() {
             next.insert(predicate.clone(), crate::CoverageStatus::Incomplete);
         }
-        if next == evaluation.coverage {
-            return;
+        if next == current {
+            return current;
         }
-        evaluation.coverage = next;
+        current = next;
     }
+    current
+}
+
+fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
+    evaluation.coverage = compute_derived_coverage(
+        evaluation.bundle,
+        &evaluation.base_coverage,
+        &evaluation.coverage_reasons,
+        evaluation.budget.status,
+    );
 }
 
 /// The coverage a derived head may claim from its rules and their inputs.
-fn head_coverage(evaluation: &Evaluation<'_>, head: &str) -> crate::CoverageStatus {
+fn head_coverage_from(
+    bundle: &crate::RuleBundle,
+    coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
+    budget_status: crate::ExecutionStatus,
+    head: &str,
+) -> crate::CoverageStatus {
+    assert!(!head.is_empty());
+    debug_assert!(bundle.rules.len() < usize::MAX);
     let mut is_all_complete = true;
     let mut is_any_incomplete = false;
     let mut has_seed = false;
-    for rule in &evaluation.bundle.rules {
+    for rule in &bundle.rules {
         if rule.head.predicate != head {
             continue;
         }
@@ -2957,18 +3123,24 @@ fn head_coverage(evaluation: &Evaluation<'_>, head: &str) -> crate::CoverageStat
             |literal| matches!(literal, crate::Literal::Positive(atom) if atom.predicate == head),
         );
         has_seed = has_seed || !has_self;
-        let is_body_complete = evaluation.budget.status == crate::ExecutionStatus::Complete
-            && rule.body.iter().all(|literal| match literal {
-                crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
-                    if matches!(literal, crate::Literal::Positive(_)) && atom.predicate == head {
-                        true
-                    } else {
-                        evaluation.coverage_status(&atom.predicate)
+        let is_body_complete = budget_status == crate::ExecutionStatus::Complete
+            && rule.body.iter().all(|literal| {
+                if let crate::Literal::Positive(atom) = literal {
+                    atom.predicate == head
+                        || coverage
+                            .get(&atom.predicate)
+                            .copied()
+                            .unwrap_or(crate::CoverageStatus::Unknown)
                             == crate::CoverageStatus::Complete
-                    }
+                } else if let crate::Literal::Negative(atom) = literal {
+                    coverage
+                        .get(&atom.predicate)
+                        .copied()
+                        .unwrap_or(crate::CoverageStatus::Unknown)
+                        == crate::CoverageStatus::Complete
+                } else {
+                    !matches!(literal, crate::Literal::Forbidden(_))
                 }
-                crate::Literal::Forbidden(_) => false,
-                crate::Literal::Aggregate { .. } | crate::Literal::Compare { .. } => true,
             });
         if is_body_complete {
             continue;
@@ -3878,14 +4050,65 @@ struct ReconcileDeltaInput<'a> {
     target_revision: mneme_core::WorkspaceRevisionId,
 }
 
+struct ExistingRowTransition<'a> {
+    pred: &'a str,
+    key: &'a FactKey,
+    old_data: &'a crate::FactData,
+    new_data: Option<&'a crate::FactData>,
+}
+
+struct ReconcileAccum {
+    base_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    dirty_provenance: std::collections::BTreeSet<(String, FactKey)>,
+}
+
+fn reconcile_existing_row(
+    row: ExistingRowTransition<'_>,
+    reconciled: &mut ReconciledFacts,
+    accum: &mut ReconcileAccum,
+) -> Result<(), crate::Error> {
+    assert!(!row.pred.is_empty());
+    let was_active = row.old_data.is_active();
+    if let Some(new_data) = row.new_data {
+        let is_now_active = new_data.is_active();
+        if was_active != is_now_active {
+            let weight = if is_now_active { 1 } else { -1 };
+            accum
+                .base_deltas
+                .entry(row.pred.to_owned())
+                .or_default()
+                .insert_weighted(row.key.clone(), weight)?;
+        } else if was_active && !same_semantic_fact_data(row.old_data, new_data) {
+            accum
+                .dirty_provenance
+                .insert((row.pred.to_owned(), row.key.clone()));
+        }
+        reconciled
+            .next_facts
+            .entry(row.pred.to_owned())
+            .or_default()
+            .rows
+            .insert(row.key.clone(), new_data.clone());
+    } else if was_active {
+        accum
+            .base_deltas
+            .entry(row.pred.to_owned())
+            .or_default()
+            .insert_weighted(row.key.clone(), -1)?;
+    }
+    debug_assert!(accum.dirty_provenance.len() < usize::MAX);
+    Ok(())
+}
+
 fn reconcile_delta_facts(
     input: ReconcileDeltaInput<'_>,
     reconciled: &mut ReconciledFacts,
 ) -> Result<ReconciledDeltaOutput, crate::Error> {
     assert!(input.old_rows.len() < usize::MAX);
-    let mut base_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> =
-        std::collections::BTreeMap::new();
-    let mut dirty_provenance = std::collections::BTreeSet::new();
+    let mut accum = ReconcileAccum {
+        base_deltas: std::collections::BTreeMap::new(),
+        dirty_provenance: std::collections::BTreeSet::new(),
+    };
 
     for store in reconciled.next_facts.values_mut() {
         for data in store.rows.values_mut() {
@@ -3895,22 +4118,17 @@ fn reconcile_delta_facts(
         }
     }
     for ((pred, key), old_data) in input.old_rows {
-        if let Some(new_data) = input.temp_facts.get(pred).and_then(|s| s.rows.get(key)) {
-            if !same_semantic_fact_data(old_data, new_data) {
-                dirty_provenance.insert((pred.clone(), key.clone()));
-            }
-            reconciled
-                .next_facts
-                .entry(pred.clone())
-                .or_default()
-                .rows
-                .insert(key.clone(), new_data.clone());
-        } else {
-            base_deltas
-                .entry(pred.clone())
-                .or_default()
-                .insert_weighted(key.clone(), -1)?;
-        }
+        let new_data = input.temp_facts.get(pred).and_then(|s| s.rows.get(key));
+        reconcile_existing_row(
+            ExistingRowTransition {
+                pred,
+                key,
+                old_data,
+                new_data,
+            },
+            reconciled,
+            &mut accum,
+        )?;
     }
     for (pred, store) in input.temp_facts {
         for (key, new_data) in &store.rows {
@@ -3921,10 +4139,13 @@ fn reconcile_delta_facts(
                     .or_default()
                     .rows
                     .insert(key.clone(), new_data.clone());
-                base_deltas
-                    .entry(pred.clone())
-                    .or_default()
-                    .insert_weighted(key.clone(), 1)?;
+                if new_data.is_active() {
+                    accum
+                        .base_deltas
+                        .entry(pred.clone())
+                        .or_default()
+                        .insert_weighted(key.clone(), 1)?;
+                }
             }
         }
     }
@@ -3938,8 +4159,8 @@ fn reconcile_delta_facts(
         }
         reconciled.next_contribs.insert(*record_id, entries.clone());
     }
-    debug_assert!(dirty_provenance.len() <= input.old_rows.len());
-    Ok((base_deltas, dirty_provenance))
+    debug_assert!(accum.dirty_provenance.len() <= input.old_rows.len());
+    Ok((accum.base_deltas, accum.dirty_provenance))
 }
 
 fn same_semantic_fact_data(left: &crate::FactData, right: &crate::FactData) -> bool {
@@ -3965,33 +4186,32 @@ fn same_semantic_fact_data(left: &crate::FactData, right: &crate::FactData) -> b
 pub(crate) struct FactDataBuildRequest<'a> {
     pub rule: &'a crate::Rule,
     pub context: &'a crate::BuildContext,
-    pub limits: &'a crate::Limits,
     pub facts: &'a std::collections::BTreeMap<String, FactStore>,
     pub coverage_map: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
-    pub current_sources: &'a AvailabilityMap,
-    pub at: Option<mneme_core::Timestamp>,
-    pub start: std::time::Instant,
     pub bindings: &'a [Binding],
     pub target_terms: &'a FactKey,
 }
 
 pub(crate) fn build_ordinary_fact_data_from_bindings(
     request: FactDataBuildRequest<'_>,
+    budget: &mut Budget<'_>,
     target_store: &mut FactStore,
 ) -> bool {
     build_fact_data_with(
         &request,
+        budget,
         target_store,
-        |rule, evaluation, target_terms, temp| {
+        |rule, support_ctx, budget, target_terms, temp| {
             for binding in request.bindings {
-                let contents =
-                    instantiated_support(rule, evaluation, binding, target_terms.clone());
-                merge_fact_contents(
-                    temp,
-                    &rule.head.predicate,
-                    contents,
-                    request.limits.max_supports_per_fact,
-                );
+                if !budget.is_active() {
+                    return;
+                }
+                let Some(contents) =
+                    instantiated_support(rule, support_ctx, budget, binding, target_terms.clone())
+                else {
+                    return;
+                };
+                merge_fact_contents(temp, &rule.head.predicate, contents, budget);
             }
         },
     )
@@ -3999,66 +4219,67 @@ pub(crate) fn build_ordinary_fact_data_from_bindings(
 
 pub(crate) fn build_aggregate_fact_data_from_bindings(
     request: FactDataBuildRequest<'_>,
+    budget: &mut Budget<'_>,
     target_store: &mut FactStore,
 ) -> bool {
     build_fact_data_with(
         &request,
+        budget,
         target_store,
-        |rule, evaluation, target_terms, temp| {
+        |rule, support_ctx, budget, target_terms, temp| {
+            if !budget.is_active() {
+                return;
+            }
             let binding_indices: Vec<usize> = (0..request.bindings.len()).collect();
             let row = AggregateRow {
                 head_terms: target_terms.clone(),
                 binding_indices,
             };
-            let contents = aggregate_support(rule, evaluation, request.bindings, &row);
-            merge_fact_contents(
-                temp,
-                &rule.head.predicate,
-                contents,
-                request.limits.max_supports_per_fact,
-            );
+            let Some(contents) =
+                aggregate_support(rule, support_ctx, budget, request.bindings, &row)
+            else {
+                return;
+            };
+            merge_fact_contents(temp, &rule.head.predicate, contents, budget);
         },
     )
 }
 
 fn build_fact_data_with<F>(
     request: &FactDataBuildRequest<'_>,
+    budget: &mut Budget<'_>,
     target_store: &mut FactStore,
     build: F,
 ) -> bool
 where
     F: FnOnce(
         &crate::Rule,
-        &mut Evaluation<'_>,
+        &SupportContext<'_>,
+        &mut Budget<'_>,
         &FactKey,
         &mut std::collections::BTreeMap<String, FactStore>,
     ),
 {
     assert!(!request.rule.head.predicate.is_empty());
-    let empty_bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
-        id: request.context.rule_bundle_id.clone(),
-        version: request.context.rule_bundle_version.clone(),
-        schema_version: request.context.schema_version,
-        base_predicates: std::collections::BTreeMap::new(),
-        complete_predicates: std::collections::BTreeSet::new(),
-        rules: Vec::new(),
-    });
-    let mut evaluation = Evaluation {
-        bundle: &empty_bundle,
-        context: request.context,
-        budget: new_budget(request.limits, request.start, false),
-        facts: request.facts.clone(),
-        coverage: request.coverage_map.clone(),
-        base_coverage: request.coverage_map.clone(),
-        coverage_reasons: std::collections::BTreeMap::new(),
-        participating_vaults: std::collections::BTreeSet::from([
-            crate::PRIMARY_VAULT_ALIAS.to_owned()
-        ]),
-        at: request.at,
-        derivation_eligibility: std::collections::BTreeMap::new(),
-        record_contributions: std::collections::BTreeMap::new(),
+    if !budget.is_active() {
+        return false;
+    }
+    let participating_vaults = if request.context.vaults.is_empty() {
+        std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()])
+    } else {
+        request
+            .context
+            .vaults
+            .iter()
+            .map(|vault| vault.alias.clone())
+            .collect()
     };
-    let _ = request.current_sources;
+    let support_ctx = SupportContext {
+        context: request.context,
+        facts: request.facts,
+        coverage: request.coverage_map,
+        participating_vaults: &participating_vaults,
+    };
     let mut temp = std::collections::BTreeMap::new();
     if let Some(existing) = target_store.rows.get(request.target_terms) {
         let mut s = FactStore::default();
@@ -4068,11 +4289,15 @@ where
     }
     build(
         request.rule,
-        &mut evaluation,
+        &support_ctx,
+        budget,
         request.target_terms,
         &mut temp,
     );
-    debug_assert!(request.limits.max_supports_per_fact > 0);
+    if !budget.is_active() {
+        return false;
+    }
+    debug_assert!(budget.limits.max_supports_per_fact > 0);
     if let Some(updated) = temp
         .get(&request.rule.head.predicate)
         .and_then(|s| s.rows.get(request.target_terms))
@@ -4083,6 +4308,7 @@ where
             .insert(request.target_terms.clone(), updated.clone());
         if is_truncated {
             target_store.truncated = true;
+            budget.support_truncated = true;
         }
         return is_truncated;
     }
@@ -4093,10 +4319,17 @@ fn merge_fact_contents(
     temp_facts: &mut std::collections::BTreeMap<String, FactStore>,
     predicate: &str,
     contents: FactContents,
-    max_supports: usize,
+    budget: &mut Budget<'_>,
 ) {
     assert!(!predicate.is_empty());
+    let max_supports = budget.limits.max_supports_per_fact;
     assert!(max_supports > 0);
+    if !budget.is_active() || contents.epistemic == crate::EpistemicStatus::Rejected {
+        return;
+    }
+    if !budget.charge(1) {
+        return;
+    }
     let FactContents {
         terms,
         support,
@@ -4125,6 +4358,7 @@ fn merge_fact_contents(
         if data.supports.len() >= max_supports {
             data.truncated = true;
             store.truncated = true;
+            budget.support_truncated = true;
             return;
         }
         data.supports.push(support);
@@ -4205,7 +4439,7 @@ mod tests {
             .expect("valid scope")
     }
 
-    fn rid(tag: u16) -> mneme_core::RecordId {
+    pub(super) fn rid(tag: u16) -> mneme_core::RecordId {
         let mut bytes = [0_u8; 16];
         let [hi, lo] = tag.to_be_bytes();
         bytes[0] = 0x42;
@@ -4214,7 +4448,7 @@ mod tests {
         mneme_core::RecordId::from_bytes(bytes)
     }
 
-    fn test_context(bundle: &crate::RuleBundle) -> crate::BuildContext {
+    pub(super) fn test_context(bundle: &crate::RuleBundle) -> crate::BuildContext {
         crate::BuildContext {
             requested_revision: mneme_core::WorkspaceRevisionId::from_bytes([0x11; 16]),
             served_revision: mneme_core::WorkspaceRevisionId::from_bytes([0x11; 16]),
@@ -4229,7 +4463,7 @@ mod tests {
         }
     }
 
-    fn base_fact_contents(
+    pub(super) fn base_fact_contents(
         predicate: &str,
         terms: FactKey,
         record_id: mneme_core::RecordId,
@@ -4271,15 +4505,17 @@ mod tests {
         }
     }
 
-    struct EvaluationFixture<'a> {
-        bundle: &'a crate::RuleBundle,
-        context: &'a crate::BuildContext,
-        limits: &'a crate::Limits,
-        current_sources: &'a AvailabilityMap,
-        base_facts: &'a [(String, FactKey, mneme_core::RecordId)],
+    pub(super) struct EvaluationFixture<'a> {
+        pub(super) bundle: &'a crate::RuleBundle,
+        pub(super) context: &'a crate::BuildContext,
+        pub(super) limits: &'a crate::Limits,
+        pub(super) current_sources: &'a AvailabilityMap,
+        pub(super) base_facts: &'a [(String, FactKey, mneme_core::RecordId)],
     }
 
-    fn make_evaluation<'a>(fixture: &'a EvaluationFixture<'a>) -> Evaluation<'a> {
+    pub(super) fn make_evaluation<'a>(fixture: &'a EvaluationFixture<'a>) -> Evaluation<'a> {
+        assert!(!fixture.bundle.id.is_empty());
+        assert!(fixture.limits.max_supports_per_fact > 0);
         let _ = fixture.current_sources;
         let mut evaluation = Evaluation {
             bundle: fixture.bundle,
@@ -4325,7 +4561,7 @@ mod tests {
 
     // --- Reference binary indexed evaluator (#98 greedy + column indexes) ---
 
-    fn evaluate_rules_binary(
+    pub(super) fn evaluate_rules_binary(
         evaluation: &mut Evaluation<'_>,
         rule_strata: &std::collections::BTreeMap<String, usize>,
     ) {
@@ -4406,7 +4642,7 @@ mod tests {
 
     // --- Reference naive evaluator (pre-optimization written-order scan) ---
 
-    fn evaluate_rules_naive(
+    pub(super) fn evaluate_rules_naive(
         evaluation: &mut Evaluation<'_>,
         rule_strata: &std::collections::BTreeMap<String, usize>,
     ) {
@@ -4596,11 +4832,11 @@ mod tests {
             return Ok(false);
         };
         let mut is_matched = false;
-        for terms in store.rows.keys() {
+        for (terms, data) in &store.rows {
             if !evaluation.budget.charge(1) {
                 return Err(RuleOutcome::Skipped);
             }
-            if atom_matches_row(atom, terms, binding) {
+            if data.is_active() && atom_matches_row(atom, terms, binding) {
                 is_matched = true;
                 break;
             }
@@ -4608,7 +4844,7 @@ mod tests {
         Ok(is_matched)
     }
 
-    fn assert_equivalent_to_naive(
+    pub(super) fn assert_equivalent_to_naive(
         bundle: &crate::RuleBundle,
         base_facts: &[(String, FactKey, mneme_core::RecordId)],
         limits: &crate::Limits,
@@ -4661,1114 +4897,23 @@ mod tests {
         (naive.budget.work, planned.budget.work)
     }
 
-    fn atom(predicate: &str, terms: Vec<crate::Term>) -> crate::Atom {
+    pub(super) fn atom(predicate: &str, terms: Vec<crate::Term>) -> crate::Atom {
         crate::Atom::new(predicate, terms)
     }
 
-    fn var(name: &str) -> crate::Term {
+    pub(super) fn var(name: &str) -> crate::Term {
         crate::Term::var(name)
     }
 
-    fn sym(name: &str) -> crate::Term {
+    pub(super) fn sym(name: &str) -> crate::Term {
         crate::Term::constant(mneme_core::Value::symbol(name))
     }
 
-    fn int_const(value: i64) -> crate::Term {
+    pub(super) fn int_const(value: i64) -> crate::Term {
         crate::Term::constant(mneme_core::Value::integer(value))
     }
-
-    fn push_entities(
-        facts: &mut Vec<(String, FactKey, mneme_core::RecordId)>,
-        next_id: &mut u16,
-        entity_type: &str,
-        prefix: &str,
-        count: usize,
-    ) -> Vec<mneme_core::RecordId> {
-        let mut ids = Vec::with_capacity(count);
-        for idx in 0..count {
-            let id = rid(*next_id);
-            *next_id = next_id.saturating_add(1);
-            ids.push(id);
-            facts.push((
-                "entity".to_owned(),
-                vec![
-                    id.to_value(),
-                    mneme_core::Value::symbol(entity_type),
-                    mneme_core::Value::string(format!("{prefix} {idx}")),
-                ],
-                id,
-            ));
-        }
-        ids
-    }
-
-    fn five_atom_fixture_facts() -> Vec<(String, FactKey, mneme_core::RecordId)> {
-        let mut facts = Vec::with_capacity(194);
-        let mut next_id = 1_u16;
-        let papers = push_entities(&mut facts, &mut next_id, "paper", "Paper", 25);
-        let principles = push_entities(&mut facts, &mut next_id, "principle", "Principle", 25);
-        let classes = push_entities(&mut facts, &mut next_id, "problem_class", "Class", 10);
-        let _notes = push_entities(&mut facts, &mut next_id, "note", "Note", 20);
-        // 50 in_class edges for papers, 50 for principles, 14 bridged edges (114 relations; 194 total)
-        for (idx, paper) in papers.iter().enumerate() {
-            for offset in 0..2_usize {
-                let class = classes[(idx + offset) % 10];
-                let id = rid(next_id);
-                next_id = next_id.saturating_add(1);
-                facts.push((
-                    "relation".to_owned(),
-                    vec![
-                        mneme_core::Value::symbol("in_class"),
-                        paper.to_value(),
-                        class.to_value(),
-                    ],
-                    id,
-                ));
-            }
-        }
-        for (idx, principle) in principles.iter().enumerate() {
-            for offset in 0..2_usize {
-                let class = classes[(idx + offset) % 10];
-                let id = rid(next_id);
-                next_id = next_id.saturating_add(1);
-                facts.push((
-                    "relation".to_owned(),
-                    vec![
-                        mneme_core::Value::symbol("in_class"),
-                        principle.to_value(),
-                        class.to_value(),
-                    ],
-                    id,
-                ));
-            }
-        }
-        for idx in 0..14_usize {
-            let id = rid(next_id);
-            next_id = next_id.saturating_add(1);
-            facts.push((
-                "relation".to_owned(),
-                vec![
-                    mneme_core::Value::symbol("bridged"),
-                    papers[idx].to_value(),
-                    principles[idx].to_value(),
-                ],
-                id,
-            ));
-        }
-        facts
-    }
-
-    #[test]
-    fn five_atom_bridge_query_and_permutations_match_naive_with_low_work() {
-        let base_facts = five_atom_fixture_facts();
-        assert_eq!(base_facts.len(), 194);
-
-        let atoms = [
-            crate::Literal::Positive(atom(
-                "entity",
-                vec![var("paper"), sym("paper"), var("p_label")],
-            )),
-            crate::Literal::Positive(atom(
-                "entity",
-                vec![var("principle"), sym("principle"), var("pr_label")],
-            )),
-            crate::Literal::Positive(atom(
-                "entity",
-                vec![var("class"), sym("problem_class"), var("c_label")],
-            )),
-            crate::Literal::Positive(atom(
-                "relation",
-                vec![sym("in_class"), var("paper"), var("class")],
-            )),
-            crate::Literal::Positive(atom(
-                "relation",
-                vec![sym("in_class"), var("principle"), var("class")],
-            )),
-        ];
-        let negation = crate::Literal::Negative(atom(
-            "relation",
-            vec![sym("bridged"), var("paper"), var("principle")],
-        ));
-
-        let unfactored = crate::RuleBundle::new(crate::RuleBundleOptions {
-            id: "bridge-unfactored".to_owned(),
-            version: "1".to_owned(),
-            schema_version: 3,
-            base_predicates: std::collections::BTreeMap::from([
-                ("entity".to_owned(), 3),
-                ("relation".to_owned(), 3),
-            ]),
-            complete_predicates: std::collections::BTreeSet::from(["relation".to_owned()]),
-            rules: vec![crate::Rule::new(
-                "unbridged_candidate",
-                atom(
-                    "unbridged_candidate",
-                    vec![var("paper"), var("principle"), var("class")],
-                ),
-                // Natural 5-atom chained order (avoids intermediate Cartesian row limit,
-                // yet still exceeds 100,000 work under naive full-table scans).
-                vec![
-                    atoms[0].clone(),
-                    atoms[3].clone(),
-                    atoms[2].clone(),
-                    atoms[4].clone(),
-                    atoms[1].clone(),
-                    negation.clone(),
-                ],
-            )],
-        });
-
-        let default_limits = crate::Limits::default();
-        let program = unfactored.validate().expect("valid");
-        let context = test_context(&unfactored);
-        let sources = AvailabilityMap::new();
-        let default_fixture = EvaluationFixture {
-            bundle: &unfactored,
-            context: &context,
-            limits: &default_limits,
-            current_sources: &sources,
-            base_facts: &base_facts,
-        };
-
-        let mut naive_default = make_evaluation(&default_fixture);
-        evaluate_rules_naive(&mut naive_default, &program.strata);
-        assert_eq!(naive_default.budget.status, crate::ExecutionStatus::Timeout);
-        assert!(naive_default.budget.limit_reached);
-
-        let mut planned_default = make_evaluation(&default_fixture);
-        evaluate_rules(&mut planned_default, &program.strata);
-        assert_eq!(
-            planned_default.budget.status,
-            crate::ExecutionStatus::Complete
-        );
-        assert!(!planned_default.budget.limit_reached);
-        assert!(
-            planned_default.budget.work < 15_000,
-            "planned work {} should be well under 100k",
-            planned_default.budget.work
-        );
-
-        let generous_limits = crate::Limits {
-            max_work: 50_000_000,
-            max_time_ms: 60_000,
-            max_result_rows: 10_000,
-            ..default_limits
-        };
-        let (naive_work, planned_work) =
-            assert_equivalent_to_naive(&unfactored, &base_facts, &generous_limits);
-        eprintln!("5-atom chained bridge: naive_work={naive_work}, planned_work={planned_work}");
-        assert!(naive_work > 100_000);
-        assert!(planned_work < 15_000);
-
-        // Permutations of positive atoms + early placement of negation all match
-        // the unfactored canonical rows and complete well under default limits.
-        let permutations: [[usize; 5]; 6] = [
-            [0, 1, 2, 3, 4],
-            [4, 3, 2, 1, 0],
-            [2, 3, 4, 0, 1],
-            [3, 0, 2, 4, 1],
-            [1, 4, 2, 3, 0],
-            [3, 4, 0, 1, 2],
-        ];
-        for perm in permutations {
-            let body = vec![
-                atoms[perm[0]].clone(),
-                atoms[perm[1]].clone(),
-                negation.clone(),
-                atoms[perm[2]].clone(),
-                atoms[perm[3]].clone(),
-                atoms[perm[4]].clone(),
-            ];
-            let permuted = crate::RuleBundle::new(crate::RuleBundleOptions {
-                id: "bridge-perm".to_owned(),
-                version: "1".to_owned(),
-                schema_version: 3,
-                base_predicates: unfactored.base_predicates.clone(),
-                complete_predicates: unfactored.complete_predicates.clone(),
-                rules: vec![crate::Rule::new(
-                    "unbridged_candidate",
-                    atom(
-                        "unbridged_candidate",
-                        vec![var("paper"), var("principle"), var("class")],
-                    ),
-                    body,
-                )],
-            });
-            let (perm_naive, perm_planned) =
-                assert_equivalent_to_naive(&permuted, &base_facts, &generous_limits);
-            assert!(
-                perm_planned < 15_000,
-                "perm {:?} planned_work={}",
-                perm,
-                perm_planned
-            );
-            assert!(perm_planned < perm_naive);
-        }
-    }
-
-    #[test]
-    fn equivalence_against_naive_across_cyclic_compare_aggregates_and_truncation() {
-        let mut base_facts = Vec::new();
-        for idx in 1..=12_u16 {
-            let id = rid(idx);
-            base_facts.push((
-                "node".to_owned(),
-                vec![
-                    mneme_core::Value::integer(i64::from(idx)),
-                    mneme_core::Value::symbol(if idx % 2 == 0 { "even" } else { "odd" }),
-                ],
-                id,
-            ));
-        }
-        let mut edge_id = 100_u16;
-        for src in 1..=12_i64 {
-            for dst in [src % 12 + 1, (src + 1) % 12 + 1, (src + 3) % 12 + 1] {
-                edge_id = edge_id.saturating_add(1);
-                base_facts.push((
-                    "edge".to_owned(),
-                    vec![
-                        mneme_core::Value::integer(src),
-                        mneme_core::Value::integer(dst),
-                    ],
-                    rid(edge_id),
-                ));
-            }
-        }
-        // Self-loop edge + blocked pair + multi-proof witness table
-        edge_id = edge_id.saturating_add(1);
-        base_facts.push((
-            "edge".to_owned(),
-            vec![mneme_core::Value::integer(1), mneme_core::Value::integer(1)],
-            rid(edge_id),
-        ));
-        base_facts.push((
-            "blocked".to_owned(),
-            vec![mneme_core::Value::integer(2), mneme_core::Value::integer(3)],
-            rid(400),
-        ));
-        for a in 1..=4_i64 {
-            for b in 1..=4_i64 {
-                base_facts.push((
-                    "witness".to_owned(),
-                    vec![
-                        mneme_core::Value::integer(1),
-                        mneme_core::Value::integer(a),
-                        mneme_core::Value::integer(b),
-                    ],
-                    rid(500 + u16::try_from(a * 10 + b).expect("small")),
-                ));
-            }
-        }
-        for b in 1..=4_i64 {
-            for a in 1..=4_i64 {
-                if (a + b) % 2 == 0 {
-                    base_facts.push((
-                        "pair_filter".to_owned(),
-                        vec![mneme_core::Value::integer(b), mneme_core::Value::integer(a)],
-                        rid(700 + u16::try_from(b * 10 + a).expect("small")),
-                    ));
-                }
-            }
-        }
-
-        let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
-            id: "equivalence-suite".to_owned(),
-            version: "1".to_owned(),
-            schema_version: 3,
-            base_predicates: std::collections::BTreeMap::from([
-                ("node".to_owned(), 2),
-                ("edge".to_owned(), 2),
-                ("blocked".to_owned(), 2),
-                ("witness".to_owned(), 3),
-                ("pair_filter".to_owned(), 2),
-            ]),
-            complete_predicates: std::collections::BTreeSet::from([
-                "node".to_owned(),
-                "edge".to_owned(),
-                "blocked".to_owned(),
-                "witness".to_owned(),
-                "pair_filter".to_owned(),
-            ]),
-            rules: vec![
-                // Cyclic triangle with stratified negation + Compare pushdown
-                crate::Rule::new(
-                    "triangle",
-                    atom("triangle", vec![var("a"), var("b"), var("c")]),
-                    vec![
-                        crate::Literal::Positive(atom("edge", vec![var("a"), var("b")])),
-                        crate::Literal::Positive(atom("node", vec![var("c"), sym("even")])),
-                        crate::Literal::Positive(atom("edge", vec![var("b"), var("c")])),
-                        crate::Literal::Positive(atom("edge", vec![var("c"), var("a")])),
-                        crate::Literal::Negative(atom("blocked", vec![var("a"), var("b")])),
-                        crate::Literal::Compare {
-                            op: crate::CompareOp::Lt,
-                            left: var("a"),
-                            right: var("c"),
-                        },
-                    ],
-                ),
-                // Self-join with repeated variable in an atom
-                crate::Rule::new(
-                    "self_loop",
-                    atom("self_loop", vec![var("x")]),
-                    vec![crate::Literal::Positive(atom(
-                        "edge",
-                        vec![var("x"), var("x")],
-                    ))],
-                ),
-                // Projected-out variables (y, z) where pair_filter has smaller extent than witness
-                crate::Rule::new(
-                    "projected",
-                    atom("projected", vec![var("x")]),
-                    vec![
-                        crate::Literal::Positive(atom(
-                            "witness",
-                            vec![var("x"), var("y"), var("z")],
-                        )),
-                        crate::Literal::Positive(atom("pair_filter", vec![var("z"), var("y")])),
-                    ],
-                ),
-                // Recursive reachability
-                crate::Rule::new(
-                    "reach_base",
-                    atom("reach", vec![var("x"), var("y")]),
-                    vec![crate::Literal::Positive(atom(
-                        "edge",
-                        vec![var("x"), var("y")],
-                    ))],
-                ),
-                crate::Rule::new(
-                    "reach_step",
-                    atom("reach", vec![var("x"), var("z")]),
-                    vec![
-                        crate::Literal::Positive(atom("reach", vec![var("x"), var("y")])),
-                        crate::Literal::Positive(atom("edge", vec![var("y"), var("z")])),
-                        crate::Literal::Compare {
-                            op: crate::CompareOp::Ne,
-                            left: var("x"),
-                            right: var("z"),
-                        },
-                    ],
-                ),
-                // Aggregate over reordered body
-                crate::Rule::new(
-                    "out_sum",
-                    atom("out_sum", vec![var("a"), var("total")]),
-                    vec![
-                        crate::Literal::Positive(atom("edge", vec![var("a"), var("b")])),
-                        crate::Literal::Positive(atom("node", vec![var("b"), sym("odd")])),
-                        crate::Literal::Aggregate {
-                            function: crate::AggregateFunction::Sum,
-                            input: var("b"),
-                            output: "total".to_owned(),
-                        },
-                    ],
-                ),
-                // Ground false comparison short-circuit
-                crate::Rule::new(
-                    "impossible",
-                    atom("impossible", vec![var("x")]),
-                    vec![
-                        crate::Literal::Positive(atom("node", vec![var("x"), var("k")])),
-                        crate::Literal::Compare {
-                            op: crate::CompareOp::Gt,
-                            left: int_const(1),
-                            right: int_const(2),
-                        },
-                    ],
-                ),
-            ],
-        });
-
-        let limits = crate::Limits {
-            max_work: 5_000_000,
-            max_time_ms: 60_000,
-            max_result_rows: 1_000,
-            max_supports_per_fact: 2,
-            max_recursion_depth: 16,
-        };
-        let (naive_work, planned_work) = assert_equivalent_to_naive(&bundle, &base_facts, &limits);
-        assert!(planned_work < naive_work);
-    }
-
-    #[test]
-    fn property_equivalence_against_naive_across_seeded_programs() {
-        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
-        let mut next_u64 = || {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            seed
-        };
-
-        let preds = ["p0", "p1", "p2", "p3"];
-        let vars = ["a", "b", "c", "d"];
-
-        for case_idx in 0..30_usize {
-            let mut base_facts = Vec::with_capacity(60);
-            let mut next_rid = 1_u16;
-            for (pred_idx, pred) in preds.iter().enumerate() {
-                // Deliberately skew extent sizes (some empty, some small, some medium).
-                let row_count = match (case_idx + pred_idx) % 4 {
-                    0 => 0,
-                    1 => 3,
-                    2 => 8,
-                    _ => 18,
-                };
-                for _ in 0..row_count {
-                    let v0 = i64::try_from(next_u64() % 5).expect("mod 5");
-                    let v1 = i64::try_from(next_u64() % 5).expect("mod 5");
-                    let v2 = i64::try_from(next_u64() % 4).expect("mod 4");
-                    let id = rid(next_rid);
-                    next_rid = next_rid.saturating_add(1);
-                    let row = if pred_idx < 2 {
-                        vec![
-                            mneme_core::Value::integer(v0),
-                            mneme_core::Value::integer(v1),
-                        ]
-                    } else {
-                        vec![
-                            mneme_core::Value::integer(v0),
-                            mneme_core::Value::integer(v1),
-                            mneme_core::Value::integer(v2),
-                        ]
-                    };
-                    base_facts.push(((*pred).to_owned(), row, id));
-                }
-            }
-
-            let num_pos = 2 + usize::try_from(next_u64() % 3).expect("mod 3");
-            let mut body = Vec::new();
-            let mut used_vars = Vec::new();
-            for pos_idx in 0..num_pos {
-                let pred_idx = usize::try_from(next_u64() % 4).expect("mod 4");
-                let arity = if pred_idx < 2 { 2 } else { 3 };
-                let mut terms = Vec::with_capacity(arity);
-                for col in 0..arity {
-                    let choice = next_u64() % 5;
-                    if choice == 0 && (pos_idx > 0 || col > 0) {
-                        terms.push(int_const(i64::try_from(next_u64() % 4).expect("mod 4")));
-                    } else {
-                        let var_name = if !used_vars.is_empty() && next_u64() % 2 == 0 {
-                            let idx = usize::try_from(next_u64())
-                                .expect("u64")
-                                .checked_rem(used_vars.len())
-                                .expect("non-empty used_vars");
-                            used_vars[idx]
-                        } else {
-                            let name = vars[usize::try_from(next_u64() % 4).expect("mod 4")];
-                            if !used_vars.contains(&name) {
-                                used_vars.push(name);
-                            }
-                            name
-                        };
-                        terms.push(var(var_name));
-                    }
-                }
-                body.push(crate::Literal::Positive(atom(preds[pred_idx], terms)));
-            }
-            if let Some(&v0) = used_vars.first() {
-                let v1 = *used_vars.get(1).unwrap_or(&v0);
-                if next_u64() % 2 == 0 {
-                    body.push(crate::Literal::Negative(atom("p0", vec![var(v0), var(v1)])));
-                }
-                if next_u64() % 2 == 0 {
-                    body.push(crate::Literal::Compare {
-                        op: crate::CompareOp::Le,
-                        left: var(v0),
-                        right: var(v1),
-                    });
-                }
-            }
-            let head_terms = if used_vars.len() >= 2 {
-                vec![var(used_vars[0]), var(used_vars[1])]
-            } else if let Some(&v0) = used_vars.first() {
-                vec![var(v0)]
-            } else {
-                vec![int_const(1)]
-            };
-
-            let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
-                id: format!("prop-{case_idx}"),
-                version: "1".to_owned(),
-                schema_version: 3,
-                base_predicates: std::collections::BTreeMap::from([
-                    ("p0".to_owned(), 2),
-                    ("p1".to_owned(), 2),
-                    ("p2".to_owned(), 3),
-                    ("p3".to_owned(), 3),
-                ]),
-                complete_predicates: std::collections::BTreeSet::from([
-                    "p0".to_owned(),
-                    "p1".to_owned(),
-                    "p2".to_owned(),
-                    "p3".to_owned(),
-                ]),
-                rules: vec![crate::Rule::new("out", atom("out", head_terms), body)],
-            });
-
-            let limits = crate::Limits {
-                max_work: 5_000_000,
-                max_time_ms: 60_000,
-                max_result_rows: 1_000,
-                max_supports_per_fact: 3,
-                max_recursion_depth: 16,
-            };
-            assert_equivalent_to_naive(&bundle, &base_facts, &limits);
-        }
-    }
-
-    #[test]
-    fn greedy_planner_orders_most_bound_and_smallest_extent_with_written_tie_break() {
-        let mut facts = std::collections::BTreeMap::new();
-        let mut big = FactStore::default();
-        for idx in 0..20_i64 {
-            big.rows.insert(
-                vec![
-                    mneme_core::Value::integer(idx),
-                    mneme_core::Value::integer(idx + 1),
-                ],
-                crate::FactData {
-                    supports: Vec::new(),
-                    sources: std::collections::BTreeSet::new(),
-                    truncated: false,
-                    canonical: None,
-                    canonical_roots: std::collections::BTreeSet::new(),
-                    vaults: std::collections::BTreeSet::new(),
-                    temporal: Vec::new(),
-                    epistemic: crate::EpistemicStatus::Accepted,
-                },
-            );
-        }
-        let mut small = FactStore::default();
-        for idx in 0..3_i64 {
-            small.rows.insert(
-                vec![
-                    mneme_core::Value::integer(idx),
-                    mneme_core::Value::integer(idx + 1),
-                ],
-                crate::FactData {
-                    supports: Vec::new(),
-                    sources: std::collections::BTreeSet::new(),
-                    truncated: false,
-                    canonical: None,
-                    canonical_roots: std::collections::BTreeSet::new(),
-                    vaults: std::collections::BTreeSet::new(),
-                    temporal: Vec::new(),
-                    epistemic: crate::EpistemicStatus::Accepted,
-                },
-            );
-        }
-        let mut tie_a = small.clone();
-        let mut tie_b = small.clone();
-        let _ = (&mut tie_a, &mut tie_b);
-        facts.insert("big".to_owned(), big);
-        facts.insert("small".to_owned(), small.clone());
-        facts.insert("tie_a".to_owned(), small.clone());
-        facts.insert("tie_b".to_owned(), small);
-
-        // Smaller extent beats larger extent; ready negative/compare runs before next join.
-        let rule = crate::Rule::new(
-            "ordered",
-            atom("out", vec![var("x"), var("z")]),
-            vec![
-                crate::Literal::Positive(atom("big", vec![var("y"), var("z")])),
-                crate::Literal::Negative(atom("small", vec![var("x"), var("y")])),
-                crate::Literal::Compare {
-                    op: crate::CompareOp::Lt,
-                    left: var("x"),
-                    right: var("y"),
-                },
-                crate::Literal::Positive(atom("small", vec![var("x"), var("y")])),
-            ],
-        );
-        let plan = plan_rule_body(&rule, &facts);
-        assert!(plan.positive_reordered);
-        let order = plan
-            .steps
-            .iter()
-            .map(|step| match step {
-                PlanStep::Positive { body_index, .. }
-                | PlanStep::Negative { body_index }
-                | PlanStep::Compare { body_index } => *body_index,
-            })
-            .collect::<Vec<_>>();
-        // 3: small(x, y) first -> 2: Compare(x < y) -> 1: Negative(small(x, y)) -> 0: big(y, z)
-        assert_eq!(order, vec![3, 2, 1, 0]);
-
-        // Equal extent & equal bound positions tie-break by written order.
-        let tie_rule = crate::Rule::new(
-            "tie",
-            atom("out", vec![var("x"), var("z")]),
-            vec![
-                crate::Literal::Positive(atom("tie_a", vec![var("x"), var("y")])),
-                crate::Literal::Positive(atom("tie_b", vec![var("y"), var("z")])),
-            ],
-        );
-        let tie_plan = plan_rule_body(&tie_rule, &facts);
-        assert!(!tie_plan.positive_reordered);
-    }
-
-    #[test]
-    fn join_only_visits_matching_rows_for_bound_positions() {
-        let mut base_facts = Vec::new();
-        for idx in 0..100_i64 {
-            let id = rid(u16::try_from(idx + 1).expect("small"));
-            base_facts.push((
-                "left".to_owned(),
-                vec![
-                    mneme_core::Value::integer(idx),
-                    mneme_core::Value::integer(idx % 5),
-                ],
-                id,
-            ));
-            base_facts.push((
-                "right".to_owned(),
-                vec![
-                    mneme_core::Value::integer(idx),
-                    mneme_core::Value::string(format!("v-{idx}")),
-                ],
-                rid(u16::try_from(idx + 201).expect("small")),
-            ));
-        }
-        let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
-            id: "indexed-probe".to_owned(),
-            version: "1".to_owned(),
-            schema_version: 3,
-            base_predicates: std::collections::BTreeMap::from([
-                ("left".to_owned(), 2),
-                ("right".to_owned(), 2),
-            ]),
-            complete_predicates: std::collections::BTreeSet::from([
-                "left".to_owned(),
-                "right".to_owned(),
-            ]),
-            rules: vec![crate::Rule::new(
-                "joined",
-                atom("joined", vec![var("k"), var("s")]),
-                vec![
-                    crate::Literal::Positive(atom("left", vec![var("k"), int_const(0)])),
-                    crate::Literal::Positive(atom("right", vec![var("k"), var("s")])),
-                ],
-            )],
-        });
-        let limits = crate::Limits::default();
-        let (naive_work, planned_work) = assert_equivalent_to_naive(&bundle, &base_facts, &limits);
-        // Naive scans 100 rows on left + 20 * 100 = 2000 rows on right per round (~4,500 total).
-        // Indexed builds indexes once (~200) + probes (~20 * 2 per round) (~700 total including base load).
-        eprintln!("indexed-probe: naive_work={naive_work}, planned_work={planned_work}");
-        assert!(naive_work > 4_000);
-        assert!(planned_work < 800);
-    }
-
-    fn assert_evaluations_match(expected: &Evaluation<'_>, actual: &Evaluation<'_>) {
-        assert_eq!(actual.budget.status, expected.budget.status);
-        assert_eq!(actual.budget.limit_reached, expected.budget.limit_reached);
-        assert_eq!(
-            actual.budget.support_truncated,
-            expected.budget.support_truncated
-        );
-        assert_eq!(final_coverage(actual), final_coverage(expected));
-        assert_eq!(
-            actual.facts.keys().collect::<Vec<_>>(),
-            expected.facts.keys().collect::<Vec<_>>()
-        );
-        for (predicate, expected_store) in &expected.facts {
-            let actual_store = actual.facts.get(predicate).expect("matching predicate");
-            assert_eq!(actual_store.truncated, expected_store.truncated);
-            assert_eq!(
-                actual_store.rows.keys().collect::<Vec<_>>(),
-                expected_store.rows.keys().collect::<Vec<_>>()
-            );
-            for (key, expected_data) in &expected_store.rows {
-                let actual_data = actual_store.rows.get(key).expect("matching row");
-                assert_eq!(actual_data.supports, expected_data.supports);
-                assert_eq!(actual_data.sources, expected_data.sources);
-                assert_eq!(actual_data.truncated, expected_data.truncated);
-                assert_eq!(actual_data.canonical, expected_data.canonical);
-                assert_eq!(actual_data.canonical_roots, expected_data.canonical_roots);
-                assert_eq!(actual_data.temporal, expected_data.temporal);
-            }
-        }
-    }
-
-    fn assert_equivalent_to_binary(
-        bundle: &crate::RuleBundle,
-        base_facts: &[(String, FactKey, mneme_core::RecordId)],
-        limits: &crate::Limits,
-    ) -> (u64, u64) {
-        let program = bundle.validate().expect("valid bundle");
-        let context = test_context(bundle);
-        let current_sources = AvailabilityMap::new();
-        let fixture = EvaluationFixture {
-            bundle,
-            context: &context,
-            limits,
-            current_sources: &current_sources,
-            base_facts,
-        };
-        let mut binary = make_evaluation(&fixture);
-        evaluate_rules_binary(&mut binary, &program.strata);
-
-        let mut free_join = make_evaluation(&fixture);
-        evaluate_rules(&mut free_join, &program.strata);
-
-        assert_evaluations_match(&binary, &free_join);
-        (binary.budget.work, free_join.budget.work)
-    }
-
-    fn assert_equivalent_to_binary_and_naive(
-        bundle: &crate::RuleBundle,
-        base_facts: &[(String, FactKey, mneme_core::RecordId)],
-        limits: &crate::Limits,
-    ) -> (u64, u64, u64) {
-        assert!(!bundle.rules.is_empty());
-        let program = bundle.validate().expect("valid bundle");
-        assert!(!program.strata.is_empty());
-        let context = test_context(bundle);
-        let current_sources = AvailabilityMap::new();
-        let fixture = EvaluationFixture {
-            bundle,
-            context: &context,
-            limits,
-            current_sources: &current_sources,
-            base_facts,
-        };
-        let mut naive = make_evaluation(&fixture);
-        evaluate_rules_naive(&mut naive, &program.strata);
-
-        let mut binary = make_evaluation(&fixture);
-        evaluate_rules_binary(&mut binary, &program.strata);
-
-        let mut free_join = make_evaluation(&fixture);
-        evaluate_rules(&mut free_join, &program.strata);
-
-        assert_evaluations_match(&naive, &binary);
-        assert_evaluations_match(&naive, &free_join);
-        (naive.budget.work, binary.budget.work, free_join.budget.work)
-    }
-
-    #[test]
-    fn cyclic_triangle_hub_query_completes_under_default_limits_vs_binary_blowup() {
-        // Hub node 0 has 120 incoming edges (1..=120 -> 0) and 120 outgoing edges
-        // (0 -> 121..=240). Nodes 1..=120 also each have 1 incoming edge from
-        // 301..=420 so `edge(c, a)` cannot reject them before `a` is inspected.
-        // Plus 5 disjoint triangles on 501..=515 (15 edges) -> 375 edges total.
-        let mut base_facts = Vec::new();
-        let mut next_id = 1_u16;
-        let mut push_edge = |src: i64, dst: i64| {
-            let id = rid(next_id);
-            next_id = next_id.saturating_add(1);
-            base_facts.push((
-                "edge".to_owned(),
-                vec![
-                    mneme_core::Value::integer(src),
-                    mneme_core::Value::integer(dst),
-                ],
-                id,
-            ));
-        };
-        for idx in 1..=120_i64 {
-            push_edge(idx, 0);
-            push_edge(0, 120 + idx);
-            push_edge(300 + idx, idx);
-        }
-        for tri in 0..5_i64 {
-            let base = 500 + tri * 3;
-            push_edge(base, base + 1);
-            push_edge(base + 1, base + 2);
-            push_edge(base + 2, base);
-        }
-
-        assert_eq!(base_facts.len(), 375);
-
-        assert_eq!(base_facts.len(), 375);
-
-        let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
-            id: "cyclic-triangle-hub".to_owned(),
-            version: "1".to_owned(),
-            schema_version: 3,
-            base_predicates: std::collections::BTreeMap::from([("edge".to_owned(), 2)]),
-            complete_predicates: std::collections::BTreeSet::from(["edge".to_owned()]),
-            rules: vec![crate::Rule::new(
-                "triangle",
-                atom("triangle", vec![var("a"), var("b"), var("c")]),
-                vec![
-                    crate::Literal::Positive(atom("edge", vec![var("a"), var("b")])),
-                    crate::Literal::Positive(atom("edge", vec![var("b"), var("c")])),
-                    crate::Literal::Positive(atom("edge", vec![var("c"), var("a")])),
-                ],
-            )],
-        });
-
-        let default_limits = crate::Limits::default();
-        let program = bundle.validate().expect("valid");
-        let context = test_context(&bundle);
-        let sources = AvailabilityMap::new();
-        let fixture = EvaluationFixture {
-            bundle: &bundle,
-            context: &context,
-            limits: &default_limits,
-            current_sources: &sources,
-            base_facts: &base_facts,
-        };
-
-        // Under default limits (`max_result_rows: 1_000`), binary join blows past
-        // the intermediate binding limit on `edge(a, b) ⋈ edge(b, c)` (14,400 tuples).
-        let mut binary_default = make_evaluation(&fixture);
-        evaluate_rules_binary(&mut binary_default, &program.strata);
-        assert_eq!(
-            binary_default.budget.status,
-            crate::ExecutionStatus::Partial
-        );
-        assert!(binary_default.budget.limit_reached);
-
-        // Free Join completes exhaustively well within default limits.
-        let mut free_default = make_evaluation(&fixture);
-        evaluate_rules(&mut free_default, &program.strata);
-        assert_eq!(free_default.budget.status, crate::ExecutionStatus::Complete);
-        assert!(!free_default.budget.limit_reached);
-        assert!(!free_default.facts["triangle"].truncated);
-        assert_eq!(
-            free_default.coverage_status("triangle"),
-            crate::CoverageStatus::Complete
-        );
-        assert_eq!(free_default.facts["triangle"].rows.len(), 15);
-        assert!(
-            free_default.budget.work < 5_000,
-            "free join work {} should be well under 5,000",
-            free_default.budget.work
-        );
-
-        // Compare full exact work under raised row/work caps.
-        let generous_limits = crate::Limits {
-            max_work: 5_000_000,
-            max_time_ms: 60_000,
-            max_result_rows: 50_000,
-            ..default_limits
-        };
-        let (binary_work, free_work) =
-            assert_equivalent_to_binary(&bundle, &base_facts, &generous_limits);
-        eprintln!(
-            "cyclic-triangle-hub (375 edges, 15 triangles): binary={binary_work}, free_join={free_work}"
-        );
-        assert!(binary_work > 50_000);
-        assert!(free_work < 5_000);
-    }
-
-    #[test]
-    fn cyclic_four_clique_completes_under_default_limits_vs_binary_blowup() {
-        // Hub node 0 has 160 outgoing edges (0 -> 1..=160), plus two disjoint
-        // directed 4-cliques on 201..=204 and 205..=208 (24 edges) -> 184 edges total.
-        // Binary join `edge(a, b) ⋈ edge(a, c)` produces 160*160 = 25,600 intermediate
-        // bindings before checking `edge(b, c)`, failing default `max_result_rows` (1,000)
-        // and exceeding default `max_work` (100,000) even with raised row caps.
-        let mut base_facts = Vec::new();
-        let mut next_id = 1_u16;
-        let mut push_edge = |src: i64, dst: i64| {
-            let id = rid(next_id);
-            next_id = next_id.saturating_add(1);
-            base_facts.push((
-                "edge".to_owned(),
-                vec![
-                    mneme_core::Value::integer(src),
-                    mneme_core::Value::integer(dst),
-                ],
-                id,
-            ));
-        };
-        for idx in 1..=160_i64 {
-            push_edge(0, idx);
-        }
-        for base in [201_i64, 205_i64] {
-            for i in 0..4_i64 {
-                for j in 0..4_i64 {
-                    if i != j {
-                        push_edge(base + i, base + j);
-                    }
-                }
-            }
-        }
-
-        let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
-            id: "cyclic-k4-hub".to_owned(),
-            version: "1".to_owned(),
-            schema_version: 3,
-            base_predicates: std::collections::BTreeMap::from([("edge".to_owned(), 2)]),
-            complete_predicates: std::collections::BTreeSet::from(["edge".to_owned()]),
-            rules: vec![crate::Rule::new(
-                "k4",
-                atom("k4", vec![var("a"), var("b"), var("c"), var("d")]),
-                vec![
-                    crate::Literal::Positive(atom("edge", vec![var("a"), var("b")])),
-                    crate::Literal::Positive(atom("edge", vec![var("a"), var("c")])),
-                    crate::Literal::Positive(atom("edge", vec![var("a"), var("d")])),
-                    crate::Literal::Positive(atom("edge", vec![var("b"), var("c")])),
-                    crate::Literal::Positive(atom("edge", vec![var("b"), var("d")])),
-                    crate::Literal::Positive(atom("edge", vec![var("c"), var("d")])),
-                ],
-            )],
-        });
-
-        let default_limits = crate::Limits::default();
-        let program = bundle.validate().expect("valid");
-        let context = test_context(&bundle);
-        let sources = AvailabilityMap::new();
-        let fixture = EvaluationFixture {
-            bundle: &bundle,
-            context: &context,
-            limits: &default_limits,
-            current_sources: &sources,
-            base_facts: &base_facts,
-        };
-
-        // Binary join fails under default limits (`Partial` at 1,000 intermediate bindings).
-        let mut binary_default = make_evaluation(&fixture);
-        evaluate_rules_binary(&mut binary_default, &program.strata);
-        assert_eq!(
-            binary_default.budget.status,
-            crate::ExecutionStatus::Partial
-        );
-        assert!(binary_default.budget.limit_reached);
-
-        // Even with raised `max_result_rows`, binary join hits `Timeout` at 100k work.
-        let raised_rows = crate::Limits {
-            max_result_rows: 100_000,
-            ..default_limits
-        };
-        let raised_fixture = EvaluationFixture {
-            limits: &raised_rows,
-            ..fixture
-        };
-        let mut binary_raised = make_evaluation(&raised_fixture);
-        evaluate_rules_binary(&mut binary_raised, &program.strata);
-        assert_eq!(binary_raised.budget.status, crate::ExecutionStatus::Timeout);
-        assert!(binary_raised.budget.limit_reached);
-
-        // Free Join completes exhaustively under default limits in ~2k work.
-        let mut free_default = make_evaluation(&fixture);
-        evaluate_rules(&mut free_default, &program.strata);
-        assert_eq!(free_default.budget.status, crate::ExecutionStatus::Complete);
-        assert!(!free_default.budget.limit_reached);
-        assert_eq!(free_default.facts["k4"].rows.len(), 48);
-        assert!(
-            free_default.budget.work < 5_000,
-            "free join k4 work {} should be well under 5,000",
-            free_default.budget.work
-        );
-
-        let generous_limits = crate::Limits {
-            max_work: 5_000_000,
-            max_time_ms: 60_000,
-            max_result_rows: 100_000,
-            ..default_limits
-        };
-        let (binary_work, free_work) =
-            assert_equivalent_to_binary(&bundle, &base_facts, &generous_limits);
-        eprintln!(
-            "cyclic-4-clique-hub (184 edges, 48 k4 tuples): binary={binary_work}, free_join={free_work}"
-        );
-        assert!(binary_work > 100_000);
-        assert!(free_work < 5_000);
-    }
-
-    #[test]
-    fn property_equivalence_against_binary_and_naive_across_cyclic_seeded_programs() {
-        let mut seed = 0x517C_C1B7_2722_0A95_u64;
-        let mut next_u64 = || {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            seed
-        };
-
-        let preds = ["e0", "e1", "t0"];
-        let vars = ["a", "b", "c", "d"];
-
-        for case_idx in 0..40_usize {
-            let mut base_facts = Vec::with_capacity(60);
-            let mut next_rid = 1_u16;
-            for (pred_idx, pred) in preds.iter().enumerate() {
-                let row_count = 4 + usize::try_from(next_u64() % 14).expect("mod 14");
-                for _ in 0..row_count {
-                    let v0 = i64::try_from(next_u64() % 5).expect("mod 5");
-                    let v1 = i64::try_from(next_u64() % 5).expect("mod 5");
-                    let v2 = i64::try_from(next_u64() % 4).expect("mod 4");
-                    let id = rid(next_rid);
-                    next_rid = next_rid.saturating_add(1);
-                    let row = if pred_idx < 2 {
-                        vec![
-                            mneme_core::Value::integer(v0),
-                            mneme_core::Value::integer(v1),
-                        ]
-                    } else {
-                        vec![
-                            mneme_core::Value::integer(v0),
-                            mneme_core::Value::integer(v1),
-                            mneme_core::Value::integer(v2),
-                        ]
-                    };
-                    base_facts.push(((*pred).to_owned(), row, id));
-                }
-            }
-
-            // Build cyclic and self-join shapes with constants, negation, and compares.
-            let body = vec![
-                crate::Literal::Positive(atom("e0", vec![var("a"), var("b")])),
-                crate::Literal::Positive(atom("e1", vec![var("b"), var("c")])),
-                crate::Literal::Positive(atom(
-                    if case_idx % 2 == 0 { "e0" } else { "e1" },
-                    vec![var("c"), var("a")],
-                )),
-                crate::Literal::Positive(atom(
-                    "t0",
-                    vec![
-                        var(vars[case_idx % 3]),
-                        var(vars[(case_idx + 1) % 3]),
-                        if case_idx % 3 == 0 {
-                            int_const(i64::try_from(next_u64() % 4).expect("mod 4"))
-                        } else {
-                            var("d")
-                        },
-                    ],
-                )),
-                crate::Literal::Negative(atom("e1", vec![var("a"), var("c")])),
-                crate::Literal::Compare {
-                    op: crate::CompareOp::Ne,
-                    left: var("a"),
-                    right: var("b"),
-                },
-            ];
-            let head_terms = if case_idx % 4 == 0 {
-                vec![var("a"), var("c")]
-            } else {
-                vec![var("a"), var("b"), var("c")]
-            };
-            let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
-                id: format!("cyclic-prop-{case_idx}"),
-                version: "1".to_owned(),
-                schema_version: 3,
-                base_predicates: std::collections::BTreeMap::from([
-                    ("e0".to_owned(), 2),
-                    ("e1".to_owned(), 2),
-                    ("t0".to_owned(), 3),
-                ]),
-                complete_predicates: std::collections::BTreeSet::from([
-                    "e0".to_owned(),
-                    "e1".to_owned(),
-                    "t0".to_owned(),
-                ]),
-                rules: vec![crate::Rule::new("cyc", atom("cyc", head_terms), body)],
-            });
-
-            let limits = crate::Limits {
-                max_work: 5_000_000,
-                max_time_ms: 60_000,
-                max_result_rows: 1_000,
-                max_supports_per_fact: 2,
-                max_recursion_depth: 16,
-            };
-            assert_equivalent_to_binary_and_naive(&bundle, &base_facts, &limits);
-        }
-    }
 }
+
+#[cfg(test)]
+#[path = "engine/tests.rs"]
+mod extra_tests;
