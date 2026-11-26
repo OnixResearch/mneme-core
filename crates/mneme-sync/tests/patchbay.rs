@@ -243,10 +243,18 @@ mod linux_tests {
         let ip = dev.ip().context("device missing IPv4 address")?;
         let bind_addr = std::net::SocketAddr::new(std::net::IpAddr::V4(ip), 0);
         let allowlist = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+        let clock: std::sync::Arc<dyn mneme_store::Clock> = std::sync::Arc::new(
+            mneme_store::FixedClock::new(mneme_core::Timestamp::from_nanos(
+                1_700_000_000_000_000_000,
+            )),
+        );
         dev.spawn(move |_| async move {
             mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
                 secret_key: deterministic_secret_key(seed),
                 allowlist,
+                revocations: mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+                trusted_roots: std::collections::BTreeSet::new(),
+                clock,
                 discovery,
                 relay,
                 bind_addrs: vec![bind_addr],

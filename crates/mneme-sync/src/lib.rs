@@ -13,6 +13,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))] // tests fail via panic rather than Result
 
 pub mod bundle;
+pub mod capability;
 pub mod error;
 pub mod node;
 pub mod protocol;
@@ -23,6 +24,17 @@ pub mod trust;
 pub use bundle::{
     ExportedSyncBundle, IngestedWorkspace, PullDisposition, collect_local_rbsr_set,
     export_scope_to_store, ingest_delta_to_workspace, ingest_downloaded_archive,
+};
+pub use capability::{
+    CAPABILITY_SCHEMA, CAPABILITY_STORE_SCHEMA, CapabilityAuthority, CapabilityLink,
+    CapabilityScope, CapabilitySignature, CapabilityStore, CapabilityToken, DelegateRequest,
+    GrantRequest, LeaseScopeQuery, MAX_CAPABILITY_BYTES, MAX_DELEGATION_DEPTH,
+    MAX_REVOCATION_REASON_BYTES, MAX_REVOCATION_SET_BYTES, REVOCATION_SET_SCHEMA,
+    RevocationInsertOutcome, RevocationSet, RevocationTombstone, RootTrustPolicy,
+    SharedCapabilityLeases, SharedRevocationSet, StoredCapability, TokenId, TombstoneId,
+    VerificationRequest, VerifiedCapability, VerifiedLease, generate_token_id,
+    generate_tombstone_id, timestamp_to_epoch_secs, verify_capability,
+    verify_capability_with_policy,
 };
 pub use error::{Failure, Result};
 pub use node::{

@@ -44,6 +44,16 @@ impl SyncPaths {
     pub fn state_path(&self) -> std::path::PathBuf {
         self.state_dir.join("state.json")
     }
+
+    /// Path to the persisted capability tokens JSON store.
+    pub fn capabilities_path(&self) -> std::path::PathBuf {
+        self.state_dir.join("capabilities.json")
+    }
+
+    /// Path to the persisted convergent revocation set JSON file.
+    pub fn revocations_path(&self) -> std::path::PathBuf {
+        self.state_dir.join("revocations.json")
+    }
 }
 
 /// Persisted receipt of the most recent verified pull for a `(scope, peer)`.

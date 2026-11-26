@@ -114,6 +114,12 @@ fn commit_follow_up_source(workspace: &mut mneme_store::Workspace) {
         .expect("commit follow-up");
 }
 
+fn fixed_sync_clock() -> std::sync::Arc<dyn mneme_store::Clock> {
+    std::sync::Arc::new(mneme_store::FixedClock::new(
+        mneme_core::Timestamp::from_nanos(1_700_000_000_000_000_000),
+    ))
+}
+
 async fn bind_loopback_node(
     seed: u8,
     allowlist: mneme_sync::SharedAllowlist,
@@ -121,6 +127,9 @@ async fn bind_loopback_node(
     mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
         secret_key: deterministic_secret_key(seed),
         allowlist,
+        revocations: mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+        trusted_roots: std::collections::BTreeSet::new(),
+        clock: fixed_sync_clock(),
         discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
         relay: mneme_sync::RelayPreference::Disabled,
         bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
@@ -541,6 +550,9 @@ async fn mdns_discovery_mode_binds_offline_without_relay() {
     let node = mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
         secret_key: deterministic_secret_key(99),
         allowlist,
+        revocations: mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+        trusted_roots: std::collections::BTreeSet::new(),
+        clock: fixed_sync_clock(),
         discovery: mneme_sync::DiscoveryMode::MdnsOnly,
         relay: mneme_sync::RelayPreference::Disabled,
         bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
@@ -623,10 +635,10 @@ fn build_synthetic_item(
         scope: scope(),
         payload: mneme_core::Payload::new(payload_entries),
     };
-    let blob = mneme_store::SourceBlobDraft {
+    let blob = mneme_store::SourceBlobDraft::inline(
         bytes,
-        media_type: mneme_core::Symbol::from("text/asciidoc"),
-    };
+        mneme_core::Symbol::from("text/asciidoc"),
+    );
     (draft, blob)
 }
 
@@ -996,4 +1008,659 @@ async fn rbsr_control_handler_refuses_malformed_requests_fail_closed() {
     conn.close(0_u32.into(), b"done");
     node_a.shutdown().await.expect("shutdown a");
     node_b.shutdown().await.expect("shutdown b");
+}
+
+struct MutableTestClock {
+    nanos: std::sync::Arc<std::sync::atomic::AtomicI64>,
+}
+
+impl MutableTestClock {
+    fn new(secs: u64) -> (Self, std::sync::Arc<std::sync::atomic::AtomicI64>) {
+        let nanos = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
+            i64::try_from(secs).expect("secs") * 1_000_000_000,
+        ));
+        (
+            Self {
+                nanos: std::sync::Arc::clone(&nanos),
+            },
+            nanos,
+        )
+    }
+}
+
+impl mneme_store::Clock for MutableTestClock {
+    fn now(&self) -> mneme_core::Timestamp {
+        mneme_core::Timestamp::from_nanos(self.nanos.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+async fn bind_capability_node(
+    seed: u8,
+    trusted_roots: std::collections::BTreeSet<iroh::EndpointId>,
+    revocations: mneme_sync::SharedRevocationSet,
+    clock: std::sync::Arc<dyn mneme_store::Clock>,
+) -> mneme_sync::SyncNode {
+    mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
+        secret_key: deterministic_secret_key(seed),
+        allowlist: mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new()),
+        revocations,
+        trusted_roots,
+        clock,
+        discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
+        relay: mneme_sync::RelayPreference::Disabled,
+        bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
+    })
+    .await
+    .expect("bind capability node")
+}
+
+#[tokio::test]
+async fn delegated_capabilities_enforce_attenuation_readonly_pull_push_and_expiry() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_root = temp.path().join("source");
+    let dest_c = temp.path().join("dest-c");
+    let dest_d = temp.path().join("dest-d");
+
+    let (source_ws, vault_id) = create_fixture_workspace(&source_root);
+    let base_secs: u64 = 1_700_000_000;
+    let (clock, clock_nanos) = MutableTestClock::new(base_secs);
+    let clock: std::sync::Arc<dyn mneme_store::Clock> = std::sync::Arc::new(clock);
+
+    let key_a = deterministic_secret_key(31);
+    let key_b = deterministic_secret_key(32);
+    let key_c = deterministic_secret_key(33);
+    let key_d = deterministic_secret_key(34);
+
+    let mut roots = std::collections::BTreeSet::new();
+    roots.insert(key_a.public());
+
+    let rev_a = mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new());
+    let node_a = bind_capability_node(31, roots.clone(), rev_a.clone(), clock.clone()).await;
+    let node_b = bind_capability_node(
+        32,
+        roots.clone(),
+        mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+        clock.clone(),
+    )
+    .await;
+    let node_c = bind_capability_node(
+        33,
+        roots.clone(),
+        mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+        clock.clone(),
+    )
+    .await;
+    let node_d = bind_capability_node(
+        34,
+        roots.clone(),
+        mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+        clock.clone(),
+    )
+    .await;
+
+    node_b.add_peer_addr(node_a.addr());
+    node_c.add_peer_addr(node_a.addr());
+    node_d.add_peer_addr(node_a.addr());
+
+    let snapshot = node_a
+        .publish_workspace(&source_ws, &vault_id, &scope())
+        .await
+        .expect("publish");
+
+    // Root A grants SyncPush on scope:* to B (depth 3, expires at +600s).
+    let cap_ab = mneme_sync::CapabilityToken::grant(
+        &key_a,
+        mneme_sync::GrantRequest {
+            vault_id: vault_id.clone(),
+            subject: key_b.public(),
+            scope: mneme_sync::CapabilityScope::Wildcard,
+            authority: mneme_sync::CapabilityAuthority::SyncPush,
+            issued_at_secs: base_secs,
+            expires_at_secs: base_secs + 600,
+            max_delegation_depth: 3,
+        },
+    )
+    .expect("grant A->B");
+
+    // B delegates SyncPull on project:cedar to C (depth 1, expires at +400s).
+    let cap_bc = cap_ab
+        .delegate(
+            &key_b,
+            mneme_sync::DelegateRequest {
+                subject: key_c.public(),
+                scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+                authority: mneme_sync::CapabilityAuthority::SyncPull,
+                issued_at_secs: base_secs,
+                expires_at_secs: base_secs + 400,
+                remaining_depth: Some(1),
+            },
+        )
+        .expect("delegate B->C");
+
+    // C delegates ReadOnly on project:cedar to D (depth 0, expires at +300s).
+    let cap_cd = cap_bc
+        .delegate(
+            &key_c,
+            mneme_sync::DelegateRequest {
+                subject: key_d.public(),
+                scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+                authority: mneme_sync::CapabilityAuthority::ReadOnly,
+                issued_at_secs: base_secs,
+                expires_at_secs: base_secs + 300,
+                remaining_depth: Some(0),
+            },
+        )
+        .expect("delegate C->D");
+
+    // 1. D (delegated ReadOnly, not in PeerAllowlist) can inspect head metadata.
+    let fetched_d = node_d
+        .fetch_vault_head_with_capability(node_a.node_id(), &scope(), &vault_id, &cap_cd)
+        .await
+        .expect("ReadOnly head query succeeds");
+    assert_eq!(fetched_d.head_revision, snapshot.head_revision);
+
+    // 2. D (ReadOnly) CANNOT pull blobs/bundles (fails closed locally and on iroh-blobs ALPN).
+    let pull_err_d = node_d
+        .pull_scope_with_capability(
+            mneme_sync::PullRequest {
+                peer: node_a.node_id(),
+                scope: scope(),
+                destination: dest_d.clone(),
+                state_dir: None,
+                workspace_config: config_factory(),
+            },
+            &vault_id,
+            &cap_cd,
+        )
+        .await
+        .expect_err("ReadOnly must not pull");
+    assert!(matches!(
+        pull_err_d,
+        mneme_sync::Failure::CapabilityDenied(_)
+    ));
+    assert!(!dest_d.exists());
+
+    // Even direct iroh-blobs connection from D after ReadOnly auth must fail closed.
+    let blob_conn_d = node_d
+        .endpoint()
+        .connect(node_a.node_id(), iroh_blobs::ALPN)
+        .await;
+    if let Ok(conn) = blob_conn_d {
+        let closed = conn.closed().await;
+        assert!(matches!(
+            closed,
+            iroh::endpoint::ConnectionError::ApplicationClosed(_)
+                | iroh::endpoint::ConnectionError::ConnectionClosed(_)
+                | iroh::endpoint::ConnectionError::LocallyClosed
+        ));
+    }
+
+    // 3. C (delegated SyncPull) pulls & verifies workspace cleanly without being in PeerAllowlist.
+    let pull_c = node_c
+        .pull_scope_with_capability(
+            mneme_sync::PullRequest {
+                peer: node_a.node_id(),
+                scope: scope(),
+                destination: dest_c.clone(),
+                state_dir: None,
+                workspace_config: config_factory(),
+            },
+            &vault_id,
+            &cap_bc,
+        )
+        .await
+        .expect("delegated SyncPull succeeds");
+    assert_eq!(pull_c.disposition, mneme_sync::PullDisposition::Restored);
+    assert!(pull_c.verify_report.is_healthy());
+
+    // 4. C (SyncPull) CANNOT push heads (SyncPush required), whereas B (SyncPush) CAN.
+    let announcement = snapshot.to_announcement();
+    let push_err_c = node_c
+        .push_head_with_capability(node_a.node_id(), &announcement, &cap_bc)
+        .await
+        .expect_err("SyncPull must not push");
+    assert!(matches!(
+        push_err_c,
+        mneme_sync::Failure::CapabilityDenied(_)
+    ));
+
+    node_b
+        .push_head_with_capability(node_a.node_id(), &announcement, &cap_ab)
+        .await
+        .expect("SyncPush succeeds");
+    assert_eq!(node_a.last_pushed_head(&scope()), Some(announcement));
+
+    // 5. Wrong presenter (D presenting C's token) fails closed.
+    let wrong_presenter = node_d
+        .fetch_vault_head_with_capability(node_a.node_id(), &scope(), &vault_id, &cap_bc)
+        .await
+        .expect_err("wrong presenter must fail closed");
+    assert!(matches!(
+        wrong_presenter,
+        mneme_sync::Failure::CapabilityDenied(_)
+    ));
+
+    // 6. Wrong scope (`other_scope()`) fails closed for C's `project:cedar` token.
+    let wrong_scope = node_c
+        .fetch_vault_head_with_capability(node_a.node_id(), &other_scope(), &vault_id, &cap_bc)
+        .await
+        .expect_err("wrong scope must fail closed");
+    assert!(matches!(
+        wrong_scope,
+        mneme_sync::Failure::ScopeDenied { .. }
+    ));
+
+    // 7. Advance clock past C->D expiry (+300s) -> D fails closed.
+    clock_nanos.store(
+        i64::try_from(base_secs + 301).expect("secs") * 1_000_000_000,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let expired_err = node_d
+        .fetch_vault_head_with_capability(node_a.node_id(), &scope(), &vault_id, &cap_cd)
+        .await
+        .expect_err("expired token must fail closed");
+    assert!(matches!(
+        expired_err,
+        mneme_sync::Failure::CapabilityDenied(_)
+    ));
+
+    node_a.shutdown().await.expect("shutdown a");
+    node_b.shutdown().await.expect("shutdown b");
+    node_c.shutdown().await.expect("shutdown c");
+    node_d.shutdown().await.expect("shutdown d");
+}
+
+#[test]
+fn capability_escalation_tampering_and_depth_limits_fail_closed() {
+    let key_a = deterministic_secret_key(41);
+    let key_b = deterministic_secret_key(42);
+    let key_c = deterministic_secret_key(43);
+    let key_untrusted = deterministic_secret_key(44);
+    let vault_id = "vault-test-1";
+    let now_secs = 1_700_000_000;
+
+    let mut roots = std::collections::BTreeSet::new();
+    roots.insert(key_a.public());
+    let empty_revocations = mneme_sync::RevocationSet::new();
+
+    let cap_ab = mneme_sync::CapabilityToken::grant(
+        &key_a,
+        mneme_sync::GrantRequest {
+            vault_id: vault_id.to_owned(),
+            subject: key_b.public(),
+            scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+            authority: mneme_sync::CapabilityAuthority::SyncPull,
+            issued_at_secs: now_secs,
+            expires_at_secs: now_secs + 500,
+            max_delegation_depth: 1,
+        },
+    )
+    .expect("grant A->B");
+
+    // 1. Escalated authority (`SyncPull` -> `SyncPush`) fails closed.
+    assert!(
+        cap_ab
+            .delegate(
+                &key_b,
+                mneme_sync::DelegateRequest {
+                    subject: key_c.public(),
+                    scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+                    authority: mneme_sync::CapabilityAuthority::SyncPush,
+                    issued_at_secs: now_secs,
+                    expires_at_secs: now_secs + 400,
+                    remaining_depth: Some(0),
+                },
+            )
+            .is_err()
+    );
+
+    // 2. Escalated scope (`project:cedar` -> `scope:*` or `project:other`) fails closed.
+    assert!(
+        cap_ab
+            .delegate(
+                &key_b,
+                mneme_sync::DelegateRequest {
+                    subject: key_c.public(),
+                    scope: mneme_sync::CapabilityScope::Wildcard,
+                    authority: mneme_sync::CapabilityAuthority::ReadOnly,
+                    issued_at_secs: now_secs,
+                    expires_at_secs: now_secs + 400,
+                    remaining_depth: Some(0),
+                },
+            )
+            .is_err()
+    );
+    assert!(
+        cap_ab
+            .delegate(
+                &key_b,
+                mneme_sync::DelegateRequest {
+                    subject: key_c.public(),
+                    scope: mneme_sync::CapabilityScope::from_scopes([other_scope()])
+                        .expect("other"),
+                    authority: mneme_sync::CapabilityAuthority::ReadOnly,
+                    issued_at_secs: now_secs,
+                    expires_at_secs: now_secs + 400,
+                    remaining_depth: Some(0),
+                },
+            )
+            .is_err()
+    );
+
+    // 3. Extended expiration fails closed.
+    assert!(
+        cap_ab
+            .delegate(
+                &key_b,
+                mneme_sync::DelegateRequest {
+                    subject: key_c.public(),
+                    scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+                    authority: mneme_sync::CapabilityAuthority::ReadOnly,
+                    issued_at_secs: now_secs,
+                    expires_at_secs: now_secs + 501,
+                    remaining_depth: Some(0),
+                },
+            )
+            .is_err()
+    );
+
+    // 4. Depth limit enforced: B->C consumes depth 0, C->D fails closed.
+    let cap_bc = cap_ab
+        .delegate(
+            &key_b,
+            mneme_sync::DelegateRequest {
+                subject: key_c.public(),
+                scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+                authority: mneme_sync::CapabilityAuthority::ReadOnly,
+                issued_at_secs: now_secs,
+                expires_at_secs: now_secs + 400,
+                remaining_depth: Some(0),
+            },
+        )
+        .expect("delegate B->C");
+    assert!(
+        cap_bc
+            .delegate(
+                &key_c,
+                mneme_sync::DelegateRequest {
+                    subject: key_untrusted.public(),
+                    scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+                    authority: mneme_sync::CapabilityAuthority::ReadOnly,
+                    issued_at_secs: now_secs,
+                    expires_at_secs: now_secs + 300,
+                    remaining_depth: None,
+                },
+            )
+            .is_err()
+    );
+
+    // 5. Tampered signature / tampered field fails closed.
+    let mut tampered_field = cap_bc.clone();
+    tampered_field.links[1].authority = mneme_sync::CapabilityAuthority::SyncPush;
+    assert!(
+        mneme_sync::verify_capability(&mneme_sync::VerificationRequest {
+            token: &tampered_field,
+            presenter: key_c.public(),
+            vault_id,
+            scope: &scope(),
+            required_authority: mneme_sync::CapabilityAuthority::ReadOnly,
+            now_secs,
+            trusted_roots: &roots,
+            revocations: &empty_revocations,
+        })
+        .is_err()
+    );
+
+    let mut tampered_sig = cap_bc.clone();
+    let mut sig_bytes = tampered_sig.links[0].signature.as_iroh().to_bytes();
+    sig_bytes[0] ^= 0x01;
+    tampered_sig.links[0].signature =
+        mneme_sync::CapabilitySignature::from_iroh(iroh::Signature::from_bytes(&sig_bytes));
+    assert!(
+        mneme_sync::verify_capability(&mneme_sync::VerificationRequest {
+            token: &tampered_sig,
+            presenter: key_c.public(),
+            vault_id,
+            scope: &scope(),
+            required_authority: mneme_sync::CapabilityAuthority::ReadOnly,
+            now_secs,
+            trusted_roots: &roots,
+            revocations: &empty_revocations,
+        })
+        .is_err()
+    );
+
+    // 6. Untrusted root issuer fails closed.
+    let untrusted_cap = mneme_sync::CapabilityToken::grant(
+        &key_untrusted,
+        mneme_sync::GrantRequest {
+            vault_id: vault_id.to_owned(),
+            subject: key_b.public(),
+            scope: mneme_sync::CapabilityScope::Wildcard,
+            authority: mneme_sync::CapabilityAuthority::SyncPush,
+            issued_at_secs: now_secs,
+            expires_at_secs: now_secs + 500,
+            max_delegation_depth: 1,
+        },
+    )
+    .expect("grant untrusted");
+    assert!(
+        mneme_sync::verify_capability(&mneme_sync::VerificationRequest {
+            token: &untrusted_cap,
+            presenter: key_b.public(),
+            vault_id,
+            scope: &scope(),
+            required_authority: mneme_sync::CapabilityAuthority::ReadOnly,
+            now_secs,
+            trusted_roots: &roots,
+            revocations: &empty_revocations,
+        })
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn offline_crdt_revocation_converges_deterministically_and_blocks_sync() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_root = temp.path().join("source");
+    let dest_c = temp.path().join("dest-c");
+    let rev_path = temp.path().join("revocations.json");
+
+    let (source_ws, vault_id) = create_fixture_workspace(&source_root);
+    let now_secs: u64 = 1_700_000_000;
+
+    let key_a = deterministic_secret_key(51);
+    let key_b = deterministic_secret_key(52);
+    let key_c = deterministic_secret_key(53);
+    let key_attacker = deterministic_secret_key(54);
+
+    let mut roots = std::collections::BTreeSet::new();
+    roots.insert(key_a.public());
+
+    let rev_a = mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new());
+    let rev_b = mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new());
+    let rev_c = mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new());
+
+    let node_a = bind_capability_node(51, roots.clone(), rev_a.clone(), fixed_sync_clock()).await;
+    let node_b = bind_capability_node(52, roots.clone(), rev_b.clone(), fixed_sync_clock()).await;
+    let node_c = bind_capability_node(53, roots.clone(), rev_c.clone(), fixed_sync_clock()).await;
+
+    node_c.add_peer_addr(node_a.addr());
+    node_b.add_peer_addr(node_a.addr());
+
+    node_a
+        .publish_workspace(&source_ws, &vault_id, &scope())
+        .await
+        .expect("publish");
+
+    let cap_ab = mneme_sync::CapabilityToken::grant(
+        &key_a,
+        mneme_sync::GrantRequest {
+            vault_id: vault_id.clone(),
+            subject: key_b.public(),
+            scope: mneme_sync::CapabilityScope::Wildcard,
+            authority: mneme_sync::CapabilityAuthority::SyncPush,
+            issued_at_secs: now_secs,
+            expires_at_secs: now_secs + 1000,
+            max_delegation_depth: 2,
+        },
+    )
+    .expect("grant A->B");
+
+    let cap_bc = cap_ab
+        .delegate(
+            &key_b,
+            mneme_sync::DelegateRequest {
+                subject: key_c.public(),
+                scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+                authority: mneme_sync::CapabilityAuthority::SyncPull,
+                issued_at_secs: now_secs,
+                expires_at_secs: now_secs + 800,
+                remaining_depth: Some(1),
+            },
+        )
+        .expect("delegate B->C");
+
+    // 1. Initial pull by C succeeds and records a SyncPull lease on node_a.
+    let initial = node_c
+        .pull_scope_with_capability(
+            mneme_sync::PullRequest {
+                peer: node_a.node_id(),
+                scope: scope(),
+                destination: dest_c.clone(),
+                state_dir: None,
+                workspace_config: config_factory(),
+            },
+            &vault_id,
+            &cap_bc,
+        )
+        .await
+        .expect("initial pull succeeds");
+    assert_eq!(initial.disposition, mneme_sync::PullDisposition::Restored);
+
+    // 2. Unauthorized third-party tombstone cannot revoke A->B.
+    let forged_revoker_tombstone = mneme_sync::RevocationTombstone::issue(
+        &key_attacker,
+        &vault_id,
+        cap_ab.links[0].token_id,
+        now_secs + 10,
+        Some("unauthorized"),
+    )
+    .expect("sign attacker tombstone");
+    let mut attacker_set = mneme_sync::RevocationSet::new();
+    attacker_set
+        .insert(forged_revoker_tombstone)
+        .expect("valid sig from attacker");
+    let still_valid = mneme_sync::verify_capability(&mneme_sync::VerificationRequest {
+        token: &cap_bc,
+        presenter: key_c.public(),
+        vault_id: &vault_id,
+        scope: &scope(),
+        required_authority: mneme_sync::CapabilityAuthority::SyncPull,
+        now_secs: now_secs + 10,
+        trusted_roots: &roots,
+        revocations: &attacker_set,
+    });
+    assert!(still_valid.is_ok());
+
+    // 3. Tampered tombstone signature fails closed on RevocationSet::insert/merge.
+    let valid_tombstone = mneme_sync::RevocationTombstone::issue(
+        &key_a,
+        &vault_id,
+        cap_ab.links[0].token_id,
+        now_secs + 20,
+        Some("compromised device"),
+    )
+    .expect("issue tombstone");
+    let mut bad_tombstone = valid_tombstone.clone();
+    bad_tombstone.reason = Some("tampered".to_owned());
+    assert!(attacker_set.insert(bad_tombstone).is_err());
+
+    // 4. Deterministic CRDT convergence across different merge orders + persistence.
+    let extra_tombstone = mneme_sync::RevocationTombstone::issue(
+        &key_b,
+        &vault_id,
+        cap_bc.links[1].token_id,
+        now_secs + 25,
+        Some("rotated"),
+    )
+    .expect("issue second tombstone");
+
+    let mut set_1 = mneme_sync::RevocationSet::new();
+    set_1.insert(valid_tombstone.clone()).expect("insert 1");
+    let mut set_2 = mneme_sync::RevocationSet::new();
+    set_2.insert(extra_tombstone.clone()).expect("insert 2");
+
+    let mut order_12 = set_1.clone();
+    order_12.merge(&set_2).expect("merge 1<-2");
+    order_12.merge(&set_2).expect("idempotent merge");
+    let mut order_21 = set_2.clone();
+    order_21.merge(&set_1).expect("merge 2<-1");
+    assert_eq!(order_12, order_21);
+
+    order_12.save(&rev_path).expect("save revocations");
+    let reloaded = mneme_sync::RevocationSet::load(&rev_path).expect("reload revocations");
+    assert_eq!(reloaded, order_12);
+
+    // 5. Offline causal revocation: node_b revokes A->B via synced tombstone from A,
+    //    causally revoking delegated child B->C on node_a!
+    valid_tombstone.verify_signature().expect("sig ok");
+    rev_b
+        .insert(valid_tombstone.clone())
+        .expect("insert into b");
+    // B syncs revocations to A using B's still-non-revoked-on-A capability before A learns it.
+    let merged_on_b = node_b
+        .sync_revocations(node_a.node_id(), Some(&cap_ab))
+        .await
+        .expect("sync revocations B->A");
+    assert_eq!(merged_on_b, 0);
+    assert_eq!(rev_a.len_u64(), 1);
+
+    // Subsequent head query & pull by C fail closed with CapabilityRevoked!
+    let query_after_revoke = node_c
+        .fetch_vault_head_with_capability(node_a.node_id(), &scope(), &vault_id, &cap_bc)
+        .await
+        .expect_err("causal revocation must block query");
+    assert!(matches!(
+        query_after_revoke,
+        mneme_sync::Failure::CapabilityRevoked { .. }
+    ));
+
+    let pull_after_revoke = node_c
+        .pull_scope_with_capability(
+            mneme_sync::PullRequest {
+                peer: node_a.node_id(),
+                scope: scope(),
+                destination: dest_c,
+                state_dir: None,
+                workspace_config: config_factory(),
+            },
+            &vault_id,
+            &cap_bc,
+        )
+        .await
+        .expect_err("causal revocation must block pull");
+    assert!(matches!(
+        pull_after_revoke,
+        mneme_sync::Failure::CapabilityRevoked { .. }
+    ));
+
+    // Also verify existing iroh-blobs lease is invalidated immediately upon revocation.
+    let blob_conn_c = node_c
+        .endpoint()
+        .connect(node_a.node_id(), iroh_blobs::ALPN)
+        .await;
+    if let Ok(conn) = blob_conn_c {
+        let closed = conn.closed().await;
+        assert!(matches!(
+            closed,
+            iroh::endpoint::ConnectionError::ApplicationClosed(_)
+                | iroh::endpoint::ConnectionError::ConnectionClosed(_)
+                | iroh::endpoint::ConnectionError::LocallyClosed
+        ));
+    }
+
+    node_a.shutdown().await.expect("shutdown a");
+    node_b.shutdown().await.expect("shutdown b");
+    node_c.shutdown().await.expect("shutdown c");
 }

@@ -9,6 +9,15 @@ pub enum Failure {
     /// Peer is allowlisted, but not for the requested scope.
     #[error("peer {peer} is not authorized for scope {scope}")]
     ScopeDenied { peer: String, scope: String },
+    /// Presented capability token failed verification or attenuation checks.
+    #[error("capability denied: {0}")]
+    CapabilityDenied(String),
+    /// Capability token or an ancestor delegation link was revoked.
+    #[error("capability {token_id} revoked: {reason}")]
+    CapabilityRevoked { token_id: String, reason: String },
+    /// OS CSPRNG failed when generating a cryptographic identifier.
+    #[error("CSPRNG failure: {0}")]
+    CsprngUnavailable(String),
     /// Transport or QUIC connection failure.
     #[error("iroh transport error: {0}")]
     Transport(String),
