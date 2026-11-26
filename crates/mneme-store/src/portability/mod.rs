@@ -20,9 +20,11 @@
 //! rebuilt workspace verifies against the archive.
 
 mod file;
+mod ingest;
 mod manifest;
 mod rebuild;
 
+pub use ingest::{IngestOutcomeStatus, PortableIngestReport, ingest_into};
 pub use rebuild::restore;
 
 /// The manifest record label.

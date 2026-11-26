@@ -1,0 +1,30 @@
+[package]
+name = "mneme-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blake3.workspace = true
+bytes = "1"
+getrandom.workspace = true
+iroh = { version = "1.5", default-features = false, features = ["tls-ring", "metrics"] }
+iroh-blobs = { version = "0.105", default-features = false }
+iroh-gossip = { version = "0.103", default-features = false, features = ["net"] }
+iroh-mainline-address-lookup = "0.6"
+iroh-mdns-address-lookup = "0.6"
+mneme-core.workspace = true
+mneme-store.workspace = true
+n0-future = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

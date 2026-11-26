@@ -4038,3 +4038,34 @@ fn db_usize(value: i64, field: &'static str) -> crate::error::Result<usize> {
 fn db_u32(value: i64, field: &'static str) -> crate::error::Result<u32> {
     u32::try_from(value).map_err(|_| crate::error::Failure::ValueOutOfRange(field))
 }
+
+impl Workspace {
+    /// Digest of the current committed revision's manifest.
+    #[allow(unknown_lints, assertion_density)] // returns Result instead of panicking on layout mismatches
+    pub fn head_revision_digest(&self) -> crate::error::Result<mneme_core::ContentDigest> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let sequence = meta_u64(&transaction, META_CURRENT_SEQUENCE)?;
+        let (digest_bytes, algorithm): (Vec<u8>, Option<String>) = transaction.query_row(
+            "SELECT manifest_digest, manifest_algorithm FROM revisions WHERE sequence = ?1",
+            rusqlite::params![db_i64(sequence, "sequence")?],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        transaction.commit()?;
+        let digest = digest_32(&digest_bytes)?;
+        let algorithm_name = algorithm
+            .as_deref()
+            .unwrap_or(mneme_core::hashing::ALGORITHM_SHA256);
+        let hash_algorithm = mneme_core::HashAlgorithm::parse(algorithm_name).ok_or_else(|| {
+            crate::error::Failure::UnsupportedLayout(format!(
+                "unsupported manifest algorithm {algorithm_name}"
+            ))
+        })?;
+        mneme_core::ContentDigest::from_parts(
+            hash_algorithm,
+            mneme_core::EncodingProfile::CanonicalBinaryV1,
+            mneme_core::ValueBoundary::Payload,
+            digest,
+        )
+        .map_err(|reason| crate::error::Failure::UnsupportedLayout(reason.to_owned()))
+    }
+}
