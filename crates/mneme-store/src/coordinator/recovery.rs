@@ -989,18 +989,21 @@ fn purge_restored_blob(
         mneme_kernel::purge::BlobDecision::AlreadyAbsent => {
             Ok((crate::lifecycle::RetentionLocationState::Absent, None))
         }
-        mneme_kernel::purge::BlobDecision::Purge => match std::fs::remove_file(&path) {
-            Ok(()) => {
-                if let Some(parent) = path.parent() {
-                    super::sync_directory(parent)?;
+        mneme_kernel::purge::BlobDecision::Purge => {
+            crate::outboard::remove_for_blob_path(&path)?;
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    if let Some(parent) = path.parent() {
+                        super::sync_directory(parent)?;
+                    }
+                    Ok((crate::lifecycle::RetentionLocationState::Purged, None))
                 }
-                Ok((crate::lifecycle::RetentionLocationState::Purged, None))
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok((crate::lifecycle::RetentionLocationState::Absent, None))
+                }
+                Err(error) => Err(crate::error::Failure::io(&path, error)),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok((crate::lifecycle::RetentionLocationState::Absent, None))
-            }
-            Err(error) => Err(crate::error::Failure::io(&path, error)),
-        },
+        }
     }
 }
 

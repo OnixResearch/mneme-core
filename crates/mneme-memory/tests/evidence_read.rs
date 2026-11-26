@@ -2771,3 +2771,144 @@ fn read_side_view_context_reads_only_the_history_and_revisions_a_view_uses() {
         claims.claim_proposed,
     );
 }
+
+#[test]
+fn large_blake3_source_explain_and_validate_use_verified_range_reads() {
+    let (temp, mut workspace) = common::setup();
+    let prefix = "A".repeat(128 * 1024);
+    let quoted = "quoted evidence span inside large source";
+    let suffix = "Z".repeat(128 * 1024);
+    let large_text = format!("{prefix}{quoted}{suffix}");
+    let span_start = prefix.len() as u64;
+    let span_end = (prefix.len() + quoted.len() - 1) as u64;
+    let source_bytes = large_text.as_bytes();
+    let digest = mneme_core::ContentDigest::of_source_bytes(source_bytes);
+
+    let source_id = common::rid(0x90);
+    let source_rev = common::rev(0x91);
+    let (source_draft, source_blob) = mneme_memory::build_source(
+        source_id,
+        source_rev,
+        &common::scope(),
+        mneme_memory::SourceOptions {
+            bytes: source_bytes,
+            media_type: "text/asciidoc",
+            entity: Some(mneme_core::fixtures::entity_id()),
+            path_hint: Some("notes/large.adoc"),
+        },
+    )
+    .expect("build large source");
+    let evidence_id = common::rid(0x92);
+    let assertion_id = common::rid(0x93);
+    let evidence_draft = mneme_memory::build_evidence(
+        evidence_id,
+        common::rev(0x94),
+        &common::scope(),
+        mneme_memory::EvidenceOptions {
+            assertion: assertion_id,
+            source: source_id,
+            source_revision: source_rev,
+            relation: mneme_memory::SupportRelation::Supports,
+            span: Some(mneme_core::SourceSpan::new(span_start, span_end).expect("span")),
+            anchor: None,
+            origin: mneme_core::Origin::AuthoredStatement,
+            ancestry: &[],
+        },
+    );
+    let assertion_draft = mneme_memory::build_proposed_assertion(
+        assertion_id,
+        common::rev(0x95),
+        &common::scope(),
+        mneme_memory::ProposedAssertionOptions {
+            subject: mneme_core::fixtures::entity_id(),
+            predicate: "large-span-test",
+            value: mneme_core::Value::string("verified"),
+            stance: mneme_memory::Stance::Affirm,
+            origin: mneme_memory::Origin::AuthoredStatement,
+            asserted_by: "test-author",
+            valid_time: mneme_core::ValidTime::always(),
+            evidence: &[mneme_core::Reference::local(
+                evidence_id,
+                mneme_core::RecordKind::Evidence,
+            )],
+            extraction: None,
+            superseded_by: None,
+        },
+    );
+    {
+        let mut memory = common::engine(&mut workspace);
+        memory
+            .commit(common::batch(
+                "large-source-commit",
+                vec![source_draft, evidence_draft, assertion_draft],
+                vec![source_blob],
+            ))
+            .expect("commit large");
+    }
+
+    let ob_path = mneme_store::outboard::path(temp.path(), digest);
+    assert!(ob_path.exists());
+    let orig_ob = std::fs::read(&ob_path).expect("read ob");
+
+    let memory = common::engine(&mut workspace);
+    let view = memory.view().expect("view");
+    let validated = view
+        .validate_evidence(
+            evidence_id,
+            mneme_memory::beliefs::RetainedRequirement::Required,
+        )
+        .expect("validate large evidence");
+    assert_eq!(
+        validated.availability,
+        mneme_memory::SourceAvailability::Retained
+    );
+    assert_eq!(validated.excerpt.expect("excerpt").bytes, quoted.as_bytes());
+    let explained = view
+        .explain(assertion_id, read_policy())
+        .expect("explain large");
+    assert_eq!(
+        explained.evidence[0]
+            .excerpt
+            .as_ref()
+            .expect("explained excerpt")
+            .bytes,
+        quoted.as_bytes()
+    );
+
+    // Corrupt byte 0 (outside the quoted span's covering chunk group):
+    // `View::explain` uses `verify_span_range` and still verifies the cited
+    // span against the BLAKE3 root digest without reading byte 0.
+    let blob_path = mneme_store::payload::blob_path(temp.path(), digest);
+    let mut bad_outside = source_bytes.to_vec();
+    bad_outside[0] ^= 0xff;
+    std::fs::write(&blob_path, &bad_outside).expect("corrupt outside");
+    let explained_mid = view
+        .explain(assertion_id, read_policy())
+        .expect("explain with outer corruption");
+    assert_eq!(
+        explained_mid.evidence[0].availability,
+        mneme_memory::SourceAvailability::Retained
+    );
+    assert_eq!(
+        explained_mid.evidence[0]
+            .excerpt
+            .as_ref()
+            .expect("excerpt")
+            .bytes,
+        quoted.as_bytes()
+    );
+    std::fs::write(&blob_path, source_bytes).expect("restore");
+
+    // Corrupt 1 byte in outboard -> fail closed as Corrupt.
+    let mut bad_ob = orig_ob;
+    bad_ob[0] ^= 0x01;
+    std::fs::write(&ob_path, &bad_ob).expect("corrupt ob");
+    let corrupt_explain = view
+        .explain(assertion_id, read_policy())
+        .expect("explain corrupt ob");
+    assert!(matches!(
+        corrupt_explain.evidence[0].availability,
+        mneme_memory::SourceAvailability::Corrupt { .. }
+    ));
+    assert!(corrupt_explain.evidence[0].excerpt.is_none());
+}

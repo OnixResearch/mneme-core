@@ -366,6 +366,7 @@ pub fn stage(
     let target = blob_path(root, digest);
     if target.exists() {
         verify(root, digest, bytes.len() as u64)?;
+        crate::outboard::stage_if_large(root, digest, bytes)?;
         // An earlier try may have renamed the file into place and stopped
         // before the directory entry was durable; this path is the retry.
         if let Some(parent) = target.parent() {
@@ -387,6 +388,7 @@ pub fn stage(
     std::fs::rename(&temporary, &target)
         .map_err(|error| crate::error::Failure::io(&target, error))?;
     flush_directory(parent)?;
+    crate::outboard::stage_if_large(root, digest, bytes)?;
     Ok(StagedBlob {
         digest,
         byte_length: bytes.len() as u64,
@@ -1282,7 +1284,12 @@ impl BlobFiles {
             {
                 continue;
             }
-            let Some(digest) = parse_hex_32(&entry.file_name().to_string_lossy()) else {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(digest) = parse_hex_32(&name).or_else(|| {
+                name.strip_suffix(&format!(".{}", crate::outboard::EXTENSION))
+                    .and_then(parse_hex_32)
+            }) else {
                 continue;
             };
             return Some(Ok(BlobFile {
@@ -1387,7 +1394,7 @@ pub(crate) fn write_flushed(path: &std::path::Path, bytes: &[u8]) -> crate::erro
     Ok(())
 }
 
-fn flush_directory(path: &std::path::Path) -> crate::error::Result<()> {
+pub(crate) fn flush_directory(path: &std::path::Path) -> crate::error::Result<()> {
     // Directory flushing is best-effort on platforms that reject opening one.
     if let Ok(directory) = std::fs::File::open(path) {
         directory

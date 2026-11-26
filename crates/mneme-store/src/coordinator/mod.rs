@@ -1602,6 +1602,16 @@ impl Workspace {
         &self.root
     }
 
+    /// Read and cryptographically verify `range` (`[start, end)`) of `digest`
+    /// without reading the full blob when a `bao-tree` outboard is present.
+    pub fn verify_span_range(
+        &self,
+        digest: mneme_core::ContentDigest,
+        range: std::ops::Range<u64>,
+    ) -> crate::error::Result<Vec<u8>> {
+        crate::outboard::verify_span_range(&self.root, digest, range)
+    }
+
     /// Take the shared lock a commit holds from staging to its transaction.
     ///
     /// Shared locks do not exclude each other, so commits stay concurrent; they
