@@ -343,7 +343,7 @@ fn check_ground_positives(
             .facts
             .get(&atom.predicate)
             .and_then(|store| store.rows.get(&key))
-            .is_some_and(|data| !data.supports.is_empty());
+            .is_some_and(crate::FactData::is_active);
         if !is_present {
             return Err(super::engine::RuleOutcome::Stable);
         }
@@ -672,7 +672,7 @@ fn ensure_trie(
         if !evaluation.budget.charge(1) {
             return Err(super::engine::RuleOutcome::Skipped);
         }
-        if terms.len() != arity || data.supports.is_empty() {
+        if terms.len() != arity || !data.is_active() {
             continue;
         }
         trie.insert(terms, col_order);
@@ -985,7 +985,7 @@ fn matches_ground_negative(
     Ok(store
         .rows
         .get(ground_key_buf)
-        .is_some_and(|data| !data.supports.is_empty()))
+        .is_some_and(crate::FactData::is_active))
 }
 
 fn materialize_binding(

@@ -79,10 +79,12 @@ pub const RESPONSE_STOP_PREFIX: &str = "!mneme-stop-v1";
 /// no image data can supply a predicate or functor.
 pub const ASSERTION_RELATION: &str = "assertion";
 
-/// Relation that carries one selected Datalog row.
+/// Relation that carries one selected accepted Datalog row.
 ///
 /// Rendered as `relation(Name, [Value, …])`, where `Name` is the relation the
-/// Datalog result names and the list holds the row's ground values.
+/// Datalog result names and the list holds the row's ground values. Only
+/// `EpistemicStatus::Accepted` rows are emitted into this unqualified relation;
+/// epistemic-tagged rows are exposed via [`snapshot::SelectedRow::EPISTEMIC_RELATION`].
 pub const RELATION_RELATION: &str = "relation";
 
 /// Longest nesting depth accepted from an engine solution line.
@@ -500,11 +502,14 @@ impl CapabilityMetadata {
                 "assumption identity and rationale are required".to_owned(),
             ));
         }
+        debug_assert!(!assumption.id.trim().is_empty());
+        debug_assert!(!assumption.rationale.trim().is_empty());
         // An assumption is hypothetical input, never canonical image content.
         if matches!(
             assumption.atom.predicate.as_str(),
             ASSERTION_RELATION
                 | RELATION_RELATION
+                | snapshot::SelectedRow::EPISTEMIC_RELATION
                 | "entity"
                 | "denial"
                 | "hypothesis"
@@ -1564,7 +1569,18 @@ fn input_order_identity_value(image: &snapshot::InputImage) -> mneme_core::Value
                                     relation
                                         .rows
                                         .iter()
-                                        .map(|row| mneme_core::Value::sequence(row.values.clone()))
+                                        .map(|row| {
+                                            mneme_core::Value::record_named(
+                                                "row-order",
+                                                vec![
+                                                    mneme_core::Value::sequence(row.values.clone()),
+                                                    mneme_core::Value::symbol(row.epistemic.name()),
+                                                    mneme_core::Value::Boolean(
+                                                        row.support_truncated,
+                                                    ),
+                                                ],
+                                            )
+                                        })
                                         .collect(),
                                 ),
                             ],
@@ -3731,10 +3747,14 @@ mod tests {
                 snapshot::SelectedRow {
                     values: vec![mneme_core::Value::string("a")],
                     supports: Vec::new(),
+                    epistemic: mneme_datalog::EpistemicStatus::Accepted,
+                    support_truncated: false,
                 },
                 snapshot::SelectedRow {
                     values: vec![mneme_core::Value::string("b")],
                     supports: Vec::new(),
+                    epistemic: mneme_datalog::EpistemicStatus::Accepted,
+                    support_truncated: false,
                 },
             ],
             coverage: InputCoverage {

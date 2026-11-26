@@ -441,6 +441,17 @@ pub struct Derivation {
     pub epistemic: EpistemicStatus,
 }
 
+/// Pinned barrier invariants recorded for each participating vault in a [`Build`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VaultBarrier {
+    pub(crate) alias: String,
+    pub(crate) root: std::path::PathBuf,
+    pub(crate) served_revision: mneme_core::WorkspaceRevisionId,
+    pub(crate) eligibility_generation: u64,
+    pub(crate) requested_was_head: bool,
+    pub(crate) is_external: bool,
+}
+
 /// The built projection.
 ///
 /// The barrier fields are private: a caller cannot relabel a build's revision,
@@ -462,6 +473,7 @@ pub struct Build {
     >,
     pub(crate) arities: std::collections::BTreeMap<String, usize>,
     pub(crate) bundle: RuleBundle,
+    pub(crate) vault_barriers: Vec<VaultBarrier>,
 }
 
 impl Build {
@@ -549,6 +561,13 @@ pub(crate) struct FactData {
     temporal: Vec<String>,
     /// Epistemic provenance union (`+`) over all derivations of this row.
     epistemic: EpistemicStatus,
+}
+
+impl FactData {
+    /// Whether this row is active: backed by support and not `EpistemicStatus::Rejected` (`ZERO`).
+    pub(crate) fn is_active(&self) -> bool {
+        !self.supports.is_empty() && self.epistemic != EpistemicStatus::Rejected
+    }
 }
 
 /// A query over a built projection.
@@ -832,6 +851,7 @@ fn assembled_build(
     program: RuleProgram,
     context: BuildContext,
     evaluated: engine::BuildFacts,
+    vault_barriers: Vec<VaultBarrier>,
 ) -> Build {
     Build {
         context,
@@ -849,6 +869,7 @@ fn assembled_build(
             .collect(),
         arities: program.arities,
         bundle: program.bundle,
+        vault_barriers,
     }
 }
 
@@ -987,7 +1008,9 @@ impl<'w> Service<'w> {
             &vault_build_ids,
         );
         assert!(!build_id.is_empty());
-        if let Some(existing) = self.cached_build(&request, &build_id)? {
+        if let Some(mut existing) = self.cached_build(&request, &build_id)? {
+            existing.context.requested_was_head = request.revision == primary_head;
+            existing.vault_barriers = collect_vault_barriers(&attached_states);
             return Ok(existing);
         }
         let context = BuildContext {
@@ -1005,7 +1028,8 @@ impl<'w> Service<'w> {
         let sources = collect_vault_sources(&primary_loaded, &attached_states);
         let evaluated = engine::build_federated(&sources, &request, &context, &program, start);
         verify_federated_barriers(self.workspace, primary_generation, &attached_states)?;
-        let build = assembled_build(&request, program, context, evaluated);
+        let vault_barriers = collect_vault_barriers(&attached_states);
+        let build = assembled_build(&request, program, context, evaluated, vault_barriers);
         self.builds.insert(build_id, build.clone());
         Ok(build)
     }
@@ -1048,6 +1072,8 @@ impl<'w> Service<'w> {
             requested_was_head,
             start,
         } = invocation;
+        debug_assert!(!build_id.is_empty());
+        debug_assert!(!program.bundle.id.is_empty());
         let loaded = load_vault_from_snapshot(
             VaultLoadSpec {
                 workspace: self.workspace,
@@ -1086,7 +1112,13 @@ impl<'w> Service<'w> {
                 "eligibility barrier advanced during projection build".to_owned(),
             ));
         }
-        Ok(assembled_build(request, program, context, evaluated))
+        Ok(assembled_build(
+            request,
+            program,
+            context,
+            evaluated,
+            Vec::new(),
+        ))
     }
 
     /// Byte availability currently in force, keyed by source record.
@@ -1251,12 +1283,22 @@ impl<'w> Service<'w> {
         } else {
             build.context.requested_revision
         };
-        let is_stale = requested_revision != build.context.served_revision;
+        let mut is_stale = requested_revision != build.context.served_revision;
         if is_stale && !allow_stale {
             return Err(Error::Stale {
                 requested: requested_revision,
                 served: build.context.served_revision,
             });
+        }
+        let staleness_policy = if allow_stale {
+            StalenessPolicy::AllowStale
+        } else {
+            StalenessPolicy::Strict
+        };
+        for barrier in &build.vault_barriers {
+            if verify_attached_vault_barrier(barrier, &build.context.vaults, staleness_policy)? {
+                is_stale = true;
+            }
         }
         Ok((requested_revision, is_stale))
     }
@@ -1601,10 +1643,94 @@ struct VaultLoadSpec<'a> {
     access: &'a mneme_memory::Access,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StalenessPolicy {
+    Strict,
+    AllowStale,
+}
+
+fn verify_attached_vault_barrier(
+    barrier: &VaultBarrier,
+    context_vaults: &[VaultRevision],
+    staleness_policy: StalenessPolicy,
+) -> Result<bool, Error> {
+    assert!(!barrier.alias.is_empty());
+    debug_assert!(!context_vaults.is_empty());
+    let has_context_match = context_vaults.iter().any(|vault| {
+        vault.alias == barrier.alias && vault.served_revision == barrier.served_revision
+    });
+    if !has_context_match {
+        return Err(Error::Failed(format!(
+            "attached vault {:?} barrier does not match build context revision",
+            barrier.alias
+        )));
+    }
+    if barrier.is_external {
+        return Ok(false);
+    }
+    let attached = mneme_store::Workspace::open_read_only(
+        &barrier.root,
+        mneme_store::WorkspaceConfig::new(
+            Box::new(mneme_store::SystemClock),
+            Box::new(mneme_store::NoFaults),
+        ),
+    )?;
+    let current_generation = attached.eligibility_generation()?;
+    if current_generation != barrier.eligibility_generation {
+        return Err(mneme_store::Failure::BarrierAdvanced {
+            pinned: barrier.eligibility_generation,
+            current: current_generation,
+        }
+        .into());
+    }
+    let served_revisions = std::collections::BTreeSet::from([barrier.served_revision]);
+    if !attached
+        .revision_sequences_for(&served_revisions)?
+        .contains_key(&barrier.served_revision)
+    {
+        return Err(Error::Failed(format!(
+            "attached vault {:?} build serves a revision that is not committed in its workspace",
+            barrier.alias
+        )));
+    }
+    if barrier.requested_was_head {
+        let current_revision = attached.current_revision()?;
+        if current_revision != barrier.served_revision {
+            if staleness_policy == StalenessPolicy::Strict {
+                return Err(Error::Stale {
+                    requested: current_revision,
+                    served: barrier.served_revision,
+                });
+            }
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 struct AttachedVaultState {
     workspace: Option<mneme_store::Workspace>,
     generation: u64,
+    requested_was_head: bool,
     loaded: LoadedVaultView,
+}
+
+fn collect_vault_barriers(attached_states: &[AttachedVaultState]) -> Vec<VaultBarrier> {
+    assert!(!attached_states.is_empty());
+    attached_states
+        .iter()
+        .map(|state| VaultBarrier {
+            alias: state.loaded.metadata.alias.clone(),
+            root: state.workspace.as_ref().map_or_else(
+                || state.loaded.metadata.root.clone(),
+                |ws| ws.root().to_path_buf(),
+            ),
+            served_revision: state.loaded.metadata.served_revision,
+            eligibility_generation: state.generation,
+            requested_was_head: state.requested_was_head,
+            is_external: state.workspace.is_none(),
+        })
+        .collect()
 }
 
 fn open_federated_vault_sources(
@@ -1615,17 +1741,17 @@ fn open_federated_vault_sources(
     assert!(!sources.is_empty());
     let attached_states = sources
         .iter()
-        .map(|source| match source {
-            FederatedVaultSource::Local(attachment) => {
+        .map(|source| {
+            if let FederatedVaultSource::Local(attachment) = source {
                 let (workspace, generation, loaded) =
                     open_single_attached_vault(attachment, scope, access)?;
                 Ok(AttachedVaultState {
                     workspace: Some(workspace),
                     generation,
+                    requested_was_head: attachment.revision.is_none(),
                     loaded,
                 })
-            }
-            FederatedVaultSource::External(external) => {
+            } else if let FederatedVaultSource::External(external) = source {
                 if external.view.revision() != external.metadata.served_revision {
                     return Err(Error::Failed(format!(
                         "external vault {:?} view revision does not match served revision",
@@ -1635,12 +1761,17 @@ fn open_federated_vault_sources(
                 Ok(AttachedVaultState {
                     workspace: None,
                     generation: external.eligibility_generation,
+                    requested_was_head: false,
                     loaded: LoadedVaultView {
                         metadata: external.metadata.clone(),
                         view: external.view.clone(),
                         current_sources: external.current_sources.clone(),
                     },
                 })
+            } else {
+                Err(Error::Failed(
+                    "unsupported federated vault source".to_owned(),
+                ))
             }
         })
         .collect::<Result<Vec<_>, Error>>()?;

@@ -3776,14 +3776,13 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
         mneme_datalog::EpistemicStatus::Proposed
     );
 
-    let row_rej_acc = chain
-        .rows
-        .iter()
-        .find(|row| row.values == vec![e_rej.to_value(), e_acc.to_value()])
-        .expect("rej->acc row");
-    assert_eq!(
-        row_rej_acc.epistemic,
-        mneme_datalog::EpistemicStatus::Rejected
+    // Rejected (ZERO) is an annihilator: step_a(e_rej, e_tgt) must never satisfy positive joins.
+    assert!(
+        !chain
+            .rows
+            .iter()
+            .any(|row| row.values == vec![e_rej.to_value(), e_acc.to_value()]),
+        "Rejected base relation must not participate in derived positive joins"
     );
 
     let reach = service

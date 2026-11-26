@@ -1384,3 +1384,542 @@ fn dbsp_advance_enforces_limits_and_rolls_back_without_partial_state() {
     assert!(matches!(err, mneme_datalog::Error::LimitExceeded(_)));
     assert_eq!(tight.context().served_revision, rev1);
 }
+
+fn status_relation_payload(
+    relation_type: &str,
+    from: mneme_core::RecordId,
+    to: mneme_core::RecordId,
+    status: mneme_datalog::EpistemicStatus,
+) -> mneme_core::Payload {
+    mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("relation-type"),
+            mneme_core::Value::symbol(relation_type),
+        ),
+        (
+            mneme_core::Symbol::from("from"),
+            mneme_core::Reference::local(from, mneme_core::RecordKind::Entity).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("to"),
+            mneme_core::Reference::local(to, mneme_core::RecordKind::Entity).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::dictionary([(
+                mneme_core::Value::symbol("status"),
+                mneme_core::Value::symbol(status.name()),
+            )]),
+        ),
+    ])
+}
+
+#[test]
+fn repl_incomplete_extents_gate_negation_and_aggregates_on_add_and_advance() {
+    let (_temp, mut workspace, rev1) = setup_workspace();
+    let mut session = mneme_datalog::ReplSession::open(
+        &mut workspace,
+        mneme_datalog::ReplSessionRequest {
+            actor: "repl-test".to_owned(),
+            scope: scope(),
+            revision: Some(rev1),
+            limits: mneme_datalog::ReplLimits::default(),
+            incomplete_extents: std::collections::BTreeSet::from(["relation".to_owned()]),
+            complete_predicates: std::collections::BTreeSet::new(),
+            access: mneme_memory::Access::Operator,
+            at: None,
+        },
+    )
+    .expect("open session with incomplete relation");
+
+    let neg_rule = mneme_datalog::Rule::new(
+        "r-unlinked",
+        mneme_datalog::Atom::new("unlinked", vec![mneme_datalog::Term::var("E")]),
+        vec![
+            mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                "entity",
+                vec![
+                    mneme_datalog::Term::var("E"),
+                    mneme_datalog::Term::constant(mneme_core::Value::symbol("paper")),
+                    mneme_datalog::Term::var("L"),
+                ],
+            )),
+            mneme_datalog::Literal::Negative(mneme_datalog::Atom::new(
+                "relation",
+                vec![
+                    mneme_datalog::Term::constant(mneme_core::Value::symbol("cites")),
+                    mneme_datalog::Term::var("E"),
+                    mneme_datalog::Term::constant(rid(2).to_value()),
+                ],
+            )),
+        ],
+    );
+    let agg_rule = mneme_datalog::Rule::new(
+        "r-cite-count",
+        mneme_datalog::Atom::new(
+            "cite_count",
+            vec![
+                mneme_datalog::Term::var("From"),
+                mneme_datalog::Term::var("N"),
+            ],
+        ),
+        vec![
+            mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                "relation",
+                vec![
+                    mneme_datalog::Term::constant(mneme_core::Value::symbol("cites")),
+                    mneme_datalog::Term::var("From"),
+                    mneme_datalog::Term::var("To"),
+                ],
+            )),
+            mneme_datalog::Literal::Aggregate {
+                function: mneme_datalog::AggregateFunction::Count,
+                input: mneme_datalog::Term::var("To"),
+                output: "N".to_owned(),
+            },
+        ],
+    );
+
+    let add_neg = session.add_rule(neg_rule).expect("add neg rule");
+    assert_eq!(add_neg.status, mneme_datalog::ExecutionStatus::Partial);
+    let add_agg = session.add_rule(agg_rule).expect("add agg rule");
+    assert_eq!(add_agg.status, mneme_datalog::ExecutionStatus::Partial);
+
+    let q_neg_1 = session
+        .query_relation(None, mneme_datalog::Query::all("unlinked", 10))
+        .expect("query unlinked rev1");
+    assert!(q_neg_1.rows.is_empty());
+    assert!(!q_neg_1.exhaustive);
+    let q_agg_1 = session
+        .query_relation(None, mneme_datalog::Query::all("cite_count", 10))
+        .expect("query cite_count rev1");
+    assert!(q_agg_1.rows.is_empty());
+    assert!(!q_agg_1.exhaustive);
+
+    // Commit a new paper and citation at rev2; advance_to_revision must keep gating both rules.
+    let e_new = draft(
+        rid(40),
+        rev(40),
+        mneme_core::RecordKind::Entity,
+        scope(),
+        paper_payload("Paper Extra"),
+    );
+    let r_new = draft(
+        rid(41),
+        rev(41),
+        mneme_core::RecordKind::Relation,
+        scope(),
+        relation_payload("cites", rid(40), rid(1)),
+    );
+    let rev2 = workspace
+        .commit(mneme_store::CommitCommand {
+            base: rev1,
+            actor: "repl-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "commit-incomplete-advance".to_owned(),
+            records: vec![e_new, r_new],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit rev2")
+        .revision;
+
+    let adv = session
+        .advance_to_revision(&mut workspace, Some(rev2))
+        .expect("advance to rev2");
+    assert_eq!(adv.status, mneme_datalog::ExecutionStatus::Partial);
+
+    let q_neg_2 = session
+        .query_relation(None, mneme_datalog::Query::all("unlinked", 10))
+        .expect("query unlinked rev2");
+    assert!(
+        q_neg_2.rows.is_empty(),
+        "incomplete extent must never materialize false-absence rows on advance"
+    );
+    assert!(!q_neg_2.exhaustive);
+
+    let q_agg_2 = session
+        .query_relation(None, mneme_datalog::Query::all("cite_count", 10))
+        .expect("query cite_count rev2");
+    assert!(
+        q_agg_2.rows.is_empty(),
+        "incomplete extent must never materialize under-counted aggregate rows on advance"
+    );
+    assert!(!q_agg_2.exhaustive);
+}
+
+#[test]
+fn dbsp_recursive_epistemic_upgrade_across_rounds_matches_fresh_build() {
+    let (_temp, mut workspace) = {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = mneme_store::Workspace::create(
+            temp.path(),
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
+        )
+        .expect("create ws");
+        (temp, ws)
+    };
+    let a = rid(1);
+    let b = rid(2);
+    let c = rid(3);
+    let d = rid(4);
+    let base0 = workspace.current_revision().expect("base0");
+    // rev0: direct Proposed edges a->c, a->d, b->d, and Accepted edges a->b, c->d.
+    let rev0 = workspace
+        .commit(mneme_store::CommitCommand {
+            base: base0,
+            actor: "repl-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "rec-upgrade-0".to_owned(),
+            records: vec![
+                draft(
+                    a,
+                    rev(1),
+                    mneme_core::RecordKind::Entity,
+                    scope(),
+                    paper_payload("A"),
+                ),
+                draft(
+                    b,
+                    rev(2),
+                    mneme_core::RecordKind::Entity,
+                    scope(),
+                    paper_payload("B"),
+                ),
+                draft(
+                    c,
+                    rev(3),
+                    mneme_core::RecordKind::Entity,
+                    scope(),
+                    paper_payload("C"),
+                ),
+                draft(
+                    d,
+                    rev(4),
+                    mneme_core::RecordKind::Entity,
+                    scope(),
+                    paper_payload("D"),
+                ),
+                draft(
+                    rid(10),
+                    rev(10),
+                    mneme_core::RecordKind::Relation,
+                    scope(),
+                    status_relation_payload("edge", a, b, mneme_datalog::EpistemicStatus::Accepted),
+                ),
+                draft(
+                    rid(11),
+                    rev(11),
+                    mneme_core::RecordKind::Relation,
+                    scope(),
+                    status_relation_payload("edge", a, c, mneme_datalog::EpistemicStatus::Proposed),
+                ),
+                draft(
+                    rid(12),
+                    rev(12),
+                    mneme_core::RecordKind::Relation,
+                    scope(),
+                    status_relation_payload("edge", c, d, mneme_datalog::EpistemicStatus::Accepted),
+                ),
+                draft(
+                    rid(13),
+                    rev(13),
+                    mneme_core::RecordKind::Relation,
+                    scope(),
+                    status_relation_payload("edge", a, d, mneme_datalog::EpistemicStatus::Proposed),
+                ),
+            ],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit rev0")
+        .revision;
+
+    let mut session = open_session(
+        &mut workspace,
+        Some(rev0),
+        mneme_datalog::ReplLimits::default(),
+    );
+    let reach_base = mneme_datalog::Rule::new(
+        "r-reach-base",
+        mneme_datalog::Atom::new(
+            "reach",
+            vec![mneme_datalog::Term::var("X"), mneme_datalog::Term::var("Y")],
+        ),
+        vec![mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+            "relation",
+            vec![
+                mneme_datalog::Term::constant(mneme_core::Value::symbol("edge")),
+                mneme_datalog::Term::var("X"),
+                mneme_datalog::Term::var("Y"),
+            ],
+        ))],
+    );
+    let reach_step = mneme_datalog::Rule::new(
+        "r-reach-step",
+        mneme_datalog::Atom::new(
+            "reach",
+            vec![mneme_datalog::Term::var("X"), mneme_datalog::Term::var("Z")],
+        ),
+        vec![
+            mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                "reach",
+                vec![mneme_datalog::Term::var("X"), mneme_datalog::Term::var("Y")],
+            )),
+            mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                "relation",
+                vec![
+                    mneme_datalog::Term::constant(mneme_core::Value::symbol("edge")),
+                    mneme_datalog::Term::var("Y"),
+                    mneme_datalog::Term::var("Z"),
+                ],
+            )),
+        ],
+    );
+    session.add_rule(reach_base.clone()).expect("add base");
+    session.add_rule(reach_step.clone()).expect("add step");
+
+    // At rev0, reach(a, c) and reach(a, d) are Proposed.
+    let q0 = session
+        .query_relation(None, mneme_datalog::Query::all("reach", 20))
+        .expect("q0");
+    let ac0 = q0
+        .rows
+        .iter()
+        .find(|row| row.values == vec![a.to_value(), c.to_value()])
+        .expect("ac rev0");
+    assert_eq!(ac0.epistemic, mneme_datalog::EpistemicStatus::Proposed);
+
+    // rev1: commit Accepted edge b -> c. Round-0 still derives reach(a,c) as Proposed,
+    // round-1 derives reach(a,c) as Accepted via a->b->c, and reach(a,d) upgrades to Accepted via a->c->d!
+    let rev1 = workspace
+        .commit(mneme_store::CommitCommand {
+            base: rev0,
+            actor: "repl-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "rec-upgrade-1".to_owned(),
+            records: vec![draft(
+                rid(14),
+                rev(14),
+                mneme_core::RecordKind::Relation,
+                scope(),
+                status_relation_payload("edge", b, c, mneme_datalog::EpistemicStatus::Accepted),
+            )],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit rev1")
+        .revision;
+
+    session
+        .advance_to_revision(&mut workspace, Some(rev1))
+        .expect("advance rev1");
+    let inc = session
+        .query_relation(None, mneme_datalog::Query::all("reach", 20))
+        .expect("inc reach");
+
+    // Compare against fresh ReplSession (from-scratch evaluation) at rev1.
+    let mut fresh = open_session(
+        &mut workspace,
+        Some(rev1),
+        mneme_datalog::ReplLimits::default(),
+    );
+    fresh.add_rule(reach_base).expect("fresh base");
+    fresh.add_rule(reach_step).expect("fresh step");
+    let scratch = fresh
+        .query_relation(None, mneme_datalog::Query::all("reach", 20))
+        .expect("scratch reach");
+
+    let inc_ac = inc
+        .rows
+        .iter()
+        .find(|row| row.values == vec![a.to_value(), c.to_value()])
+        .expect("inc ac");
+    let inc_ad = inc
+        .rows
+        .iter()
+        .find(|row| row.values == vec![a.to_value(), d.to_value()])
+        .expect("inc ad");
+    assert_eq!(inc_ac.epistemic, mneme_datalog::EpistemicStatus::Accepted);
+    assert_eq!(inc_ad.epistemic, mneme_datalog::EpistemicStatus::Accepted);
+
+    let inc_map: std::collections::BTreeMap<_, _> = inc
+        .rows
+        .iter()
+        .map(|r| (r.values.clone(), r.epistemic))
+        .collect();
+    let scratch_map: std::collections::BTreeMap<_, _> = scratch
+        .rows
+        .iter()
+        .map(|r| (r.values.clone(), r.epistemic))
+        .collect();
+    assert_eq!(inc_map, scratch_map);
+}
+
+#[test]
+fn dbsp_zero_positive_atom_negated_rule_retracts_and_reappears() {
+    let (_temp, mut workspace, rev1) = setup_workspace();
+    let mut session = open_session(
+        &mut workspace,
+        Some(rev1),
+        mneme_datalog::ReplLimits::default(),
+    );
+
+    // 0-positive-atom rule: all_clear("yes") :- not relation(alert, rid(1), rid(2))
+    let rule = mneme_datalog::Rule::new(
+        "r-all-clear",
+        mneme_datalog::Atom::new(
+            "all_clear",
+            vec![mneme_datalog::Term::constant(mneme_core::Value::string(
+                "yes",
+            ))],
+        ),
+        vec![mneme_datalog::Literal::Negative(mneme_datalog::Atom::new(
+            "relation",
+            vec![
+                mneme_datalog::Term::constant(mneme_core::Value::symbol("alert")),
+                mneme_datalog::Term::constant(rid(1).to_value()),
+                mneme_datalog::Term::constant(rid(2).to_value()),
+            ],
+        ))],
+    );
+    session.add_rule(rule).expect("add zero-pos rule");
+
+    let q1 = session
+        .query_relation(None, mneme_datalog::Query::all("all_clear", 10))
+        .expect("q1");
+    assert_eq!(q1.rows.len(), 1);
+    assert_eq!(q1.rows[0].values, vec![mneme_core::Value::string("yes")]);
+
+    // rev2: commit blocking alert relation -> must emit -1 delta and retract all_clear("yes").
+    let rev2 = workspace
+        .commit(mneme_store::CommitCommand {
+            base: rev1,
+            actor: "repl-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "zero-pos-block".to_owned(),
+            records: vec![draft(
+                rid(90),
+                rev(90),
+                mneme_core::RecordKind::Relation,
+                scope(),
+                status_relation_payload(
+                    "alert",
+                    rid(1),
+                    rid(2),
+                    mneme_datalog::EpistemicStatus::Accepted,
+                ),
+            )],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit alert")
+        .revision;
+
+    session
+        .advance_to_revision(&mut workspace, Some(rev2))
+        .expect("advance rev2");
+    let q2 = session
+        .query_relation(None, mneme_datalog::Query::all("all_clear", 10))
+        .expect("q2");
+    assert!(
+        q2.rows.is_empty(),
+        "0-positive-atom negated rule must retract cleanly when blocker is committed"
+    );
+
+    // rev3: update alert relation to Rejected (ZERO) -> blocker disappears and all_clear("yes") reappears.
+    let rev3 = workspace
+        .commit(mneme_store::CommitCommand {
+            base: rev2,
+            actor: "repl-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "zero-pos-unblock".to_owned(),
+            records: vec![mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Relation,
+                record_id: rid(90),
+                revision_id: rev(91),
+                predecessor: Some(rev(90)),
+                scope: scope(),
+                payload: status_relation_payload(
+                    "alert",
+                    rid(1),
+                    rid(2),
+                    mneme_datalog::EpistemicStatus::Rejected,
+                ),
+            }],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit rejected alert")
+        .revision;
+
+    session
+        .advance_to_revision(&mut workspace, Some(rev3))
+        .expect("advance rev3");
+    let q3 = session
+        .query_relation(None, mneme_datalog::Query::all("all_clear", 10))
+        .expect("q3");
+    assert_eq!(q3.rows.len(), 1);
+    assert_eq!(q3.rows[0].values, vec![mneme_core::Value::string("yes")]);
+}
+
+#[test]
+fn repl_sync_after_rule_change_enforces_step_limits_and_charges_total_work() {
+    let (_temp, mut workspace, rev1) = setup_workspace();
+
+    // Measure full work (evaluate_incremental + sync_after_rule_change) for adding paper_rule.
+    let mut reference = open_session(
+        &mut workspace,
+        Some(rev1),
+        mneme_datalog::ReplLimits::default(),
+    );
+    let base_work = reference.total_work();
+    let step = reference.add_rule(paper_rule()).expect("reference add");
+    assert!(step.step_work > 0);
+    assert_eq!(reference.total_work(), base_work + step.step_work);
+
+    // Now pick a step work budget strictly smaller than `step.step_work` (specifically 1 less),
+    // which is large enough for `evaluate_incremental` to succeed yet tight enough for
+    // `sync_after_rule_change` to hit `LimitExceeded` and roll back while charging total_work.
+    let tight_step_work = step.step_work.saturating_sub(1).max(1);
+    let mut tight = open_session(
+        &mut workspace,
+        Some(rev1),
+        mneme_datalog::ReplLimits {
+            per_step: mneme_datalog::Limits {
+                max_work: tight_step_work,
+                ..mneme_datalog::Limits::default()
+            },
+            max_total_work: base_work + tight_step_work,
+            ..mneme_datalog::ReplLimits::default()
+        },
+    );
+    let work_before = tight.total_work();
+    let err = tight
+        .add_rule(paper_rule())
+        .expect_err("sync_after_rule_change must enforce step_limits");
+    assert!(matches!(err, mneme_datalog::Error::LimitExceeded(_)));
+    assert!(
+        tight.total_work() > work_before,
+        "failed sync_after_rule_change must charge total_work"
+    );
+    assert!(tight.total_work() <= tight.limits().max_total_work);
+    assert!(
+        tight.rules().is_empty(),
+        "failed sync_after_rule_change must roll back without partial state"
+    );
+}
