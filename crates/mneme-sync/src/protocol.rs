@@ -113,6 +113,247 @@ pub struct BlobDigestRef {
     pub byte_length: u64,
 }
 
+/// Wire representation of a [`mneme_kernel::hlc::HybridTimestamp`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WireHlc {
+    pub physical_ns: i64,
+    pub logical: u32,
+}
+
+impl WireHlc {
+    /// Convert a kernel [`mneme_kernel::hlc::HybridTimestamp`] into its wire form.
+    pub const fn from_kernel(ts: mneme_kernel::hlc::HybridTimestamp) -> Self {
+        Self {
+            physical_ns: ts.physical_ns,
+            logical: ts.logical,
+        }
+    }
+
+    /// Convert back into a kernel [`mneme_kernel::hlc::HybridTimestamp`].
+    pub const fn to_kernel(self) -> mneme_kernel::hlc::HybridTimestamp {
+        mneme_kernel::hlc::HybridTimestamp {
+            physical_ns: self.physical_ns,
+            logical: self.logical,
+        }
+    }
+}
+
+/// Thread-safe Hybrid Logical Clock state owned by one [`crate::SyncNode`].
+#[derive(Clone)]
+pub(crate) struct SharedSyncHlc {
+    inner: std::sync::Arc<std::sync::Mutex<(mneme_kernel::hlc::HybridTimestamp, i64)>>,
+    clock: std::sync::Arc<dyn mneme_store::Clock>,
+}
+
+impl SharedSyncHlc {
+    pub(crate) fn new(clock: std::sync::Arc<dyn mneme_store::Clock>) -> Self {
+        let now_ns = clock.now().nanos();
+        Self {
+            inner: std::sync::Arc::new(std::sync::Mutex::new((
+                mneme_kernel::hlc::HybridTimestamp {
+                    physical_ns: now_ns,
+                    logical: 0,
+                },
+                mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS,
+            ))),
+            clock,
+        }
+    }
+
+    pub(crate) fn current(&self) -> mneme_kernel::hlc::HybridTimestamp {
+        self.inner
+            .lock()
+            .map(|guard| guard.0)
+            .unwrap_or(mneme_kernel::hlc::HybridTimestamp {
+                physical_ns: 0,
+                logical: 0,
+            })
+    }
+
+    pub(crate) fn set_max_skew_ns(&self, max_skew_ns: i64) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.1 = max_skew_ns;
+        }
+    }
+
+    pub(crate) fn tick(&self) -> crate::error::Result<WireHlc> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| crate::error::Failure::Protocol("sync HLC mutex poisoned".to_owned()))?;
+        let pt_ns = self.clock.now().nanos();
+        let next = mneme_kernel::hlc::tick_local(guard.0, pt_ns, guard.1).map_err(|error| {
+            crate::error::Failure::Protocol(format!("sync HLC tick failed: {error:?}"))
+        })?;
+        guard.0 = next;
+        Ok(WireHlc::from_kernel(next))
+    }
+
+    pub(crate) fn observe(&self, remote: WireHlc) -> crate::error::Result<WireHlc> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| crate::error::Failure::Protocol("sync HLC mutex poisoned".to_owned()))?;
+        let pt_ns = self.clock.now().nanos();
+        let next = mneme_kernel::hlc::receive(guard.0, pt_ns, remote.to_kernel(), guard.1)
+            .map_err(|error| {
+                crate::error::Failure::Protocol(format!("sync HLC receive failed: {error:?}"))
+            })?;
+        guard.0 = next;
+        Ok(WireHlc::from_kernel(next))
+    }
+}
+
+const fn no_hlc() -> Option<WireHlc> {
+    None
+}
+
+const fn default_generation() -> u64 {
+    1
+}
+
+/// Wire representation of one [`mneme_store::portability::PortableSuppression`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct WirePortableSuppression {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub target_kind: String,
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<WireDigest>,
+    pub generation: u64,
+}
+
+impl WirePortableSuppression {
+    fn from_portable(entry: &mneme_store::portability::PortableSuppression) -> Self {
+        Self {
+            target: entry.target.to_hex(),
+            revision: entry.revision.map(|rev| rev.to_hex()),
+            target_kind: entry.target_kind.clone(),
+            mode: entry.mode.as_str().to_owned(),
+            content_digest: entry.content_digest.map(WireDigest::from_digest),
+            generation: entry.generation,
+        }
+    }
+
+    fn to_portable(&self) -> crate::error::Result<mneme_store::portability::PortableSuppression> {
+        let target = mneme_core::RecordId::from_hex(&self.target).map_err(|reason| {
+            crate::error::Failure::Protocol(format!("invalid suppression target: {reason}"))
+        })?;
+        let revision = self
+            .revision
+            .as_deref()
+            .map(|hex| {
+                mneme_core::RevisionId::from_hex(hex).map_err(|reason| {
+                    crate::error::Failure::Protocol(format!(
+                        "invalid suppression revision: {reason}"
+                    ))
+                })
+            })
+            .transpose()?;
+        let mode = mneme_store::SuppressionMode::parse(&self.mode).ok_or_else(|| {
+            crate::error::Failure::Protocol(format!("invalid suppression mode {}", self.mode))
+        })?;
+        let content_digest = self
+            .content_digest
+            .as_ref()
+            .map(WireDigest::to_digest)
+            .transpose()?;
+        Ok(mneme_store::portability::PortableSuppression {
+            target,
+            revision,
+            target_kind: self.target_kind.clone(),
+            mode,
+            content_digest,
+            generation: self.generation,
+        })
+    }
+}
+
+/// Wire representation of one [`mneme_store::portability::PortablePruning`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct WirePortablePruning {
+    pub source: String,
+    pub revision: String,
+    pub digest: WireDigest,
+}
+
+impl WirePortablePruning {
+    fn from_portable(entry: &mneme_store::portability::PortablePruning) -> Self {
+        Self {
+            source: entry.source.to_hex(),
+            revision: entry.revision.to_hex(),
+            digest: WireDigest::from_digest(entry.digest),
+        }
+    }
+
+    fn to_portable(&self) -> crate::error::Result<mneme_store::portability::PortablePruning> {
+        let source = mneme_core::RecordId::from_hex(&self.source).map_err(|reason| {
+            crate::error::Failure::Protocol(format!("invalid pruning source: {reason}"))
+        })?;
+        let revision = mneme_core::RevisionId::from_hex(&self.revision).map_err(|reason| {
+            crate::error::Failure::Protocol(format!("invalid pruning revision: {reason}"))
+        })?;
+        let digest = self.digest.to_digest()?;
+        Ok(mneme_store::portability::PortablePruning {
+            source,
+            revision,
+            digest,
+        })
+    }
+}
+
+/// Wire representation of [`mneme_store::portability::PortableRetentionState`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct WirePortableRetentionState {
+    pub generation: u64,
+    pub suppressions: Vec<WirePortableSuppression>,
+    pub prunings: Vec<WirePortablePruning>,
+}
+
+impl WirePortableRetentionState {
+    pub(crate) fn from_portable(state: &mneme_store::portability::PortableRetentionState) -> Self {
+        Self {
+            generation: state.generation,
+            suppressions: state
+                .suppressions
+                .iter()
+                .map(WirePortableSuppression::from_portable)
+                .collect(),
+            prunings: state
+                .prunings
+                .iter()
+                .map(WirePortablePruning::from_portable)
+                .collect(),
+        }
+    }
+
+    pub(crate) fn to_portable(
+        &self,
+    ) -> crate::error::Result<mneme_store::portability::PortableRetentionState> {
+        let suppressions = self
+            .suppressions
+            .iter()
+            .map(WirePortableSuppression::to_portable)
+            .collect::<crate::error::Result<Vec<_>>>()?;
+        let prunings = self
+            .prunings
+            .iter()
+            .map(WirePortablePruning::to_portable)
+            .collect::<crate::error::Result<Vec<_>>>()?;
+        Ok(mneme_store::portability::PortableRetentionState {
+            generation: self.generation,
+            suppressions,
+            prunings,
+        })
+    }
+}
+
 /// Metadata describing a served vault scope revision and its portable bundle.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -122,9 +363,13 @@ pub struct VaultSnapshotInfo {
     pub head_revision: String,
     pub head_revision_digest: WireDigest,
     pub sequence: u64,
+    #[serde(default = "default_generation")]
+    pub eligibility_generation: u64,
     pub bundle_hash: String,
     pub bundle_bytes: u64,
     pub blobs: Vec<BlobDigestRef>,
+    #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+    pub hlc: Option<WireHlc>,
 }
 
 impl VaultSnapshotInfo {
@@ -150,6 +395,7 @@ impl VaultSnapshotInfo {
             seq: self.sequence,
             bundle_hash: self.bundle_hash.clone(),
             bundle_bytes: self.bundle_bytes,
+            hlc: self.hlc,
             origin: None,
             signature: None,
         }
@@ -187,6 +433,8 @@ pub struct HeadAnnouncement {
     pub seq: u64,
     pub bundle_hash: String,
     pub bundle_bytes: u64,
+    #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+    pub hlc: Option<WireHlc>,
     #[serde(default = "no_origin", skip_serializing_if = "Option::is_none")]
     pub origin: Option<iroh::EndpointId>,
     #[serde(default = "no_signature", skip_serializing_if = "Option::is_none")]
@@ -286,6 +534,11 @@ fn canonical_announcement_bytes(
     out.extend_from_slice(&announcement.seq.to_le_bytes());
     push_len_prefixed(&mut out, announcement.bundle_hash.as_bytes())?;
     out.extend_from_slice(&announcement.bundle_bytes.to_le_bytes());
+    if let Some(ts) = announcement.hlc {
+        out.push(1);
+        out.extend_from_slice(&ts.physical_ns.to_le_bytes());
+        out.extend_from_slice(&ts.logical.to_le_bytes());
+    }
     out.extend_from_slice(origin.as_bytes());
     Ok(out)
 }
@@ -343,6 +596,8 @@ pub(crate) struct WireDeltaRevision {
     pub commit_sequence: u64,
     pub commit_actor: String,
     pub commit_at_ns: i64,
+    #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+    pub commit_hlc: Option<WireHlc>,
 }
 
 impl WireDeltaRevision {
@@ -354,6 +609,7 @@ impl WireDeltaRevision {
             commit_sequence: revision.commit.sequence,
             commit_actor: revision.commit.actor.clone(),
             commit_at_ns: revision.commit.committed_at_ns,
+            commit_hlc: revision.commit.hlc.map(WireHlc::from_kernel),
         }
     }
 
@@ -400,6 +656,7 @@ impl WireDeltaRevision {
                 sequence: self.commit_sequence,
                 actor: self.commit_actor.clone(),
                 committed_at_ns: self.commit_at_ns,
+                hlc: self.commit_hlc.map(WireHlc::to_kernel),
             },
         })
     }
@@ -421,11 +678,17 @@ const fn no_limit() -> Option<u64> {
     None
 }
 
+const fn no_retention() -> Option<Box<WirePortableRetentionState>> {
+    None
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub(crate) enum SyncControlRequest {
     GetVaultHead {
         scope: String,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
         #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
         capability: Option<crate::capability::CapabilityToken>,
     },
@@ -433,6 +696,8 @@ pub(crate) enum SyncControlRequest {
         scope: String,
         snapshot_revision: String,
         request: crate::rbsr::RbsrRequest,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
         #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
         capability: Option<crate::capability::CapabilityToken>,
     },
@@ -441,11 +706,15 @@ pub(crate) enum SyncControlRequest {
         snapshot_revision: String,
         revisions: Vec<WireRevisionKey>,
         blobs: Vec<String>,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
         #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
         capability: Option<crate::capability::CapabilityToken>,
     },
     PushHead {
         announcement: Box<HeadAnnouncement>,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
         #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
         capability: Option<crate::capability::CapabilityToken>,
     },
@@ -458,6 +727,8 @@ pub(crate) enum SyncControlRequest {
         after_id: Option<crate::capability::TombstoneId>,
         #[serde(default = "no_limit", skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
         #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
         capability: Option<crate::capability::CapabilityToken>,
     },
@@ -473,6 +744,18 @@ impl SyncControlRequest {
             | SyncControlRequest::SyncRevocations { capability, .. } => capability.as_ref(),
         }
     }
+
+    fn sender_hlc(&self) -> Option<WireHlc> {
+        match self {
+            SyncControlRequest::GetVaultHead { hlc, .. }
+            | SyncControlRequest::RbsrReconcile { hlc, .. }
+            | SyncControlRequest::FetchDeltaMetadata { hlc, .. }
+            | SyncControlRequest::SyncRevocations { hlc, .. } => *hlc,
+            SyncControlRequest::PushHead {
+                announcement, hlc, ..
+            } => hlc.or(announcement.hlc),
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -483,11 +766,17 @@ pub(crate) enum SyncControlResponse {
     DeltaMetadata {
         revisions: Vec<WireDeltaRevision>,
         blobs: Vec<BlobDigestRef>,
+        #[serde(default = "no_retention", skip_serializing_if = "Option::is_none")]
+        retention: Option<Box<WirePortableRetentionState>>,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
     },
     HeadAccepted {
         vault_id: String,
         scope: String,
         seq: u64,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
     },
     Revocations {
         revocations: Vec<crate::capability::RevocationTombstone>,
@@ -498,6 +787,8 @@ pub(crate) enum SyncControlResponse {
             skip_serializing_if = "Option::is_none"
         )]
         next_cursor: Option<crate::capability::TombstoneId>,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
     },
     Refused {
         reason: String,
@@ -509,6 +800,21 @@ pub(crate) enum SyncControlResponse {
         token_id: String,
         reason: String,
     },
+}
+
+impl SyncControlResponse {
+    pub(crate) fn sender_hlc(&self) -> Option<WireHlc> {
+        match self {
+            SyncControlResponse::VaultHead(info) => info.hlc,
+            SyncControlResponse::DeltaMetadata { hlc, .. }
+            | SyncControlResponse::HeadAccepted { hlc, .. }
+            | SyncControlResponse::Revocations { hlc, .. } => *hlc,
+            SyncControlResponse::RbsrReply(_)
+            | SyncControlResponse::Refused { .. }
+            | SyncControlResponse::CapabilityDenied { .. }
+            | SyncControlResponse::CapabilityRevoked { .. } => None,
+        }
+    }
 }
 
 /// Protocol handler wrapper enforcing the deny-by-default Ed25519 allowlist.
@@ -560,6 +866,7 @@ pub(crate) struct PublishedScopeEntry {
         mneme_store::portability::PortableRevision,
     >,
     pub blobs_by_digest: std::collections::BTreeMap<[u8; 32], BlobDigestRef>,
+    pub retention: mneme_store::portability::PortableRetentionState,
     pub authorized_hashes: std::collections::BTreeSet<iroh_blobs::Hash>,
 }
 
@@ -880,6 +1187,7 @@ pub(crate) type SharedScopeTable = std::sync::Arc<std::sync::RwLock<SyncScopeTab
 pub(crate) struct SyncControlHandler {
     auth: CapabilityAuthorizer,
     scopes: SharedScopeTable,
+    hlc: SharedSyncHlc,
     connection_limit: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
@@ -890,10 +1198,15 @@ impl std::fmt::Debug for SyncControlHandler {
 }
 
 impl SyncControlHandler {
-    pub(crate) fn new(auth: CapabilityAuthorizer, scopes: SharedScopeTable) -> Self {
+    pub(crate) fn new(
+        auth: CapabilityAuthorizer,
+        scopes: SharedScopeTable,
+        hlc: SharedSyncHlc,
+    ) -> Self {
         Self {
             auth,
             scopes,
+            hlc,
             connection_limit: std::sync::Arc::new(tokio::sync::Semaphore::new(
                 MAX_CONCURRENT_CONTROL_SEMAPHORE,
             )),
@@ -955,15 +1268,23 @@ impl SyncControlHandler {
         remote: iroh::EndpointId,
         request: &SyncControlRequest,
     ) -> SyncControlResponse {
+        if let Some(remote_hlc) = request.sender_hlc()
+            && let Err(error) = self.hlc.observe(remote_hlc)
+        {
+            return SyncControlResponse::Refused {
+                reason: error.to_string(),
+            };
+        }
         match request {
-            SyncControlRequest::GetVaultHead { scope, capability } => {
-                self.handle_get_vault_head(remote, scope, capability.as_ref())
-            }
+            SyncControlRequest::GetVaultHead {
+                scope, capability, ..
+            } => self.handle_get_vault_head(remote, scope, capability.as_ref()),
             SyncControlRequest::RbsrReconcile {
                 scope,
                 snapshot_revision,
                 request,
                 capability,
+                ..
             } => self.handle_rbsr_reconcile(RbsrReconcileInput {
                 remote,
                 scope,
@@ -977,6 +1298,7 @@ impl SyncControlHandler {
                 revisions,
                 blobs,
                 capability,
+                ..
             } => self.handle_fetch_delta_metadata(FetchDeltaMetadataInput {
                 remote,
                 scope,
@@ -988,12 +1310,14 @@ impl SyncControlHandler {
             SyncControlRequest::PushHead {
                 announcement,
                 capability,
+                ..
             } => self.handle_push_head(remote, announcement, capability.as_ref()),
             SyncControlRequest::SyncRevocations {
                 revocations,
                 after_id,
                 limit,
                 capability,
+                ..
             } => self.handle_sync_revocations(
                 remote,
                 revocations,
@@ -1023,6 +1347,9 @@ impl SyncControlHandler {
         // peers discover missing blobs via RBSR on /mneme/sync/1.
         let mut summary = entry.info.clone();
         summary.blobs.clear();
+        if let Ok(ts) = self.hlc.tick() {
+            summary.hlc = Some(ts);
+        }
         SyncControlResponse::VaultHead(Box::new(summary))
     }
 
@@ -1073,7 +1400,7 @@ impl SyncControlHandler {
                 ),
             };
         }
-        resolve_delta_metadata(&entry, input.revisions, input.blobs)
+        resolve_delta_metadata(&entry, input.revisions, input.blobs, self.hlc.tick().ok())
     }
 
     fn authorize_push_head(
@@ -1171,6 +1498,7 @@ impl SyncControlHandler {
             vault_id: announcement.vault_id.clone(),
             scope: announcement.scope.clone(),
             seq: announcement.seq,
+            hlc: self.hlc.tick().ok(),
         }
     }
 
@@ -1229,6 +1557,7 @@ impl SyncControlHandler {
             revocations: page,
             has_more,
             next_cursor,
+            hlc: self.hlc.tick().ok(),
         }
     }
 
@@ -1375,6 +1704,7 @@ fn resolve_delta_metadata(
     entry: &PublishedScopeEntry,
     revision_keys: &[WireRevisionKey],
     blob_hexes: &[String],
+    hlc: Option<WireHlc>,
 ) -> SyncControlResponse {
     if revision_keys.len() as u64 > MAX_DELTA_ITEMS_PER_REQUEST
         || blob_hexes.len() as u64 > MAX_DELTA_ITEMS_PER_REQUEST
@@ -1417,6 +1747,10 @@ fn resolve_delta_metadata(
     SyncControlResponse::DeltaMetadata {
         revisions: out_revisions,
         blobs: out_blobs,
+        retention: Some(Box::new(WirePortableRetentionState::from_portable(
+            &entry.retention,
+        ))),
+        hlc,
     }
 }
 

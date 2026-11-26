@@ -85,6 +85,7 @@ pub struct VaultGossipTopic {
     authorized_issuers: crate::capability::SharedAuthorizedIssuers,
     leases: crate::capability::SharedCapabilityLeases,
     clock: std::sync::Arc<dyn mneme_store::Clock>,
+    hlc: crate::protocol::SharedSyncHlc,
     high_water: std::collections::BTreeMap<(mneme_core::ScopeId, iroh::EndpointId), u64>,
     topic: iroh_gossip::GossipTopic,
 }
@@ -103,7 +104,9 @@ impl VaultGossipTopic {
         &mut self,
         info: &crate::protocol::VaultSnapshotInfo,
     ) -> crate::error::Result<()> {
-        let announcement = info.to_signed_announcement(&self.secret_key)?;
+        let mut announcement = info.to_announcement();
+        announcement.hlc = Some(self.hlc.tick()?);
+        let announcement = announcement.signed(&self.secret_key)?;
         let bytes = announcement.encode()?;
         self.topic
             .broadcast(bytes)
@@ -181,6 +184,11 @@ impl VaultGossipTopic {
             if !self.is_sender_authorized(origin, &scope) {
                 continue;
             }
+            if let Some(remote_hlc) = announcement.hlc
+                && self.hlc.observe(remote_hlc).is_err()
+            {
+                continue;
+            }
             let key = (scope, origin);
             if let Some(&prev_seq) = self.high_water.get(&key)
                 && announcement.seq <= prev_seq
@@ -228,6 +236,7 @@ pub struct SyncNode {
     authorized_issuers: crate::capability::SharedAuthorizedIssuers,
     leases: crate::capability::SharedCapabilityLeases,
     clock: std::sync::Arc<dyn mneme_store::Clock>,
+    hlc: crate::protocol::SharedSyncHlc,
     scopes: crate::protocol::SharedScopeTable,
 }
 
@@ -275,7 +284,9 @@ impl SyncNode {
             crate::capability::CapabilityAuthority::SyncPull,
             gossip.clone(),
         );
-        let control_handler = crate::protocol::SyncControlHandler::new(auth, scopes.clone());
+        let hlc = crate::protocol::SharedSyncHlc::new(std::sync::Arc::clone(&config.clock));
+        let control_handler =
+            crate::protocol::SyncControlHandler::new(auth, scopes.clone(), hlc.clone());
 
         let router = iroh::protocol::Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, blobs_handler)
@@ -296,8 +307,19 @@ impl SyncNode {
             authorized_issuers,
             leases,
             clock: config.clock,
+            hlc,
             scopes,
         })
+    }
+
+    /// Return this node's current Hybrid Logical Clock watermark.
+    pub fn current_hlc(&self) -> mneme_kernel::hlc::HybridTimestamp {
+        self.hlc.current()
+    }
+
+    /// Configure the maximum permitted HLC physical clock skew in nanoseconds.
+    pub fn set_hlc_max_skew_ns(&self, max_skew_ns: i64) {
+        self.hlc.set_max_skew_ns(max_skew_ns);
     }
 
     /// Return this node's Ed25519 identity.
@@ -392,6 +414,7 @@ impl SyncNode {
             rbsr_set: exported.rbsr_set,
             revisions: exported.revisions,
             blobs_by_digest: exported.blobs_by_digest,
+            retention: exported.retention,
             authorized_hashes,
         });
         let mut guard = self.scopes.write().map_err(|_| {
@@ -433,6 +456,7 @@ impl SyncNode {
             authorized_issuers: self.authorized_issuers.clone(),
             leases: self.leases.clone(),
             clock: std::sync::Arc::clone(&self.clock),
+            hlc: self.hlc.clone(),
             high_water: std::collections::BTreeMap::new(),
             topic,
         })
@@ -446,7 +470,8 @@ impl SyncNode {
     ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
         self.require_peer_scope(peer, scope)?;
         let conn = self.connect_control(peer).await?;
-        let (info, _sent, _recv) = fetch_vault_head_on_conn(&conn, peer, scope, None).await?;
+        let (info, _sent, _recv) =
+            fetch_vault_head_on_conn(&conn, peer, scope, None, &self.hlc).await?;
         conn.close(0_u32.into(), b"done");
         Ok(info)
     }
@@ -469,6 +494,7 @@ impl SyncNode {
                 snapshot_revision,
                 local_set,
                 capability: None,
+                hlc: &self.hlc,
             },
         )
         .await?;
@@ -495,6 +521,7 @@ impl SyncNode {
                 peer,
                 &crate::protocol::SyncControlRequest::GetVaultHead {
                     scope: scope.to_string(),
+                    hlc: Some(self.hlc.tick()?),
                     capability: Some(capability.clone()),
                 },
             )
@@ -518,7 +545,7 @@ impl SyncNode {
         self.require_peer_scope(request.peer, &request.scope)?;
         let conn = self.connect_control(request.peer).await?;
         let (snapshot, head_sent, head_recv) =
-            fetch_vault_head_on_conn(&conn, request.peer, &request.scope, None).await?;
+            fetch_vault_head_on_conn(&conn, request.peer, &request.scope, None, &self.hlc).await?;
         self.finish_pull_with_snapshot(
             conn,
             request,
@@ -547,8 +574,14 @@ impl SyncNode {
             crate::capability::CapabilityAuthority::SyncPull,
         )?;
         let conn = self.connect_control(request.peer).await?;
-        let (snapshot, head_sent, head_recv) =
-            fetch_vault_head_on_conn(&conn, request.peer, &request.scope, Some(capability)).await?;
+        let (snapshot, head_sent, head_recv) = fetch_vault_head_on_conn(
+            &conn,
+            request.peer,
+            &request.scope,
+            Some(capability),
+            &self.hlc,
+        )
+        .await?;
         if snapshot.vault_id != vault_id {
             conn.close(0_u32.into(), b"wrong-vault");
             return Err(crate::error::Failure::Protocol(format!(
@@ -587,13 +620,18 @@ impl SyncNode {
         let signed = if announcement.signature.is_some() {
             announcement.clone()
         } else {
-            announcement.clone().signed(&self.secret_key)?
+            let mut with_hlc = announcement.clone();
+            if with_hlc.hlc.is_none() {
+                with_hlc.hlc = Some(self.hlc.tick()?);
+            }
+            with_hlc.signed(&self.secret_key)?
         };
         let response = self
             .send_control_request(
                 peer,
                 &crate::protocol::SyncControlRequest::PushHead {
                     announcement: Box::new(signed),
+                    hlc: Some(self.hlc.tick()?),
                     capability: Some(capability.clone()),
                 },
             )
@@ -707,6 +745,7 @@ impl SyncNode {
                     revocations,
                     after_id,
                     limit: Some(crate::capability::MAX_REVOCATIONS_PER_PAGE),
+                    hlc: Some(self.hlc.tick()?),
                     capability: capability.cloned(),
                 },
             )
@@ -716,6 +755,7 @@ impl SyncNode {
                 revocations,
                 has_more,
                 next_cursor,
+                ..
             } => Ok((revocations, has_more, next_cursor)),
             other => Err(unexpected_control_response(peer, other)),
         }
@@ -755,7 +795,7 @@ impl SyncNode {
         mut stats: SyncTransferStats,
         capability: Option<&crate::capability::CapabilityToken>,
     ) -> crate::error::Result<PullOutcome> {
-        let local_set = collect_local_rbsr_blocking(&request).await?;
+        let (local_set, local_generation) = collect_local_rbsr_blocking(&request).await?;
         let (rbsr_outcome, rbsr_sent, rbsr_recv) = reconcile_on_conn(
             &conn,
             ReconcileConnQuery {
@@ -764,6 +804,7 @@ impl SyncNode {
                 snapshot_revision: &snapshot.head_revision,
                 local_set: &local_set,
                 capability,
+                hlc: &self.hlc,
             },
         )
         .await?;
@@ -775,7 +816,9 @@ impl SyncNode {
         stats.rbsr_local_only_items = rbsr_outcome.local_only.len() as u64;
 
         let extra_local = partition_keys(&rbsr_outcome.local_only)?;
-        if !extra_local.revisions.is_empty() {
+        let missing = partition_keys(&rbsr_outcome.remote_only)?;
+        let has_retention_update = snapshot.eligibility_generation > local_generation;
+        if !extra_local.revisions.is_empty() && !has_retention_update {
             conn.close(0_u32.into(), b"conflict");
             return Err(crate::error::Failure::Store(
                 mneme_store::Failure::PortableArchive(
@@ -784,8 +827,7 @@ impl SyncNode {
             ));
         }
 
-        let missing = partition_keys(&rbsr_outcome.remote_only)?;
-        if missing.revisions.is_empty() && missing.blobs.is_empty() {
+        if missing.revisions.is_empty() && missing.blobs.is_empty() && !has_retention_update {
             conn.close(0_u32.into(), b"done");
             return self.complete_empty_diff(request, snapshot, stats);
         }
@@ -797,13 +839,34 @@ impl SyncNode {
             missing_revs: &missing.revisions,
             missing_blobs: &missing.blobs,
             capability,
+            hlc: &self.hlc,
         };
-        let (delta_revisions, delta_blob_refs, meta_sent, meta_recv) =
+        let (delta_revisions, delta_blob_refs, delta_retention, meta_sent, meta_recv) =
             fetch_delta_metadata_on_conn(&conn, &query).await?;
         conn.close(0_u32.into(), b"done");
 
         stats.control_bytes_sent = stats.control_bytes_sent.saturating_add(meta_sent);
         stats.control_bytes_received = stats.control_bytes_received.saturating_add(meta_recv);
+
+        if !extra_local.revisions.is_empty() {
+            let retention_barrier_present = delta_retention.as_ref().is_some_and(|retention| {
+                retention.generation > local_generation
+                    || extra_local.revisions.iter().any(|(rec_id, rev_id)| {
+                        retention.suppressions.iter().any(|sup| {
+                            sup.mode == mneme_store::SuppressionMode::Forgotten
+                                && sup.target == *rec_id
+                                && (sup.revision.is_none() || sup.revision == Some(*rev_id))
+                        })
+                    })
+            });
+            if !retention_barrier_present {
+                return Err(crate::error::Failure::Store(
+                    mneme_store::Failure::PortableArchive(
+                        "destination workspace history conflicts with remote peer".to_owned(),
+                    ),
+                ));
+            }
+        }
 
         let (fetched_blobs, blob_bytes_fetched) = self
             .download_delta_blobs(request.peer, &request.destination, &delta_blob_refs)
@@ -811,8 +874,13 @@ impl SyncNode {
         stats.blobs_fetched = fetched_blobs.len() as u64;
         stats.blob_bytes_fetched = blob_bytes_fetched;
 
-        let delta =
-            build_portable_delta(&request.scope, &snapshot, delta_revisions, fetched_blobs)?;
+        let delta = build_portable_delta(
+            &request.scope,
+            &snapshot,
+            delta_revisions,
+            fetched_blobs,
+            delta_retention,
+        )?;
         let destination = request.destination.clone();
         let workspace_config = (request.workspace_config)();
         let ingested = tokio::task::spawn_blocking(move || {
@@ -863,9 +931,14 @@ impl SyncNode {
             .read_to_end(crate::protocol::MAX_CONTROL_MESSAGE_BYTES)
             .await
             .map_err(|error| crate::error::Failure::Transport(format!("read control: {error}")))?;
-        serde_json::from_slice(&response_bytes).map_err(|error| {
-            crate::error::Failure::Protocol(format!("decode control response: {error}"))
-        })
+        let response: crate::protocol::SyncControlResponse =
+            serde_json::from_slice(&response_bytes).map_err(|error| {
+                crate::error::Failure::Protocol(format!("decode control response: {error}"))
+            })?;
+        if let Some(remote_hlc) = response.sender_hlc() {
+            let _ = self.hlc.observe(remote_hlc)?;
+        }
+        Ok(response)
     }
 
     fn precheck_local_capability(
@@ -1256,12 +1329,17 @@ async fn fetch_vault_head_on_conn(
     peer: iroh::EndpointId,
     scope: &mneme_core::ScopeId,
     capability: Option<&crate::capability::CapabilityToken>,
+    hlc: &crate::protocol::SharedSyncHlc,
 ) -> crate::error::Result<(crate::protocol::VaultSnapshotInfo, u64, u64)> {
     let req = crate::protocol::SyncControlRequest::GetVaultHead {
         scope: scope.to_string(),
+        hlc: Some(hlc.tick()?),
         capability: capability.cloned(),
     };
     let (response, sent, recv) = send_control_on_conn(conn, &req).await?;
+    if let Some(remote_hlc) = response.sender_hlc() {
+        let _ = hlc.observe(remote_hlc)?;
+    }
     match response {
         crate::protocol::SyncControlResponse::VaultHead(info) => Ok((*info, sent, recv)),
         other => Err(unexpected_control_response(peer, other)),
@@ -1274,6 +1352,7 @@ struct ReconcileConnQuery<'a> {
     snapshot_revision: &'a str,
     local_set: &'a crate::rbsr::RbsrSet,
     capability: Option<&'a crate::capability::CapabilityToken>,
+    hlc: &'a crate::protocol::SharedSyncHlc,
 }
 
 async fn reconcile_on_conn(
@@ -1290,9 +1369,13 @@ async fn reconcile_on_conn(
             scope: scope_text.clone(),
             snapshot_revision: query.snapshot_revision.to_owned(),
             request,
+            hlc: Some(query.hlc.tick()?),
             capability: query.capability.cloned(),
         };
         let (response, sent, recv) = send_control_on_conn(conn, &control_req).await?;
+        if let Some(remote_hlc) = response.sender_hlc() {
+            let _ = query.hlc.observe(remote_hlc)?;
+        }
         total_sent = total_sent.saturating_add(sent);
         total_recv = total_recv.saturating_add(recv);
         match response {
@@ -1314,6 +1397,7 @@ struct DeltaMetadataQuery<'a> {
     missing_revs: &'a [(mneme_core::RecordId, mneme_core::RevisionId)],
     missing_blobs: &'a [[u8; 32]],
     capability: Option<&'a crate::capability::CapabilityToken>,
+    hlc: &'a crate::protocol::SharedSyncHlc,
 }
 
 fn build_portable_delta(
@@ -1321,6 +1405,7 @@ fn build_portable_delta(
     snapshot: &crate::protocol::VaultSnapshotInfo,
     revisions: Vec<mneme_store::portability::PortableRevision>,
     blobs: Vec<mneme_store::portability::PortableDeltaBlob>,
+    retention: Option<mneme_store::portability::PortableRetentionState>,
 ) -> crate::error::Result<mneme_store::portability::PortableDelta> {
     let remote_revision = mneme_core::WorkspaceRevisionId::from_hex(&snapshot.head_revision)
         .map_err(|reason| {
@@ -1332,6 +1417,7 @@ fn build_portable_delta(
         remote_sequence: snapshot.sequence,
         revisions,
         blobs,
+        retention,
     })
 }
 
@@ -1341,6 +1427,7 @@ async fn fetch_delta_metadata_on_conn(
 ) -> crate::error::Result<(
     Vec<mneme_store::portability::PortableRevision>,
     Vec<crate::protocol::BlobDigestRef>,
+    Option<mneme_store::portability::PortableRetentionState>,
     u64,
     u64,
 )> {
@@ -1357,9 +1444,10 @@ async fn fetch_delta_metadata_on_conn(
     } else {
         query.missing_blobs.chunks(items_per_chunk).collect()
     };
-    let steps = rev_chunks.len().max(blob_chunks.len());
+    let steps = rev_chunks.len().max(blob_chunks.len()).max(1);
     let mut out_revs = Vec::with_capacity(query.missing_revs.len());
     let mut out_blobs = Vec::with_capacity(query.missing_blobs.len());
+    let mut out_retention = None;
     let mut total_sent = 0_u64;
     let mut total_recv = 0_u64;
     let scope_text = query.scope.to_string();
@@ -1367,15 +1455,18 @@ async fn fetch_delta_metadata_on_conn(
     for idx in 0..steps {
         let rev_slice = rev_chunks.get(idx).copied().unwrap_or(&[]);
         let blob_slice = blob_chunks.get(idx).copied().unwrap_or(&[]);
-        let (chunk_revs, chunk_blobs, sent, recv) =
+        let (chunk_revs, chunk_blobs, chunk_retention, sent, recv) =
             fetch_delta_chunk(conn, query, &scope_text, rev_slice, blob_slice).await?;
         total_sent = total_sent.saturating_add(sent);
         total_recv = total_recv.saturating_add(recv);
         out_revs.extend(chunk_revs);
         out_blobs.extend(chunk_blobs);
+        if out_retention.is_none() {
+            out_retention = chunk_retention;
+        }
     }
 
-    Ok((out_revs, out_blobs, total_sent, total_recv))
+    Ok((out_revs, out_blobs, out_retention, total_sent, total_recv))
 }
 
 async fn fetch_delta_chunk(
@@ -1387,6 +1478,7 @@ async fn fetch_delta_chunk(
 ) -> crate::error::Result<(
     Vec<mneme_store::portability::PortableRevision>,
     Vec<crate::protocol::BlobDigestRef>,
+    Option<mneme_store::portability::PortableRetentionState>,
     u64,
     u64,
 )> {
@@ -1402,14 +1494,27 @@ async fn fetch_delta_chunk(
             .map(|(rec, rev)| crate::protocol::WireRevisionKey::from_pair(*rec, *rev))
             .collect(),
         blobs: blob_slice.iter().map(encode_hex_32).collect(),
+        hlc: Some(query.hlc.tick()?),
         capability: query.capability.cloned(),
     };
     let (response, sent, recv) = send_control_on_conn(conn, &req).await?;
+    if let Some(remote_hlc) = response.sender_hlc() {
+        let _ = query.hlc.observe(remote_hlc)?;
+    }
     match response {
-        crate::protocol::SyncControlResponse::DeltaMetadata { revisions, blobs } => {
+        crate::protocol::SyncControlResponse::DeltaMetadata {
+            revisions,
+            blobs,
+            retention,
+            ..
+        } => {
             let parsed_revs = parse_delta_revisions(query.scope, &expected_revs, revisions)?;
             let parsed_blobs = parse_delta_blobs(&expected_blobs, blobs)?;
-            Ok((parsed_revs, parsed_blobs, sent, recv))
+            let parsed_retention = retention
+                .as_deref()
+                .map(crate::protocol::WirePortableRetentionState::to_portable)
+                .transpose()?;
+            Ok((parsed_revs, parsed_blobs, parsed_retention, sent, recv))
         }
         other => Err(unexpected_control_response(query.peer, other)),
     }
@@ -1503,13 +1608,15 @@ fn local_workspace_sequence(request: &PullRequest) -> crate::error::Result<Optio
 
 async fn collect_local_rbsr_blocking(
     request: &PullRequest,
-) -> crate::error::Result<crate::rbsr::RbsrSet> {
+) -> crate::error::Result<(crate::rbsr::RbsrSet, u64)> {
     let destination = request.destination.clone();
     let scope = request.scope.clone();
     let config = (request.workspace_config)();
     tokio::task::spawn_blocking(move || {
         let workspace = mneme_store::Workspace::open(&destination, config)?;
-        crate::bundle::collect_local_rbsr_set(&workspace, &scope)
+        let generation = workspace.eligibility_generation()?;
+        let rbsr = crate::bundle::collect_local_rbsr_set(&workspace, &scope)?;
+        Ok((rbsr, generation))
     })
     .await
     .map_err(|error| crate::error::Failure::Io(format!("collect RBSR set join: {error}")))?

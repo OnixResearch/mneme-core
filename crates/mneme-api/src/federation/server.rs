@@ -23,6 +23,7 @@ pub struct ServerConfig {
     pub allowlist: PeerAllowlist,
     pub max_limits: super::protocol::FederationLimits,
     pub channel_capacity: u32,
+    pub max_hlc_skew_ns: i64,
 }
 
 impl ServerConfig {
@@ -33,6 +34,7 @@ impl ServerConfig {
             allowlist,
             max_limits: super::protocol::FederationLimits::standard(),
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
+            max_hlc_skew_ns: mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS,
         }
     }
 }
@@ -42,11 +44,20 @@ struct AuthenticatedMessage {
     message: super::protocol::VaultFederationMessage,
 }
 
+struct ArcClock(std::sync::Arc<dyn mneme_store::Clock>);
+
+impl mneme_store::Clock for ArcClock {
+    fn now(&self) -> mneme_core::Timestamp {
+        self.0.now()
+    }
+}
+
 #[derive(Clone)]
 struct ActorContext {
     config: ServerConfig,
     authorizer: super::auth::SharedFederationAuthorizer,
     clock: std::sync::Arc<dyn mneme_store::Clock>,
+    hlc: std::sync::Arc<std::sync::Mutex<mneme_kernel::hlc::HybridTimestamp>>,
     blocking_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
@@ -56,6 +67,7 @@ struct ActorContext {
 pub struct VaultFederationServer {
     config: ServerConfig,
     authorizer: super::auth::SharedFederationAuthorizer,
+    clock: std::sync::Arc<dyn mneme_store::Clock>,
     connection_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
     sender: tokio::sync::mpsc::Sender<AuthenticatedMessage>,
 }
@@ -87,10 +99,15 @@ impl VaultFederationServer {
         })?;
         debug_assert!(channel_depth >= 1);
         let (sender, receiver) = tokio::sync::mpsc::channel(channel_depth);
+        let init_hlc = mneme_kernel::hlc::HybridTimestamp {
+            physical_ns: clock.now().nanos(),
+            logical: 0,
+        };
         let context = ActorContext {
             config: config.clone(),
             authorizer: authorizer.clone(),
-            clock,
+            clock: std::sync::Arc::clone(&clock),
+            hlc: std::sync::Arc::new(std::sync::Mutex::new(init_hlc)),
             blocking_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(
                 MAX_CONCURRENT_BLOCKING_TASKS,
             )),
@@ -108,6 +125,7 @@ impl VaultFederationServer {
         Ok(Self {
             config,
             authorizer,
+            clock,
             connection_semaphore,
             sender,
         })
@@ -150,6 +168,7 @@ impl VaultFederationServer {
         drop(gate_handle);
         debug_assert!(!caller.as_bytes().is_empty());
         super::client::VaultFederationClient::from_irpc(irpc::Client::local(gate_tx))
+            .with_clock(std::sync::Arc::clone(&self.clock))
     }
 
     /// Create an `iroh::protocol::ProtocolHandler` enforcing the live authorizer
@@ -398,6 +417,61 @@ async fn dispatch_message(
     }
 }
 
+fn observe_incoming_hlc(
+    ctx: &ActorContext,
+    sender_hlc: Option<super::protocol::WireHybridTimestamp>,
+    read_hlc: Option<super::protocol::WireHybridTimestamp>,
+) -> Result<(), super::protocol::RpcError> {
+    let pt_ns = ctx.clock.now().nanos();
+    let max_skew_ns = ctx.config.max_hlc_skew_ns;
+    let mut guard = ctx.hlc.lock().map_err(|_| {
+        super::protocol::RpcError::new(
+            super::protocol::RpcErrorCode::Unavailable,
+            "server HLC mutex poisoned",
+        )
+    })?;
+    for incoming in [sender_hlc, read_hlc].into_iter().flatten() {
+        let next = mneme_kernel::hlc::receive(*guard, pt_ns, incoming.to_kernel(), max_skew_ns)
+            .map_err(map_server_hlc_error)?;
+        *guard = next;
+    }
+    Ok(())
+}
+
+fn tick_server_hlc(
+    ctx: &ActorContext,
+) -> Result<super::protocol::WireHybridTimestamp, super::protocol::RpcError> {
+    let pt_ns = ctx.clock.now().nanos();
+    let max_skew_ns = ctx.config.max_hlc_skew_ns;
+    let mut guard = ctx.hlc.lock().map_err(|_| {
+        super::protocol::RpcError::new(
+            super::protocol::RpcErrorCode::Unavailable,
+            "server HLC mutex poisoned",
+        )
+    })?;
+    let next =
+        mneme_kernel::hlc::tick_local(*guard, pt_ns, max_skew_ns).map_err(map_server_hlc_error)?;
+    *guard = next;
+    Ok(super::protocol::WireHybridTimestamp::from_kernel(next))
+}
+
+fn map_server_hlc_error(error: mneme_kernel::hlc::HlcError) -> super::protocol::RpcError {
+    match error {
+        mneme_kernel::hlc::HlcError::ClockSkewExceeded => super::protocol::RpcError::new(
+            super::protocol::RpcErrorCode::ClockSkewExceeded,
+            "incoming federation HLC exceeded maximum permitted physical clock skew",
+        ),
+        mneme_kernel::hlc::HlcError::LogicalOverflow => super::protocol::RpcError::new(
+            super::protocol::RpcErrorCode::ClockSkewExceeded,
+            "server federation HLC logical counter overflowed",
+        ),
+        mneme_kernel::hlc::HlcError::InvalidMaxSkew => super::protocol::RpcError::new(
+            super::protocol::RpcErrorCode::InvalidInput,
+            "server max_hlc_skew_ns must be non-negative",
+        ),
+    }
+}
+
 async fn run_authorized_blocking<T, F>(
     ctx: &ActorContext,
     auth: Result<mneme_core::ScopeId, super::protocol::RpcError>,
@@ -406,14 +480,14 @@ async fn run_authorized_blocking<T, F>(
 ) -> Result<T, super::protocol::RpcError>
 where
     T: Send + 'static,
-    F: FnOnce(ServerConfig) -> Result<T, super::protocol::RpcError> + Send + 'static,
+    F: FnOnce(ActorContext) -> Result<T, super::protocol::RpcError> + Send + 'static,
 {
     let _scope = auth?;
-    let cfg = ctx.config.clone();
+    let task_ctx = ctx.clone();
     run_bounded_blocking(
         std::sync::Arc::clone(&ctx.blocking_semaphore),
         timeout_ms,
-        move || task(cfg),
+        move || task(task_ctx),
     )
     .await
 }
@@ -431,10 +505,14 @@ async fn dispatch_query_head(
         caller,
         &msg.inner.scope,
         msg.inner.capability_document.as_deref(),
-    );
+    )
+    .and_then(|scope| {
+        observe_incoming_hlc(&ctx, msg.inner.sender_hlc, None)?;
+        Ok(scope)
+    });
     let timeout_ms = ctx.config.max_limits.max_time_ms;
-    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
-        handle_query_head(&cfg, &msg.inner)
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |task_ctx| {
+        handle_query_head(&task_ctx, &msg.inner)
     })
     .await;
     let _sent = msg.tx.send(result).await.is_ok();
@@ -453,10 +531,14 @@ async fn dispatch_query_metadata(
         caller,
         &msg.inner.scope,
         msg.inner.capability_document.as_deref(),
-    );
+    )
+    .and_then(|scope| {
+        observe_incoming_hlc(&ctx, msg.inner.sender_hlc, msg.inner.read_hlc)?;
+        Ok(scope)
+    });
     let timeout_ms = ctx.config.max_limits.max_time_ms;
-    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
-        handle_query_metadata(&cfg, &msg.inner)
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |task_ctx| {
+        handle_query_metadata(&task_ctx, &msg.inner)
     })
     .await;
     let _sent = msg.tx.send(result).await.is_ok();
@@ -475,15 +557,19 @@ async fn dispatch_fetch_pinned_snapshot(
         caller,
         &msg.inner.scope,
         msg.inner.capability_document.as_deref(),
-    );
+    )
+    .and_then(|scope| {
+        observe_incoming_hlc(&ctx, msg.inner.sender_hlc, msg.inner.read_hlc)?;
+        Ok(scope)
+    });
     let timeout_ms = msg
         .inner
         .limits
         .max_time_ms
         .min(ctx.config.max_limits.max_time_ms)
         .max(1);
-    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
-        handle_fetch_pinned_snapshot(&cfg, &msg.inner)
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |task_ctx| {
+        handle_fetch_pinned_snapshot(&task_ctx, &msg.inner)
     })
     .await;
     let _sent = msg.tx.send(result).await.is_ok();
@@ -502,15 +588,19 @@ async fn dispatch_evaluate_datalog(
         caller,
         &msg.inner.scope,
         msg.inner.capability_document.as_deref(),
-    );
+    )
+    .and_then(|scope| {
+        observe_incoming_hlc(&ctx, msg.inner.sender_hlc, msg.inner.read_hlc)?;
+        Ok(scope)
+    });
     let timeout_ms = msg
         .inner
         .limits
         .max_time_ms
         .min(ctx.config.max_limits.max_time_ms)
         .max(1);
-    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
-        handle_evaluate_datalog(&cfg, &msg.inner)
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |task_ctx| {
+        handle_evaluate_datalog(&task_ctx, &msg.inner)
     })
     .await;
     let _sent = msg.tx.send(result).await.is_ok();
@@ -529,15 +619,19 @@ async fn dispatch_explain_missing(
         caller,
         &msg.inner.scope,
         msg.inner.capability_document.as_deref(),
-    );
+    )
+    .and_then(|scope| {
+        observe_incoming_hlc(&ctx, msg.inner.sender_hlc, msg.inner.read_hlc)?;
+        Ok(scope)
+    });
     let timeout_ms = msg
         .inner
         .limits
         .max_time_ms
         .min(ctx.config.max_limits.max_time_ms)
         .max(1);
-    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
-        handle_explain_missing(&cfg, &msg.inner)
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |task_ctx| {
+        handle_explain_missing(&task_ctx, &msg.inner)
     })
     .await;
     let _sent = msg.tx.send(result).await.is_ok();
@@ -589,15 +683,35 @@ where
 
 fn open_read_only_vault(
     root: &std::path::Path,
+    clock: &std::sync::Arc<dyn mneme_store::Clock>,
+    max_hlc_skew_ns: i64,
 ) -> Result<mneme_store::Workspace, super::protocol::RpcError> {
-    mneme_store::Workspace::open_read_only(
+    let mut workspace = mneme_store::Workspace::open_read_only(
         root,
         mneme_store::WorkspaceConfig::new(
-            Box::new(mneme_store::SystemClock),
+            Box::new(ArcClock(std::sync::Arc::clone(clock))),
             Box::new(mneme_store::NoFaults),
         ),
     )
-    .map_err(store_rpc_error)
+    .map_err(store_rpc_error)?;
+    workspace.set_hlc_max_skew_ns(max_hlc_skew_ns);
+    Ok(workspace)
+}
+
+fn resolve_requested_revision(
+    workspace: &mneme_store::Workspace,
+    explicit_revision: Option<[u8; 16]>,
+    read_hlc: Option<super::protocol::WireHybridTimestamp>,
+) -> Result<mneme_core::WorkspaceRevisionId, super::protocol::RpcError> {
+    if let Some(bytes) = explicit_revision {
+        return Ok(mneme_core::WorkspaceRevisionId::from_bytes(bytes));
+    }
+    if let Some(hlc_cut) = read_hlc {
+        return workspace
+            .resolve_revision_at_hlc(hlc_cut.to_kernel())
+            .map_err(store_rpc_error);
+    }
+    workspace.current_revision().map_err(store_rpc_error)
 }
 
 fn parse_scope(scope: &str) -> Result<mneme_core::ScopeId, super::protocol::RpcError> {
@@ -619,11 +733,15 @@ fn parse_scope(scope: &str) -> Result<mneme_core::ScopeId, super::protocol::RpcE
 }
 
 fn handle_query_head(
-    config: &ServerConfig,
+    ctx: &ActorContext,
     request: &super::protocol::QueryHeadRequest,
 ) -> Result<super::protocol::HeadState, super::protocol::RpcError> {
     let _scope = parse_scope(&request.scope)?;
-    let workspace = open_read_only_vault(&config.vault_root)?;
+    let workspace = open_read_only_vault(
+        &ctx.config.vault_root,
+        &ctx.clock,
+        ctx.config.max_hlc_skew_ns,
+    )?;
     for _ in 0..MAX_HEAD_READ_RETRIES {
         let generation_before = workspace
             .eligibility_generation()
@@ -637,11 +755,13 @@ fn handle_query_head(
         if head_before == head_after && generation_before == generation_after {
             debug_assert_eq!(head_before, head_after);
             debug_assert_eq!(generation_before, generation_after);
+            let sender_hlc = Some(tick_server_hlc(ctx)?);
             return Ok(super::protocol::HeadState {
                 protocol_version: super::protocol::PROTOCOL_VERSION,
                 head_revision: *head_before.as_bytes(),
                 head_sequence: sequence,
                 eligibility_generation: generation_before,
+                sender_hlc,
             });
         }
     }
@@ -652,19 +772,20 @@ fn handle_query_head(
 }
 
 fn handle_query_metadata(
-    config: &ServerConfig,
+    ctx: &ActorContext,
     request: &super::protocol::QueryMetadataRequest,
 ) -> Result<super::protocol::VaultMetadata, super::protocol::RpcError> {
     let scope = parse_scope(&request.scope)?;
     let access = mneme_memory::Access::scopes([scope.clone()]);
-    let workspace = open_read_only_vault(&config.vault_root)?;
+    let workspace = open_read_only_vault(
+        &ctx.config.vault_root,
+        &ctx.clock,
+        ctx.config.max_hlc_skew_ns,
+    )?;
     let generation = workspace
         .eligibility_generation()
         .map_err(store_rpc_error)?;
-    let head = workspace.current_revision().map_err(store_rpc_error)?;
-    let requested = request
-        .revision
-        .map_or(head, mneme_core::WorkspaceRevisionId::from_bytes);
+    let requested = resolve_requested_revision(&workspace, request.revision, request.read_hlc)?;
     let snapshot = workspace
         .snapshot_at(requested, Some(generation))
         .map_err(store_rpc_error)?;
@@ -678,6 +799,7 @@ fn handle_query_metadata(
     })?;
     assert_eq!(filtered.revision, requested);
     assert_eq!(filtered.eligibility_generation, generation);
+    let sender_hlc = Some(tick_server_hlc(ctx)?);
     Ok(super::protocol::VaultMetadata {
         protocol_version: super::protocol::PROTOCOL_VERSION,
         requested_revision: *requested.as_bytes(),
@@ -685,7 +807,8 @@ fn handle_query_metadata(
         sequence: filtered.sequence,
         eligibility_generation: generation,
         scoped_record_count,
-        max_limits: config.max_limits,
+        max_limits: ctx.config.max_limits,
+        sender_hlc,
     })
 }
 
@@ -707,20 +830,21 @@ fn verify_generation_unchanged(
 }
 
 fn handle_fetch_pinned_snapshot(
-    config: &ServerConfig,
+    ctx: &ActorContext,
     request: &super::protocol::FetchPinnedSnapshotRequest,
 ) -> Result<super::protocol::PinnedSnapshotPayload, super::protocol::RpcError> {
-    request.limits.check_within(&config.max_limits)?;
+    request.limits.check_within(&ctx.config.max_limits)?;
     let scope = parse_scope(&request.scope)?;
     let access = mneme_memory::Access::scopes([scope.clone()]);
-    let workspace = open_read_only_vault(&config.vault_root)?;
+    let workspace = open_read_only_vault(
+        &ctx.config.vault_root,
+        &ctx.clock,
+        ctx.config.max_hlc_skew_ns,
+    )?;
     let generation = workspace
         .eligibility_generation()
         .map_err(store_rpc_error)?;
-    let head = workspace.current_revision().map_err(store_rpc_error)?;
-    let requested = request
-        .revision
-        .map_or(head, mneme_core::WorkspaceRevisionId::from_bytes);
+    let requested = resolve_requested_revision(&workspace, request.revision, request.read_hlc)?;
     let snapshot = workspace
         .snapshot_at(requested, Some(generation))
         .map_err(store_rpc_error)?;
@@ -736,6 +860,7 @@ fn handle_fetch_pinned_snapshot(
     let current_sources = scoped_source_overlay(&workspace, filtered.revision, &scope, &access)?;
     verify_generation_unchanged(&workspace, generation, "pinned snapshot fetch")?;
     let served = filtered.revision;
+    let sender_hlc = Some(tick_server_hlc(ctx)?);
     let payload = build_snapshot_payload_bounded(
         SnapshotPayloadInput {
             requested,
@@ -744,6 +869,7 @@ fn handle_fetch_pinned_snapshot(
             view_context,
             suppressions,
             current_sources,
+            sender_hlc,
         },
         request.limits.max_bytes,
     )?;
@@ -805,6 +931,7 @@ struct SnapshotPayloadInput {
     view_context: mneme_memory::ViewContext,
     suppressions: Vec<super::protocol::EncodedSuppression>,
     current_sources: Vec<([u8; 16], super::protocol::EncodedSourceAvailability)>,
+    sender_hlc: Option<super::protocol::WireHybridTimestamp>,
 }
 
 fn encode_bounded_record_docs<'a>(
@@ -837,6 +964,7 @@ fn build_snapshot_payload_bounded(
         view_context,
         suppressions,
         current_sources,
+        sender_hlc,
     } = input;
     assert_eq!(filtered.revision, requested);
     assert_eq!(filtered.eligibility_generation, generation);
@@ -888,6 +1016,7 @@ fn build_snapshot_payload_bounded(
         revision_sequences,
         suppressions,
         current_sources,
+        sender_hlc,
     })
 }
 
@@ -1068,13 +1197,51 @@ fn parse_bundle_document(
     })
 }
 
+fn bundle_calm_stratum(bundle: &mneme_datalog::RuleBundle) -> mneme_kernel::calm::CalmStratum {
+    let has_non_monotonic = bundle.rules.iter().any(|rule| {
+        rule.body.iter().any(|literal| {
+            matches!(
+                literal,
+                mneme_datalog::Literal::Negative(_) | mneme_datalog::Literal::Aggregate { .. }
+            )
+        })
+    });
+    let op = if has_non_monotonic {
+        mneme_kernel::calm::DistributedOp::NegatedFederatedDatalog
+    } else {
+        mneme_kernel::calm::DistributedOp::PositiveFederatedDatalog
+    };
+    mneme_kernel::calm::classify_op(op)
+}
+
+fn evaluate_calm_seal_facts(
+    ctx: &ActorContext,
+    scope: &str,
+    generation: u64,
+    served_revision: [u8; 16],
+    seal: Option<&super::protocol::CalmSeal>,
+) -> mneme_kernel::calm::CalmSealFacts {
+    match seal {
+        Some(calm_seal) => {
+            let authorized_signers = ctx.authorizer.authorized_seal_signers();
+            calm_seal.verify_facts(scope, generation, served_revision, &authorized_signers)
+        }
+        None => mneme_kernel::calm::CalmSealFacts {
+            sealed: false,
+            quorum_satisfied: false,
+            epoch_matches: false,
+        },
+    }
+}
+
 fn handle_evaluate_datalog(
-    config: &ServerConfig,
+    ctx: &ActorContext,
     request: &super::protocol::EvaluateDatalogRequest,
 ) -> Result<super::protocol::RemoteDatalogResult, super::protocol::RpcError> {
-    request.limits.check_within(&config.max_limits)?;
+    request.limits.check_within(&ctx.config.max_limits)?;
     let scope = parse_scope(&request.scope)?;
     let bundle = parse_bundle_document(&request.bundle_document)?;
+    let stratum = bundle_calm_stratum(&bundle);
     let constants = decode_datalog_constants(&request.constant_documents)?;
     let datalog_limits = request.limits.to_datalog_limits()?;
     let max_result_rows = usize::try_from(request.max_rows).map_err(|_| {
@@ -1085,14 +1252,16 @@ fn handle_evaluate_datalog(
     })?;
     let incomplete_extents: std::collections::BTreeSet<String> =
         request.incomplete_extents.iter().cloned().collect();
-    let mut workspace = open_read_only_vault(&config.vault_root)?;
+    let mut workspace = open_read_only_vault(
+        &ctx.config.vault_root,
+        &ctx.clock,
+        ctx.config.max_hlc_skew_ns,
+    )?;
     let generation = workspace
         .eligibility_generation()
         .map_err(store_rpc_error)?;
-    let head = workspace.current_revision().map_err(store_rpc_error)?;
-    let revision = request
-        .revision
-        .map_or(head, mneme_core::WorkspaceRevisionId::from_bytes);
+    let revision = resolve_requested_revision(&workspace, request.revision, request.read_hlc)?;
+    let allow_hlc_cut = request.read_hlc.is_some();
     let result = run_read_only_datalog(
         &mut workspace,
         DatalogEvalParams {
@@ -1106,13 +1275,45 @@ fn handle_evaluate_datalog(
             at: request.at.map(mneme_core::Timestamp::from_nanos),
             incomplete_extents: incomplete_extents.clone(),
             stale_policy: request.stale_policy,
+            allow_hlc_cut,
         },
     )?;
     verify_generation_unchanged(&workspace, generation, "remote Datalog evaluation")?;
+    let barrier_seal = evaluate_calm_seal_facts(
+        ctx,
+        &request.scope,
+        generation,
+        *result.served_revision.as_bytes(),
+        request.calm_seal.as_ref(),
+    );
+    let absence_established = mneme_kernel::calm::federated_absence_established(
+        &mneme_kernel::calm::FederatedNegationFacts {
+            local_absence_established: result.absence_established,
+            stratum,
+            is_federated: true,
+            barrier_seal,
+        },
+    );
+    let reason = if result.absence_established && !absence_established {
+        result.reason.clone().or_else(|| {
+            Some(
+                "CALM barrier required: unsealed federated Stratum B negation cannot establish closed-world absence"
+                    .to_owned(),
+            )
+        })
+    } else {
+        result.reason.clone()
+    };
+    let sender_hlc = Some(tick_server_hlc(ctx)?);
     let encoded = encode_datalog_result(
         &result,
-        request.at,
-        incomplete_extents.into_iter().collect(),
+        EncodedDatalogMetadata {
+            at: request.at,
+            incomplete_extents: incomplete_extents.into_iter().collect(),
+            absence_established,
+            reason,
+            sender_hlc,
+        },
     );
     check_payload_byte_budget(&encoded, request.limits.max_bytes, "Datalog result")?;
     assert_eq!(encoded.served_revision, *result.served_revision.as_bytes());
@@ -1121,25 +1322,30 @@ fn handle_evaluate_datalog(
 }
 
 fn handle_explain_missing(
-    config: &ServerConfig,
+    ctx: &ActorContext,
     request: &super::protocol::ExplainMissingRpcRequest,
 ) -> Result<super::protocol::RemoteMissingExplanation, super::protocol::RpcError> {
-    request.limits.check_within(&config.max_limits)?;
-    request.explain_limits.check_within(&config.max_limits)?;
+    request.limits.check_within(&ctx.config.max_limits)?;
+    request
+        .explain_limits
+        .check_within(&ctx.config.max_limits)?;
     let scope = parse_scope(&request.scope)?;
     let bundle = parse_bundle_document(&request.bundle_document)?;
     let terms = decode_ground_terms(&request.term_documents)?;
     let datalog_limits = request.limits.to_datalog_limits()?;
     let incomplete_extents: std::collections::BTreeSet<String> =
         request.incomplete_extents.iter().cloned().collect();
-    let mut workspace = open_read_only_vault(&config.vault_root)?;
+    let mut workspace = open_read_only_vault(
+        &ctx.config.vault_root,
+        &ctx.clock,
+        ctx.config.max_hlc_skew_ns,
+    )?;
     let generation = workspace
         .eligibility_generation()
         .map_err(store_rpc_error)?;
-    let head = workspace.current_revision().map_err(store_rpc_error)?;
-    let revision = request
-        .revision
-        .map_or(head, mneme_core::WorkspaceRevisionId::from_bytes);
+    let revision = resolve_requested_revision(&workspace, request.revision, request.read_hlc)?;
+    let allow_stale = matches!(request.stale_policy, super::protocol::StalePolicy::Allow)
+        || request.read_hlc.is_some();
     let access = mneme_memory::Access::scopes([scope.clone()]);
     let mut service = mneme_datalog::Service::new(&mut workspace);
     let build = service
@@ -1163,16 +1369,18 @@ fn handle_explain_missing(
                 predicate: request.predicate.clone(),
                 terms,
                 limits: request.explain_limits.to_datalog_limits(),
-                allow_stale: matches!(request.stale_policy, super::protocol::StalePolicy::Allow),
+                allow_stale,
                 cancellation: None,
             },
         )
         .map_err(datalog_rpc_error)?;
     verify_generation_unchanged(&workspace, generation, "remote explain-missing")?;
+    let sender_hlc = Some(tick_server_hlc(ctx)?);
     let encoded = encode_missing_explanation(
         &explanation,
         request.at,
         incomplete_extents.into_iter().collect(),
+        sender_hlc,
     );
     check_payload_byte_budget(&encoded, request.limits.max_bytes, "explain-missing result")?;
     assert_eq!(
@@ -1194,6 +1402,7 @@ struct DatalogEvalParams<'a> {
     at: Option<mneme_core::Timestamp>,
     incomplete_extents: std::collections::BTreeSet<String>,
     stale_policy: super::protocol::StalePolicy,
+    allow_hlc_cut: bool,
 }
 
 fn run_read_only_datalog(
@@ -1218,7 +1427,8 @@ fn run_read_only_datalog(
         .map_err(datalog_rpc_error)?;
     let mut query = mneme_datalog::Query::all(params.predicate, params.query_limit);
     query.constants = params.constants;
-    query.allow_stale = matches!(params.stale_policy, super::protocol::StalePolicy::Allow);
+    query.allow_stale =
+        matches!(params.stale_policy, super::protocol::StalePolicy::Allow) || params.allow_hlc_cut;
     service
         .query_build(&build, query)
         .map_err(datalog_rpc_error)
@@ -1286,10 +1496,17 @@ fn encode_derivation(support: &mneme_datalog::Derivation) -> super::protocol::Re
     }
 }
 
-fn encode_datalog_result(
-    result: &mneme_datalog::QueryResult,
+struct EncodedDatalogMetadata {
     at: Option<i64>,
     incomplete_extents: Vec<String>,
+    absence_established: bool,
+    reason: Option<String>,
+    sender_hlc: Option<super::protocol::WireHybridTimestamp>,
+}
+
+fn encode_datalog_result(
+    result: &mneme_datalog::QueryResult,
+    meta: EncodedDatalogMetadata,
 ) -> super::protocol::RemoteDatalogResult {
     super::protocol::RemoteDatalogResult {
         protocol_version: super::protocol::PROTOCOL_VERSION,
@@ -1298,8 +1515,8 @@ fn encode_datalog_result(
         requested_revision: *result.requested_revision.as_bytes(),
         served_revision: *result.served_revision.as_bytes(),
         eligibility_generation: result.context.eligibility_generation,
-        at,
-        incomplete_extents,
+        at: meta.at,
+        incomplete_extents: meta.incomplete_extents,
         coverage: encode_coverage(&result.coverage),
         rows: result
             .rows
@@ -1317,10 +1534,11 @@ fn encode_datalog_result(
             .collect(),
         exhaustive: result.exhaustive,
         truncated: result.truncated,
-        absence_established: result.absence_established,
+        absence_established: meta.absence_established,
         stale: result.stale,
-        reason: result.reason.clone(),
+        reason: meta.reason,
         work: result.work,
+        sender_hlc: meta.sender_hlc,
     }
 }
 
@@ -1360,6 +1578,7 @@ fn encode_missing_explanation(
     explanation: &mneme_datalog::MissingExplanation,
     at: Option<i64>,
     incomplete_extents: Vec<String>,
+    sender_hlc: Option<super::protocol::WireHybridTimestamp>,
 ) -> super::protocol::RemoteMissingExplanation {
     super::protocol::RemoteMissingExplanation {
         protocol_version: super::protocol::PROTOCOL_VERSION,
@@ -1394,6 +1613,7 @@ fn encode_missing_explanation(
         exhaustive: explanation.exhaustive,
         stale: explanation.stale,
         work: explanation.work,
+        sender_hlc,
     }
 }
 
@@ -1404,6 +1624,9 @@ fn store_rpc_error(error: mneme_store::Failure) -> super::protocol::RpcError {
         | mneme_store::Failure::StaleBase { .. }
         | mneme_store::Failure::IdempotencyConflict { .. } => {
             super::protocol::RpcErrorCode::Conflict
+        }
+        mneme_store::Failure::ClockSkewExceeded(_) => {
+            super::protocol::RpcErrorCode::ClockSkewExceeded
         }
         mneme_store::Failure::InvalidCommand(_)
         | mneme_store::Failure::ScopeMismatch { .. }

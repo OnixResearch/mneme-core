@@ -238,6 +238,7 @@ impl super::Workspace {
             ));
         }
         let recorded = mneme_core::RecordedTime::new(self.clock.now(), next_sequence);
+        let hlc = self.tick_hlc()?;
         self.ensure_not_suppressed(command)?;
         let prior = self.prior_snapshot_for_commit()?;
         let new_records = self.validate_commit_records(command, recorded, &prior)?;
@@ -260,6 +261,7 @@ impl super::Workspace {
             generation,
             next_generation,
             recorded,
+            hlc,
             new_records,
             staged,
             record_files,
@@ -766,8 +768,8 @@ impl super::Workspace {
         transaction.execute(
             "INSERT INTO revisions (sequence, revision_id, parent_revision_id, committed_at_ns,
                  actor, scope, command_id, request_digest, eligibility_generation, manifest,
-                 manifest_digest, manifest_algorithm)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 manifest_digest, manifest_algorithm, hlc_physical_ns, hlc_logical)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 super::db_i64(prepared.next_sequence, "sequence")?,
                 prepared.revision_id.as_bytes().as_slice(),
@@ -781,6 +783,8 @@ impl super::Workspace {
                 Vec::<u8>::new(),
                 prepared.manifest_digest.as_bytes().as_slice(),
                 prepared.manifest_digest.algorithm().symbol(),
+                prepared.hlc.physical_ns,
+                i64::from(prepared.hlc.logical),
             ],
         )?;
         Ok(())

@@ -36,6 +36,7 @@
 
 pub mod admission;
 pub mod budget;
+pub mod calm;
 pub mod capability;
 pub mod claim;
 pub mod cleanup;
@@ -43,6 +44,7 @@ pub mod completeness;
 pub mod epistemic;
 pub mod extent;
 pub mod hashing;
+pub mod hlc;
 pub mod isolation;
 pub mod publish;
 pub mod purge;

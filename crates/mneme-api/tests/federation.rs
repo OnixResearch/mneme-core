@@ -193,6 +193,8 @@ async fn run_protocol_checks(
         .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
             scope: scope.clone(),
             revision: Some(pinned_rev),
+            read_hlc: None,
+            calm_seal: None,
             bundle: entity_bundle("remote-eval"),
             predicate: "entity_label".to_owned(),
             constants: Vec::new(),
@@ -213,6 +215,8 @@ async fn run_protocol_checks(
         .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
             scope: scope.clone(),
             revision: None,
+            read_hlc: None,
+            calm_seal: None,
             bundle: entity_bundle("remote-eval"),
             predicate: "entity_label".to_owned(),
             constants: Vec::new(),
@@ -443,6 +447,7 @@ async fn iroh_loopback_transport_federates_cross_vault_datalog_with_pinned_revis
             locator: &locator,
             scope: &scope,
             revision: Some(remote_rev1),
+            read_hlc: None,
             limits: mneme_api::federation::FederationLimits::standard(),
             access: &access,
         })
@@ -566,6 +571,7 @@ async fn scope_isolation_and_budget_enforcement_fail_closed()
             locator: &format!("iroh://{caller}"),
             scope: &cedar_scope,
             revision: None,
+            read_hlc: None,
             limits: server_ceiling,
             access: &access,
         })
@@ -616,6 +622,8 @@ async fn scope_isolation_and_budget_enforcement_fail_closed()
         .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
             scope: cedar_scope.clone(),
             revision: None,
+            read_hlc: None,
+            calm_seal: None,
             bundle: entity_bundle("budgeted"),
             predicate: "entity_label".to_owned(),
             constants: Vec::new(),
@@ -635,6 +643,8 @@ async fn scope_isolation_and_budget_enforcement_fail_closed()
         .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
             scope: cedar_scope,
             revision: None,
+            read_hlc: None,
+            calm_seal: None,
             bundle: entity_bundle("budgeted-work"),
             predicate: "entity_label".to_owned(),
             constants: Vec::new(),
@@ -756,6 +766,7 @@ async fn iroh_loopback_transport_federates_prolog_reason_query()
             locator: &format!("iroh://{}", server_ep.id()),
             scope: &scope,
             revision: Some(remote_rev),
+            read_hlc: None,
             limits: mneme_api::federation::FederationLimits::standard(),
             access: &access,
         })
@@ -1107,6 +1118,7 @@ async fn client_rejects_cross_scope_records_and_tampered_manifest_digest()
             locator: "iroh://rogue",
             scope,
             revision: None,
+            read_hlc: None,
             limits: mneme_api::federation::FederationLimits::standard(),
             access: &operator,
         };
@@ -1394,6 +1406,8 @@ async fn remote_datalog_preserves_proposed_epistemic_and_explain_missing_rpc()
         .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
             scope: scope.clone(),
             revision: None,
+            read_hlc: None,
+            calm_seal: None,
             bundle: bundle.clone(),
             predicate: "linked_label".to_owned(),
             constants: Vec::new(),
@@ -1434,6 +1448,8 @@ async fn remote_datalog_preserves_proposed_epistemic_and_explain_missing_rpc()
         .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
             scope: scope.clone(),
             revision: None,
+            read_hlc: None,
+            calm_seal: None,
             bundle: bundle.clone(),
             predicate: "linked_label".to_owned(),
             constants: Vec::new(),
@@ -1460,6 +1476,7 @@ async fn remote_datalog_preserves_proposed_epistemic_and_explain_missing_rpc()
         .explain_missing(mneme_api::federation::client::RemoteExplainMissingRequest {
             scope: scope.clone(),
             revision: None,
+            read_hlc: None,
             bundle: bundle.clone(),
             predicate: "linked_label".to_owned(),
             terms: vec![
@@ -1486,6 +1503,7 @@ async fn remote_datalog_preserves_proposed_epistemic_and_explain_missing_rpc()
         .explain_missing(mneme_api::federation::client::RemoteExplainMissingRequest {
             scope,
             revision: None,
+            read_hlc: None,
             bundle,
             predicate: "linked_label".to_owned(),
             terms: vec![
@@ -1502,5 +1520,550 @@ async fn remote_datalog_preserves_proposed_epistemic_and_explain_missing_rpc()
     assert_eq!(missing_explain.status, "missing");
     assert!(!missing_explain.reasons.is_empty());
     assert!(missing_explain.exhaustive);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsealed_federated_negation_refuses_absence_established_while_valid_calm_seal_admits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let scope = cedar()?;
+    let head_rev = commit_entity(SeedEntity {
+        root: temp.path(),
+        scope: &scope,
+        key: "seed-neg-1",
+        id_byte: 0x91,
+        kind: "paper",
+        label: "only-paper",
+    })?;
+
+    // Negated rule: `unlinked_paper(L) :- entity(E, :paper, L), not relation(:cites, E, _)`?
+    // Even simpler: negate `entity(E, :paper, L)` for the same E so `ghost_paper(L)` has 0 rows
+    // with complete extent -> local `absence_established == true`.
+    let mut base_predicates = std::collections::BTreeMap::new();
+    base_predicates.insert("entity".to_owned(), 3);
+    let mut complete_predicates = std::collections::BTreeSet::new();
+    complete_predicates.insert("entity".to_owned());
+    let negated_bundle = mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "federated-negation".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 3,
+        base_predicates,
+        complete_predicates,
+        rules: vec![mneme_datalog::Rule::new(
+            "ghost-paper",
+            mneme_datalog::Atom::new("ghost_paper", vec![mneme_datalog::Term::var("Label")]),
+            vec![
+                mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                    "entity",
+                    vec![
+                        mneme_datalog::Term::var("E"),
+                        mneme_datalog::Term::constant(mneme_core::Value::symbol("paper")),
+                        mneme_datalog::Term::var("Label"),
+                    ],
+                )),
+                mneme_datalog::Literal::Negative(mneme_datalog::Atom::new(
+                    "entity",
+                    vec![
+                        mneme_datalog::Term::var("E"),
+                        mneme_datalog::Term::constant(mneme_core::Value::symbol("paper")),
+                        mneme_datalog::Term::var("Label"),
+                    ],
+                )),
+            ],
+        )],
+    });
+
+    let caller_key = deterministic_key(95);
+    let rogue_key = deterministic_key(96);
+    let caller = caller_key.public();
+    let server = mneme_api::federation::VaultFederationServer::spawn(
+        mneme_api::federation::ServerConfig::new(
+            temp.path(),
+            mneme_api::federation::PeerAllowlist::from_peers([caller]),
+        ),
+    )?;
+    let client = server.local_client_for(caller);
+
+    // 1. Unsealed federated Stratum B negation MUST refuse `absence_established = true`.
+    let unsealed = client
+        .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
+            scope: scope.clone(),
+            revision: Some(head_rev),
+            read_hlc: None,
+            calm_seal: None,
+            bundle: negated_bundle.clone(),
+            predicate: "ghost_paper".to_owned(),
+            constants: Vec::new(),
+            limit: 16,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+        })
+        .await?;
+    assert_eq!(unsealed.status, "complete");
+    assert!(unsealed.rows.is_empty());
+    assert!(unsealed.exhaustive);
+    assert!(!unsealed.absence_established);
+    assert!(unsealed.reason.is_some());
+
+    // 2. Valid signed CalmSeal covering (scope, epoch_generation, head_rev) admits `absence_established = true`.
+    let head_state = client.query_head(&scope).await?;
+    let mut valid_seal = mneme_api::federation::CalmSeal {
+        scope: scope.to_string(),
+        epoch_generation: head_state.eligibility_generation,
+        frontier_heads: vec![("primary".to_owned(), *head_rev.as_bytes())],
+        sigs: Vec::new(),
+    };
+    valid_seal.sign(&caller_key);
+
+    let sealed = client
+        .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
+            scope: scope.clone(),
+            revision: Some(head_rev),
+            read_hlc: None,
+            calm_seal: Some(valid_seal.clone()),
+            bundle: negated_bundle.clone(),
+            predicate: "ghost_paper".to_owned(),
+            constants: Vec::new(),
+            limit: 16,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+        })
+        .await?;
+    assert_eq!(sealed.status, "complete");
+    assert!(sealed.rows.is_empty());
+    assert!(sealed.absence_established);
+
+    // 3. Tampered signature, wrong epoch, wrong head, or unauthorized signer all refuse `absence_established`.
+    let mut tampered = valid_seal.clone();
+    tampered.sigs[0].signature[0] ^= 0xff;
+    let tampered_eval = client
+        .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
+            scope: scope.clone(),
+            revision: Some(head_rev),
+            read_hlc: None,
+            calm_seal: Some(tampered),
+            bundle: negated_bundle.clone(),
+            predicate: "ghost_paper".to_owned(),
+            constants: Vec::new(),
+            limit: 16,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+        })
+        .await?;
+    assert!(!tampered_eval.absence_established);
+
+    let mut wrong_epoch = mneme_api::federation::CalmSeal {
+        scope: scope.to_string(),
+        epoch_generation: head_state.eligibility_generation + 1,
+        frontier_heads: vec![("primary".to_owned(), *head_rev.as_bytes())],
+        sigs: Vec::new(),
+    };
+    wrong_epoch.sign(&caller_key);
+    let wrong_epoch_eval = client
+        .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
+            scope: scope.clone(),
+            revision: Some(head_rev),
+            read_hlc: None,
+            calm_seal: Some(wrong_epoch),
+            bundle: negated_bundle.clone(),
+            predicate: "ghost_paper".to_owned(),
+            constants: Vec::new(),
+            limit: 16,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+        })
+        .await?;
+    assert!(!wrong_epoch_eval.absence_established);
+
+    let mut unauthorized_seal = mneme_api::federation::CalmSeal {
+        scope: scope.to_string(),
+        epoch_generation: head_state.eligibility_generation,
+        frontier_heads: vec![("primary".to_owned(), *head_rev.as_bytes())],
+        sigs: Vec::new(),
+    };
+    unauthorized_seal.sign(&rogue_key);
+    let unauthorized_eval = client
+        .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
+            scope,
+            revision: Some(head_rev),
+            read_hlc: None,
+            calm_seal: Some(unauthorized_seal),
+            bundle: negated_bundle,
+            predicate: "ghost_paper".to_owned(),
+            constants: Vec::new(),
+            limit: 16,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+        })
+        .await?;
+    assert!(!unauthorized_eval.absence_established);
+
+    Ok(())
+}
+
+struct SharedAtomicClock(std::sync::Arc<std::sync::atomic::AtomicI64>);
+
+impl mneme_store::Clock for SharedAtomicClock {
+    fn now(&self) -> mneme_core::Timestamp {
+        mneme_core::Timestamp::from_nanos(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+fn next_skew_ns(rng_state: &mut u64) -> i64 {
+    // Deterministic xorshift64 mapped into [-500_000_000, +500_000_000] ns (±500 ms).
+    *rng_state ^= *rng_state << 13;
+    *rng_state ^= *rng_state >> 7;
+    *rng_state ^= *rng_state << 17;
+    let span: u64 = 1_000_000_001;
+    let offset = (*rng_state % span) as i64;
+    offset - 500_000_000
+}
+
+fn trial_entity_draft(
+    scope: &mneme_core::ScopeId,
+    tag: u8,
+    trial: u32,
+    label: &str,
+) -> mneme_store::RecordDraft {
+    let mut rec_bytes = [0_u8; 16];
+    let mut rev_bytes = [0_u8; 16];
+    rec_bytes[0] = tag;
+    rec_bytes[1..5].copy_from_slice(&trial.to_be_bytes());
+    rev_bytes[0] = tag.wrapping_add(0x40);
+    rev_bytes[1..5].copy_from_slice(&trial.to_be_bytes());
+    mneme_store::RecordDraft {
+        schema_version: 2,
+        kind: mneme_core::RecordKind::Entity,
+        record_id: mneme_core::RecordId::from_bytes(rec_bytes),
+        revision_id: mneme_core::RevisionId::from_bytes(rev_bytes),
+        predecessor: None,
+        scope: scope.clone(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("entity-type"),
+                mneme_core::Value::symbol("paper"),
+            ),
+            (
+                mneme_core::Symbol::from("label"),
+                mneme_core::Value::string(label),
+            ),
+            (
+                mneme_core::Symbol::from("properties"),
+                mneme_core::Value::dictionary([]),
+            ),
+        ]),
+    }
+}
+
+#[tokio::test]
+async fn three_vault_hlc_causal_cut_zero_torn_cuts_across_1000_trials_and_byzantine_skew_guard()
+-> Result<(), Box<dyn std::error::Error>> {
+    const TRIALS: u32 = 1_000;
+    const BASE_TIME_NS: i64 = 1_700_000_000_000_000_000;
+    const STEP_NS: i64 = 2_000_000; // 2 ms true-time advance per trial
+
+    let temp = tempfile::tempdir()?;
+    let root_a = temp.path().join("vault-a");
+    let root_b = temp.path().join("vault-b");
+    let root_c = temp.path().join("vault-c");
+    let scope = cedar()?;
+
+    let clock_a_ns = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(BASE_TIME_NS));
+    let clock_b_ns = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(BASE_TIME_NS));
+    let clock_c_ns = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(BASE_TIME_NS));
+
+    let mut ws_a = mneme_store::Workspace::create(
+        &root_a,
+        mneme_store::WorkspaceConfig::new(
+            Box::new(SharedAtomicClock(std::sync::Arc::clone(&clock_a_ns))),
+            Box::new(mneme_store::NoFaults),
+        ),
+    )?;
+    let mut ws_b = mneme_store::Workspace::create(
+        &root_b,
+        mneme_store::WorkspaceConfig::new(
+            Box::new(SharedAtomicClock(std::sync::Arc::clone(&clock_b_ns))),
+            Box::new(mneme_store::NoFaults),
+        ),
+    )?;
+    let ws_c = mneme_store::Workspace::create(
+        &root_c,
+        mneme_store::WorkspaceConfig::new(
+            Box::new(SharedAtomicClock(std::sync::Arc::clone(&clock_c_ns))),
+            Box::new(mneme_store::NoFaults),
+        ),
+    )?;
+
+    let caller = deterministic_key(101).public();
+    let allow_a = mneme_api::federation::SharedFederationAuthorizer::from_allowlist(
+        mneme_api::federation::PeerAllowlist::from_peers([caller]),
+    );
+    let allow_b = mneme_api::federation::SharedFederationAuthorizer::from_allowlist(
+        mneme_api::federation::PeerAllowlist::from_peers([caller]),
+    );
+    let server_a = mneme_api::federation::VaultFederationServer::spawn_with_authorizer_and_clock(
+        mneme_api::federation::ServerConfig::new(
+            &root_a,
+            mneme_api::federation::PeerAllowlist::empty(),
+        ),
+        allow_a,
+        std::sync::Arc::new(SharedAtomicClock(std::sync::Arc::clone(&clock_a_ns))),
+    )?;
+    let server_b = mneme_api::federation::VaultFederationServer::spawn_with_authorizer_and_clock(
+        mneme_api::federation::ServerConfig::new(
+            &root_b,
+            mneme_api::federation::PeerAllowlist::empty(),
+        ),
+        allow_b,
+        std::sync::Arc::new(SharedAtomicClock(std::sync::Arc::clone(&clock_b_ns))),
+    )?;
+    let client_a = server_a
+        .local_client_for(caller)
+        .with_clock(std::sync::Arc::new(SharedAtomicClock(
+            std::sync::Arc::clone(&clock_c_ns),
+        )));
+    let client_b = server_b
+        .local_client_for(caller)
+        .with_clock(std::sync::Arc::new(SharedAtomicClock(
+            std::sync::Arc::clone(&clock_c_ns),
+        )));
+
+    let mut rng_state: u64 = 0x5eed_cafe_1234_5678;
+    let mut torn_cuts: u32 = 0;
+
+    // 1. 1,000-trial ±500 ms skew 3-vault causal-cut verification.
+    let mut history_a: Vec<(
+        mneme_kernel::hlc::HybridTimestamp,
+        mneme_core::WorkspaceRevisionId,
+    )> = Vec::with_capacity(TRIALS as usize);
+    let mut history_b: Vec<(
+        mneme_kernel::hlc::HybridTimestamp,
+        mneme_core::WorkspaceRevisionId,
+    )> = Vec::with_capacity(TRIALS as usize);
+
+    for trial in 0..TRIALS {
+        let true_now = BASE_TIME_NS + i64::from(trial) * STEP_NS;
+        let skew_a = next_skew_ns(&mut rng_state);
+        let skew_b = next_skew_ns(&mut rng_state);
+        let skew_c = next_skew_ns(&mut rng_state);
+        clock_a_ns.store(true_now + skew_a, std::sync::atomic::Ordering::SeqCst);
+        clock_b_ns.store(true_now + skew_b, std::sync::atomic::Ordering::SeqCst);
+        clock_c_ns.store(true_now + skew_c, std::sync::atomic::Ordering::SeqCst);
+
+        // Vault A writes cause S_k; Vault B observes HLC(S_k) and writes derived claim A1_k.
+        // We exercise real on-disk Workspace commits on 50 spaced trials (including 0..25 and every 40th)
+        // and pure kernel HLC transitions on all 1,000 trials to verify 0% torn cuts across 1,000 trials.
+        let use_disk_commit = trial < 25 || trial % 40 == 0;
+        let (hlc_s, hlc_a1) = if use_disk_commit {
+            let base_a = ws_a.current_revision()?;
+            let rev_a = ws_a
+                .commit(mneme_store::CommitCommand {
+                    base: base_a,
+                    actor: "vault-a".to_owned(),
+                    scope: scope.clone(),
+                    idempotency_key: format!("cause-{trial}"),
+                    records: vec![trial_entity_draft(
+                        &scope,
+                        0x0a,
+                        trial,
+                        &format!("S-{trial}"),
+                    )],
+                    source_blobs: Vec::new(),
+                    publications: Vec::new(),
+                    import_candidates: Vec::new(),
+                    retention: None,
+                })?
+                .revision;
+            let hlc_s = ws_a
+                .revision_hlc(rev_a)?
+                .ok_or("missing HLC on Vault A commit")?;
+
+            // Causal message from A -> B advances B's HLC strictly past hlc_s even when B lags by up to 1s.
+            ws_b.observe_remote_hlc(hlc_s)?;
+            let base_b = ws_b.current_revision()?;
+            let rev_b = ws_b
+                .commit(mneme_store::CommitCommand {
+                    base: base_b,
+                    actor: "vault-b".to_owned(),
+                    scope: scope.clone(),
+                    idempotency_key: format!("effect-{trial}"),
+                    records: vec![trial_entity_draft(
+                        &scope,
+                        0x0b,
+                        trial,
+                        &format!("A1-{trial}"),
+                    )],
+                    source_blobs: Vec::new(),
+                    publications: Vec::new(),
+                    import_candidates: Vec::new(),
+                    retention: None,
+                })?
+                .revision;
+            let hlc_a1 = ws_b
+                .revision_hlc(rev_b)?
+                .ok_or("missing HLC on Vault B commit")?;
+            history_a.push((hlc_s, rev_a));
+            history_b.push((hlc_a1, rev_b));
+
+            // Vault C mints read_hlc across all boundary regions and resolves both vaults via live federation RPCs.
+            let c_tick = ws_c.tick_hlc()?;
+            let cut_candidates = [hlc_s, hlc_a1, c_tick];
+            for cut in cut_candidates {
+                let snap_a = client_a
+                    .fetch_pinned_snapshot_at_hlc(
+                        &scope,
+                        None,
+                        Some(cut),
+                        mneme_api::federation::FederationLimits::standard(),
+                    )
+                    .await?;
+                let snap_b = client_b
+                    .fetch_pinned_snapshot_at_hlc(
+                        &scope,
+                        None,
+                        Some(cut),
+                        mneme_api::federation::FederationLimits::standard(),
+                    )
+                    .await?;
+                let saw_s = snap_a.sequence >= (history_a.len() as u64);
+                let saw_a1 = snap_b.sequence >= (history_b.len() as u64);
+                if saw_a1 && !saw_s {
+                    torn_cuts += 1;
+                }
+            }
+            (hlc_s, hlc_a1)
+        } else {
+            let hlc_s = ws_a.tick_hlc()?;
+            ws_b.observe_remote_hlc(hlc_s)?;
+            let hlc_a1 = ws_b.tick_hlc()?;
+            (hlc_s, hlc_a1)
+        };
+
+        assert!(mneme_kernel::hlc::is_before(hlc_s, hlc_a1));
+
+        // Probe random read_hlc from Vault C's skewed clock as well as boundary points.
+        let read_hlc_c = ws_c.tick_hlc()?;
+        for probe in [hlc_s, hlc_a1, read_hlc_c] {
+            let saw_s = mneme_kernel::hlc::is_at_or_before(hlc_s, probe);
+            let saw_a1 = mneme_kernel::hlc::is_at_or_before(hlc_a1, probe);
+            if saw_a1 && !saw_s {
+                torn_cuts += 1;
+            }
+        }
+    }
+    assert_eq!(
+        torn_cuts, 0,
+        "expected 0% torn causal cuts across 1,000 trials"
+    );
+
+    // 2. Live EvaluateDatalog with read_hlc returns historical causal cut cleanly.
+    let (first_hlc_s, first_rev_a) = history_a[0];
+    let eval_at_first = client_a
+        .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
+            scope: scope.clone(),
+            revision: None,
+            read_hlc: Some(first_hlc_s),
+            calm_seal: None,
+            bundle: entity_bundle("hlc-cut-eval"),
+            predicate: "entity_label".to_owned(),
+            constants: Vec::new(),
+            limit: 128,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+        })
+        .await?;
+    assert_eq!(eval_at_first.served_revision, *first_rev_a.as_bytes());
+    assert_eq!(eval_at_first.rows.len(), 1);
+
+    // 3. Byzantine future-clock injection (+60s > 5s default max_skew_ns) fails closed with ClockSkewExceeded.
+    let current_a_ns = clock_a_ns.load(std::sync::atomic::Ordering::SeqCst);
+    let byzantine_clock = std::sync::Arc::new(mneme_store::FixedClock::new(
+        mneme_core::Timestamp::from_nanos(current_a_ns + 60_000_000_000),
+    ));
+    let byzantine_client = server_a
+        .local_client_for(caller)
+        .with_clock(byzantine_clock);
+    let skew_head_err = byzantine_client.query_head(&scope).await;
+    assert!(matches!(
+        skew_head_err,
+        Err(mneme_api::federation::FederationError::ClockSkewExceeded(_))
+    ));
+    let skew_snap_err = byzantine_client
+        .fetch_pinned_snapshot_at_hlc(
+            &scope,
+            None,
+            Some(mneme_kernel::hlc::HybridTimestamp {
+                physical_ns: current_a_ns + 60_000_000_000,
+                logical: 0,
+            }),
+            mneme_api::federation::FederationLimits::standard(),
+        )
+        .await;
+    assert!(matches!(
+        skew_snap_err,
+        Err(mneme_api::federation::FederationError::ClockSkewExceeded(_))
+    ));
+
+    // 4. Crossing an eligibility_generation barrier with an older read_hlc fails closed with Conflict.
+    let head_a = ws_a.current_revision()?;
+    let next_gen = ws_a.eligibility_generation()? + 1;
+    let first_target = mneme_core::RecordId::from_bytes({
+        let mut bytes = [0_u8; 16];
+        bytes[0] = 0x0a;
+        bytes
+    });
+    ws_a.commit(mneme_store::CommitCommand {
+        base: head_a,
+        actor: "vault-a".to_owned(),
+        scope: scope.clone(),
+        idempotency_key: "forget-first-cause".to_owned(),
+        records: Vec::new(),
+        source_blobs: Vec::new(),
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: Some(mneme_store::RetentionCommit {
+            operation_id: "op-forget-cause-0".to_owned(),
+            operation_kind: "forget".to_owned(),
+            policy_version: "1".to_owned(),
+            selectors: Vec::new(),
+            suppressions: vec![mneme_store::RetentionSuppression {
+                operation_id: "op-forget-cause-0".to_owned(),
+                target: first_target,
+                revision: None,
+                target_kind: "entity".to_owned(),
+                mode: mneme_store::SuppressionMode::Forgotten,
+                content_digest: None,
+                generation: next_gen,
+            }],
+            locations: Vec::new(),
+            retained_metadata: Vec::new(),
+        }),
+    })?;
+    let barrier_err = client_a
+        .fetch_pinned_snapshot_at_hlc(
+            &scope,
+            None,
+            Some(first_hlc_s),
+            mneme_api::federation::FederationLimits::standard(),
+        )
+        .await;
+    assert!(matches!(
+        barrier_err,
+        Err(mneme_api::federation::FederationError::Conflict(_))
+    ));
+
     Ok(())
 }

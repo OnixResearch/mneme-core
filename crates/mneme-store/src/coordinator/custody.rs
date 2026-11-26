@@ -109,22 +109,238 @@ impl super::Workspace {
                 "portable retention state does not advance the target generation".to_owned(),
             ));
         }
+        let _changed = self.merge_portable_retention(scope, state)?;
+        Ok(())
+    }
+
+    /// Inflationary CALM Stratum M merge of portable retention barriers at any
+    /// workspace sequence (`sequence >= 0`).
+    ///
+    /// Merges incoming suppressions and prunings using
+    /// [`mneme_kernel::calm::join_suppression`] (`None < Withdrawn < Forgotten`,
+    /// `max(generation)`), removes newly forgotten rows from metadata
+    /// projections inside the same transaction, and advances the eligibility
+    /// generation barrier monotonically. Returns `true` if any suppression or
+    /// generation advanced.
+    pub(crate) fn merge_portable_retention(
+        &mut self,
+        scope: &mneme_core::ScopeId,
+        state: &crate::portability::PortableRetentionState,
+    ) -> crate::error::Result<bool> {
+        self.require_writable()?;
+        if state.generation == 0 {
+            return Err(crate::error::Failure::InvalidCommand(
+                "portable retention state requires generation >= 1".to_owned(),
+            ));
+        }
         let rows = installation_rows(state)?;
+        let current_sequence = self.current_sequence()?;
+        let current_generation = self.eligibility_generation()?;
         let genesis = self.genesis_revision()?;
         let now_ns = self.clock.now().nanos();
+
         let transaction = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if !rows.is_empty() {
-            insert_portable_operation(&transaction, scope, genesis, state.generation, now_ns)?;
+        struct ExistingSuppression {
+            state: mneme_kernel::calm::SuppressionState,
+            content_digest: Option<mneme_core::ContentDigest>,
+            target_kind: String,
         }
-        for row in &rows {
-            insert_portable_suppression(&transaction, row)?;
+        let existing_all = super::sweep::all_suppressions(&transaction)?;
+        let mut strongest_existing: std::collections::BTreeMap<
+            (mneme_core::RecordId, Option<mneme_core::RevisionId>),
+            ExistingSuppression,
+        > = std::collections::BTreeMap::new();
+        for entry in existing_all {
+            let incoming_state = mneme_kernel::calm::SuppressionState {
+                level: suppression_mode_to_kernel(entry.mode),
+                generation: entry.generation,
+            };
+            match strongest_existing.entry((entry.target, entry.revision)) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(ExistingSuppression {
+                        state: incoming_state,
+                        content_digest: entry.content_digest,
+                        target_kind: entry.target_kind,
+                    });
+                }
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    let existing = slot.get_mut();
+                    let prev_level = existing.state.level;
+                    existing.state =
+                        mneme_kernel::calm::join_suppression(existing.state, incoming_state);
+                    if existing.state.level != prev_level {
+                        existing.target_kind = entry.target_kind;
+                    }
+                    if existing.content_digest.is_none() {
+                        existing.content_digest = entry.content_digest;
+                    }
+                }
+            }
         }
-        super::set_meta_u64(&transaction, super::META_GENERATION, state.generation)?;
+
+        let mut merged_rows = Vec::with_capacity(rows.len());
+        let mut applied_suppressions = Vec::with_capacity(rows.len());
+        let mut strengthened = false;
+        for row in rows {
+            let incoming_state = mneme_kernel::calm::SuppressionState {
+                level: suppression_mode_to_kernel(row.mode),
+                generation: row.generation,
+            };
+            let existing = strongest_existing.get(&(row.target, row.revision));
+            let base_state = existing.map_or(
+                mneme_kernel::calm::SuppressionState {
+                    level: mneme_kernel::calm::SuppressionLevel::None,
+                    generation: 0,
+                },
+                |entry| entry.state,
+            );
+            let joined = mneme_kernel::calm::join_suppression(base_state, incoming_state);
+            let joined_mode = kernel_to_suppression_mode(joined.level);
+            let joined_digest = existing
+                .and_then(|entry| entry.content_digest)
+                .or(row.content_digest);
+            let joined_kind = if existing.is_some_and(|entry| entry.state.level == joined.level) {
+                existing
+                    .map(|entry| entry.target_kind.clone())
+                    .unwrap_or(row.target_kind)
+            } else {
+                row.target_kind
+            };
+            let is_stronger = existing.is_none()
+                || existing.is_some_and(|entry| {
+                    mneme_kernel::calm::suppression_rank(joined.level)
+                        > mneme_kernel::calm::suppression_rank(entry.state.level)
+                        || joined.generation > entry.state.generation
+                        || (entry.content_digest.is_none() && joined_digest.is_some())
+                });
+            if is_stronger {
+                strengthened = true;
+            }
+            let merged = crate::portability::PortableSuppression {
+                target: row.target,
+                revision: row.revision,
+                target_kind: joined_kind.clone(),
+                mode: joined_mode,
+                content_digest: joined_digest,
+                generation: joined.generation,
+            };
+            applied_suppressions.push(crate::lifecycle::RetentionSuppression {
+                operation_id: "portable-restore".to_owned(),
+                target: merged.target,
+                revision: merged.revision,
+                target_kind: joined_kind,
+                mode: merged.mode,
+                content_digest: merged.content_digest,
+                generation: merged.generation,
+            });
+            merged_rows.push(merged);
+        }
+
+        let mut next_generation = current_generation.max(state.generation);
+        if strengthened && next_generation == current_generation && current_sequence > 0 {
+            next_generation = current_generation.saturating_add(1);
+        }
+
+        if !merged_rows.is_empty() {
+            insert_portable_operation(&transaction, scope, genesis, next_generation, now_ns)?;
+            for row in &merged_rows {
+                upsert_portable_suppression(&transaction, row)?;
+            }
+            super::index::apply_suppressions(&transaction, &applied_suppressions)?;
+        }
+        let generation_advanced = next_generation > current_generation;
+        if generation_advanced {
+            super::set_meta_u64(&transaction, super::META_GENERATION, next_generation)?;
+        }
         transaction.commit()?;
-        self.facts().align(state.generation);
-        Ok(())
+
+        let changed = strengthened || generation_advanced;
+        if changed {
+            self.facts().align(next_generation);
+            *self.requirements.borrow_mut() = None;
+        }
+        Ok(changed)
+    }
+
+    /// Active `Forgotten` suppressions and forgotten content digests for `scope`.
+    pub(crate) fn forgotten_filter(
+        &self,
+        scope: &mneme_core::ScopeId,
+    ) -> crate::error::Result<ForgottenFilter> {
+        let suppressions = super::sweep::forgotten_suppressions_in(&self.connection)?;
+        let content_digests = forgotten_digests(&self.connection, scope)?;
+        Ok(ForgottenFilter {
+            identities: suppressions.identities,
+            revisions: suppressions.revisions,
+            content_digests,
+        })
+    }
+}
+
+/// Active `Forgotten` suppression filter used by barrier-first sync ingestion so
+/// forgotten records and blobs are never resurrected by concurrent deltas.
+pub(crate) struct ForgottenFilter {
+    pub(crate) identities: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub(crate) revisions:
+        std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    pub(crate) content_digests: std::collections::BTreeSet<[u8; 32]>,
+}
+
+impl ForgottenFilter {
+    pub(crate) fn matches_record_id(&self, record_id: mneme_core::RecordId) -> bool {
+        self.identities.contains(&record_id)
+    }
+
+    pub(crate) fn matches_revision(
+        &self,
+        revision: &crate::portability::PortableRevision,
+    ) -> crate::error::Result<bool> {
+        let record_id = revision.envelope.record_id;
+        let revision_id = revision.envelope.revision_id;
+        if self.identities.contains(&record_id)
+            || self.revisions.contains(&(record_id, revision_id))
+        {
+            return Ok(true);
+        }
+        if let Some(retained) = crate::portability::portable_retained_source(&revision.envelope)?
+            && self.content_digests.contains(retained.digest().as_bytes())
+        {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn matches_digest(&self, digest: mneme_core::ContentDigest) -> bool {
+        self.content_digests.contains(digest.as_bytes())
+    }
+}
+
+fn suppression_mode_to_kernel(
+    mode: crate::lifecycle::SuppressionMode,
+) -> mneme_kernel::calm::SuppressionLevel {
+    match mode {
+        crate::lifecycle::SuppressionMode::Withdrawn => {
+            mneme_kernel::calm::SuppressionLevel::Withdrawn
+        }
+        crate::lifecycle::SuppressionMode::Forgotten => {
+            mneme_kernel::calm::SuppressionLevel::Forgotten
+        }
+    }
+}
+
+fn kernel_to_suppression_mode(
+    level: mneme_kernel::calm::SuppressionLevel,
+) -> crate::lifecycle::SuppressionMode {
+    match level {
+        mneme_kernel::calm::SuppressionLevel::None
+        | mneme_kernel::calm::SuppressionLevel::Withdrawn => {
+            crate::lifecycle::SuppressionMode::Withdrawn
+        }
+        mneme_kernel::calm::SuppressionLevel::Forgotten => {
+            crate::lifecycle::SuppressionMode::Forgotten
+        }
     }
 }
 
@@ -207,7 +423,8 @@ fn scoped_suppressions(
     Ok(suppressions)
 }
 
-/// Deduplicate one target; the forgotten mode and newest generation win.
+/// Deduplicate one target via the Lean-verified CALM Stratum M suppression join;
+/// the stronger suppression level and newest generation win.
 fn insert_strongest(
     suppressions: &mut std::collections::BTreeMap<
         (mneme_core::RecordId, Option<mneme_core::RevisionId>),
@@ -221,11 +438,20 @@ fn insert_strongest(
         }
         std::collections::btree_map::Entry::Occupied(mut entry) => {
             let existing = entry.get_mut();
-            if candidate.mode > existing.mode {
-                existing.mode = candidate.mode;
+            let left = mneme_kernel::calm::SuppressionState {
+                level: suppression_mode_to_kernel(existing.mode),
+                generation: existing.generation,
+            };
+            let right = mneme_kernel::calm::SuppressionState {
+                level: suppression_mode_to_kernel(candidate.mode),
+                generation: candidate.generation,
+            };
+            let joined = mneme_kernel::calm::join_suppression(left, right);
+            if joined.level != left.level {
+                existing.mode = kernel_to_suppression_mode(joined.level);
                 existing.target_kind = candidate.target_kind;
             }
-            existing.generation = existing.generation.max(candidate.generation);
+            existing.generation = joined.generation;
             if existing.content_digest.is_none() {
                 existing.content_digest = candidate.content_digest;
             }
@@ -407,15 +633,21 @@ fn insert_portable_operation(
     Ok(())
 }
 
-/// Insert one suppression row under the synthetic restore operation.
-fn insert_portable_suppression(
+/// Upsert one suppression row under the synthetic restore operation using
+/// inflationary semantics (never weakening mode or generation).
+fn upsert_portable_suppression(
     transaction: &rusqlite::Transaction<'_>,
     suppression: &crate::portability::PortableSuppression,
 ) -> crate::error::Result<()> {
     transaction.execute(
         "INSERT INTO retention_suppressions (operation_id, target_id, target_revision,
              target_kind, mode, content_digest, generation)
-         VALUES ('portable-restore', ?1, ?2, ?3, ?4, ?5, ?6)",
+         VALUES ('portable-restore', ?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(operation_id, target_id, target_revision) DO UPDATE SET
+             target_kind = excluded.target_kind,
+             mode = excluded.mode,
+             content_digest = COALESCE(retention_suppressions.content_digest, excluded.content_digest),
+             generation = MAX(retention_suppressions.generation, excluded.generation)",
         rusqlite::params![
             suppression.target.as_bytes().as_slice(),
             suppression

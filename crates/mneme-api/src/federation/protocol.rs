@@ -14,6 +14,138 @@ const DEFAULT_MAX_RECURSION_DEPTH: u64 = 32;
 const DEFAULT_EXPLAIN_MAX_WORK: u64 = 10_000;
 const DEFAULT_EXPLAIN_MAX_DEPTH: u32 = 16;
 const DEFAULT_EXPLAIN_MAX_REASONS: u32 = 64;
+const CALM_SEAL_SIGNING_DOMAIN: &[u8] = b"mneme.federation.calm-seal.v1\0";
+const ED25519_SIGNATURE_LEN: usize = 64;
+
+/// Wire representation of a [`mneme_kernel::hlc::HybridTimestamp`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WireHybridTimestamp {
+    pub physical_ns: i64,
+    pub logical: u32,
+}
+
+impl WireHybridTimestamp {
+    /// Convert a kernel [`mneme_kernel::hlc::HybridTimestamp`] to wire form.
+    pub const fn from_kernel(ts: mneme_kernel::hlc::HybridTimestamp) -> Self {
+        Self {
+            physical_ns: ts.physical_ns,
+            logical: ts.logical,
+        }
+    }
+
+    /// Convert back to a kernel [`mneme_kernel::hlc::HybridTimestamp`].
+    pub const fn to_kernel(self) -> mneme_kernel::hlc::HybridTimestamp {
+        mneme_kernel::hlc::HybridTimestamp {
+            physical_ns: self.physical_ns,
+            logical: self.logical,
+        }
+    }
+}
+
+/// One Ed25519 signature over a [`CalmSeal`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CalmSealSignature {
+    pub signer: [u8; 32],
+    pub signature: Vec<u8>,
+}
+
+/// Signed cross-vault barrier seal admitting Stratum B closed-world negation
+/// (`absence_established = true`) across federated vaults.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CalmSeal {
+    pub scope: String,
+    pub epoch_generation: u64,
+    pub frontier_heads: Vec<(String, [u8; 16])>,
+    pub sigs: Vec<CalmSealSignature>,
+}
+
+impl CalmSeal {
+    /// Deterministic canonical signing payload for this seal.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(CALM_SEAL_SIGNING_DOMAIN);
+        let scope_bytes = self.scope.as_bytes();
+        out.extend_from_slice(&(scope_bytes.len() as u64).to_le_bytes());
+        out.extend_from_slice(scope_bytes);
+        out.extend_from_slice(&self.epoch_generation.to_le_bytes());
+        let mut sorted_heads = self.frontier_heads.clone();
+        sorted_heads.sort();
+        out.extend_from_slice(&(sorted_heads.len() as u64).to_le_bytes());
+        for (alias, head) in &sorted_heads {
+            let alias_bytes = alias.as_bytes();
+            out.extend_from_slice(&(alias_bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(alias_bytes);
+            out.extend_from_slice(head);
+        }
+        out
+    }
+
+    /// Append an Ed25519 signature from `signing_key` covering this seal.
+    pub fn sign(&mut self, signing_key: &iroh::SecretKey) {
+        let message = self.canonical_bytes();
+        let sig = signing_key.sign(&message);
+        self.sigs.push(CalmSealSignature {
+            signer: *signing_key.public().as_bytes(),
+            signature: sig.to_bytes().to_vec(),
+        });
+    }
+
+    /// Verify this seal against `expected_scope`, `expected_epoch`,
+    /// `served_revision`, and `authorized_signers`, producing kernel
+    /// [`mneme_kernel::calm::CalmSealFacts`].
+    pub fn verify_facts(
+        &self,
+        expected_scope: &str,
+        expected_epoch: u64,
+        served_revision: [u8; 16],
+        authorized_signers: &std::collections::BTreeSet<iroh::EndpointId>,
+    ) -> mneme_kernel::calm::CalmSealFacts {
+        let message = self.canonical_bytes();
+        let mut verified_signers = std::collections::BTreeSet::new();
+        let mut all_sigs_valid = !self.sigs.is_empty();
+        for entry in &self.sigs {
+            let Ok(public_key) = iroh::EndpointId::from_bytes(&entry.signer) else {
+                all_sigs_valid = false;
+                continue;
+            };
+            if entry.signature.len() != ED25519_SIGNATURE_LEN {
+                all_sigs_valid = false;
+                continue;
+            }
+            let Ok(sig_bytes) = <[u8; ED25519_SIGNATURE_LEN]>::try_from(entry.signature.as_slice())
+            else {
+                all_sigs_valid = false;
+                continue;
+            };
+            let signature = iroh::Signature::from_bytes(&sig_bytes);
+            if public_key.verify(&message, &signature).is_ok() {
+                verified_signers.insert(public_key);
+            } else {
+                all_sigs_valid = false;
+            }
+        }
+        let sealed = all_sigs_valid && !verified_signers.is_empty();
+        let epoch_matches = self.scope == expected_scope && self.epoch_generation == expected_epoch;
+        let head_covered = self
+            .frontier_heads
+            .iter()
+            .any(|(_, head)| *head == served_revision);
+        let signers_authorized = if authorized_signers.is_empty() {
+            !verified_signers.is_empty()
+        } else {
+            verified_signers
+                .iter()
+                .any(|signer| authorized_signers.contains(signer))
+        };
+        let quorum_satisfied =
+            !self.frontier_heads.is_empty() && head_covered && signers_authorized;
+        mneme_kernel::calm::CalmSealFacts {
+            sealed,
+            quorum_satisfied,
+            epoch_matches,
+        }
+    }
+}
 
 /// Protocol wire version.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -140,6 +272,7 @@ pub enum RpcErrorCode {
     Stale,
     Unavailable,
     ProtocolError,
+    ClockSkewExceeded,
 }
 
 /// Typed RPC failure returned by the remote federation service.
@@ -171,6 +304,7 @@ impl std::error::Error for RpcError {}
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryHeadRequest {
     pub scope: String,
+    pub sender_hlc: Option<WireHybridTimestamp>,
     pub capability_document: Option<String>,
 }
 
@@ -181,6 +315,7 @@ pub struct HeadState {
     pub head_revision: [u8; 16],
     pub head_sequence: u64,
     pub eligibility_generation: u64,
+    pub sender_hlc: Option<WireHybridTimestamp>,
 }
 
 /// Request scoped metadata for a pinned or head revision.
@@ -188,6 +323,8 @@ pub struct HeadState {
 pub struct QueryMetadataRequest {
     pub scope: String,
     pub revision: Option<[u8; 16]>,
+    pub read_hlc: Option<WireHybridTimestamp>,
+    pub sender_hlc: Option<WireHybridTimestamp>,
     pub capability_document: Option<String>,
 }
 
@@ -201,6 +338,7 @@ pub struct VaultMetadata {
     pub eligibility_generation: u64,
     pub scoped_record_count: u64,
     pub max_limits: FederationLimits,
+    pub sender_hlc: Option<WireHybridTimestamp>,
 }
 
 /// Request a strictly read-only, scope-filtered pinned snapshot view.
@@ -208,6 +346,8 @@ pub struct VaultMetadata {
 pub struct FetchPinnedSnapshotRequest {
     pub scope: String,
     pub revision: Option<[u8; 16]>,
+    pub read_hlc: Option<WireHybridTimestamp>,
+    pub sender_hlc: Option<WireHybridTimestamp>,
     pub limits: FederationLimits,
     pub capability_document: Option<String>,
 }
@@ -250,6 +390,7 @@ pub struct PinnedSnapshotPayload {
     pub revision_sequences: Vec<([u8; 16], u64)>,
     pub suppressions: Vec<EncodedSuppression>,
     pub current_sources: Vec<([u8; 16], EncodedSourceAvailability)>,
+    pub sender_hlc: Option<WireHybridTimestamp>,
 }
 
 /// Request a bounded remote Datalog evaluation over one pinned vault revision.
@@ -257,6 +398,9 @@ pub struct PinnedSnapshotPayload {
 pub struct EvaluateDatalogRequest {
     pub scope: String,
     pub revision: Option<[u8; 16]>,
+    pub read_hlc: Option<WireHybridTimestamp>,
+    pub sender_hlc: Option<WireHybridTimestamp>,
+    pub calm_seal: Option<CalmSeal>,
     pub bundle_document: String,
     pub predicate: String,
     pub constant_documents: Vec<Option<String>>,
@@ -340,6 +484,7 @@ pub struct RemoteDatalogResult {
     pub stale: bool,
     pub reason: Option<String>,
     pub work: u64,
+    pub sender_hlc: Option<WireHybridTimestamp>,
 }
 
 /// Explicit traversal bounds for a remote Why-Not [`ExplainMissingRpcRequest`].
@@ -407,6 +552,8 @@ impl RemoteExplainLimits {
 pub struct ExplainMissingRpcRequest {
     pub scope: String,
     pub revision: Option<[u8; 16]>,
+    pub read_hlc: Option<WireHybridTimestamp>,
+    pub sender_hlc: Option<WireHybridTimestamp>,
     pub bundle_document: String,
     pub predicate: String,
     pub term_documents: Vec<String>,
@@ -459,6 +606,7 @@ pub struct RemoteMissingExplanation {
     pub exhaustive: bool,
     pub stale: bool,
     pub work: u64,
+    pub sender_hlc: Option<WireHybridTimestamp>,
 }
 
 /// Strictly read-only, revision-pinned `irpc` protocol for remote vault federation.

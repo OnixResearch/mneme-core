@@ -22,6 +22,7 @@ pub struct ExportedSyncBundle {
     >,
     pub(crate) blobs_by_digest:
         std::collections::BTreeMap<[u8; 32], crate::protocol::BlobDigestRef>,
+    pub(crate) retention: mneme_store::portability::PortableRetentionState,
 }
 
 /// Result of verifying and ingesting a downloaded portable revision bundle.
@@ -87,6 +88,15 @@ pub async fn export_scope_to_store(
         by_digest: blobs_by_digest,
     } = export_manifest_blobs(workspace, &manifest.blobs, blobs, &mut rbsr_keys)?;
     let rbsr_set = crate::rbsr::RbsrSet::from_keys(rbsr_keys);
+    let hlc = workspace
+        .current_hlc()
+        .ok()
+        .map(crate::protocol::WireHlc::from_kernel);
+    let retention = mneme_store::portability::PortableRetentionState {
+        generation: manifest.generation,
+        suppressions: manifest.suppressions,
+        prunings: manifest.prunings,
+    };
 
     let info = crate::protocol::VaultSnapshotInfo {
         vault_id: vault_id.to_owned(),
@@ -94,9 +104,11 @@ pub async fn export_scope_to_store(
         head_revision: head_revision.to_hex(),
         head_revision_digest: crate::protocol::WireDigest::from_digest(head_revision_digest),
         sequence,
+        eligibility_generation: retention.generation,
         bundle_hash: archive_hash.to_string(),
         bundle_bytes: archive_len,
         blobs: blob_refs,
+        hlc,
     };
 
     Ok(ExportedSyncBundle {
@@ -105,6 +117,7 @@ pub async fn export_scope_to_store(
         rbsr_set,
         revisions: revisions_map,
         blobs_by_digest,
+        retention,
     })
 }
 
