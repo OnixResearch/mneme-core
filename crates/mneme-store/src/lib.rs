@@ -20,6 +20,8 @@ pub mod payload;
 pub mod portability;
 pub mod requests;
 pub mod timekeeper;
+#[cfg(feature = "trace-spec")]
+pub mod trace;
 
 pub use catalog::{Manifest, ManifestRecord};
 pub use coordinator::verify::{

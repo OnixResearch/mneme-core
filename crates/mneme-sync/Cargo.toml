@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+trace-spec = ["mneme-store/trace-spec"]
+
 [dependencies]
 blake3.workspace = true
 bytes = "1"

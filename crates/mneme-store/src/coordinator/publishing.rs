@@ -79,6 +79,10 @@ impl super::Workspace {
         let snapshot = self.snapshot_from_disk()?;
         self.rebuild_metadata_projection(&snapshot)?;
         let publications = self.publish_pending()?;
+        #[cfg(feature = "trace-spec")]
+        if let Ok(orphans_removed) = u64::try_from(orphan_blobs) {
+            crate::trace::emit(crate::trace::Event::Recover { orphans_removed });
+        }
         Ok(super::RecoveryReport {
             staged_files_removed: staged,
             orphan_blobs_removed: orphan_blobs,
@@ -100,10 +104,20 @@ impl super::Workspace {
         if !intent.state.should_attempt() {
             return self.require_outcome(intent_id);
         }
-        if let Some(outcome) = self.suppress_stale_publication(intent_id, &intent)? {
-            return Ok(outcome);
-        }
-        self.publish_current_intent(intent_id, &intent)
+        let outcome = if let Some(outcome) = self.suppress_stale_publication(intent_id, &intent)? {
+            outcome
+        } else {
+            self.publish_current_intent(intent_id, &intent)?
+        };
+        #[cfg(feature = "trace-spec")]
+        crate::trace::emit(crate::trace::Event::PublishIntent(
+            crate::trace::PublishIntentData {
+                intent_sequence: intent.revision_sequence,
+                intent_generation: intent.eligibility_generation,
+                outcome: outcome.state.as_str().to_owned(),
+            },
+        ));
+        Ok(outcome)
     }
 
     fn suppress_stale_publication(

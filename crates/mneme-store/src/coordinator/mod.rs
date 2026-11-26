@@ -1914,6 +1914,10 @@ impl Workspace {
         set_meta(&transaction, META_RESTORE_PENDING, b"1")?;
         transaction.commit()?;
         workspace.is_restore_required = true;
+        #[cfg(feature = "trace-spec")]
+        if let Ok(generation) = workspace.eligibility_generation() {
+            crate::trace::emit(crate::trace::Event::RestorePendingSet { generation });
+        }
         Ok(workspace)
     }
 

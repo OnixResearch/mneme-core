@@ -132,10 +132,24 @@ impl super::Workspace {
         prepared: &super::PreparedCommit,
         intent_ids: Vec<String>,
     ) -> crate::error::Result<super::CommitOutcome> {
-        crate::injectors::check(
+        #[cfg(feature = "trace-spec")]
+        emit_written_trace(command, prepared);
+        #[cfg(feature = "trace-spec")]
+        let fault_check = crate::injectors::check(
             self.faults.as_ref(),
             crate::injectors::FaultPoint::AfterCommit,
-        )?;
+        )
+        .inspect_err(|_| {
+            crate::trace::emit(crate::trace::Event::CommitFault {
+                point: "AfterCommit".to_owned(),
+            });
+        });
+        #[cfg(not(feature = "trace-spec"))]
+        let fault_check = crate::injectors::check(
+            self.faults.as_ref(),
+            crate::injectors::FaultPoint::AfterCommit,
+        );
+        fault_check?;
         let mut publications = Vec::with_capacity(intent_ids.len());
         for (index, intent_id) in intent_ids.into_iter().enumerate() {
             let path = command
@@ -1377,4 +1391,27 @@ pub(super) fn infer_publication_media_type(path: &str) -> &'static str {
     } else {
         ""
     }
+}
+
+#[cfg(feature = "trace-spec")]
+fn emit_written_trace(command: &crate::requests::CommitCommand, prepared: &super::PreparedCommit) {
+    let is_retention = command.retention.is_some();
+    let blob = if is_retention {
+        String::new()
+    } else {
+        prepared
+            .new_records
+            .first()
+            .map(|record| record.full_digest().to_hex())
+            .unwrap_or_default()
+    };
+    crate::trace::emit(crate::trace::Event::CommitWritten(
+        crate::trace::CommitWrittenData {
+            sequence: prepared.next_sequence,
+            generation: prepared.next_generation,
+            pinned_generation: prepared.generation,
+            blob,
+            is_retention,
+        },
+    ));
 }

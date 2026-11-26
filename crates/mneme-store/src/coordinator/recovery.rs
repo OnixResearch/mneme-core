@@ -108,6 +108,7 @@ impl super::Workspace {
     /// decision suppresses the pre-prune revision so its bytes are not served
     /// again.
     pub fn apply_restore_suppression_ledger(&mut self, bytes: &[u8]) -> crate::error::Result<()> {
+        let old_generation = self.eligibility_generation()?;
         let (ledger, next, operation_id) = self.require_applicable_ledger(bytes)?;
         let revision = self.current_revision()?;
         let sequence = self.current_sequence()?;
@@ -151,6 +152,16 @@ impl super::Workspace {
         // The applied ledger advances the generation and purges restored
         // payloads, so anything this handle decoded before is unauthorized now.
         self.facts().align(next);
+        #[cfg(feature = "trace-spec")]
+        crate::trace::emit(crate::trace::Event::LedgerApplied(
+            crate::trace::LedgerAppliedData {
+                old_generation,
+                new_generation: next,
+                is_same_workspace: true,
+            },
+        ));
+        #[cfg(not(feature = "trace-spec"))]
+        let _ = old_generation;
         Ok(())
     }
 
@@ -183,11 +194,19 @@ impl super::Workspace {
         match decision {
             mneme_kernel::restore::LedgerDecision::Apply => {}
             mneme_kernel::restore::LedgerDecision::ForeignWorkspace => {
+                #[cfg(feature = "trace-spec")]
+                crate::trace::emit(crate::trace::Event::LedgerRejected {
+                    reason: "foreign".to_owned(),
+                });
                 return Err(crate::error::Failure::InvalidCommand(
                     "suppression ledger belongs to another workspace".to_owned(),
                 ));
             }
             mneme_kernel::restore::LedgerDecision::Stale => {
+                #[cfg(feature = "trace-spec")]
+                crate::trace::emit(crate::trace::Event::LedgerRejected {
+                    reason: "stale".to_owned(),
+                });
                 return Err(crate::error::Failure::InvalidCommand(
                     "suppression ledger is older than the restored workspace".to_owned(),
                 ));
@@ -211,6 +230,8 @@ impl super::Workspace {
             mneme_kernel::restore::Marker::Clear
         };
         if !mneme_kernel::restore::may_serve(marker) {
+            #[cfg(feature = "trace-spec")]
+            crate::trace::emit(crate::trace::Event::ServeDenied);
             return Err(crate::error::Failure::MissingRetentionState {
                 reason: "restored workspace has not applied the current suppression ledger"
                     .to_owned(),

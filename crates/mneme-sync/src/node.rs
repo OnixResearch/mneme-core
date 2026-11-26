@@ -225,10 +225,8 @@ impl VaultGossipTopic {
 #[derive(Clone)]
 pub struct SyncNode {
     secret_key: iroh::SecretKey,
-    endpoint: iroh::Endpoint,
+    transport: crate::transport::IrohTransport,
     router: iroh::protocol::Router,
-    blobs: crate::blobstore::DiskBlobStore,
-    gossip: iroh_gossip::Gossip,
     memory_lookup: iroh::address_lookup::memory::MemoryLookup,
     allowlist: crate::trust::SharedAllowlist,
     revocations: crate::capability::SharedRevocationSet,
@@ -243,7 +241,7 @@ pub struct SyncNode {
 impl std::fmt::Debug for SyncNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SyncNode")
-            .field("node_id", &self.endpoint.id())
+            .field("node_id", &self.transport.node_id())
             .finish()
     }
 }
@@ -294,12 +292,12 @@ impl SyncNode {
             .accept(crate::protocol::SYNC_CONTROL_ALPN, control_handler)
             .spawn();
 
+        let transport = crate::transport::IrohTransport::new(endpoint, blobs, gossip);
+
         Ok(Self {
             secret_key: config.secret_key,
-            endpoint,
+            transport,
             router,
-            blobs,
-            gossip,
             memory_lookup,
             allowlist: config.allowlist,
             revocations: config.revocations,
@@ -324,12 +322,12 @@ impl SyncNode {
 
     /// Return this node's Ed25519 identity.
     pub fn node_id(&self) -> iroh::EndpointId {
-        self.endpoint.id()
+        self.transport.node_id()
     }
 
     /// Return this node's current socket/relay address information.
     pub fn addr(&self) -> iroh::EndpointAddr {
-        self.endpoint.addr()
+        self.transport.addr()
     }
 
     /// Register a peer's explicit address in local memory lookup without granting trust.
@@ -352,14 +350,19 @@ impl SyncNode {
         &self.trusted_roots
     }
 
+    /// Access the underlying production [`crate::transport::IrohTransport`].
+    pub const fn transport(&self) -> &crate::transport::IrohTransport {
+        &self.transport
+    }
+
     /// Access the underlying Iroh endpoint (for address lookup or diagnostics).
     pub const fn endpoint(&self) -> &iroh::Endpoint {
-        &self.endpoint
+        self.transport.endpoint()
     }
 
     /// Access the disk-backed blob store backing `iroh-blobs` transfers.
     pub const fn blob_store(&self) -> &crate::blobstore::DiskBlobStore {
-        &self.blobs
+        self.transport.blob_store()
     }
 
     /// Return the most recent authorized `PushHead` announcement received for `scope`.
@@ -399,8 +402,13 @@ impl SyncNode {
         vault_id: &str,
         scope: &mneme_core::ScopeId,
     ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
-        let exported =
-            crate::bundle::export_scope_to_store(workspace, vault_id, scope, &self.blobs).await?;
+        let exported = crate::bundle::export_scope_to_store(
+            workspace,
+            vault_id,
+            scope,
+            self.transport.blob_store(),
+        )
+        .await?;
         let mut authorized_hashes = std::collections::BTreeSet::new();
         authorized_hashes.insert(exported.archive_hash);
         for blob_ref in &exported.info.blobs {
@@ -441,7 +449,8 @@ impl SyncNode {
         self.register_vault_id(vault_id)?;
         let topic_id = crate::state::topic_id_for_vault(vault_id);
         let topic = self
-            .gossip
+            .transport
+            .gossip()
             .subscribe(topic_id, bootstrap)
             .await
             .map_err(|error| {
@@ -908,29 +917,12 @@ impl SyncNode {
         peer: iroh::EndpointId,
         request: &crate::protocol::SyncControlRequest,
     ) -> crate::error::Result<crate::protocol::SyncControlResponse> {
-        let conn = self
-            .endpoint
-            .connect(peer, crate::protocol::SYNC_CONTROL_ALPN)
-            .await
-            .map_err(|error| {
-                crate::error::Failure::Transport(format!("connect control to {peer}: {error}"))
-            })?;
-        let (mut send, mut recv) = conn.open_bi().await.map_err(|error| {
-            crate::error::Failure::Transport(format!("open control stream: {error}"))
-        })?;
         let encoded = serde_json::to_vec(request).map_err(|error| {
             crate::error::Failure::Protocol(format!("encode control request: {error}"))
         })?;
-        send.write_all(&encoded)
-            .await
-            .map_err(|error| crate::error::Failure::Transport(format!("write control: {error}")))?;
-        send.finish().map_err(|error| {
-            crate::error::Failure::Transport(format!("finish control write: {error}"))
-        })?;
-        let response_bytes = recv
-            .read_to_end(crate::protocol::MAX_CONTROL_MESSAGE_BYTES)
-            .await
-            .map_err(|error| crate::error::Failure::Transport(format!("read control: {error}")))?;
+        let response_bytes =
+            crate::transport::SyncTransport::control_roundtrip(&self.transport, peer, &encoded)
+                .await?;
         let response: crate::protocol::SyncControlResponse =
             serde_json::from_slice(&response_bytes).map_err(|error| {
                 crate::error::Failure::Protocol(format!("decode control response: {error}"))
@@ -1011,12 +1003,7 @@ impl SyncNode {
         &self,
         peer: iroh::EndpointId,
     ) -> crate::error::Result<iroh::endpoint::Connection> {
-        self.endpoint
-            .connect(peer, crate::protocol::SYNC_CONTROL_ALPN)
-            .await
-            .map_err(|error| {
-                crate::error::Failure::Transport(format!("connect control to {peer}: {error}"))
-            })
+        self.transport.connect_control(peer).await
     }
 
     async fn pull_full_restore(
@@ -1172,15 +1159,14 @@ impl SyncNode {
         max_bytes: u64,
         target_path: &std::path::Path,
     ) -> crate::error::Result<crate::blobstore::DownloadedBlob> {
-        let conn = self
-            .endpoint
-            .connect(peer, iroh_blobs::ALPN)
-            .await
-            .map_err(|error| {
-                crate::error::Failure::Transport(format!("connect blobs to {peer}: {error}"))
-            })?;
-        crate::blobstore::download_blob_to_file(&conn, bundle_hash, max_bytes, target_path, None)
-            .await
+        let fetch = crate::transport::BlobFetchRequest {
+            peer,
+            hash: bundle_hash,
+            max_bytes,
+            target_path,
+            extra_algorithm: None,
+        };
+        crate::transport::SyncTransport::fetch_blob(&self.transport, &fetch).await
     }
 
     async fn download_delta_blobs(
@@ -1193,13 +1179,7 @@ impl SyncNode {
             return Ok((Vec::new(), 0));
         }
         let staging_dir = create_pull_staging_dir(None, destination)?;
-        let conn = self
-            .endpoint
-            .connect(peer, iroh_blobs::ALPN)
-            .await
-            .map_err(|error| {
-                crate::error::Failure::Transport(format!("connect blobs to {peer}: {error}"))
-            })?;
+        let conn = self.transport.connect_blobs(peer).await?;
         let mut out = Vec::with_capacity(blobs.len());
         let mut bytes_fetched = 0_u64;
         for (idx, blob_ref) in blobs.iter().enumerate() {
