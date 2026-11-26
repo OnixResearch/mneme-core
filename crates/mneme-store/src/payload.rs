@@ -20,8 +20,11 @@ use sha2::Digest;
 
 const ZSTD_FRAME_MAGIC: &[u8; 8] = b"MNZSTD01";
 const ZSTD_HEADER_LEN: usize = 16;
+const ZSTD_DICT_FRAME_MAGIC: &[u8; 8] = b"MNZSTD02";
+const ZSTD_DICT_HEADER_LEN: usize = 48;
 const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 const MAX_DECOMPRESSED_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ZSTD_DICTIONARY_BYTES: u64 = 16 * 1024 * 1024;
 
 /// On-disk compression policy for newly staged `source-bytes` blobs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -30,9 +33,15 @@ pub enum BlobCompression {
     #[default]
     None,
     /// Compress compressible `source-bytes` blobs (`text/*`,
-    /// `application/json`, `application/xml`) with zstd on disk while
-    /// preserving uncompressed SHA-256 content identity.
+    /// `application/json`, `application/xml`, `application/preserves`)
+    /// with zstd on disk while preserving uncompressed SHA-256 content
+    /// identity.
     Zstd,
+    /// Compress compressible `source-bytes` blobs with a pinned
+    /// content-addressed zstd dictionary stored under `blobs/dicts/`.
+    ZstdDictionary {
+        dictionary: mneme_core::ContentDigest,
+    },
 }
 
 /// Whether `media_type` names a compressible text or structured-text format.
@@ -47,12 +56,20 @@ pub fn is_compressible_media_type(media_type: &str) -> bool {
     }
     mime.eq_ignore_ascii_case("application/json")
         || mime.eq_ignore_ascii_case("application/xml")
+        || mime.eq_ignore_ascii_case("application/preserves")
+        || mime.eq_ignore_ascii_case("application/x-preserves")
         || (mime.len() >= 5 && mime[mime.len().saturating_sub(5)..].eq_ignore_ascii_case("+json"))
         || (mime.len() >= 4 && mime[mime.len().saturating_sub(4)..].eq_ignore_ascii_case("+xml"))
+        || (mime.len() >= 10
+            && mime[mime.len().saturating_sub(10)..].eq_ignore_ascii_case("+preserves"))
 }
 
 /// Directory holding immutable blobs.
 pub const BLOB_DIRECTORY: &str = "blobs";
+/// Subdirectory under [`BLOB_DIRECTORY`] holding immutable trained zstd dictionaries.
+pub const DICTIONARY_DIRECTORY: &str = "dicts";
+/// Subdirectory under [`BLOB_DIRECTORY`] holding immutable FastCDC chunks.
+pub const CHUNK_DIRECTORY: &str = "chunks";
 /// Directory holding in-progress staged files.
 pub const STAGING_DIRECTORY: &str = "staging";
 /// Directory holding published working files.
@@ -270,6 +287,27 @@ pub fn blob_path(root: &std::path::Path, digest: mneme_core::ContentDigest) -> s
         .join(hex)
 }
 
+/// The filesystem path for a content-addressed zstd dictionary digest.
+pub fn dictionary_path(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> std::path::PathBuf {
+    let hex = digest.to_hex();
+    root.join(BLOB_DIRECTORY)
+        .join(DICTIONARY_DIRECTORY)
+        .join(&hex[0..2])
+        .join(hex)
+}
+
+/// The filesystem path for a content-addressed FastCDC chunk digest.
+pub fn chunk_path(root: &std::path::Path, digest: mneme_core::ContentDigest) -> std::path::PathBuf {
+    let hex = digest.to_hex();
+    root.join(BLOB_DIRECTORY)
+        .join(CHUNK_DIRECTORY)
+        .join(&hex[0..2])
+        .join(hex)
+}
+
 /// The directory of one pending transfer, kept under the key id of the device
 /// that signed it. An owner is a key id, never a device's chosen name, so it
 /// is always one path component.
@@ -310,9 +348,13 @@ pub fn read_range(
             crate::error::Failure::io(&path, error)
         }
     })?;
-    if file_has_zstd_magic(&mut file, &path)? {
+    let magic = read_file_magic(&mut file, &path)?;
+    if magic.as_ref() == Some(ZSTD_FRAME_MAGIC) || magic.as_ref() == Some(ZSTD_DICT_FRAME_MAGIC) {
         let decompressed = read(root, digest)?;
         return slice_range(digest, &decompressed, offset, length);
+    }
+    if magic.as_ref() == Some(crate::chunking::CDC_MANIFEST_MAGIC) {
+        return read_cdc_range(root, &path, digest, offset, length);
     }
     std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(offset))
         .map_err(|error| crate::error::Failure::io(&path, error))?;
@@ -330,10 +372,10 @@ pub fn read_range(
     Ok(bytes)
 }
 
-fn file_has_zstd_magic(
+fn read_file_magic(
     file: &mut std::fs::File,
     path: &std::path::Path,
-) -> crate::error::Result<bool> {
+) -> crate::error::Result<Option<[u8; 8]>> {
     let mut prefix = [0_u8; 8];
     let mut read_so_far = 0_usize;
     while read_so_far < prefix.len() {
@@ -341,11 +383,78 @@ fn file_has_zstd_magic(
             .read(&mut prefix[read_so_far..])
             .map_err(|error| crate::error::Failure::io(path, error))?;
         if count == 0 {
-            return Ok(false);
+            return Ok(None);
         }
         read_so_far = read_so_far.saturating_add(count);
     }
-    Ok(&prefix == ZSTD_FRAME_MAGIC)
+    Ok(Some(prefix))
+}
+
+fn read_cdc_range(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    offset: u64,
+    length: usize,
+) -> crate::error::Result<Vec<u8>> {
+    let disk_bytes = std::fs::read(path).map_err(|error| crate::error::Failure::io(path, error))?;
+    if sha256(&disk_bytes) == *digest.as_bytes() {
+        return slice_range(digest, &disk_bytes, offset, length);
+    }
+    let (expected_len, chunks) =
+        crate::chunking::parse_cdc_manifest(digest, &disk_bytes, MAX_DECOMPRESSED_BLOB_BYTES)?;
+    let length_u64 = u64::try_from(length).map_err(|_| crate::error::Failure::CorruptBlob {
+        digest: digest.to_hex(),
+        reason: "stored bytes end before the requested range".to_owned(),
+    })?;
+    let Some(end) = offset.checked_add(length_u64) else {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored bytes end before the requested range".to_owned(),
+        });
+    };
+    if end > expected_len {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored bytes end before the requested range".to_owned(),
+        });
+    }
+    if length == 0 {
+        return Ok(Vec::new());
+    }
+    let mut result = Vec::with_capacity(length);
+    let mut position = 0_u64;
+    for (chunk_digest, chunk_len) in chunks {
+        let chunk_end = position.saturating_add(chunk_len);
+        if chunk_end > offset && position < end {
+            let chunk_bytes = read_chunk(root, chunk_digest, chunk_len)?;
+            let slice_start = usize::try_from(offset.saturating_sub(position)).map_err(|_| {
+                crate::error::Failure::CorruptBlob {
+                    digest: digest.to_hex(),
+                    reason: "chunk range start exceeds usize".to_owned(),
+                }
+            })?;
+            let slice_end =
+                usize::try_from(end.min(chunk_end).saturating_sub(position)).map_err(|_| {
+                    crate::error::Failure::CorruptBlob {
+                        digest: digest.to_hex(),
+                        reason: "chunk range end exceeds usize".to_owned(),
+                    }
+                })?;
+            let Some(overlap) = chunk_bytes.get(slice_start..slice_end) else {
+                return Err(crate::error::Failure::CorruptBlob {
+                    digest: digest.to_hex(),
+                    reason: "chunk length mismatch during range read".to_owned(),
+                });
+            };
+            result.extend_from_slice(overlap);
+        }
+        position = chunk_end;
+        if position >= end {
+            break;
+        }
+    }
+    Ok(result)
 }
 
 fn slice_range(
@@ -421,13 +530,114 @@ fn hex_32(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Train a deterministic Zstd dictionary from sample payloads.
+pub fn train_zstd_dictionary(
+    samples: &[&[u8]],
+    max_dict_bytes: u32,
+) -> crate::error::Result<Vec<u8>> {
+    if samples.is_empty() {
+        return Err(crate::error::Failure::InvalidCommand(
+            "cannot train a zstd dictionary from empty samples".to_owned(),
+        ));
+    }
+    let max_size = usize::try_from(max_dict_bytes).map_err(|_| {
+        crate::error::Failure::InvalidCommand("dictionary size exceeds usize".to_owned())
+    })?;
+    if max_size == 0 || u64::from(max_dict_bytes) > MAX_ZSTD_DICTIONARY_BYTES {
+        return Err(crate::error::Failure::InvalidCommand(format!(
+            "dictionary max size {max_dict_bytes} is out of bounds"
+        )));
+    }
+    zstd::dict::from_samples(samples, max_size).map_err(|error| {
+        crate::error::Failure::InvalidCommand(format!("zstd dictionary training failed: {error}"))
+    })
+}
+
+/// Stage an immutable content-addressed Zstd dictionary under `blobs/dicts/`.
+pub fn stage_dictionary(
+    root: &std::path::Path,
+    dict_bytes: &[u8],
+) -> crate::error::Result<mneme_core::ContentDigest> {
+    if dict_bytes.is_empty() {
+        return Err(crate::error::Failure::InvalidCommand(
+            "zstd dictionary cannot be empty".to_owned(),
+        ));
+    }
+    if u64::try_from(dict_bytes.len())
+        .map(|len| len > MAX_ZSTD_DICTIONARY_BYTES)
+        .unwrap_or(true)
+    {
+        return Err(crate::error::Failure::InvalidCommand(
+            "zstd dictionary exceeds maximum supported size".to_owned(),
+        ));
+    }
+    let digest = mneme_core::ContentDigest::of_source_bytes(dict_bytes);
+    let target = dictionary_path(root, digest);
+    if target.exists() {
+        let existing = read_dictionary(root, digest)?;
+        if existing != dict_bytes {
+            return Err(crate::error::Failure::CorruptBlob {
+                digest: digest.to_hex(),
+                reason: "stored dictionary differs from staged bytes".to_owned(),
+            });
+        }
+        if let Some(parent) = target.parent() {
+            flush_directory(parent)?;
+        }
+        return Ok(digest);
+    }
+    write_staged_blob(root, &target, dict_bytes)?;
+    Ok(digest)
+}
+
+/// Read and SHA-256 verify an immutable Zstd dictionary by its digest.
+pub fn read_dictionary(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> crate::error::Result<Vec<u8>> {
+    let path = dictionary_path(root, digest);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            crate::error::Failure::MissingBlob {
+                digest: digest.to_hex(),
+            }
+        } else {
+            crate::error::Failure::io(&path, error)
+        }
+    })?;
+    if bytes.is_empty()
+        || u64::try_from(bytes.len())
+            .map(|len| len > MAX_ZSTD_DICTIONARY_BYTES)
+            .unwrap_or(true)
+    {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored dictionary length is out of bounds".to_owned(),
+        });
+    }
+    if sha256(&bytes) != *digest.as_bytes() {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored dictionary bytes do not hash to the committed digest".to_owned(),
+        });
+    }
+    Ok(bytes)
+}
+
 /// Stage exact bytes into the immutable blob store.
 pub fn stage(
     root: &std::path::Path,
     digest: mneme_core::ContentDigest,
     bytes: &[u8],
 ) -> crate::error::Result<StagedBlob> {
-    stage_with_compression(root, digest, bytes, BlobCompression::None, "")
+    stage_with_policy(
+        root,
+        digest,
+        bytes,
+        BlobCompression::None,
+        crate::chunking::BlobChunking::None,
+        "",
+    )
 }
 
 /// Stage exact bytes into the immutable blob store, optionally compressing
@@ -438,6 +648,27 @@ pub fn stage_with_compression(
     digest: mneme_core::ContentDigest,
     bytes: &[u8],
     compression: BlobCompression,
+    media_type: &str,
+) -> crate::error::Result<StagedBlob> {
+    stage_with_policy(
+        root,
+        digest,
+        bytes,
+        compression,
+        crate::chunking::BlobChunking::None,
+        media_type,
+    )
+}
+
+/// Stage exact bytes into the immutable blob store using the configured
+/// compression and FastCDC chunking policies while preserving the canonical
+/// uncompressed SHA-256 content identity.
+pub fn stage_with_policy(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    bytes: &[u8],
+    compression: BlobCompression,
+    chunking: crate::chunking::BlobChunking,
     media_type: &str,
 ) -> crate::error::Result<StagedBlob> {
     if sha256(bytes) != *digest.as_bytes() {
@@ -455,12 +686,130 @@ pub fn stage_with_compression(
     if target.exists() {
         return finish_existing_stage(&target, root, digest, uncompressed_len);
     }
-    if matches!(compression, BlobCompression::Zstd) && is_compressible_media_type(media_type) {
-        let framed = encode_zstd_frame(digest, bytes, uncompressed_len)?;
-        write_staged_blob(root, &target, &framed)?;
-    } else {
-        write_staged_blob(root, &target, bytes)?;
+    if let crate::chunking::BlobChunking::FastCdc(cdc_config) = chunking
+        && uncompressed_len >= cdc_config.min_blob_bytes()
+    {
+        return stage_chunked_blob(ChunkedStageRequest {
+            root,
+            target: &target,
+            digest,
+            bytes,
+            uncompressed_len,
+            compression,
+            cdc_config,
+            media_type,
+        });
     }
+    let disk_bytes = encode_for_storage(
+        root,
+        digest,
+        bytes,
+        uncompressed_len,
+        compression,
+        media_type,
+    )?;
+    write_staged_blob(root, &target, &disk_bytes)?;
+    Ok(StagedBlob {
+        digest,
+        byte_length: uncompressed_len,
+    })
+}
+
+fn encode_for_storage(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    bytes: &[u8],
+    uncompressed_len: u64,
+    compression: BlobCompression,
+    media_type: &str,
+) -> crate::error::Result<Vec<u8>> {
+    if !is_compressible_media_type(media_type) {
+        return Ok(bytes.to_vec());
+    }
+    match compression {
+        BlobCompression::None => Ok(bytes.to_vec()),
+        BlobCompression::Zstd => encode_zstd_frame(digest, bytes, uncompressed_len),
+        BlobCompression::ZstdDictionary { dictionary } => {
+            encode_zstd_dict_frame(root, digest, bytes, uncompressed_len, dictionary)
+        }
+    }
+}
+
+struct ChunkedStageRequest<'a> {
+    root: &'a std::path::Path,
+    target: &'a std::path::Path,
+    digest: mneme_core::ContentDigest,
+    bytes: &'a [u8],
+    uncompressed_len: u64,
+    compression: BlobCompression,
+    cdc_config: crate::chunking::FastCdcConfig,
+    media_type: &'a str,
+}
+
+fn stage_chunked_blob(request: ChunkedStageRequest<'_>) -> crate::error::Result<StagedBlob> {
+    let ChunkedStageRequest {
+        root,
+        target,
+        digest,
+        bytes,
+        uncompressed_len,
+        compression,
+        cdc_config,
+        media_type,
+    } = request;
+    let spans = crate::chunking::fastcdc_chunk_spans(bytes, cdc_config)?;
+    let mut entries = Vec::with_capacity(spans.len());
+    for span in spans {
+        let start =
+            usize::try_from(span.offset_bytes).map_err(|_| crate::error::Failure::CorruptBlob {
+                digest: digest.to_hex(),
+                reason: "chunk offset exceeds usize".to_owned(),
+            })?;
+        let len =
+            usize::try_from(span.length_bytes).map_err(|_| crate::error::Failure::CorruptBlob {
+                digest: digest.to_hex(),
+                reason: "chunk length exceeds usize".to_owned(),
+            })?;
+        let end = start.saturating_add(len);
+        let chunk_slice = &bytes[start..end];
+        let chunk_hash = sha256(chunk_slice);
+        let chunk_digest = mneme_core::ContentDigest::from_parts(
+            mneme_core::HashAlgorithm::Sha256,
+            mneme_core::EncodingProfile::RawBytesV1,
+            mneme_core::ValueBoundary::SourceBytes,
+            chunk_hash,
+        )
+        .map_err(|reason| crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: reason.to_owned(),
+        })?;
+        let chunk_target = chunk_path(root, chunk_digest);
+        if chunk_target.exists() {
+            let existing = read_chunk(root, chunk_digest, span.length_bytes)?;
+            if existing != chunk_slice {
+                return Err(crate::error::Failure::CorruptBlob {
+                    digest: chunk_digest.to_hex(),
+                    reason: "existing chunk differs from staged bytes".to_owned(),
+                });
+            }
+            if let Some(parent) = chunk_target.parent() {
+                flush_directory(parent)?;
+            }
+        } else {
+            let disk_chunk = encode_for_storage(
+                root,
+                chunk_digest,
+                chunk_slice,
+                span.length_bytes,
+                compression,
+                media_type,
+            )?;
+            write_staged_blob(root, &chunk_target, &disk_chunk)?;
+        }
+        entries.push((chunk_hash, span.length_bytes));
+    }
+    let manifest = crate::chunking::encode_cdc_manifest(digest, uncompressed_len, &entries)?;
+    write_staged_blob(root, target, &manifest)?;
     Ok(StagedBlob {
         digest,
         byte_length: uncompressed_len,
@@ -519,6 +868,43 @@ fn encode_zstd_frame(
     Ok(framed)
 }
 
+fn encode_zstd_dict_frame(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    bytes: &[u8],
+    uncompressed_len: u64,
+    dict_digest: mneme_core::ContentDigest,
+) -> crate::error::Result<Vec<u8>> {
+    let dict_bytes = read_dictionary(root, dict_digest)?;
+    let mut encoder = zstd::stream::write::Encoder::with_dictionary(
+        Vec::new(),
+        ZSTD_COMPRESSION_LEVEL,
+        &dict_bytes,
+    )
+    .map_err(|error| crate::error::Failure::CorruptBlob {
+        digest: digest.to_hex(),
+        reason: format!("zstd dictionary compression failed: {error}"),
+    })?;
+    encoder
+        .write_all(bytes)
+        .map_err(|error| crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: format!("zstd dictionary compression failed: {error}"),
+        })?;
+    let compressed = encoder
+        .finish()
+        .map_err(|error| crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: format!("zstd dictionary compression failed: {error}"),
+        })?;
+    let mut framed = Vec::with_capacity(ZSTD_DICT_HEADER_LEN.saturating_add(compressed.len()));
+    framed.extend_from_slice(ZSTD_DICT_FRAME_MAGIC);
+    framed.extend_from_slice(&uncompressed_len.to_le_bytes());
+    framed.extend_from_slice(dict_digest.as_bytes());
+    framed.extend_from_slice(&compressed);
+    Ok(framed)
+}
+
 fn parse_zstd_header(
     digest: mneme_core::ContentDigest,
     disk_bytes: &[u8],
@@ -552,6 +938,58 @@ fn parse_zstd_header(
     Ok((expected_len, &disk_bytes[ZSTD_HEADER_LEN..]))
 }
 
+fn parse_zstd_dict_header(
+    digest: mneme_core::ContentDigest,
+    disk_bytes: &[u8],
+) -> crate::error::Result<(u64, mneme_core::ContentDigest, &[u8])> {
+    let Some(header) = disk_bytes.get(..ZSTD_DICT_HEADER_LEN) else {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "compressed dictionary blob header is truncated".to_owned(),
+        });
+    };
+    if &header[..ZSTD_DICT_FRAME_MAGIC.len()] != ZSTD_DICT_FRAME_MAGIC {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored bytes do not hash to the committed digest".to_owned(),
+        });
+    }
+    let Ok(length_bytes) = <[u8; 8]>::try_from(&header[8..16]) else {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "compressed dictionary blob header is truncated".to_owned(),
+        });
+    };
+    let expected_len = u64::from_le_bytes(length_bytes);
+    if expected_len > MAX_DECOMPRESSED_BLOB_BYTES {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "compressed blob header exceeds maximum supported size".to_owned(),
+        });
+    }
+    let Ok(dict_hash) = <[u8; 32]>::try_from(&header[16..ZSTD_DICT_HEADER_LEN]) else {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "compressed dictionary blob header is truncated".to_owned(),
+        });
+    };
+    let dict_digest = mneme_core::ContentDigest::from_parts(
+        mneme_core::HashAlgorithm::Sha256,
+        mneme_core::EncodingProfile::RawBytesV1,
+        mneme_core::ValueBoundary::SourceBytes,
+        dict_hash,
+    )
+    .map_err(|reason| crate::error::Failure::CorruptBlob {
+        digest: digest.to_hex(),
+        reason: reason.to_owned(),
+    })?;
+    Ok((
+        expected_len,
+        dict_digest,
+        &disk_bytes[ZSTD_DICT_HEADER_LEN..],
+    ))
+}
+
 fn decode_zstd_frame(
     digest: mneme_core::ContentDigest,
     disk_bytes: &[u8],
@@ -563,6 +1001,31 @@ fn decode_zstd_frame(
             reason: format!("invalid zstd blob stream: {error}"),
         }
     })?;
+    read_zstd_stream(digest, decoder, expected_len)
+}
+
+fn decode_zstd_dict_frame(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    disk_bytes: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    let (expected_len, dict_digest, payload) = parse_zstd_dict_header(digest, disk_bytes)?;
+    let dict_bytes = read_dictionary(root, dict_digest)?;
+    let decoder =
+        zstd::stream::read::Decoder::with_dictionary(payload, &dict_bytes).map_err(|error| {
+            crate::error::Failure::CorruptBlob {
+                digest: digest.to_hex(),
+                reason: format!("invalid zstd dictionary blob stream: {error}"),
+            }
+        })?;
+    read_zstd_stream(digest, decoder, expected_len)
+}
+
+fn read_zstd_stream<R: Read>(
+    digest: mneme_core::ContentDigest,
+    decoder: R,
+    expected_len: u64,
+) -> crate::error::Result<Vec<u8>> {
     let mut decompressed = Vec::new();
     decoder
         .take(expected_len.saturating_add(1))
@@ -573,6 +1036,75 @@ fn decode_zstd_frame(
         })?;
     verify_decompressed(digest, &decompressed, expected_len)?;
     Ok(decompressed)
+}
+
+fn read_chunk(
+    root: &std::path::Path,
+    chunk_digest: mneme_core::ContentDigest,
+    expected_len: u64,
+) -> crate::error::Result<Vec<u8>> {
+    let path = chunk_path(root, chunk_digest);
+    let disk_bytes = std::fs::read(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            crate::error::Failure::MissingBlob {
+                digest: chunk_digest.to_hex(),
+            }
+        } else {
+            crate::error::Failure::io(&path, error)
+        }
+    })?;
+    let bytes = decode_single_blob_bytes(root, chunk_digest, &disk_bytes)?;
+    if u64::try_from(bytes.len()).ok() != Some(expected_len) {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: chunk_digest.to_hex(),
+            reason: format!(
+                "stored chunk length {} differs from manifest {expected_len}",
+                bytes.len()
+            ),
+        });
+    }
+    Ok(bytes)
+}
+
+fn decode_cdc_blob(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    disk_bytes: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    let (expected_len, chunks) =
+        crate::chunking::parse_cdc_manifest(digest, disk_bytes, MAX_DECOMPRESSED_BLOB_BYTES)?;
+    let capacity =
+        usize::try_from(expected_len).map_err(|_| crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "chunked blob length exceeds usize".to_owned(),
+        })?;
+    let mut reassembled = Vec::with_capacity(capacity);
+    for (chunk_digest, chunk_len) in chunks {
+        let chunk_bytes = read_chunk(root, chunk_digest, chunk_len)?;
+        reassembled.extend_from_slice(&chunk_bytes);
+    }
+    verify_decompressed(digest, &reassembled, expected_len)?;
+    Ok(reassembled)
+}
+
+fn decode_single_blob_bytes(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    disk_bytes: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    if sha256(disk_bytes) == *digest.as_bytes() {
+        return Ok(disk_bytes.to_vec());
+    }
+    if disk_bytes.starts_with(ZSTD_FRAME_MAGIC) {
+        return decode_zstd_frame(digest, disk_bytes);
+    }
+    if disk_bytes.starts_with(ZSTD_DICT_FRAME_MAGIC) {
+        return decode_zstd_dict_frame(root, digest, disk_bytes);
+    }
+    Err(crate::error::Failure::CorruptBlob {
+        digest: digest.to_hex(),
+        reason: "stored bytes do not hash to the committed digest".to_owned(),
+    })
 }
 
 fn verify_decompressed(
@@ -623,10 +1155,13 @@ pub fn blob_is_present(
     if metadata.len() < header_len {
         return Ok(false);
     }
-    read_zstd_header_length(&path).map(|length| length == Some(expected_length))
+    read_frame_header_length(&path, metadata.len()).map(|length| length == Some(expected_length))
 }
 
-fn read_zstd_header_length(path: &std::path::Path) -> crate::error::Result<Option<u64>> {
+fn read_frame_header_length(
+    path: &std::path::Path,
+    file_len: u64,
+) -> crate::error::Result<Option<u64>> {
     let mut file =
         std::fs::File::open(path).map_err(|error| crate::error::Failure::io(path, error))?;
     let mut header = [0_u8; ZSTD_HEADER_LEN];
@@ -640,7 +1175,17 @@ fn read_zstd_header_length(path: &std::path::Path) -> crate::error::Result<Optio
         }
         read_so_far = read_so_far.saturating_add(count);
     }
-    if &header[..ZSTD_FRAME_MAGIC.len()] != ZSTD_FRAME_MAGIC {
+    let magic = &header[..ZSTD_FRAME_MAGIC.len()];
+    let min_len = if magic == ZSTD_FRAME_MAGIC {
+        ZSTD_HEADER_LEN as u64
+    } else if magic == ZSTD_DICT_FRAME_MAGIC {
+        ZSTD_DICT_HEADER_LEN as u64
+    } else if magic == crate::chunking::CDC_MANIFEST_MAGIC {
+        crate::chunking::CDC_HEADER_LEN as u64
+    } else {
+        return Ok(None);
+    };
+    if file_len < min_len {
         return Ok(None);
     }
     Ok(
@@ -708,16 +1253,12 @@ pub fn read(
             crate::error::Failure::io(&path, error)
         }
     })?;
-    if sha256(&bytes) == *digest.as_bytes() {
-        return Ok(bytes);
+    if bytes.starts_with(crate::chunking::CDC_MANIFEST_MAGIC)
+        && sha256(&bytes) != *digest.as_bytes()
+    {
+        return decode_cdc_blob(root, digest, &bytes);
     }
-    if bytes.starts_with(ZSTD_FRAME_MAGIC) {
-        return decode_zstd_frame(digest, &bytes);
-    }
-    Err(crate::error::Failure::CorruptBlob {
-        digest: digest.to_hex(),
-        reason: "stored bytes do not hash to the committed digest".to_owned(),
-    })
+    decode_single_blob_bytes(root, digest, &bytes)
 }
 
 /// Verify a blob's presence, length, and hash.
@@ -1583,6 +2124,14 @@ impl Iterator for BlobFiles {
                 }
                 None => return None,
             };
+            let is_algorithm = entry
+                .file_name()
+                .to_str()
+                .and_then(mneme_core::HashAlgorithm::parse)
+                .is_some();
+            if !is_algorithm {
+                continue;
+            }
             match BlobFiles::descend(entry) {
                 Ok(Some((directory, shards))) => {
                     self.algorithm_dir = directory;
@@ -1799,6 +2348,247 @@ mod tests {
         assert!(matches!(
             read(root.path(), digest),
             Err(crate::error::Failure::CorruptBlob { .. })
+        ));
+    }
+
+    fn preserves_fixture_samples(count: usize) -> Vec<Vec<u8>> {
+        (0..count)
+            .map(|index| {
+                format!(
+                    "<record \"schema-version\": 5 \"kind\": 'assertion \"scope\": \"notes/research\" \
+                     \"record-id\": #:\"0000000000000000000000000000{index:04x}\" \
+                     \"title\": \"Experiment Note {index:04}\" \
+                     \"predicate\": 'supports-claim \"confidence\": 0.85 \
+                     \"summary\": \"Observed repeatable content-defined chunk deduplication on fixture {index:04}.\">"
+                )
+                .into_bytes()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn zstd_dictionary_reduces_small_preserves_size_and_roundtrips() {
+        let samples = preserves_fixture_samples(48);
+        let sample_refs: Vec<&[u8]> = samples.iter().map(Vec::as_slice).collect();
+        let dict_bytes = train_zstd_dictionary(&sample_refs, 8192).expect("train dictionary");
+
+        let root_dict = tempfile::tempdir().expect("temp dict");
+        let root_dict_clone = tempfile::tempdir().expect("temp dict clone");
+        let root_plain = tempfile::tempdir().expect("temp plain");
+
+        let dict_digest = stage_dictionary(root_dict.path(), &dict_bytes).expect("stage dict");
+        let dict_digest_clone =
+            stage_dictionary(root_dict_clone.path(), &dict_bytes).expect("stage dict clone");
+        assert_eq!(dict_digest, dict_digest_clone);
+
+        let target = preserves_fixture_samples(100).pop().expect("sample");
+        let digest = mneme_core::ContentDigest::of_source_bytes(&target);
+
+        let staged_dict = stage_with_compression(
+            root_dict.path(),
+            digest,
+            &target,
+            BlobCompression::ZstdDictionary {
+                dictionary: dict_digest,
+            },
+            "application/preserves",
+        )
+        .expect("stage dict compressed");
+        assert_eq!(staged_dict.byte_length, target.len() as u64);
+
+        stage_with_compression(
+            root_dict_clone.path(),
+            digest,
+            &target,
+            BlobCompression::ZstdDictionary {
+                dictionary: dict_digest,
+            },
+            "application/preserves",
+        )
+        .expect("stage dict compressed clone");
+
+        stage_with_compression(
+            root_plain.path(),
+            digest,
+            &target,
+            BlobCompression::Zstd,
+            "application/preserves",
+        )
+        .expect("stage plain zstd");
+
+        let dict_disk = std::fs::read(blob_path(root_dict.path(), digest)).expect("dict disk");
+        let dict_disk_clone =
+            std::fs::read(blob_path(root_dict_clone.path(), digest)).expect("dict disk clone");
+        let plain_disk = std::fs::read(blob_path(root_plain.path(), digest)).expect("plain disk");
+
+        assert!(dict_disk.starts_with(ZSTD_DICT_FRAME_MAGIC));
+        assert_eq!(
+            dict_disk, dict_disk_clone,
+            "dictionary compression must be deterministic"
+        );
+        assert!(
+            dict_disk.len() < target.len(),
+            "dict compressed {} must be smaller than raw {}",
+            dict_disk.len(),
+            target.len()
+        );
+        assert!(
+            dict_disk.len() < plain_disk.len(),
+            "dict compressed {} must be smaller than standalone zstd {}",
+            dict_disk.len(),
+            plain_disk.len()
+        );
+
+        assert!(
+            blob_is_present(root_dict.path(), digest, target.len() as u64).expect("present"),
+            "dict-compressed blob must report present against uncompressed length"
+        );
+        verify(root_dict.path(), digest, target.len() as u64).expect("verify");
+        assert_eq!(read(root_dict.path(), digest).expect("read"), target);
+        assert_eq!(
+            read_range(root_dict.path(), digest, 12, 24).expect("read_range"),
+            &target[12..36]
+        );
+    }
+
+    #[test]
+    fn missing_or_corrupt_zstd_dictionary_fails_closed() {
+        let samples = preserves_fixture_samples(32);
+        let sample_refs: Vec<&[u8]> = samples.iter().map(Vec::as_slice).collect();
+        let dict_bytes = train_zstd_dictionary(&sample_refs, 4096).expect("train");
+        let target = samples[0].clone();
+        let digest = mneme_core::ContentDigest::of_source_bytes(&target);
+
+        let root = tempfile::tempdir().expect("temp");
+        let missing_dict = mneme_core::ContentDigest::of_source_bytes(&dict_bytes);
+        assert!(matches!(
+            stage_with_compression(
+                root.path(),
+                digest,
+                &target,
+                BlobCompression::ZstdDictionary {
+                    dictionary: missing_dict,
+                },
+                "application/preserves",
+            ),
+            Err(crate::error::Failure::MissingBlob { .. })
+        ));
+
+        let dict_digest = stage_dictionary(root.path(), &dict_bytes).expect("stage dict");
+        stage_with_compression(
+            root.path(),
+            digest,
+            &target,
+            BlobCompression::ZstdDictionary {
+                dictionary: dict_digest,
+            },
+            "application/preserves",
+        )
+        .expect("stage with dict");
+
+        // Legacy raw blob starting with MNZSTD02 still reads cleanly.
+        let mut raw_magic = ZSTD_DICT_FRAME_MAGIC.to_vec();
+        raw_magic.extend_from_slice(b"legacy raw bytes");
+        let raw_magic_digest = mneme_core::ContentDigest::of_source_bytes(&raw_magic);
+        stage(root.path(), raw_magic_digest, &raw_magic).expect("stage raw magic");
+        assert_eq!(
+            read(root.path(), raw_magic_digest).expect("read raw magic"),
+            raw_magic
+        );
+
+        // Corrupt dictionary fails closed.
+        let dict_path = dictionary_path(root.path(), dict_digest);
+        let mut corrupt_dict = dict_bytes.clone();
+        corrupt_dict[0] ^= 0xff;
+        std::fs::write(&dict_path, &corrupt_dict).expect("corrupt dict");
+        assert!(matches!(
+            read(root.path(), digest),
+            Err(crate::error::Failure::CorruptBlob { .. })
+        ));
+        assert!(matches!(
+            verify(root.path(), digest, target.len() as u64),
+            Err(crate::error::Failure::CorruptBlob { .. })
+        ));
+
+        // Missing dictionary fails closed.
+        std::fs::remove_file(&dict_path).expect("remove dict");
+        assert!(matches!(
+            read(root.path(), digest),
+            Err(crate::error::Failure::MissingBlob { .. })
+        ));
+    }
+
+    #[test]
+    fn fastcdc_chunked_blob_roundtrips_range_reads_and_fails_closed() {
+        let root = tempfile::tempdir().expect("temp");
+        let mut doc = Vec::with_capacity(300 * 1024);
+        for index in 0..4500_u64 {
+            let mixed = index.wrapping_mul(2654435761);
+            doc.extend_from_slice(
+                format!("Line {index:04}: deterministic AsciiDoc content {mixed:08x}\n").as_bytes(),
+            );
+        }
+        let digest = mneme_core::ContentDigest::of_source_bytes(&doc);
+        let cdc_config = crate::chunking::FastCdcConfig::default();
+
+        let staged = stage_with_policy(
+            root.path(),
+            digest,
+            &doc,
+            BlobCompression::Zstd,
+            crate::chunking::BlobChunking::FastCdc(cdc_config),
+            "text/asciidoc",
+        )
+        .expect("stage fastcdc");
+        assert_eq!(staged.byte_length, doc.len() as u64);
+
+        let manifest_path = blob_path(root.path(), digest);
+        let manifest_bytes = std::fs::read(&manifest_path).expect("manifest");
+        assert!(manifest_bytes.starts_with(crate::chunking::CDC_MANIFEST_MAGIC));
+        assert!(blob_is_present(root.path(), digest, doc.len() as u64).expect("present"));
+        verify(root.path(), digest, doc.len() as u64).expect("verify");
+        assert_eq!(read(root.path(), digest).expect("read"), doc);
+
+        // Range read across chunk boundaries.
+        let spans = crate::chunking::fastcdc_chunk_spans(&doc, cdc_config).expect("spans");
+        assert!(spans.len() >= 3);
+        let cross_offset = spans[0].length_bytes.saturating_sub(32);
+        let cross_start = usize::try_from(cross_offset).expect("cross offset fits usize");
+        let cross_len = 128_usize;
+        assert_eq!(
+            read_range(root.path(), digest, cross_offset, cross_len).expect("cross range"),
+            &doc[cross_start..cross_start.saturating_add(cross_len)]
+        );
+
+        // Cleanup orphans keeps the manifest and does not delete chunks.
+        let known = std::collections::BTreeSet::from([*digest.as_bytes()]);
+        let (_, removed_blobs) = cleanup_orphans(root.path(), &known).expect("cleanup");
+        assert_eq!(removed_blobs, 0);
+        verify(root.path(), digest, doc.len() as u64).expect("verify after cleanup");
+
+        // Corrupting a chunk fails closed.
+        let (_, chunks) = crate::chunking::parse_cdc_manifest(
+            digest,
+            &manifest_bytes,
+            MAX_DECOMPRESSED_BLOB_BYTES,
+        )
+        .expect("parse manifest");
+        let first_chunk_path = chunk_path(root.path(), chunks[0].0);
+        let original_chunk = std::fs::read(&first_chunk_path).expect("chunk disk");
+        let mut corrupted_chunk = original_chunk.clone();
+        let tail = corrupted_chunk.len() - 1;
+        corrupted_chunk[tail] ^= 0xff;
+        std::fs::write(&first_chunk_path, &corrupted_chunk).expect("write corrupt chunk");
+        assert!(matches!(
+            verify(root.path(), digest, doc.len() as u64),
+            Err(crate::error::Failure::CorruptBlob { .. })
+        ));
+
+        // Deleting a chunk fails closed.
+        std::fs::remove_file(&first_chunk_path).expect("remove chunk");
+        assert!(matches!(
+            read(root.path(), digest),
+            Err(crate::error::Failure::MissingBlob { .. })
         ));
     }
 }

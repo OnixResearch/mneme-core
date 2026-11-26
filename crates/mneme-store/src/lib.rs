@@ -10,6 +10,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod catalog;
+pub mod chunking;
 pub mod coordinator;
 pub mod error;
 pub mod injectors;
@@ -20,6 +21,7 @@ pub mod requests;
 pub mod timekeeper;
 
 pub use catalog::{Manifest, ManifestRecord};
+pub use chunking::{BlobChunking, ChunkSpan, FastCdcConfig};
 pub use coordinator::{
     CommitOutcome, FOLDER_WORKSPACE_DIRECTORY, JobClaim, LAYOUT_VERSION, LEDGER_FILE,
     ProjectionRegistration, ProjectionResolution, ProjectionState, PublicationOutcome,

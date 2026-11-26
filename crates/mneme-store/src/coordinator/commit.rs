@@ -386,11 +386,12 @@ impl super::Workspace {
     ) -> crate::error::Result<()> {
         for source in sources {
             let digest = source.digest();
-            let staged_blob = crate::payload::stage_with_compression(
+            let staged_blob = crate::payload::stage_with_policy(
                 &self.root,
                 digest,
                 &source.bytes,
                 self.blob_compression,
+                self.blob_chunking,
                 source.media_type.as_str(),
             )?;
             staged.insert(

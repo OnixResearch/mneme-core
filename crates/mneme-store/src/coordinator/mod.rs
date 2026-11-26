@@ -1208,6 +1208,7 @@ pub struct Workspace {
     clock: Box<dyn Clock>,
     faults: Box<dyn FaultInjector>,
     blob_compression: crate::payload::BlobCompression,
+    blob_chunking: crate::chunking::BlobChunking,
     is_restore_required: bool,
     /// Required-digest and path-binding sets, keyed by the revision and
     /// generation they were computed for.
@@ -1567,6 +1568,7 @@ impl Workspace {
             clock: config.clock,
             faults: config.faults,
             blob_compression: crate::payload::BlobCompression::default(),
+            blob_chunking: crate::chunking::BlobChunking::default(),
             is_restore_required,
             requirements: std::cell::RefCell::new(None),
             records: std::cell::RefCell::new(RecordCache::default()),
@@ -1590,6 +1592,33 @@ impl Workspace {
     pub fn with_blob_compression(mut self, compression: crate::payload::BlobCompression) -> Self {
         self.blob_compression = compression;
         self
+    }
+
+    /// The on-disk chunking policy for newly staged `source-bytes` blobs.
+    pub fn blob_chunking(&self) -> crate::chunking::BlobChunking {
+        self.blob_chunking
+    }
+
+    /// Configure the on-disk chunking policy for newly staged `source-bytes`
+    /// blobs.
+    pub fn set_blob_chunking(&mut self, chunking: crate::chunking::BlobChunking) {
+        self.blob_chunking = chunking;
+    }
+
+    /// Return this workspace handle configured with `chunking` for newly
+    /// staged `source-bytes` blobs.
+    pub fn with_blob_chunking(mut self, chunking: crate::chunking::BlobChunking) -> Self {
+        self.blob_chunking = chunking;
+        self
+    }
+
+    /// Stage an immutable content-addressed zstd dictionary in this workspace's
+    /// blob store and return its digest.
+    pub fn stage_zstd_dictionary(
+        &self,
+        dict_bytes: &[u8],
+    ) -> crate::error::Result<mneme_core::ContentDigest> {
+        crate::payload::stage_dictionary(&self.root, dict_bytes)
     }
 
     /// Open a workspace produced by an application-supported restore. Until
