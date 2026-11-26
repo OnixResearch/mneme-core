@@ -1633,6 +1633,14 @@ impl Workspace {
         self
     }
 
+    /// Combined compression and FastCDC chunking policy for newly staged source blobs.
+    pub(crate) fn storage_policy(&self) -> crate::payload::StoragePolicy {
+        crate::payload::StoragePolicy {
+            compression: self.blob_compression,
+            chunking: self.blob_chunking,
+        }
+    }
+
     /// Stage an immutable content-addressed zstd dictionary in this workspace's
     /// blob store and return its digest.
     pub fn stage_zstd_dictionary(
@@ -4092,6 +4100,8 @@ fn is_workspace_directory(name: &std::ffi::OsStr) -> bool {
                 || name == crate::payload::STAGING_DIRECTORY
                 || name == crate::payload::WORKING_DIRECTORY
                 || name == crate::payload::JOB_DIRECTORY
+                || name == crate::payload::TRANSFER_DIRECTORY
+                || name == crate::payload::SYNC_DIRECTORY
         }
         None => false,
     }

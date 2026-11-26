@@ -356,12 +356,13 @@ fn stage_self_healed_blobs(
     if missing.is_empty() {
         return Ok(());
     }
-    let mut allowed_digests = std::collections::BTreeSet::new();
+    let mut allowed_digests: std::collections::BTreeMap<[u8; 32], mneme_core::Symbol> =
+        std::collections::BTreeMap::new();
     for record in &snapshot.records {
         if record.scope == delta.scope
             && let Some(retained) = super::portable_retained_source(record)?
         {
-            allowed_digests.insert(*retained.digest().as_bytes());
+            allowed_digests.insert(*retained.digest().as_bytes(), retained.media_type().clone());
         }
     }
     let histories = workspace.record_histories(snapshot)?;
@@ -370,17 +371,25 @@ fn stage_self_healed_blobs(
             if envelope.scope == delta.scope
                 && let Some(retained) = super::portable_retained_source(envelope)?
             {
-                allowed_digests.insert(*retained.digest().as_bytes());
+                allowed_digests
+                    .insert(*retained.digest().as_bytes(), retained.media_type().clone());
             }
         }
     }
+    let policy = workspace.storage_policy();
     for blob in missing {
-        if !allowed_digests.contains(blob.digest.as_bytes()) {
+        let Some(media_type) = allowed_digests.get(blob.digest.as_bytes()) else {
             return Err(crate::error::Failure::PortableArchive(
                 "delta supplied an unreferenced source blob".to_owned(),
             ));
-        }
-        let _ = crate::payload::stage(workspace.root(), blob.digest, &blob.bytes)?;
+        };
+        let _ = crate::payload::stage_with_policy(
+            workspace.root(),
+            blob.digest,
+            &blob.bytes,
+            policy,
+            media_type.as_str(),
+        )?;
     }
     Ok(())
 }
@@ -706,13 +715,13 @@ fn publish_new_working_files(
     previous_paths: &std::collections::BTreeMap<String, mneme_core::ContentDigest>,
 ) -> crate::error::Result<Vec<crate::coordinator::PublicationOutcome>> {
     let candidates = current_publications(snapshot)?;
-    let working_dir = crate::payload::working_directory(workspace.root())?;
     let mut outcomes = Vec::with_capacity(candidates.len());
     let mut pending_publishes = Vec::with_capacity(candidates.len());
     for (index, (path, digest)) in candidates.into_iter().enumerate() {
-        let target = working_dir.join(&path);
-        let expected_previous = match std::fs::read(&target) {
-            Ok(existing_bytes) => {
+        let expected_previous = match crate::payload::inspect_working_file(workspace.root(), &path)?
+        {
+            crate::payload::WorkingEntry::Absent => None,
+            crate::payload::WorkingEntry::Regular(existing_bytes) => {
                 let existing_digest = mneme_core::ContentDigest::of_source_bytes_with(
                     &existing_bytes,
                     digest.algorithm(),
@@ -722,8 +731,11 @@ fn publish_new_working_files(
                 }
                 previous_paths.get(&path).copied()
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(crate::Failure::io(&target, error)),
+            crate::payload::WorkingEntry::NotRegular => {
+                return Err(crate::error::Failure::InvalidCommand(
+                    "working file target is not a regular file".to_owned(),
+                ));
+            }
         };
         pending_publishes.push((index, path, digest, expected_previous));
     }

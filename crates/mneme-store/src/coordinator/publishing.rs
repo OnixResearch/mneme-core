@@ -706,44 +706,102 @@ fn blob_record(
     ))
 }
 
-/// Re-encode the exact bytes of one prepared blob.
+struct RebuiltBlob<'a> {
+    bytes: Option<Vec<u8>>,
+    streamed_file: Option<(&'a std::path::Path, u64)>,
+    media_type: String,
+    is_full_record: bool,
+}
+
+/// Re-encode or re-locate the exact bytes of one prepared blob.
 ///
 /// A commit that finds a staged blob missing after a concurrent recovery uses
 /// this to restore it from the command it is committing, without keeping a
 /// second copy of every payload in memory.
-fn rebuild_staged_blob(
-    command: &crate::requests::CommitCommand,
+fn rebuild_staged_blob<'a>(
+    command: &'a crate::requests::CommitCommand,
     records: &[mneme_core::RecordEnvelope],
     digest: mneme_core::ContentDigest,
     boundary: mneme_core::ValueBoundary,
-) -> Option<Vec<u8>> {
+) -> Option<RebuiltBlob<'a>> {
     match boundary {
         mneme_core::ValueBoundary::FullRecord => records.iter().find_map(|record| {
             let value = record.to_value();
-            (mneme_core::ContentDigest::of_full_record(&value) == digest)
-                .then(|| mneme_core::binary::encode(&value))
+            (mneme_core::ContentDigest::of_full_record_with(&value, digest.algorithm()) == digest)
+                .then(|| RebuiltBlob {
+                    bytes: Some(mneme_core::binary::encode(&value)),
+                    streamed_file: None,
+                    media_type: String::new(),
+                    is_full_record: true,
+                })
         }),
-        mneme_core::ValueBoundary::SourceBytes => command
-            .source_blobs
-            .iter()
-            .find(|blob| blob.digest() == digest)
-            .map(|blob| blob.bytes.clone())
-            .or_else(|| {
-                command
-                    .import_candidates
-                    .iter()
-                    .find(|candidate| candidate.digest() == digest)
-                    .map(|candidate| candidate.bytes.clone())
-            })
-            .or_else(|| {
-                command
-                    .publications
-                    .iter()
-                    .find(|publication| publication.desired_digest() == digest)
-                    .map(|publication| publication.bytes.clone())
-            }),
+        mneme_core::ValueBoundary::SourceBytes => rebuild_source_blob(command, records, digest),
         mneme_core::ValueBoundary::Payload => None,
     }
+}
+
+fn rebuild_source_blob<'a>(
+    command: &'a crate::requests::CommitCommand,
+    records: &[mneme_core::RecordEnvelope],
+    digest: mneme_core::ContentDigest,
+) -> Option<RebuiltBlob<'a>> {
+    let algo = digest.algorithm();
+    debug_assert!(!digest.as_bytes().is_empty());
+    for blob in &command.source_blobs {
+        if let Some(file) = &blob.file {
+            if file.digest == digest {
+                return Some(RebuiltBlob {
+                    bytes: None,
+                    streamed_file: Some((&file.path, file.size_bytes)),
+                    media_type: blob.media_type.as_str().to_owned(),
+                    is_full_record: false,
+                });
+            }
+        } else if mneme_core::ContentDigest::of_source_bytes_with(&blob.bytes, algo) == digest {
+            return Some(RebuiltBlob {
+                bytes: Some(blob.bytes.clone()),
+                streamed_file: None,
+                media_type: blob.media_type.as_str().to_owned(),
+                is_full_record: false,
+            });
+        }
+    }
+    if let Some(candidate) = command
+        .import_candidates
+        .iter()
+        .find(|c| mneme_core::ContentDigest::of_source_bytes_with(&c.bytes, algo) == digest)
+    {
+        return Some(RebuiltBlob {
+            bytes: Some(candidate.bytes.clone()),
+            streamed_file: None,
+            media_type: record_source_media_type(records, digest).unwrap_or_default(),
+            is_full_record: false,
+        });
+    }
+    let publication = command
+        .publications
+        .iter()
+        .find(|p| mneme_core::ContentDigest::of_source_bytes_with(&p.bytes, algo) == digest)?;
+    debug_assert!(!publication.path.is_empty());
+    let media_type = record_source_media_type(records, digest).unwrap_or_else(|| {
+        super::commit::infer_publication_media_type(&publication.path).to_owned()
+    });
+    Some(RebuiltBlob {
+        bytes: Some(publication.bytes.clone()),
+        streamed_file: None,
+        media_type,
+        is_full_record: false,
+    })
+}
+
+fn record_source_media_type(
+    records: &[mneme_core::RecordEnvelope],
+    digest: mneme_core::ContentDigest,
+) -> Option<String> {
+    records.iter().find_map(|record| {
+        let (record_digest, media_type) = super::validation::retained_source_media_type(record)?;
+        (record_digest == digest).then(|| media_type.as_str().to_owned())
+    })
 }
 
 /// Re-stage every blob of the prepared revision that is no longer on disk.
@@ -756,18 +814,43 @@ pub(super) fn restore_staged_blobs(
     command: &crate::requests::CommitCommand,
     records: &[mneme_core::RecordEnvelope],
     staged: &super::BlobIndex,
+    policy: crate::payload::StoragePolicy,
 ) -> crate::error::Result<()> {
+    debug_assert!(!root.as_os_str().is_empty());
+    debug_assert!(records.len() <= command.records.len());
     for (digest, length, _, boundary) in staged.values() {
         if crate::payload::blob_is_present(root, *digest, *length)? {
             continue;
         }
-        let rewritten = rebuild_staged_blob(command, records, *digest, *boundary);
-        let Some(bytes) = rewritten else {
+        let Some(rebuilt) = rebuild_staged_blob(command, records, *digest, *boundary) else {
             return Err(crate::error::Failure::MissingBlob {
                 digest: digest.to_hex(),
             });
         };
-        crate::payload::stage(root, *digest, &bytes)?;
+        if let Some((path, size_bytes)) = rebuilt.streamed_file {
+            crate::payload::stage_file_with_policy(
+                root,
+                *digest,
+                crate::payload::StreamedStageInput {
+                    source: path,
+                    expected_bytes: size_bytes,
+                    policy,
+                    media_type: &rebuilt.media_type,
+                },
+            )?;
+        } else if let Some(bytes) = &rebuilt.bytes {
+            if rebuilt.is_full_record {
+                crate::payload::stage(root, *digest, bytes)?;
+            } else {
+                crate::payload::stage_with_policy(
+                    root,
+                    *digest,
+                    bytes,
+                    policy,
+                    &rebuilt.media_type,
+                )?;
+            }
+        }
     }
     Ok(())
 }

@@ -218,27 +218,27 @@ pub(super) fn validate_sources(
     command_scope: &mneme_core::ScopeId,
     proposed: &[mneme_core::RecordEnvelope],
 ) -> crate::error::Result<()> {
-    let mut supplied_digests = std::collections::BTreeMap::new();
-    for source in supplied {
+    let mut supplied_by_digest: std::collections::BTreeMap<mneme_core::ContentDigest, usize> =
+        std::collections::BTreeMap::new();
+    for (index, source) in supplied.iter().enumerate() {
         let digest = source.digest();
         debug_assert_eq!(digest, source.digest());
-        if let Some(existing) = supplied_digests.insert(digest, source) {
-            let both_inline = existing.file.is_none() && source.file.is_none();
-            if both_inline && existing.bytes != source.bytes {
-                return Err(crate::error::Failure::InvalidCommand(
-                    "source blobs with the same digest have different bytes".to_owned(),
-                ));
-            }
+        register_supplied_digest(&mut supplied_by_digest, supplied, digest, index)?;
+        if source.file.is_none() {
+            let legacy_digest = mneme_core::ContentDigest::of_source_bytes_with(
+                &source.bytes,
+                mneme_core::HashAlgorithm::Sha256,
+            );
+            register_supplied_digest(&mut supplied_by_digest, supplied, legacy_digest, index)?;
         }
     }
-    debug_assert!(supplied_digests.len() <= supplied.len());
-    let mut referenced = std::collections::BTreeSet::new();
+    let mut referenced_indices = std::collections::BTreeSet::new();
     for record in proposed {
         let Some((digest, declared_length, media_type)) = retained_source(record)? else {
             continue;
         };
-        referenced.insert(digest);
-        if let Some(source) = supplied_digests.get(&digest) {
+        if let Some(&index) = supplied_by_digest.get(&digest) {
+            let source = &supplied[index];
             if source.byte_length() != declared_length {
                 return Err(crate::error::Failure::SourceLengthMismatch {
                     digest: digest.to_hex(),
@@ -251,11 +251,13 @@ pub(super) fn validate_sources(
                     "source blob {digest} media type does not match its source revision"
                 )));
             }
+            referenced_indices.insert(index);
             continue;
         }
-        let is_bytes_supplied = candidates
-            .iter()
-            .any(|candidate| candidate.digest() == digest);
+        let is_bytes_supplied = candidates.iter().any(|candidate| {
+            mneme_core::ContentDigest::of_source_bytes_with(&candidate.bytes, digest.algorithm())
+                == digest
+        });
         let is_bound_in_scope = prior.iter().any(|earlier| {
             earlier.scope == *command_scope && retained_source_digest(earlier) == Some(digest)
         });
@@ -270,11 +272,32 @@ pub(super) fn validate_sources(
             ));
         }
     }
-    for digest in supplied_digests.keys() {
-        if !referenced.contains(digest) {
+    for (index, source) in supplied.iter().enumerate() {
+        if !referenced_indices.contains(&index) {
             return Err(crate::error::Failure::InvalidCommand(format!(
-                "source blob {digest} is not referenced by a new retained source revision"
+                "source blob {} is not referenced by a new retained source revision",
+                source.digest()
             )));
+        }
+    }
+    debug_assert_eq!(referenced_indices.len(), supplied.len());
+    Ok(())
+}
+
+fn register_supplied_digest(
+    map: &mut std::collections::BTreeMap<mneme_core::ContentDigest, usize>,
+    supplied: &[crate::requests::SourceBlobDraft],
+    digest: mneme_core::ContentDigest,
+    index: usize,
+) -> crate::error::Result<()> {
+    if let Some(existing_index) = map.insert(digest, index) {
+        let existing = &supplied[existing_index];
+        let source = &supplied[index];
+        let is_both_inline = existing.file.is_none() && source.file.is_none();
+        if is_both_inline && existing.bytes != source.bytes {
+            return Err(crate::error::Failure::InvalidCommand(
+                "source blobs with the same digest have different bytes".to_owned(),
+            ));
         }
     }
     Ok(())
@@ -409,4 +432,13 @@ pub(super) fn retained_source_digest(
         .ok()
         .flatten()
         .map(|(digest, _, _)| digest)
+}
+
+pub(super) fn retained_source_media_type(
+    record: &mneme_core::RecordEnvelope,
+) -> Option<(mneme_core::ContentDigest, mneme_core::Symbol)> {
+    retained_source(record)
+        .ok()
+        .flatten()
+        .map(|(digest, _, media_type)| (digest, media_type))
 }

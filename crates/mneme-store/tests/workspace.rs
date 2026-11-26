@@ -4530,8 +4530,8 @@ fn workspace_zstd_dictionary_and_fastcdc_deduplication() {
         .expect("verify v2 after recover");
 
     // Deleting a chunk fails closed in payload::verify and recover().
-    let one_chunk = std::fs::read_dir(&chunks_dir)
-        .expect("chunks dir")
+    let one_chunk = std::fs::read_dir(chunks_dir.join("blake3"))
+        .expect("chunks/blake3 dir")
         .filter_map(Result::ok)
         .flat_map(|shard| std::fs::read_dir(shard.path()).expect("shard"))
         .filter_map(Result::ok)

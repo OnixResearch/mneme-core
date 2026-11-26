@@ -84,6 +84,9 @@ pub enum IssueKind {
     /// A present `bao-tree` outboard sidecar is corrupt, wrong length, or
     /// disagrees with its canonical BLAKE3 blob.
     CorruptOutboard,
+    /// SQLite metadata projection (`entities`, `relations`, `documents`)
+    /// disagrees with the active non-forgotten head records.
+    ProjectionMismatch,
 }
 
 impl IssueKind {
@@ -102,6 +105,7 @@ impl IssueKind {
             IssueKind::BrokenChain => "broken-chain",
             IssueKind::ManifestMismatch => "manifest-mismatch",
             IssueKind::CorruptOutboard => "corrupt-outboard",
+            IssueKind::ProjectionMismatch => "projection-mismatch",
         }
     }
 }
@@ -239,7 +243,9 @@ pub fn verify_workspace(
             orphans: Vec::new(),
         },
         blob_digests: std::collections::BTreeSet::new(),
+        purged_blobs: std::collections::BTreeSet::new(),
         verified: std::collections::BTreeSet::new(),
+        live_framed_refs: crate::payload::FramedReferences::default(),
         record_owners: std::collections::BTreeMap::new(),
     };
     scrub.run()?;
@@ -263,8 +269,12 @@ struct Scrub<'a> {
     report: VerifyReport,
     /// Every digest the `blobs` table holds.
     blob_digests: std::collections::BTreeSet<[u8; 32]>,
+    /// Blob digests explicitly recorded as purged by retention.
+    purged_blobs: std::collections::BTreeSet<[u8; 32]>,
     /// Digests whose file passed every check this mode runs.
     verified: std::collections::BTreeSet<[u8; 32]>,
+    /// FastCDC chunks and Zstd dictionaries referenced by live framed blobs.
+    live_framed_refs: crate::payload::FramedReferences,
     /// Which records reference each blob digest, for diagnostics.
     record_owners: std::collections::BTreeMap<[u8; 32], Vec<String>>,
 }
@@ -272,9 +282,11 @@ struct Scrub<'a> {
 impl Scrub<'_> {
     fn run(&mut self) -> crate::error::Result<()> {
         self.load_digests()?;
+        self.load_purged_blobs()?;
         self.check_records()?;
         self.check_blobs()?;
         self.check_source_references()?;
+        self.check_metadata_projection()?;
         self.check_revisions()?;
         self.check_journal_digests()?;
         self.find_orphans()?;
@@ -288,6 +300,23 @@ impl Scrub<'_> {
         for row in rows {
             if let Ok(digest) = <[u8; 32]>::try_from(row?.as_slice()) {
                 self.blob_digests.insert(digest);
+            }
+        }
+        Ok(())
+    }
+
+    fn load_purged_blobs(&mut self) -> crate::error::Result<()> {
+        if !super::table_exists(self.connection, "retention_locations")? {
+            return Ok(());
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT locator FROM retention_locations
+             WHERE location_kind IN ('source-blob', 'record-blob') AND state = 'purged'",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            if let Some(digest) = unhex(&row?) {
+                self.purged_blobs.insert(digest);
             }
         }
         Ok(())
@@ -363,6 +392,9 @@ impl Scrub<'_> {
         let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if self.purged_blobs.contains(&bytes) {
+                    return;
+                }
                 self.push(blob_issue(
                     IssueKind::MissingBlob,
                     &digest.to_hex(),
@@ -407,7 +439,14 @@ impl Scrub<'_> {
             return;
         }
         if is_framed {
-            self.verify_framed_blob(shown, digest, bytes, expected);
+            self.verify_framed_blob(FramedBlobTarget {
+                path,
+                shown,
+                digest,
+                bytes,
+                file_len_bytes: metadata.len(),
+                expected_bytes: expected,
+            });
             return;
         }
         match self.mode {
@@ -449,23 +488,44 @@ impl Scrub<'_> {
         }
     }
 
-    fn verify_framed_blob(
-        &mut self,
-        shown: &str,
-        digest: mneme_core::ContentDigest,
-        bytes: [u8; 32],
-        expected: u64,
-    ) {
+    fn verify_framed_blob(&mut self, target: FramedBlobTarget<'_>) {
+        let FramedBlobTarget {
+            path,
+            shown,
+            digest,
+            bytes,
+            file_len_bytes,
+            expected_bytes,
+        } = target;
+        self.check_stray_framed_outboard(digest);
+        let framing = match crate::payload::inspect_path_framing(path, file_len_bytes) {
+            Ok(framing) => framing,
+            Err(error) => {
+                self.push(blob_issue(
+                    IssueKind::UnreadableBlob,
+                    &digest.to_hex(),
+                    Some(shown.to_owned()),
+                    error.to_string(),
+                ));
+                return;
+            }
+        };
+        let is_quick_ok =
+            self.inspect_framed_subobjects(path, shown, digest, framing, expected_bytes);
         match self.mode {
             VerifyMode::Quick => {
-                self.report.bytes_sized = self.report.bytes_sized.saturating_add(expected);
-                self.verified.insert(bytes);
+                if is_quick_ok {
+                    self.report.bytes_sized =
+                        self.report.bytes_sized.saturating_add(expected_bytes);
+                    self.verified.insert(bytes);
+                }
             }
-            VerifyMode::Full => match crate::payload::verify(self.root, digest, expected) {
+            VerifyMode::Full => match crate::payload::verify(self.root, digest, expected_bytes) {
                 Ok(()) => {
                     self.report.bytes_verified =
-                        self.report.bytes_verified.saturating_add(expected);
-                    self.report.bytes_sized = self.report.bytes_sized.saturating_add(expected);
+                        self.report.bytes_verified.saturating_add(expected_bytes);
+                    self.report.bytes_sized =
+                        self.report.bytes_sized.saturating_add(expected_bytes);
                     self.verified.insert(bytes);
                 }
                 Err(error) => {
@@ -483,6 +543,329 @@ impl Scrub<'_> {
                 }
             },
         }
+    }
+
+    fn check_stray_framed_outboard(&mut self, digest: mneme_core::ContentDigest) {
+        let ob_path = crate::outboard::path(self.root, digest);
+        match std::fs::symlink_metadata(&ob_path) {
+            Ok(_) => {
+                self.report.outboards_checked = self.report.outboards_checked.saturating_add(1);
+                self.push(blob_issue(
+                    IssueKind::CorruptOutboard,
+                    &digest.to_hex(),
+                    Some(self.relative(&ob_path)),
+                    "framed blob must not carry a bao-tree outboard".to_owned(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.report.outboards_checked = self.report.outboards_checked.saturating_add(1);
+                self.push(blob_issue(
+                    IssueKind::CorruptOutboard,
+                    &digest.to_hex(),
+                    Some(self.relative(&ob_path)),
+                    format!("cannot inspect outboard: {error}"),
+                ));
+            }
+        }
+    }
+
+    fn inspect_framed_subobjects(
+        &mut self,
+        path: &std::path::Path,
+        shown: &str,
+        digest: mneme_core::ContentDigest,
+        framing: crate::payload::BlobFraming,
+        expected: u64,
+    ) -> bool {
+        match framing {
+            crate::payload::BlobFraming::Raw | crate::payload::BlobFraming::Zstd => true,
+            crate::payload::BlobFraming::ZstdDict => {
+                self.inspect_zstd_dict_subobject(path, shown, digest)
+            }
+            crate::payload::BlobFraming::FastCdc => {
+                self.inspect_cdc_subobjects(path, shown, digest, expected)
+            }
+        }
+    }
+
+    fn inspect_zstd_dict_subobject(
+        &mut self,
+        path: &std::path::Path,
+        shown: &str,
+        digest: mneme_core::ContentDigest,
+    ) -> bool {
+        let dict_digest = match crate::payload::read_zstd_dict_header_info(path, digest) {
+            Ok((_, dict_digest)) => dict_digest,
+            Err(error) => {
+                if self.mode == VerifyMode::Quick {
+                    self.push(blob_issue(
+                        IssueKind::DigestMismatch,
+                        &digest.to_hex(),
+                        Some(shown.to_owned()),
+                        error.to_string(),
+                    ));
+                }
+                return false;
+            }
+        };
+        self.live_framed_refs
+            .dicts
+            .insert((dict_digest.algorithm(), *dict_digest.as_bytes()));
+        if self.mode == VerifyMode::Quick {
+            return self.check_quick_dict(dict_digest);
+        }
+        true
+    }
+
+    fn inspect_cdc_subobjects(
+        &mut self,
+        path: &std::path::Path,
+        shown: &str,
+        digest: mneme_core::ContentDigest,
+        expected: u64,
+    ) -> bool {
+        let disk_bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if self.mode == VerifyMode::Quick {
+                    self.push(blob_issue(
+                        IssueKind::UnreadableBlob,
+                        &digest.to_hex(),
+                        Some(shown.to_owned()),
+                        error.to_string(),
+                    ));
+                }
+                return false;
+            }
+        };
+        let (manifest_len, chunks) = match crate::dedup::parse_cdc_manifest(
+            digest,
+            &disk_bytes,
+            crate::payload::MAX_DECOMPRESSED_BLOB_BYTES,
+        ) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                if self.mode == VerifyMode::Quick {
+                    self.push(blob_issue(
+                        IssueKind::DigestMismatch,
+                        &digest.to_hex(),
+                        Some(shown.to_owned()),
+                        error.to_string(),
+                    ));
+                }
+                return false;
+            }
+        };
+        let mut is_all_ok = manifest_len == expected;
+        if !is_all_ok && self.mode == VerifyMode::Quick {
+            self.push(blob_issue(
+                IssueKind::SizeMismatch,
+                &digest.to_hex(),
+                Some(shown.to_owned()),
+                format!("FastCDC manifest length {manifest_len} differs from ledger {expected}"),
+            ));
+        }
+        for (chunk_digest, chunk_len) in chunks {
+            self.live_framed_refs
+                .chunks
+                .insert((chunk_digest.algorithm(), *chunk_digest.as_bytes()));
+            if !self.inspect_cdc_chunk(chunk_digest, chunk_len) {
+                is_all_ok = false;
+            }
+        }
+        is_all_ok
+    }
+
+    fn inspect_cdc_chunk(
+        &mut self,
+        chunk_digest: mneme_core::ContentDigest,
+        expected_len: u64,
+    ) -> bool {
+        let chunk_path = crate::dedup::resolve_chunk_path(self.root, chunk_digest);
+        let chunk_shown = self.relative(&chunk_path);
+        let metadata = match std::fs::symlink_metadata(&chunk_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if self.mode == VerifyMode::Quick {
+                    self.push(blob_issue(
+                        IssueKind::MissingBlob,
+                        &chunk_digest.to_hex(),
+                        Some(chunk_shown),
+                        format!("missing FastCDC chunk; manifest records {expected_len} bytes"),
+                    ));
+                }
+                return false;
+            }
+            Err(error) => {
+                if self.mode == VerifyMode::Quick {
+                    self.push(blob_issue(
+                        IssueKind::UnreadableBlob,
+                        &chunk_digest.to_hex(),
+                        Some(chunk_shown),
+                        error.to_string(),
+                    ));
+                }
+                return false;
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            if self.mode == VerifyMode::Quick {
+                self.push(blob_issue(
+                    IssueKind::UnreadableBlob,
+                    &chunk_digest.to_hex(),
+                    Some(chunk_shown),
+                    "FastCDC chunk path is not a regular file".to_owned(),
+                ));
+            }
+            return false;
+        }
+        let framing = match crate::payload::inspect_path_framing(&chunk_path, metadata.len()) {
+            Ok(framing) => framing,
+            Err(error) => {
+                if self.mode == VerifyMode::Quick {
+                    self.push(blob_issue(
+                        IssueKind::UnreadableBlob,
+                        &chunk_digest.to_hex(),
+                        Some(chunk_shown),
+                        error.to_string(),
+                    ));
+                }
+                return false;
+            }
+        };
+        match framing {
+            crate::payload::BlobFraming::Raw => {
+                if metadata.len() != expected_len {
+                    if self.mode == VerifyMode::Quick {
+                        self.push(blob_issue(
+                            IssueKind::SizeMismatch,
+                            &chunk_digest.to_hex(),
+                            Some(chunk_shown),
+                            format!(
+                                "FastCDC chunk holds {} bytes; manifest records {expected_len}",
+                                metadata.len()
+                            ),
+                        ));
+                    }
+                    return false;
+                }
+                true
+            }
+            crate::payload::BlobFraming::Zstd => {
+                let header_len =
+                    crate::payload::read_frame_header_length(&chunk_path, metadata.len())
+                        .ok()
+                        .flatten();
+                if header_len != Some(expected_len) {
+                    if self.mode == VerifyMode::Quick {
+                        self.push(blob_issue(
+                            IssueKind::SizeMismatch,
+                            &chunk_digest.to_hex(),
+                            Some(chunk_shown),
+                            format!(
+                                "compressed FastCDC chunk header length {header_len:?} differs from manifest {expected_len}"
+                            ),
+                        ));
+                    }
+                    return false;
+                }
+                true
+            }
+            crate::payload::BlobFraming::ZstdDict => {
+                match crate::payload::read_zstd_dict_header_info(&chunk_path, chunk_digest) {
+                    Ok((header_len, dict_digest)) => {
+                        self.live_framed_refs
+                            .dicts
+                            .insert((dict_digest.algorithm(), *dict_digest.as_bytes()));
+                        let is_len_ok = header_len == expected_len;
+                        if !is_len_ok && self.mode == VerifyMode::Quick {
+                            self.push(blob_issue(
+                                IssueKind::SizeMismatch,
+                                &chunk_digest.to_hex(),
+                                Some(chunk_shown),
+                                format!(
+                                    "dictionary-compressed FastCDC chunk length {header_len} differs from manifest {expected_len}"
+                                ),
+                            ));
+                        }
+                        let is_dict_ok = if self.mode == VerifyMode::Quick {
+                            self.check_quick_dict(dict_digest)
+                        } else {
+                            true
+                        };
+                        is_len_ok && is_dict_ok
+                    }
+                    Err(error) => {
+                        if self.mode == VerifyMode::Quick {
+                            self.push(blob_issue(
+                                IssueKind::DigestMismatch,
+                                &chunk_digest.to_hex(),
+                                Some(chunk_shown),
+                                error.to_string(),
+                            ));
+                        }
+                        false
+                    }
+                }
+            }
+            crate::payload::BlobFraming::FastCdc => {
+                if self.mode == VerifyMode::Quick {
+                    self.push(blob_issue(
+                        IssueKind::DigestMismatch,
+                        &chunk_digest.to_hex(),
+                        Some(chunk_shown),
+                        "nested FastCDC manifest is not valid inside a chunk".to_owned(),
+                    ));
+                }
+                false
+            }
+        }
+    }
+
+    fn check_quick_dict(&mut self, dict_digest: mneme_core::ContentDigest) -> bool {
+        let dict_path = crate::dedup::resolve_dictionary_path(self.root, dict_digest);
+        let dict_shown = self.relative(&dict_path);
+        let metadata = match std::fs::symlink_metadata(&dict_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.push(blob_issue(
+                    IssueKind::MissingBlob,
+                    &dict_digest.to_hex(),
+                    Some(dict_shown),
+                    "referenced Zstd dictionary file is missing".to_owned(),
+                ));
+                return false;
+            }
+            Err(error) => {
+                self.push(blob_issue(
+                    IssueKind::UnreadableBlob,
+                    &dict_digest.to_hex(),
+                    Some(dict_shown),
+                    error.to_string(),
+                ));
+                return false;
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            self.push(blob_issue(
+                IssueKind::UnreadableBlob,
+                &dict_digest.to_hex(),
+                Some(dict_shown),
+                "Zstd dictionary path is not a regular file".to_owned(),
+            ));
+            return false;
+        }
+        if metadata.len() == 0 || metadata.len() > crate::dedup::MAX_ZSTD_DICTIONARY_BYTES {
+            self.push(blob_issue(
+                IssueKind::SizeMismatch,
+                &dict_digest.to_hex(),
+                Some(dict_shown),
+                format!("Zstd dictionary length {} is out of bounds", metadata.len()),
+            ));
+            return false;
+        }
+        true
     }
 
     fn check_outboard_file(
@@ -666,6 +1049,315 @@ impl Scrub<'_> {
         }
         for (digest, owners) in sources {
             self.record_owners.entry(digest).or_default().extend(owners);
+        }
+        Ok(())
+    }
+
+    /// Check 2c: verify SQLite `#89` metadata projection parity (`entities`,
+    /// `relations`, `documents`) against active non-forgotten head records.
+    fn check_metadata_projection(&mut self) -> crate::error::Result<()> {
+        if !super::table_exists(self.connection, "entities")?
+            || !super::table_exists(self.connection, "relations")?
+            || !super::table_exists(self.connection, "documents")?
+        {
+            return Ok(());
+        }
+        let forgotten = super::sweep::forgotten_suppressions_in(self.connection)?;
+        let context = mneme_core::WorkspaceRevisionId::from_bytes([0; 16]);
+        let mut statement = self.connection.prepare(
+            "SELECT r.record_id, r.revision_id, r.kind, r.full_digest
+             FROM record_membership m
+             JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
+             WHERE m.last_sequence IS NULL AND r.kind IN ('entity', 'relation', 'document')
+             ORDER BY r.record_id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let active: Vec<_> = rows
+            .into_iter()
+            .filter_map(|(record_bytes, rev_bytes, kind, full_bytes)| {
+                let record_id = super::record_id_from_blob(&record_bytes, context).ok()?;
+                let revision_id = super::revision_id_from_blob(&rev_bytes, context).ok()?;
+                if forgotten.matches(record_id, revision_id) {
+                    return None;
+                }
+                let decoded = if self.mode == VerifyMode::Full {
+                    self.decode_verified_envelope(&full_bytes)
+                } else {
+                    None
+                };
+                Some((
+                    *record_id.as_bytes(),
+                    *revision_id.as_bytes(),
+                    kind,
+                    decoded,
+                ))
+            })
+            .collect();
+        let expected_entities: std::collections::BTreeMap<[u8; 16], ExpectedEntityRow> = active
+            .iter()
+            .filter(|(_, _, kind, _)| kind == "entity")
+            .map(|(key, rev, _, decoded)| {
+                (
+                    *key,
+                    ExpectedEntityRow::from_envelope(*rev, decoded.as_ref()),
+                )
+            })
+            .collect();
+        let expected_relations: std::collections::BTreeMap<[u8; 16], ExpectedRelationRow> = active
+            .iter()
+            .filter(|(_, _, kind, _)| kind == "relation")
+            .map(|(key, rev, _, decoded)| {
+                (
+                    *key,
+                    ExpectedRelationRow::from_envelope(*rev, decoded.as_ref()),
+                )
+            })
+            .collect();
+        let expected_documents: std::collections::BTreeMap<[u8; 16], ExpectedDocumentRow> = active
+            .iter()
+            .filter(|(_, _, kind, _)| kind == "document")
+            .map(|(key, rev, _, decoded)| {
+                (
+                    *key,
+                    ExpectedDocumentRow::from_envelope(*rev, decoded.as_ref()),
+                )
+            })
+            .collect();
+        self.verify_projected_entities(&expected_entities)?;
+        self.verify_projected_relations(&expected_relations)?;
+        self.verify_projected_documents(&expected_documents)?;
+        Ok(())
+    }
+
+    fn decode_verified_envelope(&self, full_bytes: &[u8]) -> Option<mneme_core::RecordEnvelope> {
+        let digest_bytes = <[u8; 32]>::try_from(full_bytes).ok()?;
+        if !self.verified.contains(&digest_bytes) {
+            return None;
+        }
+        let content = self.digest_of(digest_bytes)?;
+        let bytes = crate::payload::read(self.root, content).ok()?;
+        let value = mneme_core::binary::decode(&bytes).ok()?;
+        mneme_core::RecordEnvelope::from_value(&value).ok()
+    }
+
+    fn verify_projected_entities(
+        &mut self,
+        expected: &std::collections::BTreeMap<[u8; 16], ExpectedEntityRow>,
+    ) -> crate::error::Result<()> {
+        let mut statement = self.connection.prepare(
+            "SELECT record_id, revision_id, scope, entity_type, label, external_id FROM entities",
+        )?;
+        let actual_rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for (record_bytes, rev_bytes, scope, entity_type, label, external_id) in actual_rows {
+            let Ok(key) = <[u8; 16]>::try_from(record_bytes.as_slice()) else {
+                self.push(projection_issue(
+                    None,
+                    "entities projection contains malformed record_id".to_owned(),
+                ));
+                continue;
+            };
+            seen.insert(key);
+            let Some(wanted) = expected.get(&key) else {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(&key), hex(&rev_bytes))),
+                    "entities projection holds stale or forgotten record".to_owned(),
+                ));
+                continue;
+            };
+            if rev_bytes.as_slice() != wanted.revision_id.as_slice() {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(&key), hex(&wanted.revision_id))),
+                    format!(
+                        "entities projection revision {} differs from active head {}",
+                        hex(&rev_bytes),
+                        hex(&wanted.revision_id)
+                    ),
+                ));
+                continue;
+            }
+            if let Some(fields) = &wanted.fields
+                && (scope != fields.scope
+                    || entity_type != fields.entity_type
+                    || label != fields.label
+                    || external_id != fields.external_id)
+            {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(&key), hex(&wanted.revision_id))),
+                    "entities projection columns disagree with active head record envelope"
+                        .to_owned(),
+                ));
+            }
+        }
+        for (key, wanted) in expected {
+            if !seen.contains(key) {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(key), hex(&wanted.revision_id))),
+                    "active head entity record is missing from entities projection".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_projected_relations(
+        &mut self,
+        expected: &std::collections::BTreeMap<[u8; 16], ExpectedRelationRow>,
+    ) -> crate::error::Result<()> {
+        let mut statement = self.connection.prepare(
+            "SELECT record_id, revision_id, scope, relation_type, from_id, to_id FROM relations",
+        )?;
+        let actual_rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<Vec<u8>>>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for (record_bytes, rev_bytes, scope, relation_type, from_id, to_id) in actual_rows {
+            let Ok(key) = <[u8; 16]>::try_from(record_bytes.as_slice()) else {
+                self.push(projection_issue(
+                    None,
+                    "relations projection contains malformed record_id".to_owned(),
+                ));
+                continue;
+            };
+            seen.insert(key);
+            let Some(wanted) = expected.get(&key) else {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(&key), hex(&rev_bytes))),
+                    "relations projection holds stale or forgotten record".to_owned(),
+                ));
+                continue;
+            };
+            if rev_bytes.as_slice() != wanted.revision_id.as_slice() {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(&key), hex(&wanted.revision_id))),
+                    format!(
+                        "relations projection revision {} differs from active head {}",
+                        hex(&rev_bytes),
+                        hex(&wanted.revision_id)
+                    ),
+                ));
+                continue;
+            }
+            if let Some(fields) = &wanted.fields
+                && (scope != fields.scope
+                    || relation_type != fields.relation_type
+                    || from_id != fields.from_id
+                    || to_id != fields.to_id)
+            {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(&key), hex(&wanted.revision_id))),
+                    "relations projection columns disagree with active head record envelope"
+                        .to_owned(),
+                ));
+            }
+        }
+        for (key, wanted) in expected {
+            if !seen.contains(key) {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(key), hex(&wanted.revision_id))),
+                    "active head relation record is missing from relations projection".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_projected_documents(
+        &mut self,
+        expected: &std::collections::BTreeMap<[u8; 16], ExpectedDocumentRow>,
+    ) -> crate::error::Result<()> {
+        let mut statement = self.connection.prepare(
+            "SELECT record_id, revision_id, scope, path, title, source_revision_id FROM documents",
+        )?;
+        let actual_rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<Vec<u8>>>(5)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for (record_bytes, rev_bytes, scope, path, title, source_revision_id) in actual_rows {
+            let Ok(key) = <[u8; 16]>::try_from(record_bytes.as_slice()) else {
+                self.push(projection_issue(
+                    None,
+                    "documents projection contains malformed record_id".to_owned(),
+                ));
+                continue;
+            };
+            seen.insert(key);
+            let Some(wanted) = expected.get(&key) else {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(&key), hex(&rev_bytes))),
+                    "documents projection holds stale or forgotten record".to_owned(),
+                ));
+                continue;
+            };
+            if rev_bytes.as_slice() != wanted.revision_id.as_slice() {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(&key), hex(&wanted.revision_id))),
+                    format!(
+                        "documents projection revision {} differs from active head {}",
+                        hex(&rev_bytes),
+                        hex(&wanted.revision_id)
+                    ),
+                ));
+                continue;
+            }
+            if let Some(fields) = &wanted.fields
+                && (scope != fields.scope
+                    || path != fields.path
+                    || title != fields.title
+                    || source_revision_id != fields.source_revision_id)
+            {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(&key), hex(&wanted.revision_id))),
+                    "documents projection columns disagree with active head record envelope"
+                        .to_owned(),
+                ));
+            }
+        }
+        for (key, wanted) in expected {
+            if !seen.contains(key) {
+                self.push(projection_issue(
+                    Some(format!("{}@{}", hex(key), hex(&wanted.revision_id))),
+                    "active head document record is missing from documents projection".to_owned(),
+                ));
+            }
         }
         Ok(())
     }
@@ -935,12 +1627,24 @@ impl Scrub<'_> {
                 path,
             });
         }
-        for (digest, path) in crate::payload::blob_file_inventory(self.root)? {
-            if !self.blob_digests.contains(&digest) {
+        for file in crate::payload::blob_file_inventory(self.root)? {
+            let is_orphan = match file.kind {
+                crate::payload::StoredObjectKind::Primary(_)
+                | crate::payload::StoredObjectKind::Outboard(_) => {
+                    !self.blob_digests.contains(&file.digest)
+                }
+                crate::payload::StoredObjectKind::Chunk(algo) => {
+                    !self.live_framed_refs.contains_chunk(algo, file.digest)
+                }
+                crate::payload::StoredObjectKind::Dictionary(algo) => {
+                    !self.live_framed_refs.contains_dict(algo, file.digest)
+                }
+            };
+            if is_orphan {
                 self.report.orphans.push(OrphanBlob {
                     reason: OrphanReason::FileWithoutRow,
-                    digest: hex(&digest),
-                    path: self.relative(&path),
+                    digest: hex(&file.digest),
+                    path: self.relative(&file.path),
                 });
             }
         }
@@ -1010,6 +1714,15 @@ impl Scrub<'_> {
             .flatten()?;
         parse_digest(&row, bytes)
     }
+}
+
+struct FramedBlobTarget<'a> {
+    path: &'a std::path::Path,
+    shown: &'a str,
+    digest: mneme_core::ContentDigest,
+    bytes: [u8; 32],
+    file_len_bytes: u64,
+    expected_bytes: u64,
 }
 
 struct ManifestRow<'a> {
@@ -1101,6 +1814,137 @@ fn chain_issue(kind: IssueKind, revision: &str, sequence: u64, detail: String) -
         sequence: Some(sequence),
         detail,
     }
+}
+
+fn projection_issue(record: Option<String>, detail: String) -> VerifyIssue {
+    VerifyIssue {
+        kind: IssueKind::ProjectionMismatch,
+        digest: None,
+        path: None,
+        records: record.into_iter().collect(),
+        revision: None,
+        sequence: None,
+        detail,
+    }
+}
+
+struct ExpectedEntityFields {
+    scope: String,
+    entity_type: String,
+    label: String,
+    external_id: Option<String>,
+}
+
+struct ExpectedEntityRow {
+    revision_id: [u8; 16],
+    fields: Option<ExpectedEntityFields>,
+}
+
+impl ExpectedEntityRow {
+    fn from_envelope(revision_id: [u8; 16], envelope: Option<&mneme_core::RecordEnvelope>) -> Self {
+        let fields = envelope.map(|record| ExpectedEntityFields {
+            scope: record.scope.to_string(),
+            entity_type: payload_symbol(&record.payload, "entity-type"),
+            label: payload_text(&record.payload, "label")
+                .unwrap_or("")
+                .to_owned(),
+            external_id: extract_external_id(&record.payload),
+        });
+        Self {
+            revision_id,
+            fields,
+        }
+    }
+}
+
+struct ExpectedRelationFields {
+    scope: String,
+    relation_type: String,
+    from_id: Option<Vec<u8>>,
+    to_id: Option<Vec<u8>>,
+}
+
+struct ExpectedRelationRow {
+    revision_id: [u8; 16],
+    fields: Option<ExpectedRelationFields>,
+}
+
+impl ExpectedRelationRow {
+    fn from_envelope(revision_id: [u8; 16], envelope: Option<&mneme_core::RecordEnvelope>) -> Self {
+        let fields = envelope.map(|record| ExpectedRelationFields {
+            scope: record.scope.to_string(),
+            relation_type: payload_symbol(&record.payload, "relation-type"),
+            from_id: extract_reference_target(record.payload.get("from"))
+                .map(|id| id.as_bytes().to_vec()),
+            to_id: extract_reference_target(record.payload.get("to"))
+                .map(|id| id.as_bytes().to_vec()),
+        });
+        Self {
+            revision_id,
+            fields,
+        }
+    }
+}
+
+struct ExpectedDocumentFields {
+    scope: String,
+    path: Option<String>,
+    title: String,
+    source_revision_id: Option<Vec<u8>>,
+}
+
+struct ExpectedDocumentRow {
+    revision_id: [u8; 16],
+    fields: Option<ExpectedDocumentFields>,
+}
+
+impl ExpectedDocumentRow {
+    fn from_envelope(revision_id: [u8; 16], envelope: Option<&mneme_core::RecordEnvelope>) -> Self {
+        let fields = envelope.map(|record| ExpectedDocumentFields {
+            scope: record.scope.to_string(),
+            path: payload_text(&record.payload, "path").map(str::to_owned),
+            title: payload_text(&record.payload, "title")
+                .unwrap_or("")
+                .to_owned(),
+            source_revision_id: extract_reference_target(record.payload.get("source-revision"))
+                .map(|id| id.as_bytes().to_vec()),
+        });
+        Self {
+            revision_id,
+            fields,
+        }
+    }
+}
+
+fn payload_symbol(payload: &mneme_core::Payload, field: &str) -> String {
+    payload
+        .get(field)
+        .and_then(mneme_core::Value::as_symbol)
+        .map(|symbol| symbol.as_str().to_owned())
+        .unwrap_or_default()
+}
+
+fn payload_text<'a>(payload: &'a mneme_core::Payload, field: &str) -> Option<&'a str> {
+    payload.get(field).and_then(mneme_core::Value::as_string)
+}
+
+fn extract_external_id(payload: &mneme_core::Payload) -> Option<String> {
+    let properties = payload
+        .get("properties")
+        .and_then(mneme_core::Value::as_dictionary)?;
+    let value = properties
+        .get(&mneme_core::Value::symbol("external-id"))
+        .or_else(|| properties.get(&mneme_core::Value::string("external-id")))?;
+    value
+        .as_string()
+        .map(str::to_owned)
+        .or_else(|| value.as_symbol().map(|symbol| symbol.as_str().to_owned()))
+}
+
+fn extract_reference_target(value: Option<&mneme_core::Value>) -> Option<mneme_core::RecordId> {
+    value
+        .and_then(|value| mneme_core::Reference::from_value(value, &mneme_core::Path::root()).ok())
+        .and_then(|reference| reference.target())
 }
 
 fn hex(bytes: &[u8]) -> String {
