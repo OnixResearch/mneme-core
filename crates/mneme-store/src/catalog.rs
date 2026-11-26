@@ -114,7 +114,12 @@ impl Manifest {
 
     /// Content digest over the manifest value.
     pub fn digest(&self) -> mneme_core::ContentDigest {
-        mneme_core::ContentDigest::of_payload(&self.to_value())
+        self.digest_with(mneme_core::HashAlgorithm::default())
+    }
+
+    /// Content digest over the manifest value using an explicit hash algorithm.
+    pub fn digest_with(&self, algorithm: mneme_core::HashAlgorithm) -> mneme_core::ContentDigest {
+        mneme_core::ContentDigest::of_payload_with(&self.to_value(), algorithm)
     }
 }
 

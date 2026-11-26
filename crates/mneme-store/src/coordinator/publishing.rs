@@ -150,11 +150,24 @@ impl super::Workspace {
         let bytes = crate::payload::read(&self.root, desired)?;
         let target = crate::payload::prepare_working_target(&self.root, &intent.target_path)?;
         let mut guard = crate::payload::quarantine_working_file(&self.root, &intent.target_path)?;
-        let observed = match guard.entry() {
+        let (observed, observed_for_kernel) = match guard.entry() {
             Some(file) => match file.read()? {
-                crate::payload::WorkingEntry::Absent => None,
+                crate::payload::WorkingEntry::Absent => (None, None),
                 crate::payload::WorkingEntry::Regular(found) => {
-                    Some(mneme_core::ContentDigest::of_source_bytes(&found))
+                    let recorded = mneme_core::ContentDigest::of_source_bytes(&found);
+                    let kernel_digest = if desired.verify_source_bytes(&found) {
+                        desired.to_kernel()
+                    } else if intent
+                        .expected_digest
+                        .is_some_and(|expected| expected.verify_source_bytes(&found))
+                    {
+                        intent
+                            .expected_digest
+                            .map_or_else(|| recorded.to_kernel(), |expected| expected.to_kernel())
+                    } else {
+                        recorded.to_kernel()
+                    };
+                    (Some(recorded), Some(kernel_digest))
                 }
                 crate::payload::WorkingEntry::NotRegular => {
                     // A FIFO, directory, symbolic link or device is never
@@ -169,11 +182,11 @@ impl super::Workspace {
                     return self.require_outcome(intent_id);
                 }
             },
-            None => None,
+            None => (None, None),
         };
         let decision =
             mneme_kernel::publish::decide_publication(&mneme_kernel::publish::PublicationFacts {
-                observed: observed.map(|digest| digest.to_kernel()),
+                observed: observed_for_kernel,
                 expected: intent.expected_digest.map(|digest| digest.to_kernel()),
                 desired: desired.to_kernel(),
             });
@@ -315,11 +328,13 @@ impl super::Workspace {
         detail: Option<String>,
     ) -> crate::error::Result<()> {
         self.connection.execute(
-            "UPDATE publication_intents SET state = ?1, observed_digest = ?2, detail = ?3,
-                 updated_at_ns = ?4 WHERE intent_id = ?5",
+            "UPDATE publication_intents SET state = ?1, observed_digest = ?2,
+                 observed_algorithm = ?3, detail = ?4, updated_at_ns = ?5
+             WHERE intent_id = ?6",
             rusqlite::params![
                 state.as_str(),
                 observed.map(|digest| digest.as_bytes().to_vec()),
+                observed.map(|digest| digest.algorithm().symbol()),
                 detail,
                 self.clock.now().nanos(),
                 intent_id,
@@ -332,8 +347,8 @@ impl super::Workspace {
         let row = self
             .connection
             .query_row(
-                "SELECT revision_sequence, target_path, expected_digest, desired_digest,
-                        eligibility_generation, state
+                "SELECT revision_sequence, target_path, expected_digest, expected_algorithm,
+                        desired_digest, eligibility_generation, state
                  FROM publication_intents WHERE intent_id = ?1",
                 rusqlite::params![intent_id],
                 |row| {
@@ -341,9 +356,10 @@ impl super::Workspace {
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<Vec<u8>>>(2)?,
-                        row.get::<_, Vec<u8>>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Vec<u8>>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 },
             )
@@ -352,6 +368,7 @@ impl super::Workspace {
             revision_sequence,
             target_path,
             expected_digest,
+            expected_algorithm,
             desired_digest,
             eligibility_generation,
             state,
@@ -364,9 +381,16 @@ impl super::Workspace {
             revision_sequence: super::db_u64(revision_sequence, "revision sequence")?,
             target_path,
             expected_digest: expected_digest
-                .map(|bytes| super::digest_with(&bytes, "raw-bytes-v1", "source-bytes", revision))
+                .map(|bytes| {
+                    intent_digest(
+                        &self.connection,
+                        &bytes,
+                        expected_algorithm.as_deref(),
+                        revision,
+                    )
+                })
                 .transpose()?,
-            desired_digest: stored_digest(&desired_digest, revision)?,
+            desired_digest: stored_digest(&self.connection, &desired_digest, revision)?,
             eligibility_generation: super::db_u64(
                 eligibility_generation,
                 "eligibility generation",
@@ -382,8 +406,8 @@ impl super::Workspace {
         let row = self
             .connection
             .query_row(
-                "SELECT target_path, state, observed_digest, detail FROM publication_intents
-                 WHERE intent_id = ?1",
+                "SELECT target_path, state, observed_digest, observed_algorithm, detail
+                 FROM publication_intents WHERE intent_id = ?1",
                 rusqlite::params![intent_id],
                 |row| {
                     Ok((
@@ -391,24 +415,26 @@ impl super::Workspace {
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<Vec<u8>>>(2)?,
                         row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((path, state, observed, detail)) = row else {
+        let Some((path, state, observed, observed_algorithm, detail)) = row else {
             return Ok(None);
         };
+        let revision = mneme_core::WorkspaceRevisionId::from_bytes([0; 16]);
         Ok(Some(super::PublicationOutcome {
             intent_id: intent_id.to_owned(),
             path,
             state: intent_state(&state),
             observed: observed
                 .map(|bytes| {
-                    super::digest_with(
+                    intent_digest(
+                        &self.connection,
                         &bytes,
-                        "raw-bytes-v1",
-                        "source-bytes",
-                        mneme_core::WorkspaceRevisionId::from_bytes([0; 16]),
+                        observed_algorithm.as_deref(),
+                        revision,
                     )
                 })
                 .transpose()?,
@@ -430,7 +456,7 @@ impl super::Workspace {
     /// All publication intents and their current outcomes.
     pub fn publication_intents(&self) -> crate::error::Result<Vec<super::PublicationOutcome>> {
         let mut statement = self.connection.prepare(
-            "SELECT intent_id, target_path, state, observed_digest, detail
+            "SELECT intent_id, target_path, state, observed_digest, observed_algorithm, detail
              FROM publication_intents ORDER BY rowid",
         )?;
         let rows = statement
@@ -441,22 +467,32 @@ impl super::Workspace {
                     row.get::<_, String>(2)?,
                     row.get::<_, Option<Vec<u8>>>(3)?,
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let revision = mneme_core::WorkspaceRevisionId::from_bytes([0; 16]);
         rows.into_iter()
-            .map(|(intent_id, path, state, observed, detail)| {
-                Ok(super::PublicationOutcome {
-                    intent_id,
-                    path,
-                    state: intent_state(&state),
-                    observed: observed
-                        .map(|bytes| stored_digest(&bytes, revision))
-                        .transpose()?,
-                    detail,
-                })
-            })
+            .map(
+                |(intent_id, path, state, observed, observed_algorithm, detail)| {
+                    Ok(super::PublicationOutcome {
+                        intent_id,
+                        path,
+                        state: intent_state(&state),
+                        observed: observed
+                            .map(|bytes| {
+                                intent_digest(
+                                    &self.connection,
+                                    &bytes,
+                                    observed_algorithm.as_deref(),
+                                    revision,
+                                )
+                            })
+                            .transpose()?,
+                        detail,
+                    })
+                },
+            )
             .collect()
     }
 }
@@ -486,7 +522,7 @@ pub(super) fn publication_outcomes(
     sequence: u64,
 ) -> crate::error::Result<Vec<super::PublicationOutcome>> {
     let mut statement = connection.prepare(
-        "SELECT intent_id, target_path, state, observed_digest, detail
+        "SELECT intent_id, target_path, state, observed_digest, observed_algorithm, detail
          FROM publication_intents WHERE revision_sequence = ?1 ORDER BY rowid",
     )?;
     let rows = statement
@@ -499,23 +535,33 @@ pub(super) fn publication_outcomes(
                     row.get::<_, String>(2)?,
                     row.get::<_, Option<Vec<u8>>>(3)?,
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             },
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let placeholder = mneme_core::WorkspaceRevisionId::from_bytes([0; 16]);
     rows.into_iter()
-        .map(|(intent_id, path, state, observed, detail)| {
-            Ok(super::PublicationOutcome {
-                intent_id,
-                path,
-                state: intent_state(&state),
-                observed: observed
-                    .map(|bytes| stored_digest(&bytes, placeholder))
-                    .transpose()?,
-                detail,
-            })
-        })
+        .map(
+            |(intent_id, path, state, observed, observed_algorithm, detail)| {
+                Ok(super::PublicationOutcome {
+                    intent_id,
+                    path,
+                    state: intent_state(&state),
+                    observed: observed
+                        .map(|bytes| {
+                            intent_digest(
+                                connection,
+                                &bytes,
+                                observed_algorithm.as_deref(),
+                                placeholder,
+                            )
+                        })
+                        .transpose()?,
+                    detail,
+                })
+            },
+        )
         .collect()
 }
 
@@ -593,7 +639,7 @@ pub(super) fn blob_lengths_for(
         return Ok(super::BlobIndex::new());
     };
     let mut statement = connection.prepare_cached(
-        "SELECT digest, profile, boundary, byte_length FROM blobs ORDER BY digest",
+        "SELECT digest, algorithm, profile, boundary, byte_length FROM blobs ORDER BY digest",
     )?;
     let mut rows = statement.query([])?;
     // At most one row per wanted digest is kept, so the scan buffer's bound is
@@ -608,15 +654,16 @@ pub(super) fn blob_lengths_for(
         if !wanted.contains(&key) {
             continue;
         }
-        let profile: String = row.get(1)?;
-        let boundary: String = row.get(2)?;
-        let length: i64 = row.get(3)?;
-        selected.push((key, profile, boundary, length));
+        let algorithm: String = row.get(1)?;
+        let profile: String = row.get(2)?;
+        let boundary: String = row.get(3)?;
+        let length: i64 = row.get(4)?;
+        selected.push((key, algorithm, profile, boundary, length));
     }
     let output = selected
         .into_iter()
-        .map(|(key, profile, boundary, length)| {
-            blob_record(key, &profile, &boundary, length).map(|record| (key, record))
+        .map(|(key, algorithm, profile, boundary, length)| {
+            blob_record(key, &algorithm, &profile, &boundary, length).map(|record| (key, record))
         })
         .collect::<crate::error::Result<super::BlobIndex>>()?;
     Ok(output)
@@ -625,10 +672,16 @@ pub(super) fn blob_lengths_for(
 /// One ledger blob row's decoded facts.
 fn blob_record(
     key: [u8; 32],
+    algorithm: &str,
     profile: &str,
     boundary: &str,
     length: i64,
 ) -> crate::error::Result<super::BlobRecord> {
+    let Some(algorithm) = mneme_core::HashAlgorithm::parse(algorithm) else {
+        return Err(crate::error::Failure::UnsupportedLayout(format!(
+            "unknown blob algorithm {algorithm}"
+        )));
+    };
     let Some(profile) = mneme_core::EncodingProfile::parse(profile) else {
         return Err(crate::error::Failure::UnsupportedLayout(format!(
             "unknown blob profile {profile}"
@@ -639,15 +692,11 @@ fn blob_record(
             "unknown blob boundary {boundary}"
         )));
     };
-    let digest = mneme_core::ContentDigest::from_parts(
-        mneme_core::HashAlgorithm::Sha256,
-        profile,
-        boundary,
-        key,
-    )
-    .map_err(|message| {
-        crate::error::Failure::UnsupportedLayout(format!("ledger blob metadata: {message}"))
-    })?;
+    let digest = mneme_core::ContentDigest::from_parts(algorithm, profile, boundary, key).map_err(
+        |message| {
+            crate::error::Failure::UnsupportedLayout(format!("ledger blob metadata: {message}"))
+        },
+    )?;
     Ok((
         digest,
         super::db_u64(length, "blob length")?,
@@ -732,8 +781,30 @@ fn intent_state(text: &str) -> super::PublicationState {
 
 /// Recompute one publication digest over the raw bytes a caller supplied.
 fn stored_digest(
+    connection: &rusqlite::Connection,
     bytes: &[u8],
     revision: mneme_core::WorkspaceRevisionId,
 ) -> crate::error::Result<mneme_core::ContentDigest> {
-    super::digest_with(bytes, "raw-bytes-v1", "source-bytes", revision)
+    let algorithm = super::blob_algorithm(connection, bytes)?;
+    super::digest_with(
+        bytes,
+        algorithm.symbol(),
+        "raw-bytes-v1",
+        "source-bytes",
+        revision,
+    )
+}
+
+fn intent_digest(
+    connection: &rusqlite::Connection,
+    bytes: &[u8],
+    recorded_algorithm: Option<&str>,
+    revision: mneme_core::WorkspaceRevisionId,
+) -> crate::error::Result<mneme_core::ContentDigest> {
+    match recorded_algorithm {
+        Some(algorithm) => {
+            super::digest_with(bytes, algorithm, "raw-bytes-v1", "source-bytes", revision)
+        }
+        None => stored_digest(connection, bytes, revision),
+    }
 }

@@ -1941,7 +1941,7 @@ impl FaultInjector for SweepStagedBlobs {
 fn remove_blob_files(root: &std::path::Path) -> usize {
     let shards = root
         .join(mneme_store::payload::BLOB_DIRECTORY)
-        .join("sha256");
+        .join(mneme_core::HashAlgorithm::Blake3.symbol());
     if !shards.is_dir() {
         return 0;
     }

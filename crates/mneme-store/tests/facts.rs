@@ -123,11 +123,16 @@ fn record_revision(bytes: &[u8]) -> mneme_core::RevisionId {
     mneme_core::RevisionId::from_bytes(identity)
 }
 
-fn content_digest(bytes: &[u8], profile: &str, boundary: &str) -> mneme_core::ContentDigest {
+fn content_digest(
+    bytes: &[u8],
+    algorithm: &str,
+    profile: &str,
+    boundary: &str,
+) -> mneme_core::ContentDigest {
     let mut digest = [0_u8; 32];
     digest.copy_from_slice(bytes);
     mneme_core::ContentDigest::from_parts(
-        mneme_core::HashAlgorithm::Sha256,
+        mneme_core::HashAlgorithm::parse(algorithm).expect("algorithm"),
         mneme_core::EncodingProfile::parse(profile).expect("profile"),
         mneme_core::ValueBoundary::parse(boundary).expect("boundary"),
         digest,
@@ -489,7 +494,7 @@ fn revision_blob_requirements(
 ) -> std::collections::BTreeSet<mneme_core::ContentDigest> {
     let mut statement = connection
         .prepare(
-            "SELECT c.digest, b.profile, b.boundary, c.change
+            "SELECT c.digest, b.algorithm, b.profile, b.boundary, c.change
              FROM revision_blob_changes c
              JOIN blobs b ON b.digest = c.digest
              WHERE c.revision_sequence <= ?1
@@ -503,14 +508,15 @@ fn revision_blob_requirements(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })
         .expect("query")
         .collect::<std::result::Result<Vec<_>, _>>()
         .expect("rows");
     let mut required = std::collections::BTreeSet::new();
-    for (blob, profile, boundary, change) in changes {
-        let blob = content_digest(&blob, &profile, &boundary);
+    for (blob, algorithm, profile, boundary, change) in changes {
+        let blob = content_digest(&blob, &algorithm, &profile, &boundary);
         match change.as_str() {
             "add" => {
                 required.insert(blob);

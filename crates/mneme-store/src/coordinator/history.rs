@@ -329,7 +329,8 @@ fn verify_migrated_revisions(
     let mut cursor = 0_usize;
     let mut blobs = std::collections::BTreeSet::new();
     let mut statement = transaction.prepare(
-        "SELECT sequence, revision_id, parent_revision_id, manifest, manifest_digest
+        "SELECT sequence, revision_id, parent_revision_id, manifest, manifest_digest,
+                manifest_algorithm
          FROM revisions ORDER BY sequence",
     )?;
     let mut rows = statement.query([])?;
@@ -341,16 +342,20 @@ fn verify_migrated_revisions(
             .map(|bytes| super::revision_from_blob(&bytes))
             .transpose()?;
         let stored_bytes: Vec<u8> = row.get(3)?;
+        let manifest_algorithm: Option<String> = row.get(5)?;
         let stored_digest = super::digest_with(
             &row.get::<_, Vec<u8>>(4)?,
+            manifest_algorithm
+                .as_deref()
+                .unwrap_or(mneme_core::hashing::ALGORITHM_SHA256),
             "preserves-canonical-binary-v1",
             "payload",
             revision,
         )?;
         let sequence_value = super::db_i64(sequence, "sequence")?;
         while cursor < changes.len() && changes[cursor].0 <= sequence_value {
-            let (_, digest, profile, boundary, change) = &changes[cursor];
-            let digest = super::digest_with(digest, profile, boundary, revision)?;
+            let (_, digest, algorithm, profile, boundary, change) = &changes[cursor];
+            let digest = super::digest_with(digest, algorithm, profile, boundary, revision)?;
             super::apply_blob_change(&mut blobs, digest, change, revision)?;
             cursor += 1;
         }
@@ -408,7 +413,7 @@ fn require_reconstructed_manifest(
         }
     })?;
     if committed != manifest
-        || manifest.digest() != stored.stored_digest
+        || manifest.digest_with(stored.stored_digest.algorithm()) != stored.stored_digest
         || manifest.encode() != stored.stored_bytes
     {
         return Err(crate::error::Failure::Integrity {
@@ -420,14 +425,14 @@ fn require_reconstructed_manifest(
 }
 
 /// The recorded blob-set changes in the order they were applied.
-type BlobChangeRow = (i64, Vec<u8>, String, String, String);
+type BlobChangeRow = (i64, Vec<u8>, String, String, String, String);
 
 /// Read every recorded blob-set change once.
 fn journal_changes(
     transaction: &rusqlite::Transaction<'_>,
 ) -> crate::error::Result<Vec<BlobChangeRow>> {
     let mut statement = transaction.prepare(
-        "SELECT c.revision_sequence, c.digest, b.profile, b.boundary, c.change
+        "SELECT c.revision_sequence, c.digest, b.algorithm, b.profile, b.boundary, c.change
          FROM revision_blob_changes c
          JOIN blobs b ON b.digest = c.digest
          ORDER BY c.revision_sequence, c.digest",
@@ -440,6 +445,7 @@ fn journal_changes(
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;

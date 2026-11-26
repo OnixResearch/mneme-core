@@ -1,7 +1,8 @@
 //! Durable blob storage and atomic working-file publication.
 //!
-//! Blobs are content addressed by SHA-256 and stored under
-//! `blobs/sha256/<first-two-hex>/<hex>`. Staging writes and flushes a temporary
+//! Blobs are content addressed by cryptographic digest (BLAKE3 by default,
+//! with SHA-256 retained for existing workspaces) and stored under
+//! `blobs/<algorithm>/<first-two-hex>/<hex>`. Staging writes and flushes a temporary
 //! file, verifies it, then renames it into place and flushes the directory.
 //! Working files are replaced through a temporary file in the same directory,
 //! so a reader never observes a partially written payload.
@@ -192,6 +193,16 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(bytes).into()
 }
 
+/// BLAKE3 of exact bytes.
+pub fn blake3(bytes: &[u8]) -> [u8; 32] {
+    *blake3::hash(bytes).as_bytes()
+}
+
+/// Hash exact bytes using the given digest algorithm.
+pub fn hash_bytes(algorithm: mneme_core::HashAlgorithm, bytes: &[u8]) -> [u8; 32] {
+    algorithm.hash_bytes(bytes)
+}
+
 /// Random bytes from the operating system.
 #[allow(unknown_lints, ambient_random)] // entropy is the blob-identity shell
 pub fn random_bytes() -> crate::error::Result<[u8; 16]> {
@@ -346,7 +357,7 @@ pub fn stage(
     digest: mneme_core::ContentDigest,
     bytes: &[u8],
 ) -> crate::error::Result<StagedBlob> {
-    if sha256(bytes) != *digest.as_bytes() {
+    if hash_bytes(digest.algorithm(), bytes) != *digest.as_bytes() {
         return Err(crate::error::Failure::CorruptBlob {
             digest: digest.to_hex(),
             reason: "staged bytes do not hash to the declared digest".to_owned(),
@@ -459,7 +470,7 @@ pub fn read(
             crate::error::Failure::io(&path, error)
         }
     })?;
-    if sha256(&bytes) != *digest.as_bytes() {
+    if hash_bytes(digest.algorithm(), &bytes) != *digest.as_bytes() {
         return Err(crate::error::Failure::CorruptBlob {
             digest: digest.to_hex(),
             reason: "stored bytes do not hash to the committed digest".to_owned(),
@@ -1143,7 +1154,7 @@ fn purge_targeted_in(
             }
             let path = entry.path();
             if let WorkingEntry::Regular(bytes) = read_regular_bounded(&path)?
-                && targets.contains(&sha256(&bytes))
+                && (targets.contains(&sha256(&bytes)) || targets.contains(&blake3(&bytes)))
             {
                 std::fs::remove_file(&path)
                     .map_err(|error| crate::error::Failure::io(&path, error))?;
