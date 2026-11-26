@@ -33,6 +33,7 @@ mneme-datalog = { path = "crates/mneme-datalog" }
 mneme-recall = { path = "crates/mneme-recall" }
 mneme-api = { path = "crates/mneme-api" }
 blake3 = "1.8"
+bao-tree = { version = "0.16.1", default-features = false, features = ["fs"] }
 getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 num-bigint = "0.4"

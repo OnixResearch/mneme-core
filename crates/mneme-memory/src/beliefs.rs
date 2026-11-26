@@ -741,45 +741,149 @@ impl View {
                 "evidence anchor must not be empty",
             ));
         }
-        let status = self.source_status_for(&source)?;
-        if requirement == RetainedRequirement::Required
-            && !matches!(status, SourceStatus::Retained(_))
-        {
-            return Err(crate::failure::EvidenceError::policy(format!(
-                "evidence source is {} and cannot be newly cited",
-                status.availability().name()
-            )));
-        }
-        let excerpt = Self::evidence_excerpt(evidence.span.as_ref(), &status)?;
+        let (availability, excerpt) =
+            self.validate_evidence_span(&source, evidence.span, requirement)?;
         Ok(ValidatedEvidence {
             evidence,
             source,
-            availability: status.availability(),
+            availability,
             excerpt,
         })
     }
 
-    /// The excerpt a retained source yields for an evidence span, if any.
-    fn evidence_excerpt(
-        span: Option<&mneme_core::SourceSpan>,
-        status: &SourceStatus,
-    ) -> crate::failure::Result<Option<SourceExcerpt>> {
-        let (Some(span), SourceStatus::Retained(bytes)) = (span, status) else {
-            return Ok(None);
+    fn validate_evidence_span(
+        &self,
+        source: &crate::model::SourceView,
+        span: Option<mneme_core::SourceSpan>,
+        requirement: RetainedRequirement,
+    ) -> crate::failure::Result<(crate::model::SourceAvailability, Option<SourceExcerpt>)> {
+        let Some(span) = span else {
+            let status = self.source_status_for(source)?;
+            let availability = status.availability();
+            require_retained_availability(&availability, requirement)?;
+            return Ok((availability, None));
         };
-        let text_len = u64::try_from(bytes.len())
-            .map_err(|_| crate::failure::EvidenceError::policy("source length exceeds u64"))?;
-        let stop = span
-            .end()
-            .checked_add(1)
-            .ok_or_else(|| crate::failure::EvidenceError::policy("span end exceeds u64"))?;
-        if !mneme_kernel::extent::span_in_text(span.start(), stop, text_len) {
-            return Err(crate::failure::EvidenceError::policy(format!(
-                "evidence span ends at byte {}, beyond the retained bytes",
-                span.end()
-            )));
+        let (availability, excerpt, retained_bytes) =
+            self.source_span_excerpt_for(source, span, u64::MAX)?;
+        require_retained_availability(&availability, requirement)?;
+        if let Some(text_bytes) = retained_bytes {
+            check_span_within_retained(span, text_bytes)?;
         }
-        Ok(excerpt_of(bytes, *span, text_len))
+        Ok((availability, excerpt))
+    }
+
+    /// Verify and slice `span` (bounded by `max_bytes`) using `bao-tree` range
+    /// verification when available, without reading unrelated blob chunks.
+    fn source_span_excerpt_for(
+        &self,
+        view: &crate::model::SourceView,
+        span: mneme_core::SourceSpan,
+        max_bytes: u64,
+    ) -> crate::failure::Result<(
+        crate::model::SourceAvailability,
+        Option<SourceExcerpt>,
+        Option<u64>,
+    )> {
+        let pin = mneme_core::SourcePin::new(view.record.record_id, view.record.revision_id);
+        if self.source_roots(pin).is_err() {
+            return Ok((crate::model::SourceAvailability::Erased, None, None));
+        }
+        if view.availability != crate::model::SourceAvailability::Retained {
+            return Ok((unavailable_source_label(&view.availability), None, None));
+        }
+        let mneme_core::SourceContent::Retained(retained) = &view.content else {
+            return Ok((
+                crate::model::SourceAvailability::Corrupt {
+                    reason: "retained source has no digest".to_owned(),
+                },
+                None,
+                None,
+            ));
+        };
+        self.verify_retained_span_excerpt(view.record.record_id, retained, span, max_bytes)
+    }
+
+    fn verify_retained_span_excerpt(
+        &self,
+        source_id: mneme_core::RecordId,
+        retained: &mneme_core::RetainedSource,
+        span: mneme_core::SourceSpan,
+        max_bytes: u64,
+    ) -> crate::failure::Result<(
+        crate::model::SourceAvailability,
+        Option<SourceExcerpt>,
+        Option<u64>,
+    )> {
+        let digest = retained.digest();
+        let text_bytes = retained.byte_length();
+        debug_assert_eq!(text_bytes, retained.byte_length());
+        debug_assert!(span.start() <= span.end());
+        let window = span.end().checked_add(1).and_then(|stop| {
+            mneme_kernel::extent::excerpt_window(&mneme_kernel::extent::ExcerptRequest {
+                start: span.start(),
+                stop,
+                text_len: text_bytes,
+                max_bytes,
+            })
+        });
+        let (read_range, read_start) = match window {
+            Some(window) => {
+                let start = window.start.saturating_sub(3);
+                let end = window.stop.saturating_add(1).min(text_bytes);
+                (start..end, start)
+            }
+            None => (0_u64..0_u64, 0),
+        };
+        match mneme_store::verify_span_range(&self.root, digest, read_range) {
+            Ok(slice) => {
+                let excerpt = window.and_then(|win| {
+                    excerpt_from_window_slice(
+                        &slice,
+                        &ExcerptWindowSlice {
+                            read_start_bytes: read_start,
+                            window: win,
+                            text_bytes,
+                            span,
+                        },
+                    )
+                });
+                Ok((
+                    crate::model::SourceAvailability::Retained,
+                    excerpt,
+                    Some(text_bytes),
+                ))
+            }
+            Err(error) => self.map_span_read_error(source_id, digest, error),
+        }
+    }
+
+    fn map_span_read_error(
+        &self,
+        source_id: mneme_core::RecordId,
+        digest: mneme_core::ContentDigest,
+        error: mneme_store::Failure,
+    ) -> crate::failure::Result<(
+        crate::model::SourceAvailability,
+        Option<SourceExcerpt>,
+        Option<u64>,
+    )> {
+        match error {
+            mneme_store::Failure::MissingBlob { .. } => Ok((
+                self.retention_status_for(source_id, digest)
+                    .unwrap_or_else(|| {
+                        SourceStatus::Corrupt("committed source blob is missing".to_owned())
+                    })
+                    .availability(),
+                None,
+                None,
+            )),
+            mneme_store::Failure::CorruptBlob { reason, .. } => Ok((
+                crate::model::SourceAvailability::Corrupt { reason },
+                None,
+                None,
+            )),
+            other => Err(other.into()),
+        }
     }
 
     /// Whether a claim's valid time covers `at`.
@@ -1465,12 +1569,13 @@ impl View {
                 break;
             }
             let source = self.evidence_source(&evidence)?;
-            let status = self.source_status_for(&source)?;
-            let excerpt = match (&evidence.span, &status) {
-                (Some(span), SourceStatus::Retained(bytes)) => {
-                    excerpt_of(bytes, *span, max_excerpt)
+            let (availability, excerpt) = match evidence.span {
+                Some(span) => {
+                    let (availability, excerpt, _) =
+                        self.source_span_excerpt_for(&source, span, max_excerpt)?;
+                    (availability, excerpt)
                 }
-                _ => None,
+                None => (self.source_status_for(&source)?.availability(), None),
             };
             let (visible, all_readable) = self.visible_roots(&facts.roots, &base);
             let is_withdrawn = self
@@ -1482,7 +1587,7 @@ impl View {
                 evidence: evidence.record.record_id,
                 source: evidence.source,
                 source_revision: source.record.revision_id,
-                availability: status.availability(),
+                availability,
                 span_start: evidence.span.map(|span| span.start()),
                 span_end: evidence.span.map(|span| span.end()),
                 excerpt,
@@ -1572,29 +1677,78 @@ const fn expected_outcome(lifecycle: mneme_core::Lifecycle) -> Option<&'static s
     }
 }
 
-/// The exact span of `bytes` the caller asked for, cut to `max_bytes` and to
-/// character boundaries so it is always sliceable text.
-fn excerpt_of(bytes: &[u8], span: mneme_core::SourceSpan, max_bytes: u64) -> Option<SourceExcerpt> {
-    let text_len = u64::try_from(bytes.len()).ok()?;
-    let stop = span.end().checked_add(1)?;
-    let window = mneme_kernel::extent::excerpt_window(&mneme_kernel::extent::ExcerptRequest {
-        start: span.start(),
-        stop,
-        text_len,
-        max_bytes,
-    })?;
-    let raw_start = usize::try_from(window.start).ok()?;
-    let raw_stop = usize::try_from(window.stop).ok()?;
-    let start = mneme_kernel::extent::floor_boundary(bytes, raw_start);
-    let stop = mneme_kernel::extent::floor_boundary(bytes, raw_stop);
+fn require_retained_availability(
+    availability: &crate::model::SourceAvailability,
+    requirement: RetainedRequirement,
+) -> crate::failure::Result<()> {
+    if requirement == RetainedRequirement::Required
+        && *availability != crate::model::SourceAvailability::Retained
+    {
+        return Err(crate::failure::EvidenceError::policy(format!(
+            "evidence source is {} and cannot be newly cited",
+            availability.name()
+        )));
+    }
+    Ok(())
+}
+
+fn check_span_within_retained(
+    span: mneme_core::SourceSpan,
+    text_bytes: u64,
+) -> crate::failure::Result<()> {
+    let stop = span
+        .end()
+        .checked_add(1)
+        .ok_or_else(|| crate::failure::EvidenceError::policy("span end exceeds u64"))?;
+    if !mneme_kernel::extent::span_in_text(span.start(), stop, text_bytes) {
+        return Err(crate::failure::EvidenceError::policy(format!(
+            "evidence span ends at byte {}, beyond the retained bytes",
+            span.end()
+        )));
+    }
+    Ok(())
+}
+
+/// Map non-retained `SourceAvailability` into the explanation availability label.
+fn unavailable_source_label(
+    availability: &crate::model::SourceAvailability,
+) -> crate::model::SourceAvailability {
+    match availability {
+        crate::model::SourceAvailability::Inaccessible => {
+            crate::model::SourceAvailability::Unavailable {
+                reason: "source is marked inaccessible".to_owned(),
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+struct ExcerptWindowSlice {
+    read_start_bytes: u64,
+    window: mneme_kernel::extent::Window,
+    text_bytes: u64,
+    span: mneme_core::SourceSpan,
+}
+
+/// Slice a pre-verified `[read_start..)` range returned by `verify_span_range`
+/// at UTF-8 character boundaries matching the cited window.
+fn excerpt_from_window_slice(slice: &[u8], spec: &ExcerptWindowSlice) -> Option<SourceExcerpt> {
+    let lead = usize::try_from(spec.window.start.checked_sub(spec.read_start_bytes)?).ok()?;
+    let stop_idx = usize::try_from(spec.window.stop.checked_sub(spec.read_start_bytes)?).ok()?;
+    let start = mneme_kernel::extent::floor_boundary(slice, lead);
+    let stop = if spec.window.stop >= spec.text_bytes {
+        stop_idx.min(slice.len())
+    } else {
+        mneme_kernel::extent::floor_boundary(slice, stop_idx)
+    };
     if start > stop {
         return None;
     }
     let covered = u64::try_from(stop.saturating_sub(start)).ok()?;
-    let cited = span.length()?;
+    let cited = spec.span.length()?;
     Some(SourceExcerpt {
-        bytes: bytes[start..stop].to_vec(),
-        truncated: window.truncated || covered < cited,
+        bytes: slice.get(start..stop)?.to_vec(),
+        truncated: spec.window.truncated || covered < cited,
     })
 }
 

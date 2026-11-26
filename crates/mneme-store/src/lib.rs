@@ -14,6 +14,7 @@ pub mod coordinator;
 pub mod error;
 pub mod injectors;
 pub mod lifecycle;
+pub mod outboard;
 pub mod payload;
 pub mod portability;
 pub mod requests;
@@ -36,6 +37,23 @@ pub use lifecycle::{
     RetentionLocationState, RetentionLocationStateRecord, RetentionOperation, RetentionParticipant,
     RetentionSelector, RetentionSuppression, SuppressionMode,
 };
+pub use outboard::verify_span_range;
+
+/// Ensure a `bao-tree` outboard sidecar exists for a large BLAKE3 blob.
+pub fn ensure_outboard(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> error::Result<bool> {
+    outboard::ensure(root, digest)
+}
+
+/// Deterministically rebuild the `bao-tree` outboard sidecar from the canonical blob.
+pub fn rebuild_outboard(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> error::Result<bool> {
+    outboard::rebuild(root, digest)
+}
 pub use requests::{
     CommitCommand, ImportCandidateDraft, PublicationDraft, RecordDraft, SourceBlobDraft,
 };

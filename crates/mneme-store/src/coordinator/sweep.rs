@@ -1536,8 +1536,10 @@ fn blob_file_present(path: &std::path::Path) -> crate::error::Result<bool> {
     }
 }
 
-/// Remove one blob file, flush its directory, and report whether it existed.
+/// Remove one blob file and any companion outboard, flush its directory, and
+/// report whether the canonical blob existed.
 fn remove_blob_file(path: &std::path::Path) -> crate::error::Result<bool> {
+    crate::outboard::remove_for_blob_path(path)?;
     match std::fs::remove_file(path) {
         Ok(()) => {
             if let Some(parent) = path.parent() {

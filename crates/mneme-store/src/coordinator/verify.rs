@@ -81,6 +81,9 @@ pub enum IssueKind {
     BrokenChain,
     /// A stored manifest does not decode, reconstruct, or match its digest.
     ManifestMismatch,
+    /// A present `bao-tree` outboard sidecar is corrupt, wrong length, or
+    /// disagrees with its canonical BLAKE3 blob.
+    CorruptOutboard,
 }
 
 impl IssueKind {
@@ -98,6 +101,7 @@ impl IssueKind {
             IssueKind::DanglingJournalBlob => "dangling-journal-blob",
             IssueKind::BrokenChain => "broken-chain",
             IssueKind::ManifestMismatch => "manifest-mismatch",
+            IssueKind::CorruptOutboard => "corrupt-outboard",
         }
     }
 }
@@ -152,6 +156,7 @@ pub struct OrphanBlob {
 pub struct VerifyReport {
     pub mode: VerifyMode,
     pub blobs_checked: u64,
+    pub outboards_checked: u64,
     /// Bytes re-hashed and confirmed (always zero in quick mode).
     pub bytes_verified: u64,
     /// Bytes whose presence and length were confirmed from metadata.
@@ -224,6 +229,7 @@ pub fn verify_workspace(
         report: VerifyReport {
             mode,
             blobs_checked: 0,
+            outboards_checked: 0,
             bytes_verified: 0,
             bytes_sized: 0,
             records_checked: 0,
@@ -400,6 +406,7 @@ impl Scrub<'_> {
             VerifyMode::Quick => {
                 self.report.bytes_sized = self.report.bytes_sized.saturating_add(expected);
                 self.verified.insert(bytes);
+                self.check_outboard_file(path, digest, expected);
             }
             VerifyMode::Full => match hash_file(path, digest.algorithm()) {
                 Ok((_, length)) if length != expected => self.push(blob_issue(
@@ -422,6 +429,7 @@ impl Scrub<'_> {
                     self.report.bytes_verified = self.report.bytes_verified.saturating_add(length);
                     self.report.bytes_sized = self.report.bytes_sized.saturating_add(length);
                     self.verified.insert(bytes);
+                    self.check_outboard_file(path, digest, expected);
                 }
                 Err(error) => self.push(blob_issue(
                     IssueKind::UnreadableBlob,
@@ -430,6 +438,73 @@ impl Scrub<'_> {
                     error.to_string(),
                 )),
             },
+        }
+    }
+
+    fn check_outboard_file(
+        &mut self,
+        blob_path: &std::path::Path,
+        digest: mneme_core::ContentDigest,
+        expected: u64,
+    ) {
+        let ob_path = crate::outboard::path(self.root, digest);
+        let ob_shown = self.relative(&ob_path);
+        let metadata = match std::fs::symlink_metadata(&ob_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                self.push(blob_issue(
+                    IssueKind::CorruptOutboard,
+                    &digest.to_hex(),
+                    Some(ob_shown),
+                    format!("cannot inspect outboard: {error}"),
+                ));
+                return;
+            }
+        };
+        self.report.outboards_checked = self.report.outboards_checked.saturating_add(1);
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            self.push(blob_issue(
+                IssueKind::CorruptOutboard,
+                &digest.to_hex(),
+                Some(ob_shown),
+                "bao-tree outboard path is not a regular file".to_owned(),
+            ));
+            return;
+        }
+        if digest.algorithm() != mneme_core::HashAlgorithm::Blake3 {
+            self.push(blob_issue(
+                IssueKind::CorruptOutboard,
+                &digest.to_hex(),
+                Some(ob_shown),
+                "non-BLAKE3 blob must not carry a bao-tree outboard".to_owned(),
+            ));
+            return;
+        }
+        let expected_len =
+            bao_tree::BaoTree::new(expected, crate::outboard::BLOCK_SIZE).outboard_size();
+        if expected_len == 0 || metadata.len() != expected_len {
+            self.push(blob_issue(
+                IssueKind::CorruptOutboard,
+                &digest.to_hex(),
+                Some(ob_shown),
+                format!(
+                    "bao-tree outboard holds {} bytes; expected {expected_len}",
+                    metadata.len()
+                ),
+            ));
+            return;
+        }
+        if self.mode == VerifyMode::Full
+            && let Err(reason) =
+                crate::outboard::verify_matches_blob(blob_path, &ob_path, digest, expected)
+        {
+            self.push(blob_issue(
+                IssueKind::CorruptOutboard,
+                &digest.to_hex(),
+                Some(ob_shown),
+                reason,
+            ));
         }
     }
 
