@@ -526,7 +526,11 @@ fn allowlist_persistence_and_gossip_announcement_bounds() {
         seq: 3,
         bundle_hash: iroh_blobs::Hash::EMPTY.to_string(),
         bundle_bytes: 128,
-    };
+        origin: None,
+        signature: None,
+    }
+    .signed(&key)
+    .expect("sign announcement");
     let encoded = announcement.encode().expect("encode announcement");
     let decoded = mneme_sync::HeadAnnouncement::decode(&encoded).expect("decode announcement");
     assert_eq!(decoded, announcement);
@@ -1212,7 +1216,9 @@ async fn delegated_capabilities_enforce_attenuation_readonly_pull_push_and_expir
     assert!(pull_c.verify_report.is_healthy());
 
     // 4. C (SyncPull) CANNOT push heads (SyncPush required), whereas B (SyncPush) CAN.
-    let announcement = snapshot.to_announcement();
+    let announcement = snapshot
+        .to_signed_announcement(&key_b)
+        .expect("sign announcement");
     let push_err_c = node_c
         .push_head_with_capability(node_a.node_id(), &announcement, &cap_bc)
         .await
@@ -1661,4 +1667,535 @@ async fn offline_crdt_revocation_converges_deterministically_and_blocks_sync() {
     node_a.shutdown().await.expect("shutdown a");
     node_b.shutdown().await.expect("shutdown b");
     node_c.shutdown().await.expect("shutdown c");
+}
+
+fn commit_scoped_source(
+    workspace: &mut mneme_store::Workspace,
+    target_scope: &mneme_core::ScopeId,
+    idempotency_key: &str,
+    seed: u8,
+    bytes: &[u8],
+) {
+    let base = workspace.current_revision().expect("base");
+    let retained = mneme_core::RetainedSource::new(
+        mneme_core::ContentDigest::of_source_bytes(bytes),
+        bytes.len() as u64,
+        "text/plain",
+    )
+    .expect("retained");
+    let draft = mneme_store::RecordDraft {
+        schema_version: 2,
+        kind: mneme_core::RecordKind::SourceRevision,
+        record_id: mneme_core::RecordId::from_bytes([seed; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([seed.wrapping_add(100); 16]),
+        predecessor: None,
+        scope: target_scope.clone(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("content"),
+                mneme_core::SourceContent::Retained(retained).to_value(),
+            ),
+            (
+                mneme_core::Symbol::from("acquisition"),
+                mneme_core::Value::symbol("authored"),
+            ),
+        ]),
+    };
+    let _ = workspace
+        .commit(mneme_store::CommitCommand {
+            base,
+            actor: "sec-test".to_owned(),
+            scope: target_scope.clone(),
+            idempotency_key: idempotency_key.to_owned(),
+            records: vec![draft],
+            source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+                bytes.to_vec(),
+                mneme_core::Symbol::from("text/plain"),
+            )],
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit scoped source");
+}
+
+#[tokio::test]
+async fn cross_scope_blob_exfiltration_and_hashseq_traversal_fail_closed() {
+    let dir_a = tempfile::tempdir().expect("tempdir a");
+    let dest_b = tempfile::tempdir().expect("tempdir b");
+    let key_a = deterministic_secret_key(61);
+    let key_b = deterministic_secret_key(62);
+
+    let mut ws_a = mneme_store::Workspace::create(dir_a.path(), config_factory()())
+        .expect("create workspace a");
+    let scope_a = scope();
+    let scope_b = other_scope();
+    commit_scoped_source(&mut ws_a, &scope_a, "c-scope-a", 11, b"public-a-payload");
+    commit_scoped_source(
+        &mut ws_a,
+        &scope_b,
+        "c-scope-b",
+        12,
+        b"top-secret-b-payload",
+    );
+
+    let vault_id = ws_a.genesis_revision().expect("genesis").to_hex();
+    let now_secs = 1_700_000_000_u64;
+    let clock: std::sync::Arc<dyn mneme_store::Clock> =
+        std::sync::Arc::new(mneme_store::FixedClock::new(
+            mneme_core::Timestamp::from_nanos((now_secs as i64) * 1_000_000_000),
+        ));
+
+    let node_a = mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
+        secret_key: key_a.clone(),
+        allowlist: mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new()),
+        revocations: mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+        trusted_roots: std::collections::BTreeSet::from([key_a.public()]),
+        clock: std::sync::Arc::clone(&clock),
+        discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
+        relay: mneme_sync::RelayPreference::Disabled,
+        bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
+    })
+    .await
+    .expect("bind a");
+
+    let node_b = mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
+        secret_key: key_b.clone(),
+        allowlist: mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new()),
+        revocations: mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+        trusted_roots: std::collections::BTreeSet::from([key_a.public()]),
+        clock: std::sync::Arc::clone(&clock),
+        discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
+        relay: mneme_sync::RelayPreference::Disabled,
+        bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
+    })
+    .await
+    .expect("bind b");
+    node_b.add_peer_addr(node_a.addr());
+
+    let snap_a = node_a
+        .publish_workspace(&ws_a, &vault_id, &scope_a)
+        .await
+        .expect("publish scope a");
+    let snap_b = node_a
+        .publish_workspace(&ws_a, &vault_id, &scope_b)
+        .await
+        .expect("publish scope b");
+
+    // Grant B a SyncPull token attenuated STRICTLY to scope_a.
+    let cap_a = mneme_sync::CapabilityToken::grant(
+        &key_a,
+        mneme_sync::GrantRequest {
+            vault_id: vault_id.clone(),
+            subject: key_b.public(),
+            scope: mneme_sync::CapabilityScope::from_scopes([scope_a.clone()])
+                .expect("scope a cap"),
+            authority: mneme_sync::CapabilityAuthority::SyncPull,
+            issued_at_secs: now_secs,
+            expires_at_secs: now_secs + 600,
+            max_delegation_depth: 2,
+        },
+    )
+    .expect("grant cap a");
+
+    // B pulls scope_a successfully (establishing its SyncPull lease on scope_a).
+    let pulled_a = node_b
+        .pull_scope_with_capability(
+            mneme_sync::PullRequest {
+                peer: node_a.node_id(),
+                scope: scope_a.clone(),
+                destination: dest_b.path().join("ws"),
+                state_dir: None,
+                workspace_config: config_factory(),
+            },
+            &vault_id,
+            &cap_a,
+        )
+        .await
+        .expect("pull scope a succeeds");
+    assert_eq!(pulled_a.disposition, mneme_sync::PullDisposition::Restored);
+
+    // Now B connects directly to node_a over iroh-blobs and tries to exfiltrate
+    // scope_b's bundle hash AND scope_b's source blob hash — BOTH must fail closed!
+    let client_store = iroh_blobs::store::mem::MemStore::new();
+    let conn = node_b
+        .endpoint()
+        .connect(node_a.node_id(), iroh_blobs::ALPN)
+        .await
+        .expect("blobs conn for scope_a lease");
+
+    let bundle_b_hash = snap_b.parsed_bundle_hash().expect("bundle b hash");
+    let exfil_bundle = client_store
+        .remote()
+        .fetch(conn.clone(), bundle_b_hash)
+        .await;
+    assert!(
+        exfil_bundle.is_err(),
+        "peer with scope_a lease must NOT fetch scope_b bundle hash"
+    );
+
+    let secret_blob_hash: iroh_blobs::Hash = snap_b.blobs[0]
+        .transport_hash
+        .parse()
+        .expect("secret blob hash");
+    let exfil_blob = client_store
+        .remote()
+        .fetch(conn.clone(), secret_blob_hash)
+        .await;
+    assert!(
+        exfil_blob.is_err(),
+        "peer with scope_a lease must NOT fetch scope_b source blob hash"
+    );
+
+    // Fetching a HashSeq (offset > 0) against scope_a's bundle must also fail closed.
+    let bundle_a_hash = snap_a.parsed_bundle_hash().expect("bundle a hash");
+    let hashseq_attempt = client_store
+        .remote()
+        .fetch(
+            conn.clone(),
+            iroh_blobs::HashAndFormat::hash_seq(bundle_a_hash),
+        )
+        .await;
+    assert!(
+        hashseq_attempt.is_err(),
+        "HashSeq requests must be refused on iroh-blobs handler"
+    );
+
+    // Fetching scope_a's raw bundle hash itself still succeeds.
+    let legit_a = client_store.remote().fetch(conn, bundle_a_hash).await;
+    assert!(
+        legit_a.is_ok(),
+        "authorized scope_a raw blob fetch succeeds"
+    );
+
+    node_a.shutdown().await.expect("shutdown a");
+    node_b.shutdown().await.expect("shutdown b");
+}
+
+#[tokio::test]
+async fn cross_vault_lease_poisoning_untrusted_tombstone_flood_rollback_and_clock_skew_fail_closed()
+{
+    let dir_a = tempfile::tempdir().expect("tempdir a");
+    let key_a = deterministic_secret_key(71);
+    let key_b = deterministic_secret_key(72);
+    let key_attacker = deterministic_secret_key(73);
+
+    let mut ws_a = mneme_store::Workspace::create(dir_a.path(), config_factory()())
+        .expect("create workspace a");
+    commit_scoped_source(&mut ws_a, &scope(), "c-sec-1", 21, b"sec-payload");
+    let vault_id = ws_a.genesis_revision().expect("genesis").to_hex();
+
+    let now_secs = 1_700_000_000_u64;
+    let clock: std::sync::Arc<dyn mneme_store::Clock> =
+        std::sync::Arc::new(mneme_store::FixedClock::new(
+            mneme_core::Timestamp::from_nanos((now_secs as i64) * 1_000_000_000),
+        ));
+    let rev_a = mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new());
+    let rev_b = mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new());
+
+    let node_a = mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
+        secret_key: key_a.clone(),
+        allowlist: mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new()),
+        revocations: rev_a.clone(),
+        trusted_roots: std::collections::BTreeSet::from([key_a.public()]),
+        clock: std::sync::Arc::clone(&clock),
+        discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
+        relay: mneme_sync::RelayPreference::Disabled,
+        bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
+    })
+    .await
+    .expect("bind a");
+    let node_b = mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
+        secret_key: key_b.clone(),
+        allowlist: mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new()),
+        revocations: rev_b.clone(),
+        trusted_roots: std::collections::BTreeSet::from([key_a.public()]),
+        clock: std::sync::Arc::clone(&clock),
+        discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
+        relay: mneme_sync::RelayPreference::Disabled,
+        bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
+    })
+    .await
+    .expect("bind b");
+    node_b.add_peer_addr(node_a.addr());
+
+    let snapshot = node_a
+        .publish_workspace(&ws_a, &vault_id, &scope())
+        .await
+        .expect("publish");
+
+    // 1. Future-dated issued_at_secs beyond MAX_CLOCK_SKEW_SECS fails closed.
+    let future_cap = mneme_sync::CapabilityToken::grant(
+        &key_a,
+        mneme_sync::GrantRequest {
+            vault_id: vault_id.clone(),
+            subject: key_b.public(),
+            scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+            authority: mneme_sync::CapabilityAuthority::ReadOnly,
+            issued_at_secs: now_secs + mneme_sync::MAX_CLOCK_SKEW_SECS + 10,
+            expires_at_secs: now_secs + mneme_sync::MAX_CLOCK_SKEW_SECS + 600,
+            max_delegation_depth: 1,
+        },
+    )
+    .expect("grant future");
+    let future_err = mneme_sync::verify_capability(&mneme_sync::VerificationRequest {
+        token: &future_cap,
+        presenter: key_b.public(),
+        vault_id: &vault_id,
+        scope: &scope(),
+        required_authority: mneme_sync::CapabilityAuthority::ReadOnly,
+        now_secs,
+        trusted_roots: &std::collections::BTreeSet::from([key_a.public()]),
+        revocations: &mneme_sync::RevocationSet::new(),
+    });
+    assert!(
+        future_err.is_err(),
+        "future issued_at_secs must fail closed"
+    );
+
+    // 2. Cross-vault lease poisoning via PushHead and SyncRevocations fails closed.
+    let foreign_vault = "vault-foreign-unconfigured";
+    let cap_foreign = mneme_sync::CapabilityToken::grant(
+        &key_a,
+        mneme_sync::GrantRequest {
+            vault_id: foreign_vault.to_owned(),
+            subject: key_b.public(),
+            scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+            authority: mneme_sync::CapabilityAuthority::SyncPush,
+            issued_at_secs: now_secs,
+            expires_at_secs: now_secs + 600,
+            max_delegation_depth: 1,
+        },
+    )
+    .expect("grant foreign");
+    let mut foreign_ann = snapshot.to_announcement();
+    foreign_ann.vault_id = foreign_vault.to_owned();
+    let foreign_ann = foreign_ann.signed(&key_b).expect("sign foreign");
+    let push_foreign = node_b
+        .push_head_with_capability(node_a.node_id(), &foreign_ann, &cap_foreign)
+        .await;
+    assert!(
+        push_foreign.is_err(),
+        "unconfigured vault PushHead must fail"
+    );
+    let sync_foreign = node_b
+        .sync_revocations(node_a.node_id(), Some(&cap_foreign))
+        .await;
+    assert!(
+        sync_foreign.is_err(),
+        "unconfigured vault SyncRevocations must fail"
+    );
+    assert_eq!(
+        node_a.leases().lease_count_for_peer(key_b.public()),
+        0,
+        "foreign vault probes must not insert any leases"
+    );
+
+    // 3. Untrusted Ed25519 tombstone flood via SyncRevocations is rejected without growing rev_a.
+    let cap_legit = mneme_sync::CapabilityToken::grant(
+        &key_a,
+        mneme_sync::GrantRequest {
+            vault_id: vault_id.clone(),
+            subject: key_b.public(),
+            scope: mneme_sync::CapabilityScope::from_scopes([scope()]).expect("scope"),
+            authority: mneme_sync::CapabilityAuthority::SyncPush,
+            issued_at_secs: now_secs,
+            expires_at_secs: now_secs + 600,
+            max_delegation_depth: 1,
+        },
+    )
+    .expect("grant legit");
+    let untrusted_tombstone = mneme_sync::RevocationTombstone::issue(
+        &key_attacker,
+        &vault_id,
+        cap_legit.root_id().expect("root"),
+        now_secs,
+        Some("untrusted flood"),
+    )
+    .expect("issue untrusted");
+    rev_b
+        .insert(untrusted_tombstone)
+        .expect("insert into b local");
+    let flood_res = node_b
+        .sync_revocations(node_a.node_id(), Some(&cap_legit))
+        .await;
+    assert!(flood_res.is_err(), "untrusted tombstone must be rejected");
+    assert_eq!(
+        rev_a.len_u64(),
+        0,
+        "untrusted tombstones must not grow server RevocationSet"
+    );
+
+    // 4. Signed HeadAnnouncement + monotonic seq rollback protection.
+    let mut ann_seq_5 = snapshot.to_announcement();
+    ann_seq_5.seq = 5;
+    let ann_seq_5 = ann_seq_5.signed(&key_b).expect("sign seq 5");
+    node_b
+        .push_head_with_capability(node_a.node_id(), &ann_seq_5, &cap_legit)
+        .await
+        .expect("seq 5 push accepted");
+
+    // Rollback to seq 4 must fail closed!
+    let mut ann_seq_4 = snapshot.to_announcement();
+    ann_seq_4.seq = 4;
+    let ann_seq_4 = ann_seq_4.signed(&key_b).expect("sign seq 4");
+    let rollback_err = node_b
+        .push_head_with_capability(node_a.node_id(), &ann_seq_4, &cap_legit)
+        .await;
+    assert!(
+        rollback_err.is_err(),
+        "rollback push seq=4 must fail closed"
+    );
+    assert_eq!(node_a.last_pushed_head(&scope()).map(|a| a.seq), Some(5));
+
+    // Replay seq 5 must also fail closed, while seq 6 succeeds!
+    let replay_err = node_b
+        .push_head_with_capability(node_a.node_id(), &ann_seq_5, &cap_legit)
+        .await;
+    assert!(replay_err.is_err(), "replayed push seq=5 must fail closed");
+
+    let mut ann_seq_6 = snapshot.to_announcement();
+    ann_seq_6.seq = 6;
+    let ann_seq_6 = ann_seq_6.signed(&key_b).expect("sign seq 6");
+    node_b
+        .push_head_with_capability(node_a.node_id(), &ann_seq_6, &cap_legit)
+        .await
+        .expect("monotonic seq 6 push succeeds");
+    assert_eq!(node_a.last_pushed_head(&scope()).map(|a| a.seq), Some(6));
+
+    // 5. Tampered HeadAnnouncement signature fails closed on decode & verify.
+    let mut tampered = ann_seq_6.clone();
+    tampered.seq = 999;
+    assert!(tampered.verify_signature().is_err());
+
+    // 6. Paginated revocation sync across > MAX_REVOCATIONS_PER_PAGE trusted tombstones.
+    let rev_server = mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new());
+    let rev_client = mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new());
+    let total_tombstones = mneme_sync::MAX_REVOCATIONS_PER_PAGE + 40;
+    for idx in 0..total_tombstones {
+        let mut id_bytes = [0_u8; 16];
+        id_bytes[..8].copy_from_slice(&idx.to_le_bytes());
+        let tomb = mneme_sync::RevocationTombstone::issue(
+            &key_a,
+            &vault_id,
+            mneme_sync::TokenId::from_bytes(id_bytes),
+            now_secs + idx,
+            Some("paginated"),
+        )
+        .expect("issue tombstone");
+        rev_server.insert(tomb).expect("insert server");
+    }
+    let allow_srv = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    allow_srv
+        .allow(mneme_sync::AllowedPeer {
+            node_id: key_b.public(),
+            label: Some("b".to_owned()),
+            allowance: mneme_sync::ScopeAllowance::Any,
+        })
+        .expect("allow b");
+    let allow_cli = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    allow_cli
+        .allow(mneme_sync::AllowedPeer {
+            node_id: key_a.public(),
+            label: Some("a".to_owned()),
+            allowance: mneme_sync::ScopeAllowance::Any,
+        })
+        .expect("allow a");
+
+    let key_s = deterministic_secret_key(74);
+    let key_c = deterministic_secret_key(75);
+    allow_srv
+        .allow(mneme_sync::AllowedPeer {
+            node_id: key_c.public(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::Any,
+        })
+        .expect("allow c");
+    allow_cli
+        .allow(mneme_sync::AllowedPeer {
+            node_id: key_s.public(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::Any,
+        })
+        .expect("allow s");
+
+    let page_srv = mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
+        secret_key: key_s.clone(),
+        allowlist: allow_srv,
+        revocations: rev_server.clone(),
+        trusted_roots: std::collections::BTreeSet::from([key_a.public()]),
+        clock: std::sync::Arc::clone(&clock),
+        discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
+        relay: mneme_sync::RelayPreference::Disabled,
+        bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
+    })
+    .await
+    .expect("bind page srv");
+    let page_cli = mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
+        secret_key: key_c.clone(),
+        allowlist: allow_cli,
+        revocations: rev_client.clone(),
+        trusted_roots: std::collections::BTreeSet::from([key_a.public()]),
+        clock: std::sync::Arc::clone(&clock),
+        discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
+        relay: mneme_sync::RelayPreference::Disabled,
+        bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
+    })
+    .await
+    .expect("bind page cli");
+    page_cli.add_peer_addr(page_srv.addr());
+
+    let synced = page_cli
+        .sync_revocations(page_srv.node_id(), None)
+        .await
+        .expect("paginated sync succeeds");
+    assert_eq!(synced, total_tombstones);
+    assert_eq!(rev_client.len_u64(), total_tombstones);
+
+    // 7. Per-peer lease cap and TTL eviction.
+    let lease_table = mneme_sync::SharedCapabilityLeases::new();
+    let empty_revs = mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new());
+    let roots = std::collections::BTreeSet::from([key_a.public()]);
+    for i in 0..(mneme_sync::MAX_LEASES_PER_PEER + 10) {
+        let mut bytes = [0_u8; 16];
+        bytes[..8].copy_from_slice(&i.to_le_bytes());
+        let verified = mneme_sync::VerifiedCapability {
+            root_id: mneme_sync::TokenId::from_bytes(bytes),
+            leaf_id: mneme_sync::TokenId::from_bytes(bytes),
+            link_ids: vec![mneme_sync::TokenId::from_bytes(bytes)],
+            issuer_chain: vec![key_a.public()],
+            subject: key_b.public(),
+            scope: mneme_sync::CapabilityScope::Wildcard,
+            authority: mneme_sync::CapabilityAuthority::ReadOnly,
+            expires_at_secs: now_secs + 10 + i,
+            chain_depth: 1,
+        };
+        lease_table
+            .record_lease_with_eviction(
+                key_b.public(),
+                &vault_id,
+                &verified,
+                &mneme_sync::LeaseEvictionContext {
+                    now_secs,
+                    trusted_roots: &roots,
+                    revocations: &empty_revs,
+                },
+            )
+            .expect("record bounded lease");
+    }
+    assert!(lease_table.lease_count_for_peer(key_b.public()) <= mneme_sync::MAX_LEASES_PER_PEER);
+    let evicted = lease_table
+        .evict_inactive(&mneme_sync::LeaseEvictionContext {
+            now_secs: now_secs + 10_000,
+            trusted_roots: &roots,
+            revocations: &empty_revs,
+        })
+        .expect("evict expired");
+    assert_eq!(evicted, mneme_sync::MAX_LEASES_PER_PEER);
+    assert_eq!(lease_table.lease_count_for_peer(key_b.public()), 0);
+
+    page_srv.shutdown().await.expect("shutdown page srv");
+    page_cli.shutdown().await.expect("shutdown page cli");
+    node_a.shutdown().await.expect("shutdown a");
+    node_b.shutdown().await.expect("shutdown b");
 }

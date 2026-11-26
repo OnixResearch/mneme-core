@@ -78,11 +78,14 @@ pub struct PullOutcome {
 /// Active `iroh-gossip` subscription scoped to one vault's private topic.
 pub struct VaultGossipTopic {
     vault_id: String,
+    secret_key: iroh::SecretKey,
     allowlist: crate::trust::SharedAllowlist,
     revocations: crate::capability::SharedRevocationSet,
     trusted_roots: std::collections::BTreeSet<iroh::EndpointId>,
+    authorized_issuers: crate::capability::SharedAuthorizedIssuers,
     leases: crate::capability::SharedCapabilityLeases,
     clock: std::sync::Arc<dyn mneme_store::Clock>,
+    high_water: std::collections::BTreeMap<(mneme_core::ScopeId, iroh::EndpointId), u64>,
     topic: iroh_gossip::GossipTopic,
 }
 
@@ -95,12 +98,12 @@ impl VaultGossipTopic {
             .map_err(|error| crate::error::Failure::Protocol(format!("gossip join: {error}")))
     }
 
-    /// Broadcast a lightweight `(vault_id, head_revision_digest, seq)` announcement.
+    /// Broadcast a signed lightweight `(vault_id, head_revision_digest, seq)` announcement.
     pub async fn broadcast_head(
         &mut self,
         info: &crate::protocol::VaultSnapshotInfo,
     ) -> crate::error::Result<()> {
-        let announcement = info.to_announcement();
+        let announcement = info.to_signed_announcement(&self.secret_key)?;
         let bytes = announcement.encode()?;
         self.topic
             .broadcast(bytes)
@@ -131,11 +134,12 @@ impl VaultGossipTopic {
             })
     }
 
-    /// Receive the next authorized, well-formed [`crate::protocol::HeadAnnouncement`].
+    /// Receive the next authorized, Ed25519-signed, monotonic [`crate::protocol::HeadAnnouncement`].
     ///
-    /// Signed revocation tombstones received on the topic are verified and
-    /// merged into the node's [`crate::capability::SharedRevocationSet`].
-    /// Unauthorized senders and mismatched `vault_id` payloads are ignored
+    /// Signed revocation tombstones from authorized revokers received on the
+    /// topic are verified and merged into [`crate::capability::SharedRevocationSet`].
+    /// Unsigned announcements, untrusted revokers, unauthorized origins,
+    /// mismatched `vault_id` payloads, and rollback sequences are ignored
     /// without mutating local state.
     pub async fn next_announcement(
         &mut self,
@@ -152,15 +156,20 @@ impl VaultGossipTopic {
                     crate::capability::RevocationTombstone,
                 >(&message.content)
                 && tombstone.vault_id == self.vault_id
-                && tombstone.verify_signature().is_ok()
             {
-                if let Err(error) = self.revocations.insert(tombstone) {
-                    tracing::debug!(%error, "ignoring conflicting gossip revocation");
+                let revokers = self
+                    .authorized_issuers
+                    .effective_revokers(&self.trusted_roots, &self.allowlist);
+                if let Err(error) = self.revocations.insert_authorized(tombstone, &revokers) {
+                    tracing::debug!(%error, "ignoring untrusted or conflicting gossip revocation");
                 }
                 continue;
             }
             let Ok(announcement) = crate::protocol::HeadAnnouncement::decode(&message.content)
             else {
+                continue;
+            };
+            let Ok(origin) = announcement.verify_signature() else {
                 continue;
             };
             if announcement.vault_id != self.vault_id {
@@ -169,10 +178,17 @@ impl VaultGossipTopic {
             let Ok(scope) = crate::protocol::parse_scope_id(&announcement.scope) else {
                 continue;
             };
-            if !self.is_sender_authorized(message.delivered_from, &scope) {
+            if !self.is_sender_authorized(origin, &scope) {
                 continue;
             }
-            return Ok(Some((message.delivered_from, announcement)));
+            let key = (scope, origin);
+            if let Some(&prev_seq) = self.high_water.get(&key)
+                && announcement.seq <= prev_seq
+            {
+                continue;
+            }
+            self.high_water.insert(key, announcement.seq);
+            return Ok(Some((origin, announcement)));
         }
         Ok(None)
     }
@@ -185,8 +201,9 @@ impl VaultGossipTopic {
             return false;
         };
         self.leases
-            .permits_scope(&crate::capability::LeaseScopeQuery {
+            .permits_vault_scope(&crate::capability::LeaseVaultScopeQuery {
                 peer: sender,
+                vault_id: &self.vault_id,
                 scope,
                 required: crate::capability::CapabilityAuthority::SyncPull,
                 now_secs,
@@ -199,6 +216,7 @@ impl VaultGossipTopic {
 /// Peer-to-peer Mneme sync node running over Iroh QUIC.
 #[derive(Clone)]
 pub struct SyncNode {
+    secret_key: iroh::SecretKey,
     endpoint: iroh::Endpoint,
     router: iroh::protocol::Router,
     blobs: iroh_blobs::store::mem::MemStore,
@@ -207,6 +225,7 @@ pub struct SyncNode {
     allowlist: crate::trust::SharedAllowlist,
     revocations: crate::capability::SharedRevocationSet,
     trusted_roots: std::collections::BTreeSet<iroh::EndpointId>,
+    authorized_issuers: crate::capability::SharedAuthorizedIssuers,
     leases: crate::capability::SharedCapabilityLeases,
     clock: std::sync::Arc<dyn mneme_store::Clock>,
     scopes: crate::protocol::SharedScopeTable,
@@ -234,18 +253,22 @@ impl SyncNode {
             std::sync::RwLock::new(crate::protocol::SyncScopeTable::new()),
         );
         let leases = crate::capability::SharedCapabilityLeases::new();
+        let authorized_issuers = crate::capability::SharedAuthorizedIssuers::new();
         let auth = crate::protocol::CapabilityAuthorizer {
             allowlist: config.allowlist.clone(),
             leases: leases.clone(),
             trusted_roots: trusted_roots.clone(),
             revocations: config.revocations.clone(),
+            authorized_issuers: authorized_issuers.clone(),
+            scopes: scopes.clone(),
             clock: std::sync::Arc::clone(&config.clock),
         };
 
+        let blobs_events = crate::protocol::spawn_scoped_blobs_events(auth.clone());
         let blobs_handler = crate::protocol::CapabilityProtocol::new(
             auth.clone(),
             crate::capability::CapabilityAuthority::SyncPull,
-            iroh_blobs::BlobsProtocol::new(&blobs, None),
+            iroh_blobs::BlobsProtocol::new(&blobs, Some(blobs_events)),
         );
         let gossip_handler = crate::protocol::CapabilityProtocol::new(
             auth.clone(),
@@ -261,6 +284,7 @@ impl SyncNode {
             .spawn();
 
         Ok(Self {
+            secret_key: config.secret_key,
             endpoint,
             router,
             blobs,
@@ -269,6 +293,7 @@ impl SyncNode {
             allowlist: config.allowlist,
             revocations: config.revocations,
             trusted_roots,
+            authorized_issuers,
             leases,
             clock: config.clock,
             scopes,
@@ -321,6 +346,25 @@ impl SyncNode {
             .and_then(|guard| guard.received_pushes.get(scope).cloned())
     }
 
+    /// Register a local `vault_id` that this node accepts capability leases and pushes for.
+    pub fn register_vault_id(&self, vault_id: &str) -> crate::error::Result<()> {
+        if vault_id.trim().is_empty() {
+            return Err(crate::error::Failure::InvalidConfig(
+                "vault_id must not be empty".to_owned(),
+            ));
+        }
+        let mut guard = self.scopes.write().map_err(|_| {
+            crate::error::Failure::InvalidConfig("published scopes lock poisoned".to_owned())
+        })?;
+        guard.configured_vaults.insert(vault_id.to_owned());
+        Ok(())
+    }
+
+    /// Access the live capability lease table (for inspection or tests).
+    pub const fn leases(&self) -> &crate::capability::SharedCapabilityLeases {
+        &self.leases
+    }
+
     /// Export `scope` from `workspace` and publish its bundle, blobs, and RBSR index.
     pub async fn publish_workspace(
         &self,
@@ -330,15 +374,25 @@ impl SyncNode {
     ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
         let exported =
             crate::bundle::export_scope_to_store(workspace, vault_id, scope, &self.blobs).await?;
+        let mut authorized_hashes = std::collections::BTreeSet::new();
+        authorized_hashes.insert(exported.archive_hash);
+        for blob_ref in &exported.info.blobs {
+            let hash = iroh_blobs::Hash::from_str(&blob_ref.transport_hash).map_err(|error| {
+                crate::error::Failure::Protocol(format!("invalid exported blob hash: {error}"))
+            })?;
+            authorized_hashes.insert(hash);
+        }
         let entry = std::sync::Arc::new(crate::protocol::PublishedScopeEntry {
             info: exported.info.clone(),
             rbsr_set: exported.rbsr_set,
             revisions: exported.revisions,
             blobs_by_digest: exported.blobs_by_digest,
+            authorized_hashes,
         });
         let mut guard = self.scopes.write().map_err(|_| {
             crate::error::Failure::InvalidConfig("published scopes lock poisoned".to_owned())
         })?;
+        guard.configured_vaults.insert(vault_id.to_owned());
         guard.published.insert(scope.clone(), entry);
         Ok(exported.info)
     }
@@ -356,6 +410,7 @@ impl SyncNode {
                 return Err(crate::error::Failure::UnauthorizedPeer(peer.to_string()));
             }
         }
+        self.register_vault_id(vault_id)?;
         let topic_id = crate::state::topic_id_for_vault(vault_id);
         let topic = self
             .gossip
@@ -366,11 +421,14 @@ impl SyncNode {
             })?;
         Ok(VaultGossipTopic {
             vault_id: vault_id.to_owned(),
+            secret_key: self.secret_key.clone(),
             allowlist: self.allowlist.clone(),
             revocations: self.revocations.clone(),
             trusted_roots: self.trusted_roots.clone(),
+            authorized_issuers: self.authorized_issuers.clone(),
             leases: self.leases.clone(),
             clock: std::sync::Arc::clone(&self.clock),
+            high_water: std::collections::BTreeMap::new(),
             topic,
         })
     }
@@ -398,8 +456,17 @@ impl SyncNode {
     ) -> crate::error::Result<crate::rbsr::RbsrOutcome> {
         self.require_peer_scope(peer, scope)?;
         let conn = self.connect_control(peer).await?;
-        let (outcome, _sent, _recv) =
-            reconcile_on_conn(&conn, peer, scope, snapshot_revision, local_set, None).await?;
+        let (outcome, _sent, _recv) = reconcile_on_conn(
+            &conn,
+            ReconcileConnQuery {
+                peer,
+                scope,
+                snapshot_revision,
+                local_set,
+                capability: None,
+            },
+        )
+        .await?;
         conn.close(0_u32.into(), b"done");
         Ok(outcome)
     }
@@ -512,11 +579,16 @@ impl SyncNode {
             &scope,
             crate::capability::CapabilityAuthority::SyncPush,
         )?;
+        let signed = if announcement.signature.is_some() {
+            announcement.clone()
+        } else {
+            announcement.clone().signed(&self.secret_key)?
+        };
         let response = self
             .send_control_request(
                 peer,
                 &crate::protocol::SyncControlRequest::PushHead {
-                    announcement: announcement.clone(),
+                    announcement: Box::new(signed),
                     capability: Some(capability.clone()),
                 },
             )
@@ -527,7 +599,7 @@ impl SyncNode {
         }
     }
 
-    /// Exchange and deterministically merge CRDT revocation tombstones with `peer`.
+    /// Exchange and deterministically merge CRDT revocation tombstones with `peer` using bounded pagination.
     pub async fn sync_revocations(
         &self,
         peer: iroh::EndpointId,
@@ -537,19 +609,109 @@ impl SyncNode {
             return Err(crate::error::Failure::UnauthorizedPeer(peer.to_string()));
         }
         let local = self.revocations.snapshot()?;
+        let all_local: Vec<crate::capability::RevocationTombstone> =
+            local.tombstones().cloned().collect();
+        let authorized_revokers = self.revokers_for_sync(capability);
+        let (mut merged_total, mut pull_cursor, mut has_more_pages) = self
+            .push_revocation_chunks(peer, &all_local, capability, &authorized_revokers)
+            .await?;
+
+        let max_pages = (crate::capability::MAX_REVOCATION_TOMBSTONES
+            / crate::capability::MAX_REVOCATIONS_PER_PAGE)
+            .saturating_add(2);
+        let mut pages_pulled: u64 = 0;
+        while has_more_pages && pages_pulled < max_pages {
+            pages_pulled = pages_pulled.saturating_add(1);
+            let (page, has_more, next_cursor) = self
+                .exchange_revocation_page(peer, Vec::new(), pull_cursor, capability)
+                .await?;
+            let merged = self
+                .revocations
+                .merge_tombstones_authorized(&page, &authorized_revokers)?;
+            merged_total = merged_total.saturating_add(merged);
+            if page.is_empty() {
+                break;
+            }
+            has_more_pages = has_more;
+            pull_cursor = next_cursor.or_else(|| page.last().map(|t| t.tombstone_id));
+        }
+        Ok(merged_total)
+    }
+
+    fn revokers_for_sync(
+        &self,
+        capability: Option<&crate::capability::CapabilityToken>,
+    ) -> std::collections::BTreeSet<iroh::EndpointId> {
+        let mut revokers = self
+            .authorized_issuers
+            .effective_revokers(&self.trusted_roots, &self.allowlist);
+        if let Some(token) = capability {
+            for link in &token.links {
+                revokers.insert(link.issuer);
+            }
+        }
+        revokers
+    }
+
+    async fn push_revocation_chunks(
+        &self,
+        peer: iroh::EndpointId,
+        all_local: &[crate::capability::RevocationTombstone],
+        capability: Option<&crate::capability::CapabilityToken>,
+        authorized_revokers: &std::collections::BTreeSet<iroh::EndpointId>,
+    ) -> crate::error::Result<(u64, Option<crate::capability::TombstoneId>, bool)> {
+        let chunk_items = usize::try_from(crate::capability::MAX_REVOCATIONS_PER_PAGE)
+            .map_err(|_| crate::error::Failure::Protocol("revocation page overflow".to_owned()))?;
+        let push_chunks: Vec<&[crate::capability::RevocationTombstone]> = if all_local.is_empty() {
+            vec![&[]]
+        } else {
+            all_local.chunks(chunk_items).collect()
+        };
+        let mut merged_total: u64 = 0;
+        let mut pull_cursor: Option<crate::capability::TombstoneId> = None;
+        let mut has_more_pages = false;
+        for chunk in push_chunks {
+            let (page, has_more, next_cursor) = self
+                .exchange_revocation_page(peer, chunk.to_vec(), pull_cursor, capability)
+                .await?;
+            let merged = self
+                .revocations
+                .merge_tombstones_authorized(&page, authorized_revokers)?;
+            merged_total = merged_total.saturating_add(merged);
+            has_more_pages = has_more;
+            pull_cursor = next_cursor.or_else(|| page.last().map(|t| t.tombstone_id));
+        }
+        Ok((merged_total, pull_cursor, has_more_pages))
+    }
+
+    async fn exchange_revocation_page(
+        &self,
+        peer: iroh::EndpointId,
+        revocations: Vec<crate::capability::RevocationTombstone>,
+        after_id: Option<crate::capability::TombstoneId>,
+        capability: Option<&crate::capability::CapabilityToken>,
+    ) -> crate::error::Result<(
+        Vec<crate::capability::RevocationTombstone>,
+        bool,
+        Option<crate::capability::TombstoneId>,
+    )> {
         let response = self
             .send_control_request(
                 peer,
                 &crate::protocol::SyncControlRequest::SyncRevocations {
-                    revocations: local.tombstones().cloned().collect(),
+                    revocations,
+                    after_id,
+                    limit: Some(crate::capability::MAX_REVOCATIONS_PER_PAGE),
                     capability: capability.cloned(),
                 },
             )
             .await?;
         match response {
-            crate::protocol::SyncControlResponse::Revocations { revocations } => {
-                self.revocations.merge_tombstones(&revocations)
-            }
+            crate::protocol::SyncControlResponse::Revocations {
+                revocations,
+                has_more,
+                next_cursor,
+            } => Ok((revocations, has_more, next_cursor)),
             other => Err(unexpected_control_response(peer, other)),
         }
     }
@@ -591,11 +753,13 @@ impl SyncNode {
         let local_set = collect_local_rbsr_blocking(&request).await?;
         let (rbsr_outcome, rbsr_sent, rbsr_recv) = reconcile_on_conn(
             &conn,
-            request.peer,
-            &request.scope,
-            &snapshot.head_revision,
-            &local_set,
-            capability,
+            ReconcileConnQuery {
+                peer: request.peer,
+                scope: &request.scope,
+                snapshot_revision: &snapshot.head_revision,
+                local_set: &local_set,
+                capability,
+            },
         )
         .await?;
 
@@ -784,7 +948,11 @@ impl SyncNode {
         mut stats: SyncTransferStats,
     ) -> crate::error::Result<PullOutcome> {
         let bundle_hash = snapshot.parsed_bundle_hash()?;
-        self.download_bundle_only(request.peer, bundle_hash).await?;
+        let max_bundle_bytes = snapshot
+            .bundle_bytes
+            .min(crate::protocol::MAX_SYNC_BUNDLE_BYTES);
+        self.download_bundle_only(request.peer, bundle_hash, max_bundle_bytes)
+            .await?;
         stats.blobs_fetched = 1;
         stats.blob_bytes_fetched = snapshot.bundle_bytes;
 
@@ -914,10 +1082,58 @@ impl SyncNode {
         }))
     }
 
+    async fn fetch_blob_bounded(
+        &self,
+        conn: iroh::endpoint::Connection,
+        hash: iroh_blobs::Hash,
+        max_bytes: u64,
+    ) -> crate::error::Result<()> {
+        let mut stream = self.blobs.remote().fetch(conn.clone(), hash).stream();
+        while let Some(item) = stream.next().await {
+            match item {
+                iroh_blobs::api::remote::GetProgressItem::Progress(offset) => {
+                    if offset > max_bytes {
+                        drop(stream);
+                        conn.close(0_u32.into(), b"size-limit-exceeded");
+                        return Err(crate::error::Failure::SizeLimitExceeded {
+                            actual_bytes: offset,
+                            limit_bytes: max_bytes,
+                        });
+                    }
+                }
+                iroh_blobs::api::remote::GetProgressItem::Done(_stats) => {
+                    let status = self.blobs.blobs().status(hash).await.map_err(|error| {
+                        crate::error::Failure::Transport(format!(
+                            "inspect fetched blob {hash}: {error}"
+                        ))
+                    })?;
+                    if let iroh_blobs::api::blobs::BlobStatus::Complete { size } = status
+                        && size > max_bytes
+                    {
+                        return Err(crate::error::Failure::SizeLimitExceeded {
+                            actual_bytes: size,
+                            limit_bytes: max_bytes,
+                        });
+                    }
+                    return Ok(());
+                }
+                iroh_blobs::api::remote::GetProgressItem::Error(error) => {
+                    return Err(crate::error::Failure::Transport(format!(
+                        "fetch blob {hash}: {error}"
+                    )));
+                }
+            }
+        }
+        Err(crate::error::Failure::Transport(format!(
+            "blob fetch stream for {hash} ended unexpectedly"
+        )))
+    }
+
     async fn download_bundle_only(
         &self,
         peer: iroh::EndpointId,
         bundle_hash: iroh_blobs::Hash,
+        max_bytes: u64,
     ) -> crate::error::Result<()> {
         let conn = self
             .endpoint
@@ -926,15 +1142,7 @@ impl SyncNode {
             .map_err(|error| {
                 crate::error::Failure::Transport(format!("connect blobs to {peer}: {error}"))
             })?;
-        let _stats = self
-            .blobs
-            .remote()
-            .fetch(conn, bundle_hash)
-            .await
-            .map_err(|error| {
-                crate::error::Failure::Transport(format!("fetch bundle {bundle_hash}: {error}"))
-            })?;
-        Ok(())
+        self.fetch_blob_bounded(conn, bundle_hash, max_bytes).await
     }
 
     async fn download_delta_blobs(
@@ -960,16 +1168,16 @@ impl SyncNode {
                 iroh_blobs::Hash::from_str(&blob_ref.transport_hash).map_err(|error| {
                     crate::error::Failure::Protocol(format!("invalid blob hash: {error}"))
                 })?;
-            let _blob_stats = self
-                .blobs
-                .remote()
-                .fetch(conn.clone(), transport_hash)
-                .await
-                .map_err(|error| {
-                    crate::error::Failure::Transport(format!(
-                        "fetch blob {transport_hash}: {error}"
-                    ))
-                })?;
+            let remaining = crate::protocol::MAX_SYNC_BUNDLE_BYTES.saturating_sub(bytes_fetched);
+            if blob_ref.byte_length > remaining {
+                return Err(crate::error::Failure::SizeLimitExceeded {
+                    actual_bytes: bytes_fetched.saturating_add(blob_ref.byte_length),
+                    limit_bytes: crate::protocol::MAX_SYNC_BUNDLE_BYTES,
+                });
+            }
+            let blob_cap = blob_ref.byte_length.min(remaining);
+            self.fetch_blob_bounded(conn.clone(), transport_hash, blob_cap)
+                .await?;
             let bytes = self
                 .blobs
                 .blobs()
@@ -1051,25 +1259,29 @@ async fn fetch_vault_head_on_conn(
     }
 }
 
+struct ReconcileConnQuery<'a> {
+    peer: iroh::EndpointId,
+    scope: &'a mneme_core::ScopeId,
+    snapshot_revision: &'a str,
+    local_set: &'a crate::rbsr::RbsrSet,
+    capability: Option<&'a crate::capability::CapabilityToken>,
+}
+
 async fn reconcile_on_conn(
     conn: &iroh::endpoint::Connection,
-    peer: iroh::EndpointId,
-    scope: &mneme_core::ScopeId,
-    snapshot_revision: &str,
-    local_set: &crate::rbsr::RbsrSet,
-    capability: Option<&crate::capability::CapabilityToken>,
+    query: ReconcileConnQuery<'_>,
 ) -> crate::error::Result<(crate::rbsr::RbsrOutcome, u64, u64)> {
-    let mut session = crate::rbsr::RbsrSession::new(local_set.clone());
+    let mut session = crate::rbsr::RbsrSession::new(query.local_set.clone());
     let mut total_sent = 0_u64;
     let mut total_recv = 0_u64;
-    let scope_text = scope.to_string();
+    let scope_text = query.scope.to_string();
 
     while let Some((request, in_flight)) = session.next_request()? {
         let control_req = crate::protocol::SyncControlRequest::RbsrReconcile {
             scope: scope_text.clone(),
-            snapshot_revision: snapshot_revision.to_owned(),
+            snapshot_revision: query.snapshot_revision.to_owned(),
             request,
-            capability: capability.cloned(),
+            capability: query.capability.cloned(),
         };
         let (response, sent, recv) = send_control_on_conn(conn, &control_req).await?;
         total_sent = total_sent.saturating_add(sent);
@@ -1078,7 +1290,7 @@ async fn reconcile_on_conn(
             crate::protocol::SyncControlResponse::RbsrReply(reply) => {
                 session.apply_response(&in_flight, reply)?;
             }
-            other => return Err(unexpected_control_response(peer, other)),
+            other => return Err(unexpected_control_response(query.peer, other)),
         }
     }
 

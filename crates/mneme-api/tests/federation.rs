@@ -891,3 +891,252 @@ async fn iroh_loopback_transport_federates_prolog_reason_query()
     assert!(shutdown_res.is_ok());
     Ok(())
 }
+
+#[tokio::test]
+async fn live_reloadable_per_scope_allowlist_and_concap_revocation_enforced()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let scope_a = cedar()?;
+    let scope_b = birch()?;
+    let _rev_a = commit_entity(SeedEntity {
+        root: temp.path(),
+        scope: &scope_a,
+        key: "seed-a",
+        id_byte: 71,
+        kind: "paper",
+        label: "Scope A Paper",
+    })?;
+    let _rev_b = commit_entity(SeedEntity {
+        root: temp.path(),
+        scope: &scope_b,
+        key: "seed-b",
+        id_byte: 72,
+        kind: "paper",
+        label: "Scope B Secret",
+    })?;
+
+    let root_key = deterministic_key(81);
+    let peer_allow = deterministic_key(82).public();
+    let peer_cap = deterministic_key(83).public();
+    let now_secs: u64 = 1_700_000_000;
+    let clock: std::sync::Arc<dyn mneme_store::Clock> =
+        std::sync::Arc::new(mneme_store::FixedClock::new(
+            mneme_core::Timestamp::from_nanos((now_secs as i64) * 1_000_000_000),
+        ));
+
+    let mut allowlist = mneme_api::federation::PeerAllowlist::empty();
+    allowlist.allow_scopes(peer_allow, [scope_a.clone()]);
+    let authorizer = mneme_api::federation::SharedFederationAuthorizer::from_allowlist(allowlist);
+    authorizer.set_vault_id("vault-fed-1")?;
+    authorizer.add_trusted_root(root_key.public())?;
+
+    let server = mneme_api::federation::VaultFederationServer::spawn_with_authorizer_and_clock(
+        mneme_api::federation::ServerConfig::new(
+            temp.path(),
+            mneme_api::federation::PeerAllowlist::empty(),
+        ),
+        authorizer.clone(),
+        clock,
+    )?;
+
+    // 1. Per-scope allowlist permits scope_a, refuses scope_b, and live-revokes mid-session.
+    let allow_client = server.local_client_for(peer_allow);
+    let head = allow_client.query_head(&scope_a).await?;
+    assert_eq!(head.head_sequence, 2);
+
+    let denied_b = allow_client.query_head(&scope_b).await;
+    assert!(matches!(
+        denied_b,
+        Err(mneme_api::federation::FederationError::Unauthorized(_))
+    ));
+
+    // Live-revoke peer_allow without restarting the server.
+    authorizer.revoke_peer(&peer_allow)?;
+    let after_revoke = allow_client.query_head(&scope_a).await;
+    assert!(matches!(
+        after_revoke,
+        Err(mneme_api::federation::FederationError::Unauthorized(_))
+    ));
+
+    // 2. Non-allowlisted peer using concap token bound to (vault-fed-1, scope_a).
+    let token_id = mneme_api::federation::TokenId::from_bytes([7_u8; 16]);
+    let token = mneme_api::federation::CapabilityToken::grant(
+        &root_key,
+        mneme_api::federation::GrantParams {
+            token_id,
+            vault_id: "vault-fed-1".to_owned(),
+            subject: peer_cap,
+            scope: mneme_api::federation::CapabilityScope::from_scopes([scope_a.clone()])?,
+            authority: mneme_api::federation::CapabilityAuthority::ReadOnly,
+            issued_at_secs: now_secs,
+            expires_at_secs: now_secs + 600,
+            max_delegation_depth: 2,
+        },
+    )?;
+    let cap_json = token.to_json()?;
+    let cap_client = server
+        .local_client_for(peer_cap)
+        .with_capability(cap_json.clone());
+
+    let cap_head = cap_client.query_head(&scope_a).await?;
+    assert_eq!(cap_head.head_sequence, 2);
+
+    // Cross-scope with scope_a concap token fails closed!
+    let cap_scope_b = cap_client.query_head(&scope_b).await;
+    assert!(matches!(
+        cap_scope_b,
+        Err(mneme_api::federation::FederationError::Unauthorized(_))
+    ));
+
+    // Wrong presenter using peer_cap's token fails closed!
+    let wrong_presenter = server
+        .local_client_for(peer_allow)
+        .with_capability(cap_json);
+    assert!(matches!(
+        wrong_presenter.query_head(&scope_a).await,
+        Err(mneme_api::federation::FederationError::Unauthorized(_))
+    ));
+
+    // Live revocation tombstone immediately revokes peer_cap's token!
+    let tombstone = mneme_api::federation::RevocationTombstone::issue(
+        &root_key,
+        &mneme_api::federation::RevocationParams {
+            tombstone_id: mneme_api::federation::TombstoneId::from_bytes([9_u8; 16]),
+            vault_id: "vault-fed-1",
+            target_token_id: token_id,
+            revoked_at_secs: now_secs + 1,
+            reason: Some("live revoke"),
+        },
+    )?;
+    authorizer.insert_revocation(tombstone)?;
+    let after_tombstone = cap_client.query_head(&scope_a).await;
+    assert!(matches!(
+        after_tombstone,
+        Err(mneme_api::federation::FederationError::Unauthorized(_))
+    ));
+
+    // 3. Streaming max_bytes check refuses oversized pinned snapshot cleanly.
+    authorizer.allow_peer_scopes(peer_allow, [scope_a.clone()])?;
+    let mut tiny_limits = mneme_api::federation::FederationLimits::standard();
+    tiny_limits.max_bytes = 32;
+    let budget_err = allow_client
+        .fetch_pinned_snapshot(&scope_a, None, tiny_limits)
+        .await;
+    assert!(matches!(
+        budget_err,
+        Err(mneme_api::federation::FederationError::BudgetExceeded(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn client_rejects_cross_scope_records_and_tampered_manifest_digest()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let scope_a = cedar()?;
+    let scope_b = birch()?;
+    let rev = commit_entity(SeedEntity {
+        root: temp.path(),
+        scope: &scope_a,
+        key: "seed-a",
+        id_byte: 81,
+        kind: "paper",
+        label: "Legit Scope A",
+    })?;
+    let rev_b = commit_entity(SeedEntity {
+        root: temp.path(),
+        scope: &scope_b,
+        key: "seed-b",
+        id_byte: 82,
+        kind: "paper",
+        label: "Foreign Scope B",
+    })?;
+    let _ = rev;
+
+    let caller = deterministic_key(91).public();
+    let server = mneme_api::federation::VaultFederationServer::spawn(
+        mneme_api::federation::ServerConfig::new(
+            temp.path(),
+            mneme_api::federation::PeerAllowlist::from_peers([caller]),
+        ),
+    )?;
+    let honest_client = server.local_client_for(caller);
+    let legit_a = honest_client
+        .fetch_pinned_snapshot(
+            &scope_a,
+            Some(rev_b),
+            mneme_api::federation::FederationLimits::standard(),
+        )
+        .await?;
+    let legit_b = honest_client
+        .fetch_pinned_snapshot(
+            &scope_b,
+            Some(rev_b),
+            mneme_api::federation::FederationLimits::standard(),
+        )
+        .await?;
+
+    // Helper: spawn a rogue local irpc server returning a crafted PinnedSnapshotPayload.
+    async fn run_rogue_fetch(
+        payload: mneme_api::federation::PinnedSnapshotPayload,
+        scope: &mneme_core::ScopeId,
+    ) -> Result<mneme_datalog::ExternalVaultView, mneme_api::federation::FederationError> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tokio::task::spawn(async move {
+            if let Some(mneme_api::federation::VaultFederationMessage::FetchPinnedSnapshot(msg)) =
+                rx.recv().await
+            {
+                let _sent = msg.tx.send(Ok(payload)).await.is_ok();
+            }
+        });
+        let client =
+            mneme_api::federation::VaultFederationClient::from_irpc(irpc::Client::local(tx));
+        // Use Access::Operator to prove client enforces envelope.scope == *scope strictly!
+        let operator = mneme_memory::Access::Operator;
+        let options = mneme_api::federation::RemoteViewFetchOptions {
+            alias: "rogue",
+            locator: "iroh://rogue",
+            scope,
+            revision: None,
+            limits: mneme_api::federation::FederationLimits::standard(),
+            access: &operator,
+        };
+        assert_eq!(options.alias, "rogue");
+        assert!(!scope.to_string().is_empty());
+        client.fetch_external_vault_view(options).await
+    }
+
+    // 1. Rogue server returns scope_b's payload when client asked for scope_a -> MUST FAIL!
+    let cross_scope_err = run_rogue_fetch(legit_b.clone(), &scope_a).await;
+    assert!(matches!(
+        cross_scope_err,
+        Err(mneme_api::federation::FederationError::ProtocolError(_))
+    ));
+
+    // 2. Rogue server smugges a scope_b record inside history_documents -> MUST FAIL!
+    let mut bad_history = legit_a.clone();
+    bad_history
+        .history_documents
+        .extend(legit_b.record_documents.clone());
+    let history_err = run_rogue_fetch(bad_history, &scope_a).await;
+    assert!(matches!(
+        history_err,
+        Err(mneme_api::federation::FederationError::ProtocolError(_))
+    ));
+
+    // 3. Rogue server tampers with manifest_digest_document -> MUST FAIL!
+    let mut bad_digest = legit_a.clone();
+    let bogus_digest = mneme_core::ContentDigest::of_source_bytes(b"tampered-manifest");
+    bad_digest.manifest_digest_document =
+        mneme_core::encode_document_string(&bogus_digest.to_value());
+    let tamper_err = run_rogue_fetch(bad_digest, &scope_a).await;
+    assert!(matches!(
+        tamper_err,
+        Err(mneme_api::federation::FederationError::ProtocolError(_))
+    ));
+
+    // 4. Honest payload verifies cleanly!
+    let honest_ok = run_rogue_fetch(legit_a, &scope_a).await;
+    assert!(honest_ok.is_ok());
+    Ok(())
+}
