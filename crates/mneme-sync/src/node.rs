@@ -14,13 +14,28 @@ use std::str::FromStr;
 use n0_future::StreamExt;
 
 /// Configuration for binding a [`SyncNode`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SyncNodeConfig {
     pub secret_key: iroh::SecretKey,
     pub allowlist: crate::trust::SharedAllowlist,
+    pub revocations: crate::capability::SharedRevocationSet,
+    pub trusted_roots: std::collections::BTreeSet<iroh::EndpointId>,
+    pub clock: std::sync::Arc<dyn mneme_store::Clock>,
     pub discovery: crate::protocol::DiscoveryMode,
     pub relay: crate::protocol::RelayPreference,
     pub bind_addrs: Vec<std::net::SocketAddr>,
+}
+
+impl std::fmt::Debug for SyncNodeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncNodeConfig")
+            .field("node_id", &self.secret_key.public())
+            .field("trusted_roots_count", &self.trusted_roots.len())
+            .field("discovery", &self.discovery)
+            .field("relay", &self.relay)
+            .field("bind_addrs", &self.bind_addrs)
+            .finish()
+    }
 }
 
 /// Factory constructing a fresh [`mneme_store::WorkspaceConfig`] per store open/restore.
@@ -50,6 +65,10 @@ pub struct PullOutcome {
 pub struct VaultGossipTopic {
     vault_id: String,
     allowlist: crate::trust::SharedAllowlist,
+    revocations: crate::capability::SharedRevocationSet,
+    trusted_roots: std::collections::BTreeSet<iroh::EndpointId>,
+    leases: crate::capability::SharedCapabilityLeases,
+    clock: std::sync::Arc<dyn mneme_store::Clock>,
     topic: iroh_gossip::GossipTopic,
 }
 
@@ -75,8 +94,33 @@ impl VaultGossipTopic {
             .map_err(|error| crate::error::Failure::Protocol(format!("gossip broadcast: {error}")))
     }
 
+    /// Broadcast a signed [`crate::capability::RevocationTombstone`] over the vault topic.
+    pub async fn broadcast_revocation(
+        &mut self,
+        tombstone: &crate::capability::RevocationTombstone,
+    ) -> crate::error::Result<()> {
+        tombstone.verify_signature()?;
+        let encoded = serde_json::to_vec(tombstone).map_err(|error| {
+            crate::error::Failure::Protocol(format!("encode revocation gossip: {error}"))
+        })?;
+        if encoded.len() > crate::protocol::MAX_GOSSIP_MESSAGE_BYTES {
+            return Err(crate::error::Failure::SizeLimitExceeded {
+                actual_bytes: encoded.len() as u64,
+                limit_bytes: crate::protocol::MAX_GOSSIP_MESSAGE_BYTES as u64,
+            });
+        }
+        self.topic
+            .broadcast(bytes::Bytes::from(encoded))
+            .await
+            .map_err(|error| {
+                crate::error::Failure::Protocol(format!("gossip revocation broadcast: {error}"))
+            })
+    }
+
     /// Receive the next authorized, well-formed [`crate::protocol::HeadAnnouncement`].
     ///
+    /// Signed revocation tombstones received on the topic are verified and
+    /// merged into the node's [`crate::capability::SharedRevocationSet`].
     /// Unauthorized senders and mismatched `vault_id` payloads are ignored
     /// without mutating local state.
     pub async fn next_announcement(
@@ -89,6 +133,18 @@ impl VaultGossipTopic {
             let iroh_gossip::Event::Received(message) = event else {
                 continue;
             };
+            if message.content.len() <= crate::protocol::MAX_GOSSIP_MESSAGE_BYTES
+                && let Ok(tombstone) = serde_json::from_slice::<
+                    crate::capability::RevocationTombstone,
+                >(&message.content)
+                && tombstone.vault_id == self.vault_id
+                && tombstone.verify_signature().is_ok()
+            {
+                if let Err(error) = self.revocations.insert(tombstone) {
+                    tracing::debug!(%error, "ignoring conflicting gossip revocation");
+                }
+                continue;
+            }
             let Ok(announcement) = crate::protocol::HeadAnnouncement::decode(&message.content)
             else {
                 continue;
@@ -99,17 +155,35 @@ impl VaultGossipTopic {
             let Ok(scope) = crate::protocol::parse_scope_id(&announcement.scope) else {
                 continue;
             };
-            if !self.allowlist.allows_scope(message.delivered_from, &scope) {
+            if !self.is_sender_authorized(message.delivered_from, &scope) {
                 continue;
             }
             return Ok(Some((message.delivered_from, announcement)));
         }
         Ok(None)
     }
+
+    fn is_sender_authorized(&self, sender: iroh::EndpointId, scope: &mneme_core::ScopeId) -> bool {
+        if self.allowlist.allows_scope(sender, scope) {
+            return true;
+        }
+        let Ok(now_secs) = crate::capability::timestamp_to_epoch_secs(self.clock.now()) else {
+            return false;
+        };
+        self.leases
+            .permits_scope(&crate::capability::LeaseScopeQuery {
+                peer: sender,
+                scope,
+                required: crate::capability::CapabilityAuthority::SyncPull,
+                now_secs,
+                trusted_roots: &self.trusted_roots,
+                revocations: &self.revocations,
+            })
+    }
 }
 
 /// Peer-to-peer Mneme sync node running over Iroh QUIC.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SyncNode {
     endpoint: iroh::Endpoint,
     router: iroh::protocol::Router,
@@ -117,55 +191,54 @@ pub struct SyncNode {
     gossip: iroh_gossip::Gossip,
     memory_lookup: iroh::address_lookup::memory::MemoryLookup,
     allowlist: crate::trust::SharedAllowlist,
-    published: crate::protocol::PublishedScopes,
+    revocations: crate::capability::SharedRevocationSet,
+    trusted_roots: std::collections::BTreeSet<iroh::EndpointId>,
+    leases: crate::capability::SharedCapabilityLeases,
+    clock: std::sync::Arc<dyn mneme_store::Clock>,
+    scopes: crate::protocol::SharedScopeTable,
+}
+
+impl std::fmt::Debug for SyncNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncNode")
+            .field("node_id", &self.endpoint.id())
+            .finish()
+    }
 }
 
 impl SyncNode {
-    /// Bind an Iroh endpoint and start the allowlisted blobs, gossip, and control protocols.
+    /// Bind an Iroh endpoint and start capability-enforced blobs, gossip, and control protocols.
     pub async fn bind(config: SyncNodeConfig) -> crate::error::Result<Self> {
         let memory_lookup = iroh::address_lookup::memory::MemoryLookup::new();
-        let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .secret_key(config.secret_key)
-            .relay_mode(config.relay.into_iroh())
-            .address_lookup(memory_lookup.clone());
-
-        if matches!(
-            config.discovery,
-            crate::protocol::DiscoveryMode::MdnsOnly | crate::protocol::DiscoveryMode::MdnsAndDht
-        ) {
-            builder =
-                builder.address_lookup(iroh_mdns_address_lookup::MdnsAddressLookup::builder());
-        }
-        if config.discovery == crate::protocol::DiscoveryMode::MdnsAndDht {
-            builder =
-                builder.address_lookup(iroh_mainline_address_lookup::DhtAddressLookup::builder());
-        }
-        for addr in config.bind_addrs {
-            builder = builder.bind_addr(addr).map_err(|error| {
-                crate::error::Failure::InvalidConfig(format!("invalid bind addr: {error}"))
-            })?;
-        }
-
-        let endpoint = builder
-            .bind()
-            .await
-            .map_err(|error| crate::error::Failure::Transport(format!("endpoint bind: {error}")))?;
+        let mut trusted_roots = config.trusted_roots.clone();
+        trusted_roots.insert(config.secret_key.public());
+        let endpoint = bind_iroh_endpoint(&config, &memory_lookup).await?;
 
         let blobs = iroh_blobs::store::mem::MemStore::new();
         let gossip = iroh_gossip::Gossip::builder().spawn(endpoint.clone());
-        let published: crate::protocol::PublishedScopes =
-            std::sync::Arc::new(std::sync::RwLock::new(std::collections::BTreeMap::new()));
+        let scopes: crate::protocol::SharedScopeTable = std::sync::Arc::new(
+            std::sync::RwLock::new(crate::protocol::SyncScopeTable::new()),
+        );
+        let leases = crate::capability::SharedCapabilityLeases::new();
+        let auth = crate::protocol::CapabilityAuthorizer {
+            allowlist: config.allowlist.clone(),
+            leases: leases.clone(),
+            trusted_roots: trusted_roots.clone(),
+            revocations: config.revocations.clone(),
+            clock: std::sync::Arc::clone(&config.clock),
+        };
 
-        let blobs_handler = crate::protocol::AllowlistedProtocol::new(
-            config.allowlist.clone(),
+        let blobs_handler = crate::protocol::CapabilityProtocol::new(
+            auth.clone(),
+            crate::capability::CapabilityAuthority::SyncPull,
             iroh_blobs::BlobsProtocol::new(&blobs, None),
         );
-        let gossip_handler =
-            crate::protocol::AllowlistedProtocol::new(config.allowlist.clone(), gossip.clone());
-        let control_handler = crate::protocol::AllowlistedProtocol::new(
-            config.allowlist.clone(),
-            crate::protocol::SyncControlHandler::new(config.allowlist.clone(), published.clone()),
+        let gossip_handler = crate::protocol::CapabilityProtocol::new(
+            auth.clone(),
+            crate::capability::CapabilityAuthority::SyncPull,
+            gossip.clone(),
         );
+        let control_handler = crate::protocol::SyncControlHandler::new(auth, scopes.clone());
 
         let router = iroh::protocol::Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, blobs_handler)
@@ -180,7 +253,11 @@ impl SyncNode {
             gossip,
             memory_lookup,
             allowlist: config.allowlist,
-            published,
+            revocations: config.revocations,
+            trusted_roots,
+            leases,
+            clock: config.clock,
+            scopes,
         })
     }
 
@@ -204,12 +281,33 @@ impl SyncNode {
         &self.allowlist
     }
 
+    /// Access the live convergent revocation set.
+    pub const fn revocations(&self) -> &crate::capability::SharedRevocationSet {
+        &self.revocations
+    }
+
+    /// Access the configured trusted root capability issuers.
+    pub const fn trusted_roots(&self) -> &std::collections::BTreeSet<iroh::EndpointId> {
+        &self.trusted_roots
+    }
+
     /// Access the underlying Iroh endpoint (for address lookup or diagnostics).
     pub const fn endpoint(&self) -> &iroh::Endpoint {
         &self.endpoint
     }
 
-    /// Export `scope` from `workspace` and publish its bundle and blobs for allowlisted peers.
+    /// Return the most recent authorized `PushHead` announcement received for `scope`.
+    pub fn last_pushed_head(
+        &self,
+        scope: &mneme_core::ScopeId,
+    ) -> Option<crate::protocol::HeadAnnouncement> {
+        self.scopes
+            .read()
+            .ok()
+            .and_then(|guard| guard.received_pushes.get(scope).cloned())
+    }
+
+    /// Export `scope` from `workspace` and publish its bundle and blobs for authorized peers.
     pub async fn publish_workspace(
         &self,
         workspace: &mneme_store::Workspace,
@@ -218,10 +316,10 @@ impl SyncNode {
     ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
         let exported =
             crate::bundle::export_scope_to_store(workspace, vault_id, scope, &self.blobs).await?;
-        let mut guard = self.published.write().map_err(|_| {
+        let mut guard = self.scopes.write().map_err(|_| {
             crate::error::Failure::InvalidConfig("published scopes lock poisoned".to_owned())
         })?;
-        guard.insert(scope.clone(), exported.info.clone());
+        guard.published.insert(scope.clone(), exported.info.clone());
         Ok(exported.info)
     }
 
@@ -249,6 +347,10 @@ impl SyncNode {
         Ok(VaultGossipTopic {
             vault_id: vault_id.to_owned(),
             allowlist: self.allowlist.clone(),
+            revocations: self.revocations.clone(),
+            trusted_roots: self.trusted_roots.clone(),
+            leases: self.leases.clone(),
+            clock: std::sync::Arc::clone(&self.clock),
             topic,
         })
     }
@@ -260,36 +362,15 @@ impl SyncNode {
         scope: &mneme_core::ScopeId,
     ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
         self.require_peer_scope(peer, scope)?;
-        let conn = self
-            .endpoint
-            .connect(peer, crate::protocol::SYNC_CONTROL_ALPN)
-            .await
-            .map_err(|error| {
-                crate::error::Failure::Transport(format!("connect control to {peer}: {error}"))
-            })?;
-        let (mut send, mut recv) = conn.open_bi().await.map_err(|error| {
-            crate::error::Failure::Transport(format!("open control stream: {error}"))
-        })?;
-        let req = crate::protocol::SyncControlRequest::GetVaultHead {
-            scope: scope.to_string(),
-        };
-        let encoded = serde_json::to_vec(&req).map_err(|error| {
-            crate::error::Failure::Protocol(format!("encode control request: {error}"))
-        })?;
-        send.write_all(&encoded)
-            .await
-            .map_err(|error| crate::error::Failure::Transport(format!("write control: {error}")))?;
-        send.finish().map_err(|error| {
-            crate::error::Failure::Transport(format!("finish control write: {error}"))
-        })?;
-        let response_bytes = recv
-            .read_to_end(crate::protocol::MAX_CONTROL_MESSAGE_BYTES)
-            .await
-            .map_err(|error| crate::error::Failure::Transport(format!("read control: {error}")))?;
-        let response: crate::protocol::SyncControlResponse =
-            serde_json::from_slice(&response_bytes).map_err(|error| {
-                crate::error::Failure::Protocol(format!("decode control response: {error}"))
-            })?;
+        let response = self
+            .send_control_request(
+                peer,
+                &crate::protocol::SyncControlRequest::GetVaultHead {
+                    scope: scope.to_string(),
+                    capability: None,
+                },
+            )
+            .await?;
         match response {
             crate::protocol::SyncControlResponse::VaultHead(info) => Ok(*info),
             crate::protocol::SyncControlResponse::Refused { reason } => {
@@ -297,13 +378,134 @@ impl SyncNode {
                     "peer {peer} refused sync head request: {reason}"
                 )))
             }
+            other => Err(unexpected_control_response(peer, other)),
         }
     }
 
-    /// Pull `request.scope` from `request.peer`, verify over `iroh-blobs`, and ingest/verify locally.
+    /// Query `peer` for `scope`'s head using a signed, attenuated [`crate::capability::CapabilityToken`].
+    pub async fn fetch_vault_head_with_capability(
+        &self,
+        peer: iroh::EndpointId,
+        scope: &mneme_core::ScopeId,
+        vault_id: &str,
+        capability: &crate::capability::CapabilityToken,
+    ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
+        self.precheck_local_capability(
+            capability,
+            vault_id,
+            scope,
+            crate::capability::CapabilityAuthority::ReadOnly,
+        )?;
+        let response = self
+            .send_control_request(
+                peer,
+                &crate::protocol::SyncControlRequest::GetVaultHead {
+                    scope: scope.to_string(),
+                    capability: Some(capability.clone()),
+                },
+            )
+            .await?;
+        match response {
+            crate::protocol::SyncControlResponse::VaultHead(info) => {
+                if info.vault_id != vault_id {
+                    return Err(crate::error::Failure::Protocol(format!(
+                        "peer served vault '{}' instead of '{}'",
+                        info.vault_id, vault_id
+                    )));
+                }
+                Ok(*info)
+            }
+            other => Err(unexpected_control_response(peer, other)),
+        }
+    }
+
+    /// Pull `request.scope` from an allowlisted `request.peer`, verify over `iroh-blobs`, and ingest/verify locally.
     pub async fn pull_scope(&self, request: PullRequest) -> crate::error::Result<PullOutcome> {
         self.require_peer_scope(request.peer, &request.scope)?;
         let snapshot = self.fetch_vault_head(request.peer, &request.scope).await?;
+        self.finish_pull_with_snapshot(request, snapshot).await
+    }
+
+    /// Pull `request.scope` from `request.peer` using an offline-verifiable [`crate::capability::CapabilityToken`].
+    pub async fn pull_scope_with_capability(
+        &self,
+        request: PullRequest,
+        vault_id: &str,
+        capability: &crate::capability::CapabilityToken,
+    ) -> crate::error::Result<PullOutcome> {
+        self.precheck_local_capability(
+            capability,
+            vault_id,
+            &request.scope,
+            crate::capability::CapabilityAuthority::SyncPull,
+        )?;
+        let snapshot = self
+            .fetch_vault_head_with_capability(request.peer, &request.scope, vault_id, capability)
+            .await?;
+        self.finish_pull_with_snapshot(request, snapshot).await
+    }
+
+    /// Push a signed head announcement to `peer` using a `SyncPush` capability token.
+    pub async fn push_head_with_capability(
+        &self,
+        peer: iroh::EndpointId,
+        announcement: &crate::protocol::HeadAnnouncement,
+        capability: &crate::capability::CapabilityToken,
+    ) -> crate::error::Result<()> {
+        let scope = crate::protocol::parse_scope_id(&announcement.scope)?;
+        self.precheck_local_capability(
+            capability,
+            &announcement.vault_id,
+            &scope,
+            crate::capability::CapabilityAuthority::SyncPush,
+        )?;
+        let response = self
+            .send_control_request(
+                peer,
+                &crate::protocol::SyncControlRequest::PushHead {
+                    announcement: announcement.clone(),
+                    capability: Some(capability.clone()),
+                },
+            )
+            .await?;
+        match response {
+            crate::protocol::SyncControlResponse::HeadAccepted { .. } => Ok(()),
+            other => Err(unexpected_control_response(peer, other)),
+        }
+    }
+
+    /// Exchange and deterministically merge CRDT revocation tombstones with `peer`.
+    pub async fn sync_revocations(
+        &self,
+        peer: iroh::EndpointId,
+        capability: Option<&crate::capability::CapabilityToken>,
+    ) -> crate::error::Result<u64> {
+        if !self.allowlist.is_allowed(peer) && capability.is_none() {
+            return Err(crate::error::Failure::UnauthorizedPeer(peer.to_string()));
+        }
+        let local = self.revocations.snapshot()?;
+        let response = self
+            .send_control_request(
+                peer,
+                &crate::protocol::SyncControlRequest::SyncRevocations {
+                    revocations: local.tombstones().cloned().collect(),
+                    capability: capability.cloned(),
+                },
+            )
+            .await?;
+        match response {
+            crate::protocol::SyncControlResponse::Revocations { revocations } => {
+                self.revocations.merge_tombstones(&revocations)
+            }
+            other => Err(unexpected_control_response(peer, other)),
+        }
+    }
+
+    async fn finish_pull_with_snapshot(
+        &self,
+        request: PullRequest,
+        snapshot: crate::protocol::VaultSnapshotInfo,
+    ) -> crate::error::Result<PullOutcome> {
         validate_snapshot_info(&snapshot, &request.scope)?;
 
         if let Some(outcome) = self.try_idempotent_fast_path(&request, &snapshot)? {
@@ -344,6 +546,64 @@ impl SyncNode {
             local_sequence: ingested.local_sequence,
             verify_report: ingested.verify_report,
         })
+    }
+
+    async fn send_control_request(
+        &self,
+        peer: iroh::EndpointId,
+        request: &crate::protocol::SyncControlRequest,
+    ) -> crate::error::Result<crate::protocol::SyncControlResponse> {
+        let conn = self
+            .endpoint
+            .connect(peer, crate::protocol::SYNC_CONTROL_ALPN)
+            .await
+            .map_err(|error| {
+                crate::error::Failure::Transport(format!("connect control to {peer}: {error}"))
+            })?;
+        let (mut send, mut recv) = conn.open_bi().await.map_err(|error| {
+            crate::error::Failure::Transport(format!("open control stream: {error}"))
+        })?;
+        let encoded = serde_json::to_vec(request).map_err(|error| {
+            crate::error::Failure::Protocol(format!("encode control request: {error}"))
+        })?;
+        send.write_all(&encoded)
+            .await
+            .map_err(|error| crate::error::Failure::Transport(format!("write control: {error}")))?;
+        send.finish().map_err(|error| {
+            crate::error::Failure::Transport(format!("finish control write: {error}"))
+        })?;
+        let response_bytes = recv
+            .read_to_end(crate::protocol::MAX_CONTROL_MESSAGE_BYTES)
+            .await
+            .map_err(|error| crate::error::Failure::Transport(format!("read control: {error}")))?;
+        serde_json::from_slice(&response_bytes).map_err(|error| {
+            crate::error::Failure::Protocol(format!("decode control response: {error}"))
+        })
+    }
+
+    fn precheck_local_capability(
+        &self,
+        capability: &crate::capability::CapabilityToken,
+        vault_id: &str,
+        scope: &mneme_core::ScopeId,
+        required_authority: crate::capability::CapabilityAuthority,
+    ) -> crate::error::Result<()> {
+        let now_secs = crate::capability::timestamp_to_epoch_secs(self.clock.now())?;
+        let revocations = self.revocations.snapshot()?;
+        let _verified = crate::capability::verify_capability_with_policy(
+            &crate::capability::VerificationRequest {
+                token: capability,
+                presenter: self.node_id(),
+                vault_id,
+                scope,
+                required_authority,
+                now_secs,
+                trusted_roots: &self.trusted_roots,
+                revocations: &revocations,
+            },
+            crate::capability::RootTrustPolicy::AllowAnySignedRoot,
+        )?;
+        Ok(())
     }
 
     /// Listen on `topic` for newer head announcements and pull + verify from the announcing peer.
@@ -553,4 +813,54 @@ fn record_pull_receipt(
         local_sequence,
     });
     state.save(&paths.state_path())
+}
+
+fn unexpected_control_response(
+    peer: iroh::EndpointId,
+    response: crate::protocol::SyncControlResponse,
+) -> crate::error::Failure {
+    match response {
+        crate::protocol::SyncControlResponse::CapabilityDenied { reason } => {
+            crate::error::Failure::CapabilityDenied(reason)
+        }
+        crate::protocol::SyncControlResponse::CapabilityRevoked { token_id, reason } => {
+            crate::error::Failure::CapabilityRevoked { token_id, reason }
+        }
+        crate::protocol::SyncControlResponse::Refused { reason } => {
+            crate::error::Failure::Protocol(format!("peer {peer} refused sync request: {reason}"))
+        }
+        crate::protocol::SyncControlResponse::VaultHead(_)
+        | crate::protocol::SyncControlResponse::HeadAccepted { .. }
+        | crate::protocol::SyncControlResponse::Revocations { .. } => {
+            crate::error::Failure::Protocol(format!("unexpected sync control response from {peer}"))
+        }
+    }
+}
+
+async fn bind_iroh_endpoint(
+    config: &SyncNodeConfig,
+    memory_lookup: &iroh::address_lookup::memory::MemoryLookup,
+) -> crate::error::Result<iroh::Endpoint> {
+    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(config.secret_key.clone())
+        .relay_mode(config.relay.clone().into_iroh())
+        .address_lookup(memory_lookup.clone());
+    if matches!(
+        config.discovery,
+        crate::protocol::DiscoveryMode::MdnsOnly | crate::protocol::DiscoveryMode::MdnsAndDht
+    ) {
+        builder = builder.address_lookup(iroh_mdns_address_lookup::MdnsAddressLookup::builder());
+    }
+    if config.discovery == crate::protocol::DiscoveryMode::MdnsAndDht {
+        builder = builder.address_lookup(iroh_mainline_address_lookup::DhtAddressLookup::builder());
+    }
+    for addr in &config.bind_addrs {
+        builder = builder.bind_addr(*addr).map_err(|error| {
+            crate::error::Failure::InvalidConfig(format!("invalid bind addr: {error}"))
+        })?;
+    }
+    builder
+        .bind()
+        .await
+        .map_err(|error| crate::error::Failure::Transport(format!("endpoint bind: {error}")))
 }
