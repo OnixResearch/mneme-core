@@ -15,7 +15,7 @@ pub mod service;
 pub use command::{
     ApiCommand, COMMAND_FORMAT, COMMAND_VERSION, LocalSession, RESULT_FORMAT, RESULT_VERSION,
     RULE_BUNDLE_SCHEMA_VERSION, ReasonQuery, ReviseAction, SessionConfig, StructuredQuery, decode,
-    parse_bundle,
+    parse_bundle, parse_rule,
 };
 pub use error::{ApiError, ApiErrorCode, CallResult, FORGOTTEN_TARGET, UNAVAILABLE_RECORD};
 pub use service::{

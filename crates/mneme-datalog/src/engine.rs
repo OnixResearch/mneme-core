@@ -178,7 +178,7 @@ impl Evaluation<'_> {
 }
 
 /// The canonical base extents every build may load.
-fn canonical_extents() -> &'static [&'static str] {
+pub(crate) fn canonical_extents() -> &'static [&'static str] {
     &[
         "entity",
         "relation",
@@ -260,16 +260,7 @@ pub(crate) fn build_federated(
     load_base_facts(sources, &mut evaluation);
     evaluate_rules(&mut evaluation, &program.strata);
     let coverage = final_coverage(&evaluation);
-    let status = if evaluation.budget.status != crate::ExecutionStatus::Complete {
-        evaluation.budget.status
-    } else if coverage
-        .iter()
-        .any(|coverage| coverage.status != crate::CoverageStatus::Complete)
-    {
-        crate::ExecutionStatus::Partial
-    } else {
-        crate::ExecutionStatus::Complete
-    };
+    let status = overall_status(evaluation.budget.status, &coverage);
     BuildFacts {
         facts: evaluation.facts,
         coverage,
@@ -278,6 +269,186 @@ pub(crate) fn build_federated(
         support_truncated: evaluation.budget.support_truncated,
         limit_reached: evaluation.budget.limit_reached,
         declaration_valid: declarations_match(evaluation.bundle),
+    }
+}
+
+/// Cached canonical base extents and availability for one pinned REPL session.
+pub(crate) struct BaseSnapshot {
+    pub facts: std::collections::BTreeMap<String, FactStore>,
+    pub base_coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
+    pub coverage_reasons: std::collections::BTreeMap<String, String>,
+    pub current_sources: AvailabilityMap,
+    pub derivation_eligibility: std::collections::BTreeMap<
+        mneme_core::RecordId,
+        std::collections::BTreeSet<mneme_core::RecordId>,
+    >,
+    pub coverage: Vec<crate::Coverage>,
+    pub status: crate::ExecutionStatus,
+    pub work: u64,
+    pub support_truncated: bool,
+    pub limit_reached: bool,
+}
+
+/// Parameters for loading canonical base extents once for a REPL session.
+pub(crate) struct BaseLoadRequest<'a> {
+    pub bundle: &'a crate::RuleBundle,
+    pub context: &'a crate::BuildContext,
+    pub limits: &'a crate::Limits,
+    pub incomplete_extents: &'a std::collections::BTreeSet<String>,
+    pub current_sources: AvailabilityMap,
+    pub at: Option<mneme_core::Timestamp>,
+    pub start: std::time::Instant,
+}
+
+/// Load canonical base extents once for a session pinned to one revision.
+pub(crate) fn load_base_snapshot(
+    view: &mneme_memory::View,
+    request: BaseLoadRequest<'_>,
+) -> BaseSnapshot {
+    let BaseLoadRequest {
+        bundle,
+        context,
+        limits,
+        incomplete_extents,
+        current_sources,
+        at,
+        start,
+    } = request;
+    let mut evaluation = Evaluation {
+        bundle,
+        context,
+        budget: Budget {
+            limits,
+            work: 0,
+            stored_rows: 0,
+            start,
+            cancellation: None,
+            status: crate::ExecutionStatus::Complete,
+            limit_reached: false,
+            support_truncated: false,
+        },
+        facts: std::collections::BTreeMap::new(),
+        coverage: std::collections::BTreeMap::new(),
+        base_coverage: std::collections::BTreeMap::new(),
+        coverage_reasons: std::collections::BTreeMap::new(),
+        current_sources: &current_sources,
+        at,
+        derivation_eligibility: std::collections::BTreeMap::new(),
+    };
+    initialize_base_coverage(&mut evaluation, incomplete_extents);
+    load_base_facts(view, &mut evaluation);
+    let coverage = final_coverage(&evaluation);
+    let status = overall_status(evaluation.budget.status, &coverage);
+    let work = evaluation.budget.work;
+    let support_truncated = evaluation.budget.support_truncated;
+    let limit_reached = evaluation.budget.limit_reached;
+    let facts = evaluation.facts;
+    let base_coverage = evaluation.base_coverage;
+    let coverage_reasons = evaluation.coverage_reasons;
+    let derivation_eligibility = evaluation.derivation_eligibility;
+    BaseSnapshot {
+        facts,
+        base_coverage,
+        coverage_reasons,
+        current_sources,
+        derivation_eligibility,
+        coverage,
+        status,
+        work,
+        support_truncated,
+        limit_reached,
+    }
+}
+
+/// Parameters for incremental re-evaluation of affected predicates.
+pub(crate) struct IncrementalRequest<'a> {
+    pub bundle: &'a crate::RuleBundle,
+    pub program: &'a crate::RuleProgram,
+    pub context: &'a crate::BuildContext,
+    pub limits: &'a crate::Limits,
+    pub kept_facts: std::collections::BTreeMap<String, FactStore>,
+    pub affected_predicates: &'a std::collections::BTreeSet<String>,
+    pub at: Option<mneme_core::Timestamp>,
+    pub start: std::time::Instant,
+}
+
+/// Re-evaluate only `affected_predicates` while preserving unaffected cached relations.
+pub(crate) fn evaluate_incremental(
+    base: &BaseSnapshot,
+    request: IncrementalRequest<'_>,
+) -> BuildFacts {
+    let IncrementalRequest {
+        bundle,
+        program,
+        context,
+        limits,
+        kept_facts,
+        affected_predicates,
+        at,
+        start,
+    } = request;
+    let mut evaluation = Evaluation {
+        bundle,
+        context,
+        budget: Budget {
+            limits,
+            work: 0,
+            stored_rows: 0,
+            start,
+            cancellation: None,
+            status: crate::ExecutionStatus::Complete,
+            limit_reached: false,
+            support_truncated: false,
+        },
+        facts: kept_facts,
+        coverage: base.base_coverage.clone(),
+        base_coverage: base.base_coverage.clone(),
+        coverage_reasons: base.coverage_reasons.clone(),
+        current_sources: &base.current_sources,
+        at,
+        derivation_eligibility: base.derivation_eligibility.clone(),
+    };
+    let mut strata: std::collections::BTreeMap<usize, Vec<&crate::Rule>> =
+        std::collections::BTreeMap::new();
+    for rule in &bundle.rules {
+        if affected_predicates.contains(&rule.head.predicate) {
+            let stratum = program
+                .strata
+                .get(&rule.head.predicate)
+                .copied()
+                .unwrap_or(0);
+            strata.entry(stratum).or_default().push(rule);
+        }
+    }
+    update_derived_coverage(&mut evaluation);
+    evaluate_strata(&mut evaluation, &strata);
+    update_derived_coverage(&mut evaluation);
+    let coverage = final_coverage(&evaluation);
+    let status = overall_status(evaluation.budget.status, &coverage);
+    BuildFacts {
+        facts: evaluation.facts,
+        coverage,
+        status,
+        work: evaluation.budget.work,
+        support_truncated: evaluation.budget.support_truncated,
+        limit_reached: evaluation.budget.limit_reached,
+        declaration_valid: declarations_match(evaluation.bundle),
+    }
+}
+
+fn overall_status(
+    budget_status: crate::ExecutionStatus,
+    coverage: &[crate::Coverage],
+) -> crate::ExecutionStatus {
+    if budget_status != crate::ExecutionStatus::Complete {
+        budget_status
+    } else if coverage
+        .iter()
+        .any(|coverage| coverage.status != crate::CoverageStatus::Complete)
+    {
+        crate::ExecutionStatus::Partial
+    } else {
+        crate::ExecutionStatus::Complete
     }
 }
 
@@ -1189,6 +1360,13 @@ fn evaluate_rules(
         let stratum = rule_strata.get(&rule.head.predicate).copied().unwrap_or(0);
         strata.entry(stratum).or_default().push(rule);
     }
+    evaluate_strata(evaluation, &strata);
+}
+
+fn evaluate_strata(
+    evaluation: &mut Evaluation<'_>,
+    strata: &std::collections::BTreeMap<usize, Vec<&crate::Rule>>,
+) {
     for rules in strata.values() {
         let mut rounds = 0_usize;
         loop {

@@ -292,6 +292,7 @@ impl ApiError {
                 ApiErrorCode::Cancelled,
                 "structured evaluation was cancelled",
             ),
+            mneme_datalog::Error::LimitExceeded(reason) => Self::new(ApiErrorCode::Limit, reason),
             mneme_datalog::Error::Store(error) => Self::from_store(error),
             mneme_datalog::Error::Engine(error) => Self::from_memory(error),
             mneme_datalog::Error::MissingBuild(_) | mneme_datalog::Error::Failed(_) => {
