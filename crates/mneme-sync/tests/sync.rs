@@ -243,6 +243,8 @@ async fn two_peer_loopback_sync_restores_updates_and_repulls_idempotently() {
     );
     assert!(fourth_pull.verify_report.is_healthy());
     assert!(fourth_pull.local_sequence > first_pull.local_sequence);
+    assert_eq!(fourth_pull.stats.blobs_fetched, 1);
+    assert!(fourth_pull.stats.rbsr_rounds >= 1);
 
     let verify = mneme_store::verify_workspace(&dest_root, mneme_store::VerifyMode::Full)
         .expect("final verify");
@@ -547,4 +549,451 @@ async fn mdns_discovery_mode_binds_offline_without_relay() {
     .expect("bind mdns node");
     assert!(node.addr().relay_urls().next().is_none());
     node.shutdown().await.expect("shutdown mdns node");
+}
+
+fn deterministic_id_16(tag: u8, index: u64) -> [u8; 16] {
+    let mut input = [0_u8; 9];
+    input[0] = tag;
+    input[1..9].copy_from_slice(&index.to_le_bytes());
+    let hash = blake3::hash(&input);
+    let mut out = [0_u8; 16];
+    out.copy_from_slice(&hash.as_bytes()[0..16]);
+    out
+}
+
+fn synthetic_blob_bytes(salt: u8, index: u64) -> Vec<u8> {
+    let header = format!("= Note {salt}:{index}\n\n");
+    let mut bytes = vec![b'x'; 1024];
+    let prefix = header.as_bytes();
+    let copy_len = prefix.len().min(bytes.len());
+    bytes[..copy_len].copy_from_slice(&prefix[..copy_len]);
+    bytes
+}
+
+struct SyntheticBatchSpec {
+    salt: u8,
+    start_index: u64,
+    item_count: u64,
+    batch_items: u64,
+}
+
+#[derive(Clone, Copy)]
+enum PathHintMode {
+    Omit,
+    Include,
+}
+
+fn build_synthetic_item(
+    salt: u8,
+    idx: u64,
+    path_hint: PathHintMode,
+) -> (mneme_store::RecordDraft, mneme_store::SourceBlobDraft) {
+    let bytes = synthetic_blob_bytes(salt, idx);
+    let retained = mneme_core::RetainedSource::new(
+        mneme_core::ContentDigest::of_source_bytes(&bytes),
+        bytes.len() as u64,
+        "text/asciidoc",
+    )
+    .expect("retained");
+    let record_id = mneme_core::RecordId::from_bytes(deterministic_id_16(salt, idx));
+    let revision_id =
+        mneme_core::RevisionId::from_bytes(deterministic_id_16(salt.wrapping_add(100), idx));
+    let mut payload_entries = vec![
+        (
+            mneme_core::Symbol::from("content"),
+            mneme_core::SourceContent::Retained(retained).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("acquisition"),
+            mneme_core::Value::symbol("authored"),
+        ),
+    ];
+    if matches!(path_hint, PathHintMode::Include) {
+        payload_entries.push((
+            mneme_core::Symbol::from("path-hint"),
+            mneme_core::Value::string(format!("notes/{salt}/{idx}.adoc")),
+        ));
+    }
+    let draft = mneme_store::RecordDraft {
+        schema_version: 2,
+        kind: mneme_core::RecordKind::SourceRevision,
+        record_id,
+        revision_id,
+        predecessor: None,
+        scope: scope(),
+        payload: mneme_core::Payload::new(payload_entries),
+    };
+    let blob = mneme_store::SourceBlobDraft {
+        bytes,
+        media_type: mneme_core::Symbol::from("text/asciidoc"),
+    };
+    (draft, blob)
+}
+
+#[allow(unknown_lints, allocation_in_loop)] // test fixture builder allocates bounded batches
+fn commit_synthetic_items(workspace: &mut mneme_store::Workspace, spec: SyntheticBatchSpec) {
+    let mut committed_items = 0_u64;
+    let actor_name = "rbsr-fixture".to_owned();
+    let path_hint = if spec.start_index >= 1000 {
+        PathHintMode::Include
+    } else {
+        PathHintMode::Omit
+    };
+    while committed_items < spec.item_count {
+        let take = spec
+            .item_count
+            .saturating_sub(committed_items)
+            .min(spec.batch_items);
+        let take_usize = usize::try_from(take).expect("batch size fits usize");
+        let base = workspace.current_revision().expect("base");
+        let mut records = Vec::with_capacity(take_usize);
+        let mut source_blobs = Vec::with_capacity(take_usize);
+        for item_offset in 0..take {
+            let idx = spec
+                .start_index
+                .saturating_add(committed_items)
+                .saturating_add(item_offset);
+            let (draft, blob) = build_synthetic_item(spec.salt, idx, path_hint);
+            records.push(draft);
+            source_blobs.push(blob);
+        }
+        let _outcome = workspace
+            .commit(mneme_store::CommitCommand {
+                base,
+                actor: actor_name.clone(),
+                scope: scope(),
+                idempotency_key: format!(
+                    "rbsr-{}-{}-{committed_items}",
+                    spec.salt, spec.start_index
+                ),
+                records,
+                source_blobs,
+                publications: Vec::new(),
+                import_candidates: Vec::new(),
+                retention: None,
+            })
+            .expect("commit synthetic batch");
+        committed_items = committed_items.saturating_add(take);
+    }
+}
+
+fn build_large_vault(
+    root: &std::path::Path,
+    salt: u8,
+    item_count: u64,
+) -> (mneme_store::Workspace, String) {
+    let mut workspace =
+        mneme_store::Workspace::create(root, fixed_config()).expect("create large workspace");
+    commit_synthetic_items(
+        &mut workspace,
+        SyntheticBatchSpec {
+            salt,
+            start_index: 0,
+            item_count,
+            batch_items: 100,
+        },
+    );
+    let vault_id = workspace.genesis_revision().expect("genesis").to_hex();
+    (workspace, vault_id)
+}
+
+#[tokio::test]
+async fn thousand_item_vaults_reconcile_delta_five_logarithmically_and_empty_diff_in_one_round() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_root = temp.path().join("peer-a");
+    let dest_root = temp.path().join("peer-b");
+
+    let (mut source_ws, vault_id) = build_large_vault(&source_root, 1, 1000);
+
+    let allow_a = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    let allow_b = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    let node_a = bind_loopback_node(31, allow_a.clone()).await;
+    let node_b = bind_loopback_node(32, allow_b.clone()).await;
+
+    allow_a
+        .allow(mneme_sync::AllowedPeer {
+            node_id: node_b.node_id(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::from_scopes([scope()]),
+        })
+        .expect("allow b");
+    allow_b
+        .allow(mneme_sync::AllowedPeer {
+            node_id: node_a.node_id(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::from_scopes([scope()]),
+        })
+        .expect("allow a");
+
+    node_a.add_peer_addr(node_b.addr());
+    node_b.add_peer_addr(node_a.addr());
+
+    // Initial full restore so Peer B has all 1,000 items.
+    let _initial_pub = node_a
+        .publish_workspace(&source_ws, &vault_id, &scope())
+        .await
+        .expect("publish 1000");
+    let initial_pull = node_b
+        .pull_scope(mneme_sync::PullRequest {
+            peer: node_a.node_id(),
+            scope: scope(),
+            destination: dest_root.clone(),
+            state_dir: None,
+            workspace_config: config_factory(),
+        })
+        .await
+        .expect("initial 1000-item pull");
+    assert_eq!(
+        initial_pull.disposition,
+        mneme_sync::PullDisposition::Restored
+    );
+    assert_eq!(initial_pull.verify_report.blobs_checked, 2000);
+
+    // Empty-diff re-pull WITHOUT state_dir exercises 1-round RBSR with 0 blobs fetched.
+    let empty_pull = node_b
+        .pull_scope(mneme_sync::PullRequest {
+            peer: node_a.node_id(),
+            scope: scope(),
+            destination: dest_root.clone(),
+            state_dir: None,
+            workspace_config: config_factory(),
+        })
+        .await
+        .expect("empty diff pull");
+    assert_eq!(
+        empty_pull.disposition,
+        mneme_sync::PullDisposition::AlreadyUpToDate
+    );
+    assert_eq!(empty_pull.stats.rbsr_rounds, 1);
+    assert_eq!(empty_pull.stats.blobs_fetched, 0);
+    assert_eq!(empty_pull.stats.blob_bytes_fetched, 0);
+    assert!(empty_pull.verify_report.is_healthy());
+
+    // Commit 5 new items on Peer A (total 1005 items vs 1000 on Peer B).
+    commit_synthetic_items(
+        &mut source_ws,
+        SyntheticBatchSpec {
+            salt: 1,
+            start_index: 1000,
+            item_count: 5,
+            batch_items: 5,
+        },
+    );
+    let published_delta = node_a
+        .publish_workspace(&source_ws, &vault_id, &scope())
+        .await
+        .expect("publish 1005");
+    let full_blob_list_bytes = serde_json::to_vec(&published_delta.blobs)
+        .expect("full blob list json")
+        .len() as u64;
+
+    let delta_pull = node_b
+        .pull_scope(mneme_sync::PullRequest {
+            peer: node_a.node_id(),
+            scope: scope(),
+            destination: dest_root.clone(),
+            state_dir: None,
+            workspace_config: config_factory(),
+        })
+        .await
+        .expect("delta 5-item pull");
+
+    assert_eq!(delta_pull.disposition, mneme_sync::PullDisposition::Updated);
+    assert!(delta_pull.verify_report.is_healthy());
+    assert_eq!(delta_pull.verify_report.blobs_checked, 2010);
+    assert_eq!(delta_pull.stats.blobs_fetched, 5);
+    assert_eq!(delta_pull.stats.blob_bytes_fetched, 5 * 1024);
+    assert!(delta_pull.stats.rbsr_rounds >= 2);
+    assert!(delta_pull.stats.rbsr_rounds <= 12);
+
+    let total_control_bytes =
+        delta_pull.stats.control_bytes_sent + delta_pull.stats.control_bytes_received;
+    assert!(
+        total_control_bytes < full_blob_list_bytes / 4,
+        "control bytes {total_control_bytes} must be much smaller than full list {full_blob_list_bytes}"
+    );
+
+    node_a.shutdown().await.expect("shutdown a");
+    node_b.shutdown().await.expect("shutdown b");
+}
+
+#[tokio::test]
+async fn disjoint_thousand_item_vaults_reconcile_over_control_and_fail_closed_on_conflict() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root_a = temp.path().join("peer-a");
+    let root_b = temp.path().join("peer-b");
+
+    let (ws_a, vault_id_a) = build_large_vault(&root_a, 1, 1000);
+    let (ws_b, _vault_id_b) = build_large_vault(&root_b, 2, 1000);
+
+    let allow_a = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    let allow_b = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    let node_a = bind_loopback_node(41, allow_a.clone()).await;
+    let node_b = bind_loopback_node(42, allow_b.clone()).await;
+
+    allow_a
+        .allow(mneme_sync::AllowedPeer {
+            node_id: node_b.node_id(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::from_scopes([scope()]),
+        })
+        .expect("allow b");
+    allow_b
+        .allow(mneme_sync::AllowedPeer {
+            node_id: node_a.node_id(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::from_scopes([scope()]),
+        })
+        .expect("allow a");
+
+    node_a.add_peer_addr(node_b.addr());
+    node_b.add_peer_addr(node_a.addr());
+
+    let snapshot_a = node_a
+        .publish_workspace(&ws_a, &vault_id_a, &scope())
+        .await
+        .expect("publish a");
+    let local_set_b =
+        mneme_sync::collect_local_rbsr_set(&ws_b, &scope()).expect("local rbsr set b");
+    assert_eq!(local_set_b.len_u64(), 2000);
+
+    let reconciled = node_b
+        .reconcile_scope(
+            node_a.node_id(),
+            &scope(),
+            &snapshot_a.head_revision,
+            &local_set_b,
+        )
+        .await
+        .expect("disjoint reconcile over /mneme/sync/1");
+    assert_eq!(reconciled.remote_only.len(), 2000);
+    assert_eq!(reconciled.local_only.len(), 2000);
+
+    // Attempting pull_scope into conflicting Peer B fails closed without corrupting Peer B.
+    let err = node_b
+        .pull_scope(mneme_sync::PullRequest {
+            peer: node_a.node_id(),
+            scope: scope(),
+            destination: root_b.clone(),
+            state_dir: None,
+            workspace_config: config_factory(),
+        })
+        .await
+        .expect_err("conflicting disjoint vaults must fail closed");
+    assert!(matches!(err, mneme_sync::Failure::Store(_)));
+
+    let verify_b = mneme_store::verify_workspace(&root_b, mneme_store::VerifyMode::Full)
+        .expect("verify b untouched");
+    assert!(verify_b.is_healthy());
+    assert_eq!(verify_b.blobs_checked, 2000);
+
+    node_a.shutdown().await.expect("shutdown a");
+    node_b.shutdown().await.expect("shutdown b");
+}
+
+#[tokio::test]
+async fn rbsr_control_handler_refuses_malformed_requests_fail_closed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_root = temp.path().join("peer-a");
+    let (source_ws, vault_id) = create_fixture_workspace(&source_root);
+
+    let allow_a = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    let allow_b = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    let node_a = bind_loopback_node(51, allow_a.clone()).await;
+    let node_b = bind_loopback_node(52, allow_b.clone()).await;
+
+    allow_a
+        .allow(mneme_sync::AllowedPeer {
+            node_id: node_b.node_id(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::from_scopes([scope()]),
+        })
+        .expect("allow b");
+    allow_b
+        .allow(mneme_sync::AllowedPeer {
+            node_id: node_a.node_id(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::from_scopes([scope()]),
+        })
+        .expect("allow a");
+
+    node_a.add_peer_addr(node_b.addr());
+    node_b.add_peer_addr(node_a.addr());
+
+    let snapshot = node_a
+        .publish_workspace(&source_ws, &vault_id, &scope())
+        .await
+        .expect("publish");
+
+    let conn = node_b
+        .endpoint()
+        .connect(node_a.node_id(), mneme_sync::SYNC_CONTROL_ALPN)
+        .await
+        .expect("connect control");
+
+    let malformed_payloads = [
+        serde_json::json!({
+            "op": "rbsr-reconcile",
+            "scope": "project:cedar",
+            "snapshot_revision": snapshot.head_revision,
+            "request": {
+                "r": [{
+                    "l": "+",
+                    "u": "-",
+                    "d": 0,
+                    "p": { "k": "f", "c": 0, "d": mneme_core::base64::encode(&[0_u8; 32]) }
+                }]
+            }
+        }),
+        serde_json::json!({
+            "op": "rbsr-reconcile",
+            "scope": "project:cedar",
+            "snapshot_revision": snapshot.head_revision,
+            "request": {
+                "r": [{
+                    "l": "-",
+                    "u": "+",
+                    "d": mneme_sync::MAX_RBSR_DEPTH + 1,
+                    "p": { "k": "f", "c": 0, "d": mneme_core::base64::encode(&[0_u8; 32]) }
+                }]
+            }
+        }),
+        serde_json::json!({
+            "op": "rbsr-reconcile",
+            "scope": "project:cedar",
+            "snapshot_revision": "00000000000000000000000000000000",
+            "request": {
+                "r": [{
+                    "l": "-",
+                    "u": "+",
+                    "d": 0,
+                    "p": { "k": "f", "c": 0, "d": mneme_core::base64::encode(&[0_u8; 32]) }
+                }]
+            }
+        }),
+        serde_json::json!({
+            "op": "fetch-delta-metadata",
+            "scope": "project:cedar",
+            "snapshot_revision": snapshot.head_revision,
+            "revisions": [],
+            "blobs": [ "0000000000000000000000000000000000000000000000000000000000000000" ]
+        }),
+    ];
+
+    for payload in malformed_payloads {
+        let (mut send, mut recv) = conn.open_bi().await.expect("open bi");
+        let bytes = serde_json::to_vec(&payload).expect("encode");
+        send.write_all(&bytes).await.expect("write");
+        send.finish().expect("finish");
+        let resp_bytes = recv
+            .read_to_end(mneme_sync::MAX_CONTROL_MESSAGE_BYTES)
+            .await
+            .expect("read");
+        let resp: serde_json::Value = serde_json::from_slice(&resp_bytes).expect("decode resp");
+        assert_eq!(resp["status"], "refused");
+    }
+
+    conn.close(0_u32.into(), b"done");
+    node_a.shutdown().await.expect("shutdown a");
+    node_b.shutdown().await.expect("shutdown b");
 }

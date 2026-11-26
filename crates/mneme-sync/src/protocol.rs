@@ -14,6 +14,8 @@ use std::str::FromStr;
 pub const SYNC_CONTROL_ALPN: &[u8] = b"/mneme/sync/1";
 /// Maximum control request/response message size (1 MiB).
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
+/// Maximum delta metadata items requested in one control round-trip.
+pub const MAX_DELTA_ITEMS_PER_REQUEST: u64 = 128;
 /// Maximum size of a gossip head-revision announcement (4 KiB).
 pub const MAX_GOSSIP_MESSAGE_BYTES: usize = 4096;
 /// Maximum portable revision bundle accepted over Iroh sync.
@@ -195,17 +197,143 @@ impl HeadAnnouncement {
     }
 }
 
+/// Wire key identifying one `(record_id, revision_id)` in a delta metadata fetch.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct WireRevisionKey {
+    pub record_id: String,
+    pub revision_id: String,
+}
+
+impl WireRevisionKey {
+    pub(crate) fn from_pair(
+        record_id: mneme_core::RecordId,
+        revision_id: mneme_core::RevisionId,
+    ) -> Self {
+        Self {
+            record_id: record_id.to_hex(),
+            revision_id: revision_id.to_hex(),
+        }
+    }
+
+    pub(crate) fn to_pair(
+        &self,
+    ) -> crate::error::Result<(mneme_core::RecordId, mneme_core::RevisionId)> {
+        let record_id = mneme_core::RecordId::from_hex(&self.record_id).map_err(|reason| {
+            crate::error::Failure::Protocol(format!("invalid record id in delta request: {reason}"))
+        })?;
+        let revision_id =
+            mneme_core::RevisionId::from_hex(&self.revision_id).map_err(|reason| {
+                crate::error::Failure::Protocol(format!(
+                    "invalid revision id in delta request: {reason}"
+                ))
+            })?;
+        Ok((record_id, revision_id))
+    }
+}
+
+/// Canonical serialized [`mneme_store::portability::PortableRevision`] for delta sync.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct WireDeltaRevision {
+    pub envelope_b64: String,
+    pub commit_revision: String,
+    pub commit_sequence: u64,
+    pub commit_actor: String,
+    pub commit_at_ns: i64,
+}
+
+impl WireDeltaRevision {
+    pub(crate) fn from_portable(revision: &mneme_store::portability::PortableRevision) -> Self {
+        let encoded = mneme_core::binary::encode(&revision.envelope.to_value());
+        Self {
+            envelope_b64: mneme_core::base64::encode(&encoded),
+            commit_revision: revision.commit.revision.to_hex(),
+            commit_sequence: revision.commit.sequence,
+            commit_actor: revision.commit.actor.clone(),
+            commit_at_ns: revision.commit.committed_at_ns,
+        }
+    }
+
+    pub(crate) fn to_portable(
+        &self,
+        expected_scope: &mneme_core::ScopeId,
+    ) -> crate::error::Result<mneme_store::portability::PortableRevision> {
+        let bytes = mneme_core::base64::decode(&self.envelope_b64).map_err(|reason| {
+            crate::error::Failure::Protocol(format!("invalid delta envelope base64: {reason}"))
+        })?;
+        let value = mneme_core::binary::decode_canonical(&bytes).map_err(|diagnostic| {
+            crate::error::Failure::Protocol(format!("invalid delta envelope binary: {diagnostic}"))
+        })?;
+        let registry = mneme_core::SchemaRegistry::production();
+        let envelope = mneme_core::RecordEnvelope::from_value_with_registry(&value, &registry)
+            .map_err(|diagnostics| {
+                crate::error::Failure::Protocol(format!(
+                    "invalid delta record envelope: {}",
+                    mneme_core::render_diagnostics(&diagnostics)
+                ))
+            })?;
+        mneme_core::validate_record_value(&envelope.to_value(), &registry, None).map_err(
+            |diagnostics| {
+                crate::error::Failure::Protocol(format!(
+                    "delta record failed schema validation: {}",
+                    mneme_core::render_diagnostics(&diagnostics)
+                ))
+            },
+        )?;
+        if envelope.scope != *expected_scope {
+            return Err(crate::error::Failure::Protocol(format!(
+                "delta revision scope {} does not match {expected_scope}",
+                envelope.scope
+            )));
+        }
+        let commit_revision = mneme_core::WorkspaceRevisionId::from_hex(&self.commit_revision)
+            .map_err(|reason| {
+                crate::error::Failure::Protocol(format!("invalid delta commit revision: {reason}"))
+            })?;
+        Ok(mneme_store::portability::PortableRevision {
+            envelope,
+            commit: mneme_store::RevisionCommit {
+                revision: commit_revision,
+                sequence: self.commit_sequence,
+                actor: self.commit_actor.clone(),
+                committed_at_ns: self.commit_at_ns,
+            },
+        })
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub(crate) enum SyncControlRequest {
-    GetVaultHead { scope: String },
+    GetVaultHead {
+        scope: String,
+    },
+    RbsrReconcile {
+        scope: String,
+        snapshot_revision: String,
+        request: crate::rbsr::RbsrRequest,
+    },
+    FetchDeltaMetadata {
+        scope: String,
+        snapshot_revision: String,
+        revisions: Vec<WireRevisionKey>,
+        blobs: Vec<String>,
+    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub(crate) enum SyncControlResponse {
     VaultHead(Box<VaultSnapshotInfo>),
-    Refused { reason: String },
+    RbsrReply(crate::rbsr::RbsrResponse),
+    DeltaMetadata {
+        revisions: Vec<WireDeltaRevision>,
+        blobs: Vec<BlobDigestRef>,
+    },
+    Refused {
+        reason: String,
+    },
 }
 
 /// Protocol handler wrapper enforcing the deny-by-default Ed25519 allowlist.
@@ -247,9 +375,23 @@ impl<P: iroh::protocol::ProtocolHandler> iroh::protocol::ProtocolHandler
     }
 }
 
+/// Published scope state shared between `SyncNode` and `/mneme/sync/1`.
+#[derive(Clone, Debug)]
+pub(crate) struct PublishedScopeEntry {
+    pub info: VaultSnapshotInfo,
+    pub rbsr_set: crate::rbsr::RbsrSet,
+    pub revisions: std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_store::portability::PortableRevision,
+    >,
+    pub blobs_by_digest: std::collections::BTreeMap<[u8; 32], BlobDigestRef>,
+}
+
 /// Served scope table shared between the sync node and the control ALPN handler.
 pub(crate) type PublishedScopes = std::sync::Arc<
-    std::sync::RwLock<std::collections::BTreeMap<mneme_core::ScopeId, VaultSnapshotInfo>>,
+    std::sync::RwLock<
+        std::collections::BTreeMap<mneme_core::ScopeId, std::sync::Arc<PublishedScopeEntry>>,
+    >,
 >;
 
 /// Protocol handler for [`SYNC_CONTROL_ALPN`].
@@ -270,6 +412,34 @@ impl SyncControlHandler {
         }
     }
 
+    fn lookup_authorized_scope(
+        &self,
+        remote: iroh::EndpointId,
+        scope: &str,
+    ) -> std::result::Result<std::sync::Arc<PublishedScopeEntry>, SyncControlResponse> {
+        let Ok(parsed_scope) = parse_scope_id(scope) else {
+            return Err(SyncControlResponse::Refused {
+                reason: format!("invalid scope '{scope}'"),
+            });
+        };
+        if !self.allowlist.allows_scope(remote, &parsed_scope) {
+            return Err(SyncControlResponse::Refused {
+                reason: format!("peer is not authorized for scope {scope}"),
+            });
+        }
+        let Ok(guard) = self.published.read() else {
+            return Err(SyncControlResponse::Refused {
+                reason: "published scope table unavailable".to_owned(),
+            });
+        };
+        match guard.get(&parsed_scope) {
+            Some(entry) => Ok(std::sync::Arc::clone(entry)),
+            None => Err(SyncControlResponse::Refused {
+                reason: format!("scope {scope} is not served by this node"),
+            }),
+        }
+    }
+
     fn resolve_request(
         &self,
         remote: iroh::EndpointId,
@@ -285,29 +455,110 @@ impl SyncControlHandler {
         };
         match request {
             SyncControlRequest::GetVaultHead { scope } => {
-                let Ok(parsed_scope) = parse_scope_id(&scope) else {
-                    return SyncControlResponse::Refused {
-                        reason: format!("invalid scope '{scope}'"),
-                    };
+                let entry = match self.lookup_authorized_scope(remote, &scope) {
+                    Ok(entry) => entry,
+                    Err(refused) => return refused,
                 };
-                if !self.allowlist.allows_scope(remote, &parsed_scope) {
+                // Keep GetVaultHead O(1): omit full N-blob lists on the wire;
+                // peers discover missing blobs via RBSR on /mneme/sync/1.
+                let mut summary = entry.info.clone();
+                summary.blobs.clear();
+                SyncControlResponse::VaultHead(Box::new(summary))
+            }
+            SyncControlRequest::RbsrReconcile {
+                scope,
+                snapshot_revision,
+                request,
+            } => {
+                let entry = match self.lookup_authorized_scope(remote, &scope) {
+                    Ok(entry) => entry,
+                    Err(refused) => return refused,
+                };
+                if entry.info.head_revision != snapshot_revision {
                     return SyncControlResponse::Refused {
-                        reason: format!("peer is not authorized for scope {scope}"),
+                        reason: format!(
+                            "snapshot revision {snapshot_revision} is stale (current {})",
+                            entry.info.head_revision
+                        ),
                     };
                 }
-                let Ok(guard) = self.published.read() else {
-                    return SyncControlResponse::Refused {
-                        reason: "published scope table unavailable".to_owned(),
-                    };
-                };
-                match guard.get(&parsed_scope) {
-                    Some(info) => SyncControlResponse::VaultHead(Box::new(info.clone())),
-                    None => SyncControlResponse::Refused {
-                        reason: format!("scope {scope} is not served by this node"),
+                match entry.rbsr_set.evaluate_request(&request) {
+                    Ok(reply) => SyncControlResponse::RbsrReply(reply),
+                    Err(error) => SyncControlResponse::Refused {
+                        reason: format!("RBSR request refused: {error}"),
                     },
                 }
             }
+            SyncControlRequest::FetchDeltaMetadata {
+                scope,
+                snapshot_revision,
+                revisions,
+                blobs,
+            } => {
+                let entry = match self.lookup_authorized_scope(remote, &scope) {
+                    Ok(entry) => entry,
+                    Err(refused) => return refused,
+                };
+                if entry.info.head_revision != snapshot_revision {
+                    return SyncControlResponse::Refused {
+                        reason: format!(
+                            "snapshot revision {snapshot_revision} is stale (current {})",
+                            entry.info.head_revision
+                        ),
+                    };
+                }
+                resolve_delta_metadata(&entry, &revisions, &blobs)
+            }
         }
+    }
+}
+
+fn resolve_delta_metadata(
+    entry: &PublishedScopeEntry,
+    revision_keys: &[WireRevisionKey],
+    blob_hexes: &[String],
+) -> SyncControlResponse {
+    if revision_keys.len() as u64 > MAX_DELTA_ITEMS_PER_REQUEST
+        || blob_hexes.len() as u64 > MAX_DELTA_ITEMS_PER_REQUEST
+    {
+        return SyncControlResponse::Refused {
+            reason: format!("delta metadata request exceeds {MAX_DELTA_ITEMS_PER_REQUEST} items"),
+        };
+    }
+
+    let mut out_revisions = Vec::with_capacity(revision_keys.len());
+    for wire_key in revision_keys {
+        let Ok(pair) = wire_key.to_pair() else {
+            return SyncControlResponse::Refused {
+                reason: "invalid revision key in delta request".to_owned(),
+            };
+        };
+        let Some(revision) = entry.revisions.get(&pair) else {
+            return SyncControlResponse::Refused {
+                reason: format!("requested revision {} is not present", wire_key.revision_id),
+            };
+        };
+        out_revisions.push(WireDeltaRevision::from_portable(revision));
+    }
+
+    let mut out_blobs = Vec::with_capacity(blob_hexes.len());
+    for hex in blob_hexes {
+        let Ok(digest_bytes) = decode_hex_32(hex) else {
+            return SyncControlResponse::Refused {
+                reason: format!("invalid blob digest hex '{hex}'"),
+            };
+        };
+        let Some(blob_ref) = entry.blobs_by_digest.get(&digest_bytes) else {
+            return SyncControlResponse::Refused {
+                reason: format!("requested blob {hex} is not present"),
+            };
+        };
+        out_blobs.push(blob_ref.clone());
+    }
+
+    SyncControlResponse::DeltaMetadata {
+        revisions: out_revisions,
+        blobs: out_blobs,
     }
 }
 
@@ -317,20 +568,20 @@ impl iroh::protocol::ProtocolHandler for SyncControlHandler {
         connection: iroh::endpoint::Connection,
     ) -> std::result::Result<(), iroh::protocol::AcceptError> {
         let remote = connection.remote_id();
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        let request_bytes = recv
-            .read_to_end(MAX_CONTROL_MESSAGE_BYTES)
-            .await
-            .map_err(iroh::protocol::AcceptError::from_err)?;
-        let response = self.resolve_request(remote, &request_bytes);
-        let encoded =
-            serde_json::to_vec(&response).map_err(iroh::protocol::AcceptError::from_err)?;
-        send.write_all(&encoded)
-            .await
-            .map_err(iroh::protocol::AcceptError::from_err)?;
-        send.finish()
-            .map_err(iroh::protocol::AcceptError::from_err)?;
-        connection.closed().await;
+        while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+            let request_bytes = recv
+                .read_to_end(MAX_CONTROL_MESSAGE_BYTES)
+                .await
+                .map_err(iroh::protocol::AcceptError::from_err)?;
+            let response = self.resolve_request(remote, &request_bytes);
+            let encoded =
+                serde_json::to_vec(&response).map_err(iroh::protocol::AcceptError::from_err)?;
+            send.write_all(&encoded)
+                .await
+                .map_err(iroh::protocol::AcceptError::from_err)?;
+            send.finish()
+                .map_err(iroh::protocol::AcceptError::from_err)?;
+        }
         Ok(())
     }
 }

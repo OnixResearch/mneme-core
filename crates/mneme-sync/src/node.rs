@@ -1,4 +1,4 @@
-//! Async Iroh sync node combining allowlisted blobs, control, discovery, and gossip.
+//! Async Iroh sync node combining allowlisted blobs, control, discovery, RBSR, and gossip.
 
 #![allow(
     unknown_lints,
@@ -6,8 +6,9 @@
     path_segment_repetition,
     fragile_exhaustive_enum_match,
     unbounded_collection_growth,
-    compound_condition
-)] // returns typed Result failures instead of panicking; SyncNode* matches module domain; exhaustive match on closed control enum; max_pulls bounds pull_on_gossip output; compound checks verify receipt equivalence
+    compound_condition,
+    allocation_in_loop
+)] // returns typed Result failures instead of panicking; SyncNode* matches module domain; exhaustive match on closed control enum; max_pulls and chunking bound allocations; compound checks verify receipt equivalence
 
 use std::str::FromStr;
 
@@ -36,6 +37,18 @@ pub struct PullRequest {
     pub workspace_config: WorkspaceConfigFactory,
 }
 
+/// Telemetry describing RBSR control exchange and `iroh-blobs` transfers during one pull.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyncTransferStats {
+    pub rbsr_rounds: u64,
+    pub control_bytes_sent: u64,
+    pub control_bytes_received: u64,
+    pub rbsr_remote_only_items: u64,
+    pub rbsr_local_only_items: u64,
+    pub blobs_fetched: u64,
+    pub blob_bytes_fetched: u64,
+}
+
 /// Result of one verified pull from an allowlisted peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullOutcome {
@@ -44,6 +57,7 @@ pub struct PullOutcome {
     pub local_revision: mneme_core::WorkspaceRevisionId,
     pub local_sequence: u64,
     pub verify_report: mneme_store::VerifyReport,
+    pub stats: SyncTransferStats,
 }
 
 /// Active `iroh-gossip` subscription scoped to one vault's private topic.
@@ -209,7 +223,7 @@ impl SyncNode {
         &self.endpoint
     }
 
-    /// Export `scope` from `workspace` and publish its bundle and blobs for allowlisted peers.
+    /// Export `scope` from `workspace` and publish its bundle, blobs, and RBSR index.
     pub async fn publish_workspace(
         &self,
         workspace: &mneme_store::Workspace,
@@ -218,16 +232,22 @@ impl SyncNode {
     ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
         let exported =
             crate::bundle::export_scope_to_store(workspace, vault_id, scope, &self.blobs).await?;
+        let entry = std::sync::Arc::new(crate::protocol::PublishedScopeEntry {
+            info: exported.info.clone(),
+            rbsr_set: exported.rbsr_set,
+            revisions: exported.revisions,
+            blobs_by_digest: exported.blobs_by_digest,
+        });
         let mut guard = self.published.write().map_err(|_| {
             crate::error::Failure::InvalidConfig("published scopes lock poisoned".to_owned())
         })?;
-        guard.insert(scope.clone(), exported.info.clone());
+        guard.insert(scope.clone(), entry);
         Ok(exported.info)
     }
 
     /// Subscribe to the private `iroh-gossip` topic derived from `vault_id`.
     ///
-    /// Every bootstrap peer MUST already be in [`PeerAllowlist`].
+    /// Every bootstrap peer MUST already be in [`crate::trust::PeerAllowlist`].
     pub async fn subscribe_gossip(
         &self,
         vault_id: &str,
@@ -260,78 +280,126 @@ impl SyncNode {
         scope: &mneme_core::ScopeId,
     ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
         self.require_peer_scope(peer, scope)?;
-        let conn = self
-            .endpoint
-            .connect(peer, crate::protocol::SYNC_CONTROL_ALPN)
-            .await
-            .map_err(|error| {
-                crate::error::Failure::Transport(format!("connect control to {peer}: {error}"))
-            })?;
-        let (mut send, mut recv) = conn.open_bi().await.map_err(|error| {
-            crate::error::Failure::Transport(format!("open control stream: {error}"))
-        })?;
-        let req = crate::protocol::SyncControlRequest::GetVaultHead {
-            scope: scope.to_string(),
-        };
-        let encoded = serde_json::to_vec(&req).map_err(|error| {
-            crate::error::Failure::Protocol(format!("encode control request: {error}"))
-        })?;
-        send.write_all(&encoded)
-            .await
-            .map_err(|error| crate::error::Failure::Transport(format!("write control: {error}")))?;
-        send.finish().map_err(|error| {
-            crate::error::Failure::Transport(format!("finish control write: {error}"))
-        })?;
-        let response_bytes = recv
-            .read_to_end(crate::protocol::MAX_CONTROL_MESSAGE_BYTES)
-            .await
-            .map_err(|error| crate::error::Failure::Transport(format!("read control: {error}")))?;
-        let response: crate::protocol::SyncControlResponse =
-            serde_json::from_slice(&response_bytes).map_err(|error| {
-                crate::error::Failure::Protocol(format!("decode control response: {error}"))
-            })?;
-        match response {
-            crate::protocol::SyncControlResponse::VaultHead(info) => Ok(*info),
-            crate::protocol::SyncControlResponse::Refused { reason } => {
-                Err(crate::error::Failure::Protocol(format!(
-                    "peer {peer} refused sync head request: {reason}"
-                )))
-            }
-        }
+        let conn = self.connect_control(peer).await?;
+        let (info, _sent, _recv) = fetch_vault_head_on_conn(&conn, peer, scope).await?;
+        conn.close(0_u32.into(), b"done");
+        Ok(info)
     }
 
-    /// Pull `request.scope` from `request.peer`, verify over `iroh-blobs`, and ingest/verify locally.
+    /// Run bounded RBSR set reconciliation against `peer` over [`crate::protocol::SYNC_CONTROL_ALPN`].
+    pub async fn reconcile_scope(
+        &self,
+        peer: iroh::EndpointId,
+        scope: &mneme_core::ScopeId,
+        snapshot_revision: &str,
+        local_set: &crate::rbsr::RbsrSet,
+    ) -> crate::error::Result<crate::rbsr::RbsrOutcome> {
+        self.require_peer_scope(peer, scope)?;
+        let conn = self.connect_control(peer).await?;
+        let (outcome, _sent, _recv) =
+            reconcile_on_conn(&conn, peer, scope, snapshot_revision, local_set).await?;
+        conn.close(0_u32.into(), b"done");
+        Ok(outcome)
+    }
+
+    /// Pull `request.scope` from `request.peer`, isolate delta via RBSR, and ingest/verify locally.
     pub async fn pull_scope(&self, request: PullRequest) -> crate::error::Result<PullOutcome> {
         self.require_peer_scope(request.peer, &request.scope)?;
-        let snapshot = self.fetch_vault_head(request.peer, &request.scope).await?;
+        let conn = self.connect_control(request.peer).await?;
+        let (snapshot, head_sent, head_recv) =
+            fetch_vault_head_on_conn(&conn, request.peer, &request.scope).await?;
         validate_snapshot_info(&snapshot, &request.scope)?;
 
-        if let Some(outcome) = self.try_idempotent_fast_path(&request, &snapshot)? {
+        let stats = SyncTransferStats {
+            control_bytes_sent: head_sent,
+            control_bytes_received: head_recv,
+            ..SyncTransferStats::default()
+        };
+
+        if let Some(outcome) = self.try_idempotent_fast_path(&request, &snapshot, stats)? {
+            conn.close(0_u32.into(), b"done");
             return Ok(outcome);
         }
 
-        let bundle_hash = snapshot.parsed_bundle_hash()?;
-        self.download_verified_blobs(request.peer, bundle_hash, &snapshot.blobs)
-            .await?;
+        let local_sequence = local_workspace_sequence(&request)?;
+        let Some(local_seq) = local_sequence.filter(|seq| *seq > 0) else {
+            conn.close(0_u32.into(), b"done");
+            return self.pull_full_restore(request, snapshot, stats).await;
+        };
+        let _ = local_seq;
 
-        let temp_dir = tempfile::tempdir()
-            .map_err(|error| crate::error::Failure::Io(format!("pull tempdir: {error}")))?;
-        let archive_path = temp_dir.path().join("pulled.mneme");
-        self.blobs
-            .blobs()
-            .export(bundle_hash, &archive_path)
+        self.pull_delta_over_rbsr(conn, request, snapshot, stats)
             .await
-            .map_err(|error| {
-                crate::error::Failure::Transport(format!("export fetched bundle: {error}"))
-            })?;
+    }
 
+    async fn pull_delta_over_rbsr(
+        &self,
+        conn: iroh::endpoint::Connection,
+        request: PullRequest,
+        snapshot: crate::protocol::VaultSnapshotInfo,
+        mut stats: SyncTransferStats,
+    ) -> crate::error::Result<PullOutcome> {
+        let local_set = collect_local_rbsr_blocking(&request).await?;
+        let (rbsr_outcome, rbsr_sent, rbsr_recv) = reconcile_on_conn(
+            &conn,
+            request.peer,
+            &request.scope,
+            &snapshot.head_revision,
+            &local_set,
+        )
+        .await?;
+
+        stats.rbsr_rounds = rbsr_outcome.rounds;
+        stats.control_bytes_sent = stats.control_bytes_sent.saturating_add(rbsr_sent);
+        stats.control_bytes_received = stats.control_bytes_received.saturating_add(rbsr_recv);
+        stats.rbsr_remote_only_items = rbsr_outcome.remote_only.len() as u64;
+        stats.rbsr_local_only_items = rbsr_outcome.local_only.len() as u64;
+
+        let extra_local = partition_keys(&rbsr_outcome.local_only)?;
+        if !extra_local.revisions.is_empty() {
+            conn.close(0_u32.into(), b"conflict");
+            return Err(crate::error::Failure::Store(
+                mneme_store::Failure::PortableArchive(
+                    "destination workspace history conflicts with remote peer".to_owned(),
+                ),
+            ));
+        }
+
+        let missing = partition_keys(&rbsr_outcome.remote_only)?;
+        if missing.revisions.is_empty() && missing.blobs.is_empty() {
+            conn.close(0_u32.into(), b"done");
+            return self.complete_empty_diff(request, snapshot, stats);
+        }
+
+        let query = DeltaMetadataQuery {
+            peer: request.peer,
+            scope: &request.scope,
+            snapshot_revision: &snapshot.head_revision,
+            missing_revs: &missing.revisions,
+            missing_blobs: &missing.blobs,
+        };
+        let (delta_revisions, delta_blob_refs, meta_sent, meta_recv) =
+            fetch_delta_metadata_on_conn(&conn, &query).await?;
+        conn.close(0_u32.into(), b"done");
+
+        stats.control_bytes_sent = stats.control_bytes_sent.saturating_add(meta_sent);
+        stats.control_bytes_received = stats.control_bytes_received.saturating_add(meta_recv);
+
+        let (fetched_blobs, blob_bytes_fetched) = self
+            .download_delta_blobs(request.peer, &delta_blob_refs)
+            .await?;
+        stats.blobs_fetched = fetched_blobs.len() as u64;
+        stats.blob_bytes_fetched = blob_bytes_fetched;
+
+        let delta =
+            build_portable_delta(&request.scope, &snapshot, delta_revisions, fetched_blobs)?;
         let destination = request.destination.clone();
         let workspace_config = (request.workspace_config)();
         let ingested = tokio::task::spawn_blocking(move || {
-            crate::bundle::ingest_downloaded_archive(&archive_path, &destination, workspace_config)
+            crate::bundle::ingest_delta_to_workspace(&delta, &destination, workspace_config)
         })
         .await
-        .map_err(|error| crate::error::Failure::Io(format!("ingest task join: {error}")))??;
+        .map_err(|error| crate::error::Failure::Io(format!("delta ingest task join: {error}")))??;
 
         if let Some(state_dir) = &request.state_dir {
             record_pull_receipt(state_dir, &request, &snapshot, ingested.local_sequence)?;
@@ -343,6 +411,7 @@ impl SyncNode {
             local_revision: ingested.local_revision,
             local_sequence: ingested.local_sequence,
             verify_report: ingested.verify_report,
+            stats,
         })
     }
 
@@ -387,6 +456,93 @@ impl SyncNode {
             .map_err(|error| crate::error::Failure::Transport(format!("router shutdown: {error}")))
     }
 
+    async fn connect_control(
+        &self,
+        peer: iroh::EndpointId,
+    ) -> crate::error::Result<iroh::endpoint::Connection> {
+        self.endpoint
+            .connect(peer, crate::protocol::SYNC_CONTROL_ALPN)
+            .await
+            .map_err(|error| {
+                crate::error::Failure::Transport(format!("connect control to {peer}: {error}"))
+            })
+    }
+
+    async fn pull_full_restore(
+        &self,
+        request: PullRequest,
+        snapshot: crate::protocol::VaultSnapshotInfo,
+        mut stats: SyncTransferStats,
+    ) -> crate::error::Result<PullOutcome> {
+        let bundle_hash = snapshot.parsed_bundle_hash()?;
+        self.download_bundle_only(request.peer, bundle_hash).await?;
+        stats.blobs_fetched = 1;
+        stats.blob_bytes_fetched = snapshot.bundle_bytes;
+
+        let temp_dir = tempfile::tempdir()
+            .map_err(|error| crate::error::Failure::Io(format!("pull tempdir: {error}")))?;
+        let archive_path = temp_dir.path().join("pulled.mneme");
+        self.blobs
+            .blobs()
+            .export(bundle_hash, &archive_path)
+            .await
+            .map_err(|error| {
+                crate::error::Failure::Transport(format!("export fetched bundle: {error}"))
+            })?;
+
+        let destination = request.destination.clone();
+        let workspace_config = (request.workspace_config)();
+        let ingested = tokio::task::spawn_blocking(move || {
+            crate::bundle::ingest_downloaded_archive(&archive_path, &destination, workspace_config)
+        })
+        .await
+        .map_err(|error| crate::error::Failure::Io(format!("ingest task join: {error}")))??;
+
+        if let Some(state_dir) = &request.state_dir {
+            record_pull_receipt(state_dir, &request, &snapshot, ingested.local_sequence)?;
+        }
+
+        Ok(PullOutcome {
+            disposition: ingested.disposition,
+            snapshot,
+            local_revision: ingested.local_revision,
+            local_sequence: ingested.local_sequence,
+            verify_report: ingested.verify_report,
+            stats,
+        })
+    }
+
+    fn complete_empty_diff(
+        &self,
+        request: PullRequest,
+        snapshot: crate::protocol::VaultSnapshotInfo,
+        stats: SyncTransferStats,
+    ) -> crate::error::Result<PullOutcome> {
+        let verify_report =
+            mneme_store::verify_workspace(&request.destination, mneme_store::VerifyMode::Full)?;
+        if !verify_report.is_healthy() {
+            return Err(crate::error::Failure::VerificationFailed(format!(
+                "{} integrity issues reported by verify_workspace",
+                verify_report.issues.len()
+            )));
+        }
+        let workspace =
+            mneme_store::Workspace::open(&request.destination, (request.workspace_config)())?;
+        let local_revision = workspace.current_revision()?;
+        let local_sequence = workspace.current_sequence()?;
+        if let Some(state_dir) = &request.state_dir {
+            record_pull_receipt(state_dir, &request, &snapshot, local_sequence)?;
+        }
+        Ok(PullOutcome {
+            disposition: crate::bundle::PullDisposition::AlreadyUpToDate,
+            snapshot,
+            local_revision,
+            local_sequence,
+            verify_report,
+            stats,
+        })
+    }
+
     fn require_peer_scope(
         &self,
         peer: iroh::EndpointId,
@@ -408,6 +564,7 @@ impl SyncNode {
         &self,
         request: &PullRequest,
         snapshot: &crate::protocol::VaultSnapshotInfo,
+        stats: SyncTransferStats,
     ) -> crate::error::Result<Option<PullOutcome>> {
         let Some(state_dir) = &request.state_dir else {
             return Ok(None);
@@ -444,14 +601,14 @@ impl SyncNode {
             local_revision: workspace.current_revision()?,
             local_sequence: workspace.current_sequence()?,
             verify_report,
+            stats,
         }))
     }
 
-    async fn download_verified_blobs(
+    async fn download_bundle_only(
         &self,
         peer: iroh::EndpointId,
         bundle_hash: iroh_blobs::Hash,
-        blobs: &[crate::protocol::BlobDigestRef],
     ) -> crate::error::Result<()> {
         let conn = self
             .endpoint
@@ -463,12 +620,31 @@ impl SyncNode {
         let _stats = self
             .blobs
             .remote()
-            .fetch(conn.clone(), bundle_hash)
+            .fetch(conn, bundle_hash)
             .await
             .map_err(|error| {
                 crate::error::Failure::Transport(format!("fetch bundle {bundle_hash}: {error}"))
             })?;
+        Ok(())
+    }
 
+    async fn download_delta_blobs(
+        &self,
+        peer: iroh::EndpointId,
+        blobs: &[crate::protocol::BlobDigestRef],
+    ) -> crate::error::Result<(Vec<mneme_store::portability::PortableDeltaBlob>, u64)> {
+        if blobs.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+        let conn = self
+            .endpoint
+            .connect(peer, iroh_blobs::ALPN)
+            .await
+            .map_err(|error| {
+                crate::error::Failure::Transport(format!("connect blobs to {peer}: {error}"))
+            })?;
+        let mut out = Vec::with_capacity(blobs.len());
+        let mut bytes_fetched = 0_u64;
         for blob_ref in blobs {
             let expected_digest = blob_ref.content_digest.to_digest()?;
             let transport_hash =
@@ -504,9 +680,344 @@ impl SyncNode {
                     expected_digest.to_hex()
                 )));
             }
+            bytes_fetched = bytes_fetched.saturating_add(bytes.len() as u64);
+            out.push(mneme_store::portability::PortableDeltaBlob {
+                digest: expected_digest,
+                bytes: bytes.to_vec(),
+            });
         }
-        Ok(())
+        Ok((out, bytes_fetched))
     }
+}
+
+async fn send_control_on_conn(
+    conn: &iroh::endpoint::Connection,
+    request: &crate::protocol::SyncControlRequest,
+) -> crate::error::Result<(crate::protocol::SyncControlResponse, u64, u64)> {
+    let encoded = serde_json::to_vec(request).map_err(|error| {
+        crate::error::Failure::Protocol(format!("encode control request: {error}"))
+    })?;
+    let bytes_sent = encoded.len() as u64;
+    if encoded.len() > crate::protocol::MAX_CONTROL_MESSAGE_BYTES {
+        return Err(crate::error::Failure::SizeLimitExceeded {
+            actual_bytes: bytes_sent,
+            limit_bytes: crate::protocol::MAX_CONTROL_MESSAGE_BYTES as u64,
+        });
+    }
+    let (mut send, mut recv) = conn.open_bi().await.map_err(|error| {
+        crate::error::Failure::Transport(format!("open control stream: {error}"))
+    })?;
+    send.write_all(&encoded)
+        .await
+        .map_err(|error| crate::error::Failure::Transport(format!("write control: {error}")))?;
+    send.finish().map_err(|error| {
+        crate::error::Failure::Transport(format!("finish control write: {error}"))
+    })?;
+    let response_bytes = recv
+        .read_to_end(crate::protocol::MAX_CONTROL_MESSAGE_BYTES)
+        .await
+        .map_err(|error| crate::error::Failure::Transport(format!("read control: {error}")))?;
+    let bytes_received = response_bytes.len() as u64;
+    let response: crate::protocol::SyncControlResponse = serde_json::from_slice(&response_bytes)
+        .map_err(|error| {
+            crate::error::Failure::Protocol(format!("decode control response: {error}"))
+        })?;
+    Ok((response, bytes_sent, bytes_received))
+}
+
+async fn fetch_vault_head_on_conn(
+    conn: &iroh::endpoint::Connection,
+    peer: iroh::EndpointId,
+    scope: &mneme_core::ScopeId,
+) -> crate::error::Result<(crate::protocol::VaultSnapshotInfo, u64, u64)> {
+    let req = crate::protocol::SyncControlRequest::GetVaultHead {
+        scope: scope.to_string(),
+    };
+    let (response, sent, recv) = send_control_on_conn(conn, &req).await?;
+    match response {
+        crate::protocol::SyncControlResponse::VaultHead(info) => Ok((*info, sent, recv)),
+        crate::protocol::SyncControlResponse::Refused { reason } => {
+            Err(crate::error::Failure::Protocol(format!(
+                "peer {peer} refused sync head request: {reason}"
+            )))
+        }
+        crate::protocol::SyncControlResponse::RbsrReply(_)
+        | crate::protocol::SyncControlResponse::DeltaMetadata { .. } => {
+            Err(crate::error::Failure::Protocol(
+                "unexpected control response for GetVaultHead".to_owned(),
+            ))
+        }
+    }
+}
+
+async fn reconcile_on_conn(
+    conn: &iroh::endpoint::Connection,
+    peer: iroh::EndpointId,
+    scope: &mneme_core::ScopeId,
+    snapshot_revision: &str,
+    local_set: &crate::rbsr::RbsrSet,
+) -> crate::error::Result<(crate::rbsr::RbsrOutcome, u64, u64)> {
+    let mut session = crate::rbsr::RbsrSession::new(local_set.clone());
+    let mut total_sent = 0_u64;
+    let mut total_recv = 0_u64;
+    let scope_text = scope.to_string();
+
+    while let Some((request, in_flight)) = session.next_request()? {
+        let control_req = crate::protocol::SyncControlRequest::RbsrReconcile {
+            scope: scope_text.clone(),
+            snapshot_revision: snapshot_revision.to_owned(),
+            request,
+        };
+        let (response, sent, recv) = send_control_on_conn(conn, &control_req).await?;
+        total_sent = total_sent.saturating_add(sent);
+        total_recv = total_recv.saturating_add(recv);
+        match response {
+            crate::protocol::SyncControlResponse::RbsrReply(reply) => {
+                session.apply_response(&in_flight, reply)?;
+            }
+            crate::protocol::SyncControlResponse::Refused { reason } => {
+                return Err(crate::error::Failure::Protocol(format!(
+                    "peer {peer} refused RBSR request: {reason}"
+                )));
+            }
+            crate::protocol::SyncControlResponse::VaultHead(_)
+            | crate::protocol::SyncControlResponse::DeltaMetadata { .. } => {
+                return Err(crate::error::Failure::Protocol(
+                    "unexpected control response for RbsrReconcile".to_owned(),
+                ));
+            }
+        }
+    }
+
+    let outcome = session.finish()?;
+    Ok((outcome, total_sent, total_recv))
+}
+
+struct DeltaMetadataQuery<'a> {
+    peer: iroh::EndpointId,
+    scope: &'a mneme_core::ScopeId,
+    snapshot_revision: &'a str,
+    missing_revs: &'a [(mneme_core::RecordId, mneme_core::RevisionId)],
+    missing_blobs: &'a [[u8; 32]],
+}
+
+fn build_portable_delta(
+    scope: &mneme_core::ScopeId,
+    snapshot: &crate::protocol::VaultSnapshotInfo,
+    revisions: Vec<mneme_store::portability::PortableRevision>,
+    blobs: Vec<mneme_store::portability::PortableDeltaBlob>,
+) -> crate::error::Result<mneme_store::portability::PortableDelta> {
+    let remote_revision = mneme_core::WorkspaceRevisionId::from_hex(&snapshot.head_revision)
+        .map_err(|reason| {
+            crate::error::Failure::Protocol(format!("invalid remote head revision: {reason}"))
+        })?;
+    Ok(mneme_store::portability::PortableDelta {
+        scope: scope.clone(),
+        remote_revision,
+        remote_sequence: snapshot.sequence,
+        revisions,
+        blobs,
+    })
+}
+
+async fn fetch_delta_metadata_on_conn(
+    conn: &iroh::endpoint::Connection,
+    query: &DeltaMetadataQuery<'_>,
+) -> crate::error::Result<(
+    Vec<mneme_store::portability::PortableRevision>,
+    Vec<crate::protocol::BlobDigestRef>,
+    u64,
+    u64,
+)> {
+    let items_per_chunk = usize::try_from(crate::protocol::MAX_DELTA_ITEMS_PER_REQUEST)
+        .map_err(|_| crate::error::Failure::Protocol("delta chunk limit overflow".to_owned()))?;
+    let rev_chunks: Vec<&[(mneme_core::RecordId, mneme_core::RevisionId)]> =
+        if query.missing_revs.is_empty() {
+            Vec::new()
+        } else {
+            query.missing_revs.chunks(items_per_chunk).collect()
+        };
+    let blob_chunks: Vec<&[[u8; 32]]> = if query.missing_blobs.is_empty() {
+        Vec::new()
+    } else {
+        query.missing_blobs.chunks(items_per_chunk).collect()
+    };
+    let steps = rev_chunks.len().max(blob_chunks.len());
+    let mut out_revs = Vec::with_capacity(query.missing_revs.len());
+    let mut out_blobs = Vec::with_capacity(query.missing_blobs.len());
+    let mut total_sent = 0_u64;
+    let mut total_recv = 0_u64;
+    let scope_text = query.scope.to_string();
+
+    for idx in 0..steps {
+        let rev_slice = rev_chunks.get(idx).copied().unwrap_or(&[]);
+        let blob_slice = blob_chunks.get(idx).copied().unwrap_or(&[]);
+        let (chunk_revs, chunk_blobs, sent, recv) =
+            fetch_delta_chunk(conn, query, &scope_text, rev_slice, blob_slice).await?;
+        total_sent = total_sent.saturating_add(sent);
+        total_recv = total_recv.saturating_add(recv);
+        out_revs.extend(chunk_revs);
+        out_blobs.extend(chunk_blobs);
+    }
+
+    Ok((out_revs, out_blobs, total_sent, total_recv))
+}
+
+async fn fetch_delta_chunk(
+    conn: &iroh::endpoint::Connection,
+    query: &DeltaMetadataQuery<'_>,
+    scope_text: &str,
+    rev_slice: &[(mneme_core::RecordId, mneme_core::RevisionId)],
+    blob_slice: &[[u8; 32]],
+) -> crate::error::Result<(
+    Vec<mneme_store::portability::PortableRevision>,
+    Vec<crate::protocol::BlobDigestRef>,
+    u64,
+    u64,
+)> {
+    let expected_revs: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)> =
+        rev_slice.iter().copied().collect();
+    let expected_blobs: std::collections::BTreeSet<[u8; 32]> = blob_slice.iter().copied().collect();
+
+    let req = crate::protocol::SyncControlRequest::FetchDeltaMetadata {
+        scope: scope_text.to_owned(),
+        snapshot_revision: query.snapshot_revision.to_owned(),
+        revisions: rev_slice
+            .iter()
+            .map(|(rec, rev)| crate::protocol::WireRevisionKey::from_pair(*rec, *rev))
+            .collect(),
+        blobs: blob_slice.iter().map(encode_hex_32).collect(),
+    };
+    let (response, sent, recv) = send_control_on_conn(conn, &req).await?;
+    match response {
+        crate::protocol::SyncControlResponse::DeltaMetadata { revisions, blobs } => {
+            let parsed_revs = parse_delta_revisions(query.scope, &expected_revs, revisions)?;
+            let parsed_blobs = parse_delta_blobs(&expected_blobs, blobs)?;
+            Ok((parsed_revs, parsed_blobs, sent, recv))
+        }
+        crate::protocol::SyncControlResponse::Refused { reason } => {
+            Err(crate::error::Failure::Protocol(format!(
+                "peer {} refused delta metadata request: {reason}",
+                query.peer
+            )))
+        }
+        crate::protocol::SyncControlResponse::VaultHead(_)
+        | crate::protocol::SyncControlResponse::RbsrReply(_) => {
+            Err(crate::error::Failure::Protocol(
+                "unexpected control response for FetchDeltaMetadata".to_owned(),
+            ))
+        }
+    }
+}
+
+fn parse_delta_revisions(
+    scope: &mneme_core::ScopeId,
+    expected_revs: &std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    revisions: Vec<crate::protocol::WireDeltaRevision>,
+) -> crate::error::Result<Vec<mneme_store::portability::PortableRevision>> {
+    if revisions.len() != expected_revs.len() {
+        return Err(crate::error::Failure::Protocol(
+            "delta revision count did not match request".to_owned(),
+        ));
+    }
+    let mut out = Vec::with_capacity(revisions.len());
+    let mut seen = std::collections::BTreeSet::new();
+    for wire_rev in revisions {
+        let portable = wire_rev.to_portable(scope)?;
+        let pair = (portable.envelope.record_id, portable.envelope.revision_id);
+        if !expected_revs.contains(&pair) || !seen.insert(pair) {
+            return Err(crate::error::Failure::Protocol(
+                "peer returned unrequested or duplicate delta revision".to_owned(),
+            ));
+        }
+        out.push(portable);
+    }
+    Ok(out)
+}
+
+fn parse_delta_blobs(
+    expected_blobs: &std::collections::BTreeSet<[u8; 32]>,
+    blobs: Vec<crate::protocol::BlobDigestRef>,
+) -> crate::error::Result<Vec<crate::protocol::BlobDigestRef>> {
+    if blobs.len() != expected_blobs.len() {
+        return Err(crate::error::Failure::Protocol(
+            "delta blob count did not match request".to_owned(),
+        ));
+    }
+    let mut out = Vec::with_capacity(blobs.len());
+    let mut seen = std::collections::BTreeSet::new();
+    for blob_ref in blobs {
+        let digest = blob_ref.content_digest.to_digest()?;
+        let key = *digest.as_bytes();
+        if !expected_blobs.contains(&key) || !seen.insert(key) {
+            return Err(crate::error::Failure::Protocol(
+                "peer returned unrequested or duplicate delta blob".to_owned(),
+            ));
+        }
+        out.push(blob_ref);
+    }
+    Ok(out)
+}
+
+struct PartitionedKeys {
+    revisions: Vec<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    blobs: Vec<[u8; 32]>,
+}
+
+fn partition_keys(keys: &[crate::rbsr::RbsrKey]) -> crate::error::Result<PartitionedKeys> {
+    let mut revisions = Vec::new();
+    let mut blobs = Vec::new();
+    for &key in keys {
+        match key.kind() {
+            crate::rbsr::RbsrItemKind::Revision => {
+                let pair = key.as_revision().ok_or_else(|| {
+                    crate::error::Failure::Protocol("malformed RBSR revision key".to_owned())
+                })?;
+                revisions.push(pair);
+            }
+            crate::rbsr::RbsrItemKind::Blob => {
+                let digest = key.as_blob_bytes().ok_or_else(|| {
+                    crate::error::Failure::Protocol("malformed RBSR blob key".to_owned())
+                })?;
+                blobs.push(digest);
+            }
+        }
+    }
+    Ok(PartitionedKeys { revisions, blobs })
+}
+
+fn local_workspace_sequence(request: &PullRequest) -> crate::error::Result<Option<u64>> {
+    if !request.destination.is_dir() || !request.destination.join(mneme_store::LEDGER_FILE).exists()
+    {
+        return Ok(None);
+    }
+    let workspace =
+        mneme_store::Workspace::open(&request.destination, (request.workspace_config)())?;
+    Ok(Some(workspace.current_sequence()?))
+}
+
+async fn collect_local_rbsr_blocking(
+    request: &PullRequest,
+) -> crate::error::Result<crate::rbsr::RbsrSet> {
+    let destination = request.destination.clone();
+    let scope = request.scope.clone();
+    let config = (request.workspace_config)();
+    tokio::task::spawn_blocking(move || {
+        let workspace = mneme_store::Workspace::open(&destination, config)?;
+        crate::bundle::collect_local_rbsr_set(&workspace, &scope)
+    })
+    .await
+    .map_err(|error| crate::error::Failure::Io(format!("collect RBSR set join: {error}")))?
+}
+
+fn encode_hex_32(bytes: &[u8; 32]) -> String {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        out.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 fn validate_snapshot_info(

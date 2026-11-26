@@ -24,8 +24,16 @@ mod ingest;
 mod manifest;
 mod rebuild;
 
-pub use ingest::{IngestOutcomeStatus, PortableIngestReport, ingest_into};
+pub use ingest::{
+    IngestOutcomeStatus, PortableDelta, PortableDeltaBlob, PortableIngestReport, ingest_delta,
+    ingest_into,
+};
 pub use rebuild::restore;
+
+/// Verify a portable vault archive and return its decoded manifest.
+pub fn read_archive_manifest(archive: &std::path::Path) -> crate::error::Result<PortableManifest> {
+    file::ArchiveReader::verify(archive).map(|reader| reader.manifest)
+}
 
 /// The manifest record label.
 pub const PORTABLE_ARCHIVE_FORMAT: &str = "mneme-portable-vault";
