@@ -4291,7 +4291,7 @@ fn workspace_zstd_dictionary_and_fastcdc_deduplication() {
         .collect();
     let sample_refs: Vec<&[u8]> = samples.iter().map(Vec::as_slice).collect();
     let dict_bytes =
-        mneme_store::payload::train_zstd_dictionary(&sample_refs, 8192).expect("train dict");
+        mneme_store::dedup::train_zstd_dictionary(&sample_refs, 8192).expect("train dict");
 
     let small_payload =
         b"<record \"kind\": 'note \"scope\": \"vault/notes\" \"id\": \"note-9999\" \
@@ -4475,7 +4475,7 @@ fn workspace_zstd_dictionary_and_fastcdc_deduplication() {
     let chunks_dir = cdc_dir
         .path()
         .join(mneme_store::payload::BLOB_DIRECTORY)
-        .join(mneme_store::payload::CHUNK_DIRECTORY);
+        .join(mneme_store::dedup::CHUNK_DIRECTORY);
     let chunks_after_v1 = count_files_under(&chunks_dir);
     assert!(
         chunks_after_v1 >= 32,

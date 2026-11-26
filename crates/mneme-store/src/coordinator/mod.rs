@@ -1208,7 +1208,7 @@ pub struct Workspace {
     clock: Box<dyn Clock>,
     faults: Box<dyn FaultInjector>,
     blob_compression: crate::payload::BlobCompression,
-    blob_chunking: crate::chunking::BlobChunking,
+    blob_chunking: crate::dedup::BlobChunking,
     is_restore_required: bool,
     /// Required-digest and path-binding sets, keyed by the revision and
     /// generation they were computed for.
@@ -1555,6 +1555,8 @@ impl Workspace {
             .is_some_and(|value| !value.is_empty());
         // Binding comes last, once the ledger is known to be readable: a cache
         // bound to another workspace refuses this one before a handle exists.
+        debug_assert!(version == LAYOUT_VERSION);
+        debug_assert!(root.is_absolute());
         let shared = match shared {
             Some(cache) => {
                 cache.bind(read_genesis(&connection)?)?;
@@ -1568,7 +1570,7 @@ impl Workspace {
             clock: config.clock,
             faults: config.faults,
             blob_compression: crate::payload::BlobCompression::default(),
-            blob_chunking: crate::chunking::BlobChunking::default(),
+            blob_chunking: crate::dedup::BlobChunking::default(),
             is_restore_required,
             requirements: std::cell::RefCell::new(None),
             records: std::cell::RefCell::new(RecordCache::default()),
@@ -1595,19 +1597,19 @@ impl Workspace {
     }
 
     /// The on-disk chunking policy for newly staged `source-bytes` blobs.
-    pub fn blob_chunking(&self) -> crate::chunking::BlobChunking {
+    pub fn blob_chunking(&self) -> crate::dedup::BlobChunking {
         self.blob_chunking
     }
 
     /// Configure the on-disk chunking policy for newly staged `source-bytes`
     /// blobs.
-    pub fn set_blob_chunking(&mut self, chunking: crate::chunking::BlobChunking) {
+    pub fn set_blob_chunking(&mut self, chunking: crate::dedup::BlobChunking) {
         self.blob_chunking = chunking;
     }
 
     /// Return this workspace handle configured with `chunking` for newly
     /// staged `source-bytes` blobs.
-    pub fn with_blob_chunking(mut self, chunking: crate::chunking::BlobChunking) -> Self {
+    pub fn with_blob_chunking(mut self, chunking: crate::dedup::BlobChunking) -> Self {
         self.blob_chunking = chunking;
         self
     }
@@ -1618,7 +1620,7 @@ impl Workspace {
         &self,
         dict_bytes: &[u8],
     ) -> crate::error::Result<mneme_core::ContentDigest> {
-        crate::payload::stage_dictionary(&self.root, dict_bytes)
+        crate::dedup::stage_dictionary(&self.root, dict_bytes)
     }
 
     /// Open a workspace produced by an application-supported restore. Until

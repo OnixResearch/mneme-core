@@ -10,8 +10,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod catalog;
-pub mod chunking;
 pub mod coordinator;
+pub mod dedup;
 pub mod error;
 pub mod injectors;
 pub mod lifecycle;
@@ -21,13 +21,13 @@ pub mod requests;
 pub mod timekeeper;
 
 pub use catalog::{Manifest, ManifestRecord};
-pub use chunking::{BlobChunking, ChunkSpan, FastCdcConfig};
 pub use coordinator::{
     CommitOutcome, FOLDER_WORKSPACE_DIRECTORY, JobClaim, LAYOUT_VERSION, LEDGER_FILE,
     ProjectionRegistration, ProjectionResolution, ProjectionState, PublicationOutcome,
     PublicationState, RecordRevisionCommit, RecordRevisionCommitPage, RecoveryReport,
     RevisionCommit, SharedRecordCache, Snapshot, Workspace, WorkspaceConfig, WorkspaceStatus,
 };
+pub use dedup::{BlobChunking, FastCdcConfig};
 pub use error::{Failure, Result};
 pub use injectors::{FaultAt, FaultInjector, FaultPoint, NoFaults};
 pub use lifecycle::{
