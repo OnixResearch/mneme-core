@@ -328,6 +328,8 @@ pub struct Premise {
     pub absent: bool,
     /// The relation coverage an absent premise relied on.
     pub coverage: Option<String>,
+    /// Epistemic provenance carried by this premise in the semiring.
+    pub epistemic: EpistemicStatus,
 }
 
 /// A bounded conditional derivation support.
@@ -341,6 +343,8 @@ pub struct Derivation {
     pub revision: mneme_core::WorkspaceRevisionId,
     pub scope: mneme_core::ScopeId,
     pub truncated: bool,
+    /// Combined epistemic provenance across premises (`×` join).
+    pub epistemic: EpistemicStatus,
 }
 
 /// The built projection.
@@ -414,6 +418,26 @@ impl Build {
             .get(predicate)
             .map_or(0, std::collections::BTreeMap::len)
     }
+
+    /// Explain why a target ground atom was or was not derived in this build.
+    pub fn explain_missing(
+        &self,
+        predicate: &str,
+        terms: Vec<mneme_core::Value>,
+        limits: ExplainLimits,
+    ) -> Result<MissingExplanation, Error> {
+        provenance::explain_missing_in_build(
+            self,
+            predicate,
+            &terms,
+            provenance::ExplainContext {
+                requested_revision: self.context.requested_revision,
+                stale: false,
+                limits: &limits,
+                cancellation: None,
+            },
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -427,6 +451,8 @@ struct FactData {
     canonical_roots: std::collections::BTreeSet<mneme_core::RecordId>,
     /// Valid-time parameters the fact's claims carry.
     temporal: Vec<String>,
+    /// Epistemic provenance union (`+`) over all derivations of this row.
+    epistemic: EpistemicStatus,
 }
 
 /// A query over a built projection.
@@ -462,6 +488,7 @@ pub struct QueryRow {
     pub values: Vec<mneme_core::Value>,
     pub supports: Vec<Derivation>,
     pub support_truncated: bool,
+    pub epistemic: EpistemicStatus,
 }
 
 /// Query result with execution, coverage, and freshness kept separate.
@@ -675,7 +702,13 @@ struct QueryCacheKey {
 }
 
 mod engine;
+mod provenance;
 mod rules;
+
+pub use provenance::{
+    EpistemicStatus, ExplainLimits, ExplainMissingRequest, MissingExplanation, MissingReason,
+    MissingReasonKind, MissingStatus,
+};
 
 impl RuleBundle {
     /// Validate this bundle without registering or executing it.
@@ -953,8 +986,46 @@ impl<'w> Service<'w> {
         self.query_loaded(build.clone(), query)
     }
 
-    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
-    fn query_loaded(&mut self, build: Build, query: Query) -> Result<QueryResult, Error> {
+    /// Explain why a target ground atom was or was not derived in a built projection.
+    pub fn explain_missing(
+        &mut self,
+        build_id: &str,
+        request: ExplainMissingRequest,
+    ) -> Result<MissingExplanation, Error> {
+        let build = self
+            .builds
+            .get(build_id)
+            .cloned()
+            .ok_or_else(|| Error::MissingBuild(build_id.to_owned()))?;
+        self.explain_missing_build(&build, request)
+    }
+
+    /// Explain why a target ground atom was or was not derived in an explicit build,
+    /// re-checking workspace barriers and staleness.
+    pub fn explain_missing_build(
+        &mut self,
+        build: &Build,
+        request: ExplainMissingRequest,
+    ) -> Result<MissingExplanation, Error> {
+        let (requested_revision, stale) = self.verify_build_barriers(build, request.allow_stale)?;
+        provenance::explain_missing_in_build(
+            build,
+            &request.predicate,
+            &request.terms,
+            provenance::ExplainContext {
+                requested_revision,
+                stale,
+                limits: &request.limits,
+                cancellation: request.cancellation.as_ref(),
+            },
+        )
+    }
+
+    fn verify_build_barriers(
+        &self,
+        build: &Build,
+        allow_stale: bool,
+    ) -> Result<(mneme_core::WorkspaceRevisionId, bool), Error> {
         let current_generation = self.workspace.eligibility_generation()?;
         if current_generation != build.context.eligibility_generation {
             return Err(mneme_store::Failure::BarrierAdvanced {
@@ -974,22 +1045,25 @@ impl<'w> Service<'w> {
             ));
         }
         let current_revision = self.workspace.current_revision()?;
-        // The revision the caller asked about: a build that deliberately named
-        // an older revision answers for that revision, and otherwise the caller
-        // is asking about the current head. Serving a build older than that
-        // request is stale and must be disclosed as such.
         let requested_revision = if build.context.requested_was_head {
             current_revision
         } else {
             build.context.requested_revision
         };
         let is_stale = requested_revision != build.context.served_revision;
-        if is_stale && !query.allow_stale {
+        if is_stale && !allow_stale {
             return Err(Error::Stale {
                 requested: requested_revision,
                 served: build.context.served_revision,
             });
         }
+        Ok((requested_revision, is_stale))
+    }
+
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    fn query_loaded(&mut self, build: Build, query: Query) -> Result<QueryResult, Error> {
+        let (requested_revision, is_stale) =
+            self.verify_build_barriers(&build, query.allow_stale)?;
         if query
             .cancellation
             .as_ref()
@@ -1161,6 +1235,7 @@ fn matching_query_rows(build: &Build, query: &Query) -> Vec<QueryRow> {
                     values: terms.clone(),
                     supports: data.supports.clone(),
                     support_truncated: data.truncated,
+                    epistemic: data.epistemic,
                 });
             }
         }

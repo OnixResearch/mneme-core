@@ -42,6 +42,7 @@ struct FactContents {
     canonical: Option<mneme_core::RecordId>,
     canonical_roots: std::collections::BTreeSet<mneme_core::RecordId>,
     temporal: Vec<String>,
+    epistemic: crate::EpistemicStatus,
 }
 
 /// The premises one binding instantiates.
@@ -436,6 +437,11 @@ fn load_assertion_fact(
         return;
     }
     let (sources, availability) = assertion_sources(view, &assertion, evaluation.current_sources);
+    let epistemic = if assertion.stance == mneme_memory::Stance::Hypothesis {
+        crate::EpistemicStatus::Proposed
+    } else {
+        crate::EpistemicStatus::Accepted
+    };
     add_canonical_fact(
         evaluation,
         extent,
@@ -450,6 +456,7 @@ fn load_assertion_fact(
             sources,
             availability,
             temporal: temporal_parameters(assertion.valid_time),
+            epistemic,
         },
     );
 }
@@ -498,6 +505,7 @@ fn load_evidence_fact(
             sources,
             availability,
             temporal: Vec::new(),
+            epistemic: crate::EpistemicStatus::Accepted,
         },
     );
 }
@@ -558,6 +566,7 @@ fn load_source_fact(record: &mneme_core::RecordEnvelope, evaluation: &mut Evalua
             sources,
             availability: None,
             temporal: Vec::new(),
+            epistemic: crate::EpistemicStatus::Accepted,
         },
     );
 }
@@ -712,6 +721,7 @@ struct CanonicalRow<'a> {
     sources: std::collections::BTreeSet<crate::SourceKey>,
     availability: Option<String>,
     temporal: Vec<String>,
+    epistemic: crate::EpistemicStatus,
 }
 
 /// A canonical row with no supporting sources and no temporal parameters.
@@ -721,6 +731,7 @@ fn plain_row(record: &mneme_core::RecordEnvelope) -> CanonicalRow<'_> {
         sources: std::collections::BTreeSet::new(),
         availability: None,
         temporal: Vec::new(),
+        epistemic: crate::provenance::record_epistemic_status(record),
     }
 }
 
@@ -735,6 +746,7 @@ fn add_canonical_fact(
         sources,
         availability,
         temporal,
+        epistemic,
     } = row;
     let support = canonical_support(
         record,
@@ -742,6 +754,7 @@ fn add_canonical_fact(
         sources.clone(),
         availability,
         temporal.clone(),
+        epistemic,
     );
     add_fact(
         evaluation,
@@ -753,6 +766,7 @@ fn add_canonical_fact(
             canonical: Some(record.record_id),
             canonical_roots: std::collections::BTreeSet::from([record.record_id]),
             temporal,
+            epistemic,
         },
     );
 }
@@ -763,6 +777,7 @@ fn canonical_support(
     sources: std::collections::BTreeSet<crate::SourceKey>,
     availability: Option<String>,
     temporal: Vec<String>,
+    epistemic: crate::EpistemicStatus,
 ) -> crate::Derivation {
     crate::Derivation {
         rule_id: "canonical".to_owned(),
@@ -776,12 +791,14 @@ fn canonical_support(
             source_availability: availability,
             absent: false,
             coverage: None,
+            epistemic,
         }],
         sources,
         temporal_parameters: temporal,
         revision: context.served_revision,
         scope: context.scope.clone(),
         truncated: false,
+        epistemic,
     }
 }
 
@@ -802,6 +819,60 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
         return false;
     }
     let max_supports = evaluation.budget.limits.max_supports_per_fact;
+    let store = evaluation.facts.entry(predicate.to_owned()).or_default();
+    if store.rows.contains_key(&contents.terms) {
+        return merge_existing_fact(store, contents, max_supports, &mut evaluation.budget);
+    }
+    insert_new_fact(store, contents);
+    true
+}
+
+fn merge_existing_fact(
+    store: &mut FactStore,
+    contents: FactContents,
+    max_supports: usize,
+    budget: &mut Budget<'_>,
+) -> bool {
+    let FactContents {
+        terms,
+        support,
+        sources,
+        canonical_roots,
+        temporal,
+        epistemic,
+        ..
+    } = contents;
+    let Some(data) = store.rows.get_mut(&terms) else {
+        return false;
+    };
+    let prev_epistemic = data.epistemic;
+    data.epistemic = data.epistemic.union(epistemic);
+    let is_upgraded = data.epistemic > prev_epistemic;
+    if let Some(existing) = data
+        .supports
+        .iter_mut()
+        .find(|existing| same_proof(existing, &support))
+    {
+        merge_premises(existing, &support);
+        data.sources.extend(sources);
+        data.canonical_roots.extend(canonical_roots);
+        merge_strings(&mut data.temporal, temporal);
+        return is_upgraded;
+    }
+    if data.supports.len() >= max_supports {
+        data.truncated = true;
+        store.truncated = true;
+        budget.support_truncated = true;
+        return is_upgraded;
+    }
+    data.supports.push(support);
+    data.sources.extend(sources);
+    data.canonical_roots.extend(canonical_roots);
+    merge_strings(&mut data.temporal, temporal);
+    is_upgraded
+}
+
+fn insert_new_fact(store: &mut FactStore, contents: FactContents) {
     let FactContents {
         terms,
         support,
@@ -809,32 +880,8 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
         canonical,
         canonical_roots,
         temporal,
+        epistemic,
     } = contents;
-    let store = evaluation.facts.entry(predicate.to_owned()).or_default();
-    if let Some(data) = store.rows.get_mut(&terms) {
-        if let Some(existing) = data
-            .supports
-            .iter_mut()
-            .find(|existing| same_proof(existing, &support))
-        {
-            merge_premises(existing, &support);
-            data.sources.extend(sources);
-            data.canonical_roots.extend(canonical_roots);
-            merge_strings(&mut data.temporal, temporal);
-            return false;
-        }
-        if data.supports.len() >= max_supports {
-            data.truncated = true;
-            store.truncated = true;
-            evaluation.budget.support_truncated = true;
-            return false;
-        }
-        data.supports.push(support);
-        data.sources.extend(sources);
-        data.canonical_roots.extend(canonical_roots);
-        merge_strings(&mut data.temporal, temporal);
-        return false;
-    }
     if !store.indexes.is_empty() {
         for ((arity, cols), index) in &mut store.indexes {
             if terms.len() == *arity {
@@ -855,9 +902,9 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
             canonical,
             canonical_roots,
             temporal,
+            epistemic,
         },
     );
-    true
 }
 
 /// Whether two supports record the same proof.
@@ -892,6 +939,7 @@ fn merge_premises(existing: &mut crate::Derivation, new: &crate::Derivation) {
                 if candidate.source_availability.is_none() {
                     candidate.source_availability = premise.source_availability.clone();
                 }
+                candidate.epistemic = candidate.epistemic.union(premise.epistemic);
             }
             None => existing.premises.push(premise.clone()),
         }
@@ -902,6 +950,12 @@ fn merge_premises(existing: &mut crate::Derivation, new: &crate::Derivation) {
         new.temporal_parameters.clone(),
     );
     existing.truncated = existing.truncated || new.truncated;
+    existing.epistemic = existing
+        .premises
+        .iter()
+        .fold(crate::EpistemicStatus::ONE, |acc, premise| {
+            acc.join(premise.epistemic)
+        });
 }
 
 fn merge_strings(target: &mut Vec<String>, extra: Vec<String>) {
@@ -1795,6 +1849,21 @@ fn term_value_ref<'a>(
     }
 }
 
+pub(crate) fn compare_fact_values(
+    op: crate::CompareOp,
+    left: &mneme_core::Value,
+    right: &mneme_core::Value,
+) -> bool {
+    compare_values(op, left, right)
+}
+
+pub(crate) fn compute_aggregate_value(
+    function: crate::AggregateFunction,
+    values: Vec<mneme_core::Value>,
+) -> Result<mneme_core::Value, &'static str> {
+    aggregate_value(function, values)
+}
+
 fn compare_values(
     op: crate::CompareOp,
     left: &mneme_core::Value,
@@ -2084,6 +2153,11 @@ fn instantiated_support(
         roots,
         temporal,
     } = premises_for_binding(rule, evaluation, binding);
+    let epistemic = premises
+        .iter()
+        .fold(crate::EpistemicStatus::ONE, |acc, premise| {
+            acc.join(premise.epistemic)
+        });
     let temporal = temporal.into_iter().collect::<Vec<_>>();
     let support = crate::Derivation {
         rule_id: rule.id.clone(),
@@ -2094,6 +2168,7 @@ fn instantiated_support(
         revision: evaluation.context.served_revision,
         scope: evaluation.context.scope.clone(),
         truncated: false,
+        epistemic,
     };
     FactContents {
         terms,
@@ -2102,6 +2177,7 @@ fn instantiated_support(
         canonical: None,
         canonical_roots: roots,
         temporal,
+        epistemic,
     }
 }
 
@@ -2116,6 +2192,7 @@ fn aggregate_support(
     let mut sources = std::collections::BTreeSet::new();
     let mut roots = std::collections::BTreeSet::new();
     let mut temporal = std::collections::BTreeSet::new();
+    let mut epistemic = crate::EpistemicStatus::ONE;
     for index in &row.binding_indices {
         let Some(binding) = bindings.get(*index) else {
             continue;
@@ -2124,6 +2201,13 @@ fn aggregate_support(
         sources.extend(premise_set.sources);
         roots.extend(premise_set.roots);
         temporal.extend(premise_set.temporal);
+        let binding_epistemic = premise_set
+            .premises
+            .iter()
+            .fold(crate::EpistemicStatus::ONE, |acc, premise| {
+                acc.join(premise.epistemic)
+            });
+        epistemic = epistemic.join(binding_epistemic);
         // De-duplicate by identity instead of a linear scan over every premise
         // already collected: a group can hold thousands of bindings.
         for premise in premise_set.premises {
@@ -2149,6 +2233,7 @@ fn aggregate_support(
         revision: evaluation.context.served_revision,
         scope: evaluation.context.scope.clone(),
         truncated: is_truncated,
+        epistemic,
     };
     FactContents {
         terms: row.head_terms.clone(),
@@ -2157,6 +2242,7 @@ fn aggregate_support(
         canonical: None,
         canonical_roots: roots,
         temporal,
+        epistemic,
     }
 }
 
@@ -2239,6 +2325,7 @@ fn positive_premise(
         }),
         absent: false,
         coverage: None,
+        epistemic: data.epistemic,
     })
 }
 
@@ -2270,6 +2357,7 @@ fn negative_premise(
                 .name()
                 .to_owned(),
         ),
+        epistemic: crate::EpistemicStatus::Accepted,
     })
 }
 
@@ -2428,12 +2516,14 @@ mod tests {
                 source_availability: None,
                 absent: false,
                 coverage: None,
+                epistemic: crate::EpistemicStatus::Accepted,
             }],
             sources: std::collections::BTreeSet::new(),
             temporal_parameters: Vec::new(),
             revision: context.served_revision,
             scope: context.scope.clone(),
             truncated: false,
+            epistemic: crate::EpistemicStatus::Accepted,
         };
         FactContents {
             terms,
@@ -2442,6 +2532,7 @@ mod tests {
             canonical: Some(record_id),
             canonical_roots: std::collections::BTreeSet::from([record_id]),
             temporal: Vec::new(),
+            epistemic: crate::EpistemicStatus::Accepted,
         }
     }
 
@@ -2744,6 +2835,7 @@ mod tests {
                 assert_eq!(planned_data.canonical, naive_data.canonical);
                 assert_eq!(planned_data.canonical_roots, naive_data.canonical_roots);
                 assert_eq!(planned_data.temporal, naive_data.temporal);
+                assert_eq!(planned_data.epistemic, naive_data.epistemic);
             }
         }
         (naive.budget.work, planned.budget.work)
@@ -3323,6 +3415,7 @@ mod tests {
                     canonical: None,
                     canonical_roots: std::collections::BTreeSet::new(),
                     temporal: Vec::new(),
+                    epistemic: crate::EpistemicStatus::Accepted,
                 },
             );
         }
@@ -3340,6 +3433,7 @@ mod tests {
                     canonical: None,
                     canonical_roots: std::collections::BTreeSet::new(),
                     temporal: Vec::new(),
+                    epistemic: crate::EpistemicStatus::Accepted,
                 },
             );
         }
