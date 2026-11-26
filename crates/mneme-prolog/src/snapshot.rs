@@ -63,6 +63,15 @@ pub struct VaultRevision {
     pub served_revision: mneme_core::WorkspaceRevisionId,
 }
 
+impl VaultRevision {
+    /// Remote peer identifier when `root` uses the `iroh://<node-id>` scheme.
+    pub fn peer(&self) -> Option<&str> {
+        self.root
+            .to_str()
+            .and_then(|text| text.strip_prefix("iroh://"))
+    }
+}
+
 /// One vault-tagged base fact exposed to federated Prolog queries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VaultFact {

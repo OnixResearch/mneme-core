@@ -9,6 +9,7 @@
 
 pub mod command;
 pub mod error;
+pub mod federation;
 pub mod service;
 
 pub use command::{
@@ -18,5 +19,6 @@ pub use command::{
 };
 pub use error::{ApiError, ApiErrorCode, CallResult, FORGOTTEN_TARGET, UNAVAILABLE_RECORD};
 pub use service::{
-    ApiService, CallResponse, FederatedReasonRequest, error_document, error_document_for,
+    ApiService, CallResponse, FederatedReasonRequest, FederatedReasonSource,
+    FederatedReasonWithSourcesRequest, error_document, error_document_for,
 };
