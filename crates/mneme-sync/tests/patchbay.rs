@@ -2,9 +2,27 @@
 #![allow(unknown_lints, no_unwrap, assertion_density)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test/fixture code fails by panic, not a production path
 
+#[allow(unknown_lints, ambient_env)] // reads opt-in CI fail-closed gate variable MNEME_REQUIRE_PATCHBAY
+fn is_patchbay_required() -> bool {
+    matches!(
+        std::env::var("MNEME_REQUIRE_PATCHBAY").as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
+fn skip_or_fail(reason: &str) -> std::process::ExitCode {
+    if is_patchbay_required() {
+        eprintln!("patchbay tests failed (MNEME_REQUIRE_PATCHBAY=1): {reason}");
+        std::process::ExitCode::FAILURE
+    } else {
+        eprintln!("patchbay tests skipped: {reason}");
+        std::process::ExitCode::SUCCESS
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
-fn main() {
-    eprintln!("patchbay tests skipped: requires Linux network namespaces");
+fn main() -> std::process::ExitCode {
+    skip_or_fail("requires Linux network namespaces")
 }
 
 #[cfg(target_os = "linux")]
@@ -723,14 +741,12 @@ mod linux_tests {
         shutdown_pair(pair).await
     }
 
-    pub fn run() {
+    pub fn run() -> std::process::ExitCode {
         if let Err(err) = patchbay::init_userns() {
-            eprintln!("patchbay tests skipped: user namespaces unavailable ({err})");
-            return;
+            return super::skip_or_fail(&format!("user namespaces unavailable ({err})"));
         }
         if let Err(err) = patchbay::check_caps() {
-            eprintln!("patchbay tests skipped: missing namespace capabilities ({err})");
-            return;
+            return super::skip_or_fail(&format!("missing namespace capabilities ({err})"));
         }
         let nft = ToolProbe {
             cmd: "nft",
@@ -740,9 +756,18 @@ mod linux_tests {
             cmd: "tc",
             arg: "-V",
         };
-        if !nft.is_available() || !tc.is_available() {
-            eprintln!("patchbay tests skipped: nft or tc not available in PATH");
-            return;
+        let mut missing = Vec::new();
+        if !nft.is_available() {
+            missing.push("nft");
+        }
+        if !tc.is_available() {
+            missing.push("tc");
+        }
+        if !missing.is_empty() {
+            return super::skip_or_fail(&format!(
+                "{} not available in PATH",
+                missing.join(" and ")
+            ));
         }
 
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -776,10 +801,11 @@ mod linux_tests {
                 .expect("scenario_network_partition_and_heal");
             eprintln!("patchbay scenario_network_partition_and_heal ... ok");
         });
+        std::process::ExitCode::SUCCESS
     }
 }
 
 #[cfg(target_os = "linux")]
-fn main() {
-    linux_tests::run();
+fn main() -> std::process::ExitCode {
+    linux_tests::run()
 }
