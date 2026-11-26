@@ -1857,6 +1857,292 @@
         "hlc::is_before"
       ],
       "statement": "(last next : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (h : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Ok next)) : physical_ns.val ≤ next.physical_ns.val ∧ next.physical_ns.val - physical_ns.val ≤ max_skew_ns.val"
+    },
+    {
+      "name": "mneme_kernel.temporal.is_valid_iff",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::is_valid"
+      ],
+      "statement": "(period : Period) : is_valid period = ok (decide (period.start.val < period.stop.val))"
+    },
+    {
+      "name": "mneme_kernel.temporal.contains_iff",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::contains"
+      ],
+      "statement": "(period : Period) (instant : I128) : contains period instant = ok (decide (period.start.val ≤ instant.val ∧ instant.val < period.stop.val))"
+    },
+    {
+      "name": "mneme_kernel.temporal.validity_contains_unknown",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::validity_contains",
+        "temporal::contains"
+      ],
+      "statement": "(instant : I128) : validity_contains Validity.Unknown instant = ok false"
+    },
+    {
+      "name": "mneme_kernel.temporal.validity_contains_known_iff",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::validity_contains",
+        "temporal::contains"
+      ],
+      "statement": "(period : Period) (instant : I128) : validity_contains (Validity.Known period) instant = ok (decide (period.start.val ≤ instant.val ∧ instant.val < period.stop.val))"
+    },
+    {
+      "name": "mneme_kernel.temporal.from_legacy_bounds_total",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::from_legacy_bounds"
+      ],
+      "statement": "(start stop : Option I64) : ∃ res, from_legacy_bounds start stop = ok res"
+    },
+    {
+      "name": "mneme_kernel.temporal.from_legacy_bounds_instant",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::from_legacy_bounds"
+      ],
+      "statement": "(t : I64) : ∃ p, from_legacy_bounds (some t) (some t) = ok (some p) ∧ p.start.val = t.val ∧ p.stop.val = t.val + 1"
+    },
+    {
+      "name": "mneme_kernel.temporal.from_legacy_bounds_inverted",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::from_legacy_bounds"
+      ],
+      "statement": "(start stop : I64) (h : stop.val < start.val) : from_legacy_bounds (some start) (some stop) = ok none"
+    },
+    {
+      "name": "mneme_kernel.temporal.expire_bounds_unknown",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::expire_bounds"
+      ],
+      "statement": "(effective : I64) : expire_bounds Validity.Unknown effective = ok ExpiryDecision.UnknownValidity"
+    },
+    {
+      "name": "mneme_kernel.temporal.expire_bounds_total",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::expire_bounds"
+      ],
+      "statement": "(validity : Validity) (effective : I64) : ∃ d, expire_bounds validity effective = ok d"
+    },
+    {
+      "name": "mneme_kernel.temporal.expire_bounds_handoff_disjoint",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::expire_bounds",
+        "temporal::contains"
+      ],
+      "statement": "(p q : Period) (effective : I64) (h : expire_bounds (Validity.Known p) effective = ok (ExpiryDecision.Allowed q)) : q.start = p.start ∧ q.stop.val = effective.val ∧ q.start.val < q.stop.val ∧ (∀ t : I128, t.val = effective.val → contains q t = ok false) ∧ (∀ t : I128, t.val < effective.val → contains q t = contains p t)"
+    },
+    {
+      "name": "mneme_kernel.temporal.intersect_total",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::intersect"
+      ],
+      "statement": "(left right : Period) : ∃ r, intersect left right = ok r"
+    },
+    {
+      "name": "mneme_kernel.temporal.intersect_comm",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::intersect"
+      ],
+      "statement": "(left right : Period) : intersect left right = intersect right left"
+    },
+    {
+      "name": "mneme_kernel.temporal.intersect_pointwise",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::intersect",
+        "temporal::contains"
+      ],
+      "statement": "(left right r : Period) (h : intersect left right = ok (some r)) (instant : I128) : contains r instant = ok true ↔ (contains left instant = ok true ∧ contains right instant = ok true)"
+    },
+    {
+      "name": "mneme_kernel.temporal.intersect_option_none_left",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::intersect_option"
+      ],
+      "statement": "(right : Option Period) : intersect_option none right = ok none"
+    },
+    {
+      "name": "mneme_kernel.temporal.intersect_option_none_right",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::intersect_option"
+      ],
+      "statement": "(left : Option Period) : intersect_option left none = ok none"
+    },
+    {
+      "name": "mneme_kernel.temporal.intersect_option_comm",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::intersect_option"
+      ],
+      "statement": "(left right : Option Period) : intersect_option left right = intersect_option right left"
+    },
+    {
+      "name": "mneme_kernel.temporal.intersect_option_assoc",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::intersect_option"
+      ],
+      "statement": "(a b c : Option Period) : (do let ab ← intersect_option a b; intersect_option ab c) = (do let bc ← intersect_option b c; intersect_option a bc)"
+    },
+    {
+      "name": "mneme_kernel.temporal.can_coalesce_symm",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::can_coalesce"
+      ],
+      "statement": "(left right : Period) : can_coalesce left right = can_coalesce right left"
+    },
+    {
+      "name": "mneme_kernel.temporal.coalesce_pair_snapshot_equiv",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::coalesce_pair",
+        "temporal::contains"
+      ],
+      "statement": "(left right merged : Period) (h : coalesce_pair left right = ok (some merged)) (instant : I128) : contains merged instant = ok true ↔ (contains left instant = ok true ∨ contains right instant = ok true)"
+    },
+    {
+      "name": "mneme_kernel.temporal.interval_set_contains_iff",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::interval_set_contains",
+        "temporal::contains"
+      ],
+      "statement": "(set : IntervalSet) (instant : I128) : ∃ b, interval_set_contains set instant = ok b ∧ (b = true ↔ PrefixContains set.periods set.periods.val.length instant)"
+    },
+    {
+      "name": "mneme_kernel.temporal.interval_set_is_coalesced_iff",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::interval_set_is_coalesced"
+      ],
+      "statement": "(set : IntervalSet) : ∃ b, interval_set_is_coalesced set = ok b ∧ (b = true ↔ PrefixCoalesced set.periods set.periods.val.length)"
+    },
+    {
+      "name": "mneme_kernel.temporal.coalesce_sorted_total",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::coalesce_sorted"
+      ],
+      "statement": "(periods : Slice Period) : ∃ len out, coalesce_sorted periods = ok (len, out) ∧ len.val ≤ periods.val.length ∧ out.val.length = periods.val.length"
+    },
+    {
+      "name": "mneme_kernel.temporal.coalesce_sorted_snapshot_equiv",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::coalesce_sorted"
+      ],
+      "statement": "(periods : Slice Period) (hsorted : StartSorted periods) : ∃ len out, coalesce_sorted periods = ok (len, out) ∧ len.val ≤ periods.val.length ∧ out.val.length = periods.val.length ∧ PrefixCoalesced out len.val ∧ (∀ t : I128, PrefixContains periods periods.val.length t ↔ PrefixContains out len.val t)"
+    },
+    {
+      "name": "mneme_kernel.temporal.coalesce_sorted_idempotent",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::coalesce_sorted"
+      ],
+      "statement": "(periods : Slice Period) (hcoal : PrefixCoalesced periods periods.val.length) : coalesce_sorted periods = ok (Slice.len periods, periods)"
+    },
+    {
+      "name": "mneme_kernel.temporal.allen_relation_some_iff",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::allen_relation"
+      ],
+      "statement": "(left right : Period) : ∃ r, allen_relation left right = ok r ∧ (r.isSome = true ↔ left.start.val < left.stop.val ∧ right.start.val < right.stop.val)"
+    },
+    {
+      "name": "mneme_kernel.temporal.allen_holds_unknown_left",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::allen_holds"
+      ],
+      "statement": "(right : Validity) (relation : AllenRelation) : allen_holds Validity.Unknown right relation = ok false"
+    },
+    {
+      "name": "mneme_kernel.temporal.allen_holds_unknown_right",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::allen_holds"
+      ],
+      "statement": "(left : Validity) (relation : AllenRelation) : allen_holds left Validity.Unknown relation = ok false"
+    },
+    {
+      "name": "mneme_kernel.temporal.window_valid_iff",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::window_valid"
+      ],
+      "statement": "(window : MetricWindow) : window_valid window = ok (decide (0 ≤ window.lower.val ∧ window.lower.val ≤ window.upper.val))"
+    },
+    {
+      "name": "mneme_kernel.temporal.diamond_minus_total",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::diamond_minus"
+      ],
+      "statement": "(validity : Validity) (window : MetricWindow) : ∃ r, diamond_minus validity window = ok r"
+    },
+    {
+      "name": "mneme_kernel.temporal.diamond_minus_unknown",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::diamond_minus"
+      ],
+      "statement": "(window : MetricWindow) : diamond_minus Validity.Unknown window = ok none"
+    },
+    {
+      "name": "mneme_kernel.temporal.box_minus_total",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::box_minus"
+      ],
+      "statement": "(validity : Validity) (window : MetricWindow) : ∃ r, box_minus validity window = ok r"
+    },
+    {
+      "name": "mneme_kernel.temporal.box_minus_unknown",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::box_minus"
+      ],
+      "statement": "(window : MetricWindow) : box_minus Validity.Unknown window = ok none"
+    },
+    {
+      "name": "mneme_kernel.temporal.since_total",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::since"
+      ],
+      "statement": "(maintained trigger : Validity) (window : MetricWindow) : ∃ r, since maintained trigger window = ok r"
+    },
+    {
+      "name": "mneme_kernel.temporal.since_unknown_left",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::since"
+      ],
+      "statement": "(trigger : Validity) (window : MetricWindow) : since Validity.Unknown trigger window = ok none"
+    },
+    {
+      "name": "mneme_kernel.temporal.since_unknown_right",
+      "file": "MnemeKernelProofs/Temporal.lean",
+      "subjects": [
+        "temporal::since"
+      ],
+      "statement": "(maintained : Validity) (window : MetricWindow) : since maintained Validity.Unknown window = ok none"
     }
   ]
 }

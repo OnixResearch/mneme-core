@@ -13,5 +13,6 @@ import MnemeKernelProofs.Purge
 import MnemeKernelProofs.Restore
 import MnemeKernelProofs.Isolation
 import MnemeKernelProofs.Extent
+import MnemeKernelProofs.Temporal
 import MnemeKernelProofs.Verdict
 import MnemeKernelProofs.Text

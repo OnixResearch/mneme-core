@@ -4164,6 +4164,1041 @@ def restore.decide_ledger
     else ok restore.LedgerDecision.Apply
   else ok restore.LedgerDecision.ForeignWorkspace
 
+/-- [mneme_kernel::temporal::NEG_INF]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 15:0-15:36
+    Visibility: public -/
+@[global_simps, irreducible]
+def temporal.NEG_INF : Std.I128 := core.num.I128.MIN
+
+/-- [mneme_kernel::temporal::POS_INF]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 18:0-18:36
+    Visibility: public -/
+@[global_simps, irreducible]
+def temporal.POS_INF : Std.I128 := core.num.I128.MAX
+
+/-- [mneme_kernel::temporal::ONE_NS]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 21:0-21:23 -/
+@[global_simps, irreducible] def temporal.ONE_NS : Std.I128 := 1#i128
+
+/-- [mneme_kernel::temporal::ZERO_NS]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 24:0-24:24 -/
+@[global_simps, irreducible] def temporal.ZERO_NS : Std.I128 := 0#i128
+
+/-- [mneme_kernel::temporal::Period]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 31:0-36:1
+    Visibility: public -/
+structure temporal.Period where
+  start : Std.I128
+  stop : Std.I128
+
+/-- [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::Period}::clone]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:9-29:14
+    Visibility: public -/
+def temporal.Period.Insts.CoreCloneClone.clone
+  (self : temporal.Period) : Result temporal.Period := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::Period}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:9-29:14 -/
+@[reducible]
+def temporal.Period.Insts.CoreCloneClone : core.clone.Clone temporal.Period
+  := {
+  clone := temporal.Period.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::Copy for mneme_kernel::temporal::Period}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:16-29:20 -/
+@[reducible]
+def temporal.Period.Insts.CoreMarkerCopy : core.marker.Copy temporal.Period
+  := {
+  cloneInst := temporal.Period.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::StructuralPartialEq for mneme_kernel::temporal::Period}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:22-29:31 -/
+@[reducible]
+def temporal.Period.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq temporal.Period := {
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::Period> for mneme_kernel::temporal::Period}::eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:22-29:31
+    Visibility: public -/
+def temporal.Period.Insts.CoreCmpPartialEqPeriod.eq
+  (self : temporal.Period) (other : temporal.Period) : Result Bool := do
+  if self.start = other.start
+  then ok (self.stop = other.stop)
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::Period> for mneme_kernel::temporal::Period}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:22-29:31 -/
+@[reducible]
+def temporal.Period.Insts.CoreCmpPartialEqPeriod : core.cmp.PartialEq
+  temporal.Period temporal.Period := {
+  eq := temporal.Period.Insts.CoreCmpPartialEqPeriod.eq
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::Period}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:33-29:35
+    Visibility: public -/
+def temporal.Period.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : temporal.Period) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::Period}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:33-29:35 -/
+@[reducible]
+def temporal.Period.Insts.CoreCmpEq : core.cmp.Eq temporal.Period := {
+  partialEqInst := temporal.Period.Insts.CoreCmpPartialEqPeriod
+  assert_fields_are_eq := temporal.Period.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::Ord for mneme_kernel::temporal::Period}::cmp]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:49-29:52
+    Visibility: public -/
+def temporal.Period.Insts.CoreCmpOrd.cmp
+  (self : temporal.Period) (other : temporal.Period) : Result Ordering := do
+  let o ← lift (core.cmp.impls.OrdI128.cmp self.start other.start)
+  match o with
+  | Ordering.lt => ok Ordering.lt
+  | Ordering.eq => ok (core.cmp.impls.OrdI128.cmp self.stop other.stop)
+  | Ordering.gt => ok Ordering.gt
+
+/-- [mneme_kernel::temporal::{impl core::cmp::PartialOrd<mneme_kernel::temporal::Period> for mneme_kernel::temporal::Period}::partial_cmp]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:37-29:47
+    Visibility: public -/
+def temporal.Period.Insts.CoreCmpPartialOrdPeriod.partial_cmp
+  (self : temporal.Period) (other : temporal.Period) :
+  Result (Option Ordering)
+  := do
+  let o ← temporal.Period.Insts.CoreCmpOrd.cmp self other
+  ok (some o)
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialOrd<mneme_kernel::temporal::Period> for mneme_kernel::temporal::Period}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:37-29:47 -/
+@[reducible]
+def temporal.Period.Insts.CoreCmpPartialOrdPeriod : core.cmp.PartialOrd
+  temporal.Period temporal.Period := {
+  partialEqInst := temporal.Period.Insts.CoreCmpPartialEqPeriod
+  partial_cmp := temporal.Period.Insts.CoreCmpPartialOrdPeriod.partial_cmp
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::Ord for mneme_kernel::temporal::Period}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:49-29:52 -/
+@[reducible]
+def temporal.Period.Insts.CoreCmpOrd : core.cmp.Ord temporal.Period := {
+  eqInst := temporal.Period.Insts.CoreCmpEq
+  partialOrdInst := temporal.Period.Insts.CoreCmpPartialOrdPeriod
+  cmp := temporal.Period.Insts.CoreCmpOrd.cmp
+}
+
+/-- [mneme_kernel::temporal::IntervalSet]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 41:0-44:1
+    Visibility: public -/
+structure temporal.IntervalSet where
+  periods : Slice temporal.Period
+
+/-- [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::IntervalSet<'a>}::clone]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 39:9-39:14
+    Visibility: public -/
+def temporal.IntervalSet.Insts.CoreCloneClone.clone
+  (self : temporal.IntervalSet) : Result temporal.IntervalSet := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::IntervalSet<'a>}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 39:9-39:14 -/
+@[reducible]
+def temporal.IntervalSet.Insts.CoreCloneClone : core.clone.Clone
+  temporal.IntervalSet := {
+  clone := temporal.IntervalSet.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::Copy for mneme_kernel::temporal::IntervalSet<'a>}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 39:16-39:20 -/
+@[reducible]
+def temporal.IntervalSet.Insts.CoreMarkerCopy : core.marker.Copy
+  temporal.IntervalSet := {
+  cloneInst := temporal.IntervalSet.Insts.CoreCloneClone
+}
+
+/-- [mneme_kernel::temporal::Validity]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 49:0-54:1
+    Visibility: public -/
+@[discriminant isize]
+inductive temporal.Validity where
+| Unknown : temporal.Validity
+| Known : temporal.Period → temporal.Validity
+
+/-- [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::Validity}::clone]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 47:9-47:14
+    Visibility: public -/
+def temporal.Validity.Insts.CoreCloneClone.clone
+  (self : temporal.Validity) : Result temporal.Validity := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::Validity}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 47:9-47:14 -/
+@[reducible]
+def temporal.Validity.Insts.CoreCloneClone : core.clone.Clone temporal.Validity
+  := {
+  clone := temporal.Validity.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::Copy for mneme_kernel::temporal::Validity}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 47:16-47:20 -/
+@[reducible]
+def temporal.Validity.Insts.CoreMarkerCopy : core.marker.Copy temporal.Validity
+  := {
+  cloneInst := temporal.Validity.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::StructuralPartialEq for mneme_kernel::temporal::Validity}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 47:22-47:31 -/
+@[reducible]
+def temporal.Validity.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq temporal.Validity := {
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::Validity> for mneme_kernel::temporal::Validity}::eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 47:22-47:31
+    Visibility: public -/
+def temporal.Validity.Insts.CoreCmpPartialEqValidity.eq
+  (self : temporal.Validity) (other : temporal.Validity) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  if self1 = other1
+  then
+    match self with
+    | temporal.Validity.Unknown => ok true
+    | temporal.Validity.Known __self_0 =>
+      match other with
+      | temporal.Validity.Unknown => ok true
+      | temporal.Validity.Known __arg1_0 =>
+        temporal.Period.Insts.CoreCmpPartialEqPeriod.eq __self_0 __arg1_0
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::Validity> for mneme_kernel::temporal::Validity}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 47:22-47:31 -/
+@[reducible]
+def temporal.Validity.Insts.CoreCmpPartialEqValidity : core.cmp.PartialEq
+  temporal.Validity temporal.Validity := {
+  eq := temporal.Validity.Insts.CoreCmpPartialEqValidity.eq
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::Validity}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 47:33-47:35
+    Visibility: public -/
+def temporal.Validity.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : temporal.Validity) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::Validity}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 47:33-47:35 -/
+@[reducible]
+def temporal.Validity.Insts.CoreCmpEq : core.cmp.Eq temporal.Validity := {
+  partialEqInst := temporal.Validity.Insts.CoreCmpPartialEqValidity
+  assert_fields_are_eq :=
+    temporal.Validity.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::temporal::MetricWindow]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 59:0-64:1
+    Visibility: public -/
+structure temporal.MetricWindow where
+  lower : Std.I128
+  upper : Std.I128
+
+/-- [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::MetricWindow}::clone]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 57:9-57:14
+    Visibility: public -/
+def temporal.MetricWindow.Insts.CoreCloneClone.clone
+  (self : temporal.MetricWindow) : Result temporal.MetricWindow := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::MetricWindow}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 57:9-57:14 -/
+@[reducible]
+def temporal.MetricWindow.Insts.CoreCloneClone : core.clone.Clone
+  temporal.MetricWindow := {
+  clone := temporal.MetricWindow.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::Copy for mneme_kernel::temporal::MetricWindow}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 57:16-57:20 -/
+@[reducible]
+def temporal.MetricWindow.Insts.CoreMarkerCopy : core.marker.Copy
+  temporal.MetricWindow := {
+  cloneInst := temporal.MetricWindow.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::StructuralPartialEq for mneme_kernel::temporal::MetricWindow}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 57:22-57:31 -/
+@[reducible]
+def temporal.MetricWindow.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq temporal.MetricWindow := {
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::MetricWindow> for mneme_kernel::temporal::MetricWindow}::eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 57:22-57:31
+    Visibility: public -/
+def temporal.MetricWindow.Insts.CoreCmpPartialEqMetricWindow.eq
+  (self : temporal.MetricWindow) (other : temporal.MetricWindow) :
+  Result Bool
+  := do
+  if self.lower = other.lower
+  then ok (self.upper = other.upper)
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::MetricWindow> for mneme_kernel::temporal::MetricWindow}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 57:22-57:31 -/
+@[reducible]
+def temporal.MetricWindow.Insts.CoreCmpPartialEqMetricWindow :
+  core.cmp.PartialEq temporal.MetricWindow temporal.MetricWindow := {
+  eq := temporal.MetricWindow.Insts.CoreCmpPartialEqMetricWindow.eq
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::MetricWindow}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 57:33-57:35
+    Visibility: public -/
+def temporal.MetricWindow.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : temporal.MetricWindow) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::MetricWindow}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 57:33-57:35 -/
+@[reducible]
+def temporal.MetricWindow.Insts.CoreCmpEq : core.cmp.Eq temporal.MetricWindow
+  := {
+  partialEqInst := temporal.MetricWindow.Insts.CoreCmpPartialEqMetricWindow
+  assert_fields_are_eq :=
+    temporal.MetricWindow.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::temporal::AllenRelation]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 70:0-97:1
+    Visibility: public -/
+@[discriminant isize]
+inductive temporal.AllenRelation where
+| Before : temporal.AllenRelation
+| Meets : temporal.AllenRelation
+| Overlaps : temporal.AllenRelation
+| FinishedBy : temporal.AllenRelation
+| Contains : temporal.AllenRelation
+| Starts : temporal.AllenRelation
+| Equals : temporal.AllenRelation
+| StartedBy : temporal.AllenRelation
+| During : temporal.AllenRelation
+| Finishes : temporal.AllenRelation
+| OverlappedBy : temporal.AllenRelation
+| MetBy : temporal.AllenRelation
+| After : temporal.AllenRelation
+
+/-- [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::AllenRelation}::clone]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 68:9-68:14
+    Visibility: public -/
+def temporal.AllenRelation.Insts.CoreCloneClone.clone
+  (self : temporal.AllenRelation) : Result temporal.AllenRelation := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::AllenRelation}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 68:9-68:14 -/
+@[reducible]
+def temporal.AllenRelation.Insts.CoreCloneClone : core.clone.Clone
+  temporal.AllenRelation := {
+  clone := temporal.AllenRelation.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::Copy for mneme_kernel::temporal::AllenRelation}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 68:16-68:20 -/
+@[reducible]
+def temporal.AllenRelation.Insts.CoreMarkerCopy : core.marker.Copy
+  temporal.AllenRelation := {
+  cloneInst := temporal.AllenRelation.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::StructuralPartialEq for mneme_kernel::temporal::AllenRelation}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 68:22-68:31 -/
+@[reducible]
+def temporal.AllenRelation.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq temporal.AllenRelation := {
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::AllenRelation> for mneme_kernel::temporal::AllenRelation}::eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 68:22-68:31
+    Visibility: public -/
+def temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation.eq
+  (self : temporal.AllenRelation) (other : temporal.AllenRelation) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::AllenRelation> for mneme_kernel::temporal::AllenRelation}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 68:22-68:31 -/
+@[reducible]
+def temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation :
+  core.cmp.PartialEq temporal.AllenRelation temporal.AllenRelation := {
+  eq := temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation.eq
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::AllenRelation}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 68:33-68:35
+    Visibility: public -/
+def temporal.AllenRelation.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : temporal.AllenRelation) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::AllenRelation}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 68:33-68:35 -/
+@[reducible]
+def temporal.AllenRelation.Insts.CoreCmpEq : core.cmp.Eq temporal.AllenRelation
+  := {
+  partialEqInst := temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation
+  assert_fields_are_eq :=
+    temporal.AllenRelation.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::temporal::ExpiryDecision]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 102:0-111:1
+    Visibility: public -/
+@[discriminant isize]
+inductive temporal.ExpiryDecision where
+| Allowed : temporal.Period → temporal.ExpiryDecision
+| UnknownValidity : temporal.ExpiryDecision
+| ExpiryNotAfterStart : temporal.ExpiryDecision
+| AlreadyExpired : temporal.ExpiryDecision
+
+/-- [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::ExpiryDecision}::clone]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 100:9-100:14
+    Visibility: public -/
+def temporal.ExpiryDecision.Insts.CoreCloneClone.clone
+  (self : temporal.ExpiryDecision) : Result temporal.ExpiryDecision := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::clone::Clone for mneme_kernel::temporal::ExpiryDecision}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 100:9-100:14 -/
+@[reducible]
+def temporal.ExpiryDecision.Insts.CoreCloneClone : core.clone.Clone
+  temporal.ExpiryDecision := {
+  clone := temporal.ExpiryDecision.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::Copy for mneme_kernel::temporal::ExpiryDecision}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 100:16-100:20 -/
+@[reducible]
+def temporal.ExpiryDecision.Insts.CoreMarkerCopy : core.marker.Copy
+  temporal.ExpiryDecision := {
+  cloneInst := temporal.ExpiryDecision.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::marker::StructuralPartialEq for mneme_kernel::temporal::ExpiryDecision}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 100:22-100:31 -/
+@[reducible]
+def temporal.ExpiryDecision.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq temporal.ExpiryDecision := {
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::ExpiryDecision> for mneme_kernel::temporal::ExpiryDecision}::eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 100:22-100:31
+    Visibility: public -/
+def temporal.ExpiryDecision.Insts.CoreCmpPartialEqExpiryDecision.eq
+  (self : temporal.ExpiryDecision) (other : temporal.ExpiryDecision) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  if self1 = other1
+  then
+    match self with
+    | temporal.ExpiryDecision.Allowed __self_0 =>
+      match other with
+      | temporal.ExpiryDecision.Allowed __arg1_0 =>
+        temporal.Period.Insts.CoreCmpPartialEqPeriod.eq __self_0 __arg1_0
+      | temporal.ExpiryDecision.UnknownValidity => ok true
+      | temporal.ExpiryDecision.ExpiryNotAfterStart => ok true
+      | temporal.ExpiryDecision.AlreadyExpired => ok true
+    | temporal.ExpiryDecision.UnknownValidity => ok true
+    | temporal.ExpiryDecision.ExpiryNotAfterStart => ok true
+    | temporal.ExpiryDecision.AlreadyExpired => ok true
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::ExpiryDecision> for mneme_kernel::temporal::ExpiryDecision}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 100:22-100:31 -/
+@[reducible]
+def temporal.ExpiryDecision.Insts.CoreCmpPartialEqExpiryDecision :
+  core.cmp.PartialEq temporal.ExpiryDecision temporal.ExpiryDecision := {
+  eq := temporal.ExpiryDecision.Insts.CoreCmpPartialEqExpiryDecision.eq
+}
+
+/-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::ExpiryDecision}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 100:33-100:35
+    Visibility: public -/
+def temporal.ExpiryDecision.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : temporal.ExpiryDecision) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::ExpiryDecision}]
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 100:33-100:35 -/
+@[reducible]
+def temporal.ExpiryDecision.Insts.CoreCmpEq : core.cmp.Eq
+  temporal.ExpiryDecision := {
+  partialEqInst := temporal.ExpiryDecision.Insts.CoreCmpPartialEqExpiryDecision
+  assert_fields_are_eq :=
+    temporal.ExpiryDecision.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::temporal::shift_forward]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 115:0-127:1 -/
+def temporal.shift_forward
+  (endpoint : Std.I128) (delta : Std.I128) : Result Std.I128 := do
+  if endpoint = temporal.NEG_INF
+  then ok temporal.NEG_INF
+  else
+    if endpoint = temporal.POS_INF
+    then ok temporal.POS_INF
+    else
+      if delta <= temporal.ZERO_NS
+      then ok endpoint
+      else
+        let i ← temporal.POS_INF - delta
+        if endpoint > i
+        then ok temporal.POS_INF
+        else endpoint + delta
+
+/-- [mneme_kernel::temporal::shift_back_one]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 131:0-139:1 -/
+def temporal.shift_back_one (endpoint : Std.I128) : Result Std.I128 := do
+  if endpoint = temporal.NEG_INF
+  then ok temporal.NEG_INF
+  else
+    if endpoint = temporal.POS_INF
+    then ok temporal.POS_INF
+    else endpoint - temporal.ONE_NS
+
+/-- [mneme_kernel::temporal::is_valid]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 142:0-144:1
+    Visibility: public -/
+def temporal.is_valid (period : temporal.Period) : Result Bool := do
+  ok (period.start < period.stop)
+
+/-- [mneme_kernel::temporal::contains]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 147:0-149:1
+    Visibility: public -/
+def temporal.contains
+  (period : temporal.Period) (instant : Std.I128) : Result Bool := do
+  if period.start <= instant
+  then ok (instant < period.stop)
+  else ok false
+
+/-- [mneme_kernel::temporal::validity_contains]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 152:0-157:1
+    Visibility: public -/
+def temporal.validity_contains
+  (validity : temporal.Validity) (instant : Std.I128) : Result Bool := do
+  match validity with
+  | temporal.Validity.Unknown => ok false
+  | temporal.Validity.Known period => temporal.contains period instant
+
+/-- [mneme_kernel::temporal::from_legacy_bounds]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 164:0-195:1
+    Visibility: public -/
+def temporal.from_legacy_bounds
+  (start : Option Std.I64) (stop : Option Std.I64) :
+  Result (Option temporal.Period)
+  := do
+  match start with
+  | none =>
+    match stop with
+    | none => ok (some { start := temporal.NEG_INF, stop := temporal.POS_INF })
+    | some hi =>
+      let i ← lift (IScalar.cast .I128 hi)
+      ok (some { start := temporal.NEG_INF, stop := i })
+  | some lo =>
+    match stop with
+    | none =>
+      let i ← lift (IScalar.cast .I128 lo)
+      ok (some { start := i, stop := temporal.POS_INF })
+    | some hi =>
+      if lo < hi
+      then
+        let i ← lift (IScalar.cast .I128 lo)
+        let i1 ← lift (IScalar.cast .I128 hi)
+        ok (some { start := i, stop := i1 })
+      else
+        if lo = hi
+        then
+          let lo_wide ← lift (IScalar.cast .I128 lo)
+          let i ← lo_wide + temporal.ONE_NS
+          ok (some { start := lo_wide, stop := i })
+        else ok none
+
+/-- [mneme_kernel::temporal::expire_bounds]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 199:0-220:1
+    Visibility: public -/
+def temporal.expire_bounds
+  (validity : temporal.Validity) (effective : Std.I64) :
+  Result temporal.ExpiryDecision
+  := do
+  match validity with
+  | temporal.Validity.Unknown => ok temporal.ExpiryDecision.UnknownValidity
+  | temporal.Validity.Known period =>
+    let b ← temporal.is_valid period
+    if b
+    then
+      let eff ← lift (IScalar.cast .I128 effective)
+      if eff <= period.start
+      then ok temporal.ExpiryDecision.ExpiryNotAfterStart
+      else
+        if period.stop <= eff
+        then ok temporal.ExpiryDecision.AlreadyExpired
+        else ok (temporal.ExpiryDecision.Allowed { period with stop := eff })
+    else ok temporal.ExpiryDecision.UnknownValidity
+
+/-- [mneme_kernel::temporal::intersect]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 223:0-243:1
+    Visibility: public -/
+def temporal.intersect
+  (left : temporal.Period) (right : temporal.Period) :
+  Result (Option temporal.Period)
+  := do
+  let b ← temporal.is_valid left
+  if b
+  then
+    let b1 ← temporal.is_valid right
+    if b1
+    then
+      let start ←
+        if left.start >= right.start
+        then ok left.start
+        else ok right.start
+      let stop ←
+        if left.stop <= right.stop
+        then ok left.stop
+        else ok right.stop
+      if start < stop
+      then ok (some { start, stop })
+      else ok none
+    else ok none
+  else ok none
+
+/-- [mneme_kernel::temporal::intersect_option]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 246:0-251:1
+    Visibility: public -/
+def temporal.intersect_option
+  (left : Option temporal.Period) (right : Option temporal.Period) :
+  Result (Option temporal.Period)
+  := do
+  match left with
+  | none => ok none
+  | some lhs =>
+    match right with
+    | none => ok none
+    | some rhs => temporal.intersect lhs rhs
+
+/-- [mneme_kernel::temporal::can_coalesce]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 254:0-256:1
+    Visibility: public -/
+def temporal.can_coalesce
+  (left : temporal.Period) (right : temporal.Period) : Result Bool := do
+  let b ← temporal.is_valid left
+  if b
+  then
+    let b1 ← temporal.is_valid right
+    if b1
+    then
+      if left.start <= right.stop
+      then ok (right.start <= left.stop)
+      else ok false
+    else ok false
+  else ok false
+
+/-- [mneme_kernel::temporal::coalesce_pair]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 259:0-275:1
+    Visibility: public -/
+def temporal.coalesce_pair
+  (left : temporal.Period) (right : temporal.Period) :
+  Result (Option temporal.Period)
+  := do
+  let b ← temporal.can_coalesce left right
+  if b
+  then
+    let start ←
+      if left.start <= right.start
+      then ok left.start
+      else ok right.start
+    if left.stop >= right.stop
+    then ok (some { left with start })
+    else ok (some { right with start })
+  else ok none
+
+/-- [mneme_kernel::temporal::interval_set_contains]: loop body 0:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 281:4-284:5
+    Visibility: public -/
+@[rust_loop_body]
+def temporal.interval_set_contains_loop.body
+  (s : Slice temporal.Period) (instant : Std.I128) (is_member : Bool)
+  (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len s
+  if index < i
+  then
+    if is_member
+    then ok (done true)
+    else
+      let p ← Slice.index_usize s index
+      let is_member1 ← temporal.contains p instant
+      let index1 ← index + 1#usize
+      ok (cont (is_member1, index1))
+  else ok (done is_member)
+
+/-- [mneme_kernel::temporal::interval_set_contains]: loop 0:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 281:4-284:5
+    Visibility: public -/
+@[rust_loop]
+def temporal.interval_set_contains_loop
+  (s : Slice temporal.Period) (instant : Std.I128) (is_member : Bool)
+  (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (is_member1, index1) => temporal.interval_set_contains_loop.body s
+      instant is_member1 index1)
+    (is_member, index)
+
+/-- [mneme_kernel::temporal::interval_set_contains]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 278:0-286:1
+    Visibility: public -/
+@[reducible]
+def temporal.interval_set_contains
+  (set : temporal.IntervalSet) (instant : Std.I128) : Result Bool := do
+  temporal.interval_set_contains_loop set.periods instant false 0#usize
+
+/-- [mneme_kernel::temporal::interval_set_is_coalesced]: loop body 0:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 293:4-304:5
+    Visibility: public -/
+@[rust_loop_body]
+def temporal.interval_set_is_coalesced_loop.body
+  (s : Slice temporal.Period) (is_canonical : Bool) (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len s
+  if index < i
+  then
+    if is_canonical
+    then
+      let current ← Slice.index_usize s index
+      let b ← temporal.is_valid current
+      let is_canonical1 ←
+        if b
+        then
+          if index > 0#usize
+          then
+            do
+            let i1 ← index - 1#usize
+            let prev ← Slice.index_usize s i1
+            if prev.stop >= current.start
+            then ok false
+            else ok true
+          else ok true
+        else ok false
+      let index1 ← index + 1#usize
+      ok (cont (is_canonical1, index1))
+    else ok (done false)
+  else ok (done is_canonical)
+
+/-- [mneme_kernel::temporal::interval_set_is_coalesced]: loop 0:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 293:4-304:5
+    Visibility: public -/
+@[rust_loop]
+def temporal.interval_set_is_coalesced_loop
+  (s : Slice temporal.Period) (is_canonical : Bool) (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (is_canonical1, index1) =>
+      temporal.interval_set_is_coalesced_loop.body s is_canonical1 index1)
+    (is_canonical, index)
+
+/-- [mneme_kernel::temporal::interval_set_is_coalesced]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 290:0-306:1
+    Visibility: public -/
+@[reducible]
+def temporal.interval_set_is_coalesced
+  (set : temporal.IntervalSet) : Result Bool := do
+  temporal.interval_set_is_coalesced_loop set.periods true 0#usize
+
+/-- [mneme_kernel::temporal::coalesce_sorted]: loop body 0:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 317:4-342:5
+    Visibility: public -/
+@[rust_loop_body]
+def temporal.coalesce_sorted_loop.body
+  (periods : Slice temporal.Period) (write : Std.Usize) (read : Std.Usize) :
+  Result (ControlFlow ((Slice temporal.Period) × Std.Usize × Std.Usize)
+    (Std.Usize × (Slice temporal.Period)))
+  := do
+  let i := Slice.len periods
+  if read < i
+  then
+    let candidate ← Slice.index_usize periods read
+    let b ← temporal.is_valid candidate
+    let (periods1, write1) ←
+      if b
+      then
+        if write = 0#usize
+        then
+          do
+          let s ← Slice.update periods 0#usize candidate
+          ok (s, 1#usize)
+        else
+          do
+          let i1 ← write - 1#usize
+          let prev ← Slice.index_usize periods i1
+          if candidate.start <= prev.stop
+          then
+            let merged_stop ←
+              if candidate.stop >= prev.stop
+              then ok candidate.stop
+              else ok prev.stop
+            let s ← Slice.update periods i1 { prev with stop := merged_stop }
+            ok (s, write)
+          else
+            let s ← Slice.update periods write candidate
+            let write2 ← write + 1#usize
+            ok (s, write2)
+      else ok (periods, write)
+    let read1 ← read + 1#usize
+    ok (cont (periods1, write1, read1))
+  else ok (done (write, periods))
+
+/-- [mneme_kernel::temporal::coalesce_sorted]: loop 0:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 317:4-342:5
+    Visibility: public -/
+@[rust_loop]
+def temporal.coalesce_sorted_loop
+  (periods : Slice temporal.Period) (write : Std.Usize) (read : Std.Usize) :
+  Result (Std.Usize × (Slice temporal.Period))
+  := do
+  loop
+    (fun (periods1, write1, read1) => temporal.coalesce_sorted_loop.body
+      periods1 write1 read1)
+    (periods, write, read)
+
+/-- [mneme_kernel::temporal::coalesce_sorted]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 314:0-344:1
+    Visibility: public -/
+@[reducible]
+def temporal.coalesce_sorted
+  (periods : Slice temporal.Period) :
+  Result (Std.Usize × (Slice temporal.Period))
+  := do
+  temporal.coalesce_sorted_loop periods 0#usize 0#usize
+
+/-- [mneme_kernel::temporal::allen_relation]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 349:0-383:1
+    Visibility: public -/
+def temporal.allen_relation
+  (left : temporal.Period) (right : temporal.Period) :
+  Result (Option temporal.AllenRelation)
+  := do
+  let b ← temporal.is_valid left
+  if b
+  then
+    let b1 ← temporal.is_valid right
+    if b1
+    then
+      if left.start < right.start
+      then
+        if left.stop < right.start
+        then ok (some temporal.AllenRelation.Before)
+        else
+          if left.stop = right.start
+          then ok (some temporal.AllenRelation.Meets)
+          else
+            if left.stop < right.stop
+            then ok (some temporal.AllenRelation.Overlaps)
+            else
+              if left.stop = right.stop
+              then ok (some temporal.AllenRelation.FinishedBy)
+              else ok (some temporal.AllenRelation.Contains)
+      else
+        if left.start = right.start
+        then
+          if left.stop < right.stop
+          then ok (some temporal.AllenRelation.Starts)
+          else
+            if left.stop = right.stop
+            then ok (some temporal.AllenRelation.Equals)
+            else ok (some temporal.AllenRelation.StartedBy)
+        else
+          if left.stop < right.stop
+          then ok (some temporal.AllenRelation.During)
+          else
+            if left.stop = right.stop
+            then ok (some temporal.AllenRelation.Finishes)
+            else
+              if left.start < right.stop
+              then ok (some temporal.AllenRelation.OverlappedBy)
+              else
+                if left.start = right.stop
+                then ok (some temporal.AllenRelation.MetBy)
+                else ok (some temporal.AllenRelation.After)
+    else ok none
+  else ok none
+
+/-- [mneme_kernel::temporal::allen_holds]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 387:0-395:1
+    Visibility: public -/
+def temporal.allen_holds
+  (left : temporal.Validity) (right : temporal.Validity)
+  (relation : temporal.AllenRelation) :
+  Result Bool
+  := do
+  match left with
+  | temporal.Validity.Unknown => ok false
+  | temporal.Validity.Known lhs =>
+    match right with
+    | temporal.Validity.Unknown => ok false
+    | temporal.Validity.Known rhs =>
+      let o ← temporal.allen_relation lhs rhs
+      match o with
+      | none => ok false
+      | some actual =>
+        temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation.eq actual
+          relation
+
+/-- [mneme_kernel::temporal::window_valid]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 398:0-400:1
+    Visibility: public -/
+def temporal.window_valid (window : temporal.MetricWindow) : Result Bool := do
+  if window.lower >= temporal.ZERO_NS
+  then ok (window.lower <= window.upper)
+  else ok false
+
+/-- [mneme_kernel::temporal::diamond_minus]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 407:0-428:1
+    Visibility: public -/
+def temporal.diamond_minus
+  (validity : temporal.Validity) (window : temporal.MetricWindow) :
+  Result (Option temporal.Period)
+  := do
+  let b ← temporal.window_valid window
+  if b
+  then
+    match validity with
+    | temporal.Validity.Unknown => ok none
+    | temporal.Validity.Known period =>
+      let b1 ← temporal.is_valid period
+      if b1
+      then
+        let start ← temporal.shift_forward period.start window.lower
+        let stop ← temporal.shift_forward period.stop window.upper
+        if start < stop
+        then ok (some { start, stop })
+        else ok none
+      else ok none
+  else ok none
+
+/-- [mneme_kernel::temporal::box_minus]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 435:0-456:1
+    Visibility: public -/
+def temporal.box_minus
+  (validity : temporal.Validity) (window : temporal.MetricWindow) :
+  Result (Option temporal.Period)
+  := do
+  let b ← temporal.window_valid window
+  if b
+  then
+    match validity with
+    | temporal.Validity.Unknown => ok none
+    | temporal.Validity.Known period =>
+      let b1 ← temporal.is_valid period
+      if b1
+      then
+        let start ← temporal.shift_forward period.start window.upper
+        let stop ← temporal.shift_forward period.stop window.lower
+        if start < stop
+        then ok (some { start, stop })
+        else ok none
+      else ok none
+  else ok none
+
+/-- [mneme_kernel::temporal::since]:
+    Source: 'crates/mneme-kernel/src/temporal.rs', lines 464:0-536:1
+    Visibility: public -/
+def temporal.since
+  (maintained : temporal.Validity) (trigger : temporal.Validity)
+  (window : temporal.MetricWindow) :
+  Result (Option temporal.Period)
+  := do
+  let b ← temporal.window_valid window
+  if b
+  then
+    match maintained with
+    | temporal.Validity.Unknown => ok none
+    | temporal.Validity.Known m =>
+      match trigger with
+      | temporal.Validity.Unknown => ok none
+      | temporal.Validity.Known t =>
+        let b1 ← temporal.is_valid m
+        if b1
+        then
+          let b2 ← temporal.is_valid t
+          if b2
+          then
+            let m_start_prev ← temporal.shift_back_one m.start
+            let m_stop_prev ← temporal.shift_back_one m.stop
+            let j_start ←
+              if t.start >= m_start_prev
+              then ok t.start
+              else ok m_start_prev
+            let j_stop ←
+              if t.stop <= m_stop_prev
+              then ok t.stop
+              else ok m_stop_prev
+            let strict_lower ←
+              if window.lower >= temporal.ONE_NS
+              then ok window.lower
+              else ok temporal.ONE_NS
+            let has_strict ←
+              if j_start < j_stop
+              then ok (strict_lower <= window.upper)
+              else ok false
+            if window.lower = temporal.ZERO_NS
+            then
+              if has_strict
+              then
+                let shifted_stop ← temporal.shift_forward j_stop window.upper
+                let capped_stop ←
+                  if shifted_stop <= m.stop
+                  then ok shifted_stop
+                  else ok m.stop
+                let final_stop ←
+                  if t.stop >= capped_stop
+                  then ok t.stop
+                  else ok capped_stop
+                if t.start < final_stop
+                then ok (some { t with stop := final_stop })
+                else ok none
+              else ok (some t)
+            else
+              if has_strict
+              then
+                let start ← temporal.shift_forward j_start strict_lower
+                let shifted_stop ← temporal.shift_forward j_stop window.upper
+                let stop ←
+                  if shifted_stop <= m.stop
+                  then ok shifted_stop
+                  else ok m.stop
+                if start < stop
+                then ok (some { start, stop })
+                else ok none
+              else ok none
+          else ok none
+        else ok none
+  else ok none
+
 /-- [mneme_kernel::text::is_lower_hex_byte]:
     Source: 'crates/mneme-kernel/src/text.rs', lines 4:0-6:1
     Visibility: public -/

@@ -615,7 +615,7 @@ fn greedy_planner_orders_most_bound_and_smallest_extent_with_written_tie_break()
                 canonical: None,
                 canonical_roots: std::collections::BTreeSet::new(),
                 vaults: std::collections::BTreeSet::new(),
-                temporal: Vec::new(),
+                validity: crate::FactValidity::always(),
                 epistemic: crate::EpistemicStatus::Accepted,
             },
         );
@@ -634,7 +634,7 @@ fn greedy_planner_orders_most_bound_and_smallest_extent_with_written_tie_break()
                 canonical: None,
                 canonical_roots: std::collections::BTreeSet::new(),
                 vaults: std::collections::BTreeSet::new(),
-                temporal: Vec::new(),
+                validity: crate::FactValidity::always(),
                 epistemic: crate::EpistemicStatus::Accepted,
             },
         );
@@ -773,7 +773,7 @@ fn assert_evaluations_match(expected: &Evaluation<'_>, actual: &Evaluation<'_>) 
             assert_eq!(actual_data.truncated, expected_data.truncated);
             assert_eq!(actual_data.canonical, expected_data.canonical);
             assert_eq!(actual_data.canonical_roots, expected_data.canonical_roots);
-            assert_eq!(actual_data.temporal, expected_data.temporal);
+            assert_eq!(actual_data.validity, expected_data.validity);
         }
     }
 }
@@ -1201,7 +1201,7 @@ fn build_fact_data_with_budget_exhaustion_never_promotes_to_accepted() {
         canonical: Some(rid(id)),
         canonical_roots: std::collections::BTreeSet::from([rid(id)]),
         vaults: std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()]),
-        temporal: Vec::new(),
+        validity: crate::FactValidity::always(),
         epistemic,
     };
     let mut facts = std::collections::BTreeMap::new();
@@ -1242,6 +1242,7 @@ fn build_fact_data_with_budget_exhaustion_never_promotes_to_accepted() {
         status: crate::ExecutionStatus::Complete,
         limit_reached: false,
         support_truncated: false,
+        max_intervals_per_fact: crate::DEFAULT_MAX_INTERVALS_PER_FACT,
     };
     let mut target_store = FactStore::default();
     let _ = build_ordinary_fact_data_from_bindings(
@@ -1274,6 +1275,7 @@ fn build_fact_data_with_budget_exhaustion_never_promotes_to_accepted() {
         status: crate::ExecutionStatus::Complete,
         limit_reached: false,
         support_truncated: false,
+        max_intervals_per_fact: crate::DEFAULT_MAX_INTERVALS_PER_FACT,
     };
     let mut agg_store = FactStore::default();
     let _ = build_aggregate_fact_data_from_bindings(
@@ -1303,6 +1305,7 @@ fn build_fact_data_with_budget_exhaustion_never_promotes_to_accepted() {
         status: crate::ExecutionStatus::Complete,
         limit_reached: false,
         support_truncated: false,
+        max_intervals_per_fact: crate::DEFAULT_MAX_INTERVALS_PER_FACT,
     };
     let mut ok_store = FactStore::default();
     let _ = build_ordinary_fact_data_from_bindings(

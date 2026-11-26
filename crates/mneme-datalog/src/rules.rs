@@ -157,7 +157,18 @@ pub fn validate(
     let rule_terms = bundle.rules.iter().fold(0_usize, |total, rule| {
         let body_terms = rule.body.iter().fold(0_usize, |terms, literal| {
             terms.saturating_add(match literal {
-                crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => atom.arity(),
+                crate::Literal::Positive(atom)
+                | crate::Literal::Negative(atom)
+                | crate::Literal::DiamondMinus { atom, .. }
+                | crate::Literal::BoxMinus { atom, .. } => atom.arity(),
+                crate::Literal::Since {
+                    maintained,
+                    trigger,
+                    ..
+                } => maintained.arity().saturating_add(trigger.arity()),
+                crate::Literal::Allen { left, right, .. } => {
+                    left.arity().saturating_add(right.arity())
+                }
                 crate::Literal::Compare { .. } | crate::Literal::Aggregate { .. } => 2,
                 crate::Literal::Forbidden(_) => 0,
             })
@@ -404,22 +415,86 @@ fn analyze_literal(context: LiteralAnalysisContext<'_>, index: usize, literal: &
             analysis.compare_vars.extend(term_var(left));
             analysis.compare_vars.extend(term_var(right));
         }
+        crate::Literal::DiamondMinus { .. }
+        | crate::Literal::BoxMinus { .. }
+        | crate::Literal::Since { .. }
+        | crate::Literal::Allen { .. } => {
+            analyze_temporal_literal(
+                LiteralAnalysisContext {
+                    bundle,
+                    rule,
+                    arities,
+                    heads,
+                    analysis,
+                    diagnostics,
+                },
+                literal,
+            );
+        }
         crate::Literal::Aggregate { input, output, .. } => {
             validate_aggregate_literal(rule, index, output, analysis, diagnostics);
             analysis.aggregate = Some((input.clone(), output.clone()));
-            if !bundle.complete_predicates.iter().any(|predicate| {
-                rule.body.iter().any(|literal| {
-                    matches!(
-                        literal,
-                        crate::Literal::Positive(atom) if &atom.predicate == predicate
-                    )
-                })
-            }) {
-                // The detailed per-positive-relation check below catches
-                // the usual missing declaration; this branch only makes
-                // the diagnostic explicit for an empty positive body.
-            }
         }
+    }
+}
+
+fn analyze_temporal_literal(context: LiteralAnalysisContext<'_>, literal: &crate::Literal) {
+    let LiteralAnalysisContext {
+        rule,
+        arities,
+        heads,
+        analysis,
+        diagnostics,
+        ..
+    } = context;
+    match literal {
+        crate::Literal::DiamondMinus {
+            atom,
+            lower_ns,
+            upper_ns,
+        }
+        | crate::Literal::BoxMinus {
+            atom,
+            lower_ns,
+            upper_ns,
+        } => {
+            validate_atom(atom, arities, heads, &rule.id, diagnostics);
+            if let Some(err) = check_metric_window(*lower_ns, *upper_ns, &rule.id) {
+                diagnostics.push(err);
+            }
+            analysis
+                .positive_vars
+                .extend(atom.terms.iter().filter_map(term_var));
+        }
+        crate::Literal::Since {
+            maintained,
+            trigger,
+            lower_ns,
+            upper_ns,
+        } => {
+            validate_atom(maintained, arities, heads, &rule.id, diagnostics);
+            validate_atom(trigger, arities, heads, &rule.id, diagnostics);
+            if let Some(err) = check_metric_window(*lower_ns, *upper_ns, &rule.id) {
+                diagnostics.push(err);
+            }
+            analysis
+                .positive_vars
+                .extend(maintained.terms.iter().filter_map(term_var));
+            analysis
+                .positive_vars
+                .extend(trigger.terms.iter().filter_map(term_var));
+        }
+        crate::Literal::Allen { left, right, .. } => {
+            validate_atom(left, arities, heads, &rule.id, diagnostics);
+            validate_atom(right, arities, heads, &rule.id, diagnostics);
+            analysis
+                .positive_vars
+                .extend(left.terms.iter().filter_map(term_var));
+            analysis
+                .positive_vars
+                .extend(right.terms.iter().filter_map(term_var));
+        }
+        _ => {}
     }
 }
 
@@ -437,7 +512,7 @@ fn validate_aggregate_literal(
             "at most one aggregate literal is supported",
         ));
     }
-    if index + 1 != rule.body.len() {
+    if index.saturating_add(1) != rule.body.len() {
         diagnostics.push(diag(
             "aggregate-position",
             Some(rule.id.clone()),
@@ -470,17 +545,31 @@ fn validate_aggregate_coverage(
         return;
     }
     for literal in &rule.body {
-        if let crate::Literal::Positive(atom) = literal
-            && !bundle.complete_predicates.contains(&atom.predicate)
-        {
-            diagnostics.push(diag(
-                "aggregate-coverage",
-                Some(rule.id.clone()),
-                format!(
-                    "aggregate body predicate {:?} is not declared complete",
-                    atom.predicate
-                ),
-            ));
+        let predicates: Vec<&str> = match literal {
+            crate::Literal::Positive(atom)
+            | crate::Literal::DiamondMinus { atom, .. }
+            | crate::Literal::BoxMinus { atom, .. } => vec![atom.predicate.as_str()],
+            crate::Literal::Since {
+                maintained,
+                trigger,
+                ..
+            } => vec![maintained.predicate.as_str(), trigger.predicate.as_str()],
+            crate::Literal::Allen { left, right, .. } => {
+                vec![left.predicate.as_str(), right.predicate.as_str()]
+            }
+            crate::Literal::Negative(_)
+            | crate::Literal::Compare { .. }
+            | crate::Literal::Aggregate { .. }
+            | crate::Literal::Forbidden(_) => Vec::new(),
+        };
+        for predicate in predicates {
+            if !bundle.complete_predicates.contains(predicate) {
+                diagnostics.push(diag(
+                    "aggregate-coverage",
+                    Some(rule.id.clone()),
+                    format!("aggregate body predicate {predicate:?} is not declared complete"),
+                ));
+            }
         }
     }
 }
@@ -574,6 +663,28 @@ fn finish_validation(
     }
 }
 
+fn check_metric_window(
+    lower_ns: i128,
+    upper_ns: i128,
+    rule: &str,
+) -> Option<crate::RuleDiagnostic> {
+    let window = mneme_kernel::temporal::MetricWindow {
+        lower: lower_ns,
+        upper: upper_ns,
+    };
+    if mneme_kernel::temporal::window_valid(window) {
+        None
+    } else {
+        Some(diag(
+            "invalid-metric-window",
+            Some(rule.to_owned()),
+            format!(
+                "metric temporal window [{lower_ns}, {upper_ns}] must satisfy 0 <= lower <= upper"
+            ),
+        ))
+    }
+}
+
 fn validate_atom(
     atom: &crate::Atom,
     arities: &std::collections::BTreeMap<String, usize>,
@@ -637,7 +748,10 @@ fn strata(
         .keys()
         .map(|predicate| (predicate.clone(), 0_usize))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let limit = arities.len() + bundle.rules.len() + 2;
+    let limit = arities
+        .len()
+        .saturating_add(bundle.rules.len())
+        .saturating_add(2);
     for _ in 0..limit {
         let mut is_changed = false;
         for rule in &bundle.rules {
@@ -679,7 +793,9 @@ fn rule_target_stratum(
             crate::Literal::Positive(atom) => {
                 target = target.max(strata.get(&atom.predicate).copied().unwrap_or(0));
             }
-            crate::Literal::Negative(atom) => {
+            crate::Literal::Negative(atom)
+            | crate::Literal::DiamondMinus { atom, .. }
+            | crate::Literal::BoxMinus { atom, .. } => {
                 target = target.max(
                     strata
                         .get(&atom.predicate)
@@ -687,6 +803,20 @@ fn rule_target_stratum(
                         .unwrap_or(0)
                         .saturating_add(1),
                 );
+            }
+            crate::Literal::Since {
+                maintained,
+                trigger,
+                ..
+            } => {
+                let m_stratum = strata.get(&maintained.predicate).copied().unwrap_or(0);
+                let t_stratum = strata.get(&trigger.predicate).copied().unwrap_or(0);
+                target = target.max(m_stratum.max(t_stratum).saturating_add(1));
+            }
+            crate::Literal::Allen { left, right, .. } => {
+                let l_stratum = strata.get(&left.predicate).copied().unwrap_or(0);
+                let r_stratum = strata.get(&right.predicate).copied().unwrap_or(0);
+                target = target.max(l_stratum.max(r_stratum).saturating_add(1));
             }
             crate::Literal::Aggregate { .. } => has_aggregate = true,
             _ => {}
@@ -920,9 +1050,78 @@ fn literal_value(literal: &crate::Literal) -> mneme_core::Value {
                 mneme_core::Value::string(output.clone()),
             ],
         ),
+        crate::Literal::DiamondMinus {
+            atom,
+            lower_ns,
+            upper_ns,
+        } => metric_atom_value("diamond-minus", atom, *lower_ns, *upper_ns),
+        crate::Literal::BoxMinus {
+            atom,
+            lower_ns,
+            upper_ns,
+        } => metric_atom_value("box-minus", atom, *lower_ns, *upper_ns),
+        crate::Literal::Since {
+            maintained,
+            trigger,
+            lower_ns,
+            upper_ns,
+        } => since_literal_value(maintained, trigger, *lower_ns, *upper_ns),
+        crate::Literal::Allen {
+            relation,
+            left,
+            right,
+        } => allen_literal_value(*relation, left, right),
         crate::Literal::Forbidden(name) => mneme_core::Value::record_named(
             "forbidden",
             vec![mneme_core::Value::string(name.clone())],
         ),
     }
+}
+
+fn metric_atom_value(
+    kind: &str,
+    atom: &crate::Atom,
+    lower_ns: i128,
+    upper_ns: i128,
+) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        kind,
+        vec![
+            atom_value(atom),
+            mneme_core::Value::string(lower_ns.to_string()),
+            mneme_core::Value::string(upper_ns.to_string()),
+        ],
+    )
+}
+
+fn since_literal_value(
+    maintained: &crate::Atom,
+    trigger: &crate::Atom,
+    lower_ns: i128,
+    upper_ns: i128,
+) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "since",
+        vec![
+            atom_value(maintained),
+            atom_value(trigger),
+            mneme_core::Value::string(lower_ns.to_string()),
+            mneme_core::Value::string(upper_ns.to_string()),
+        ],
+    )
+}
+
+fn allen_literal_value(
+    relation: mneme_kernel::temporal::AllenRelation,
+    left: &crate::Atom,
+    right: &crate::Atom,
+) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "allen",
+        vec![
+            mneme_core::Value::symbol(format!("{relation:?}").to_lowercase()),
+            atom_value(left),
+            atom_value(right),
+        ],
+    )
 }

@@ -84,9 +84,26 @@ pub fn validate_vault_alias(alias: &str) -> Result<(), Error> {
 }
 
 pub mod repl;
+pub mod temporal;
 pub mod zset;
 pub use repl::{ReplLimits, ReplSession, ReplSessionRequest, ReplStepSummary};
+pub use temporal::{DEFAULT_MAX_INTERVALS_PER_FACT, FactValidity, IntervalSet};
 pub use zset::{BilinearJoin, IndexedZSet, ZSet, delta_join};
+
+/// Configuration for temporal interval bounds during Datalog evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TemporalConfig {
+    /// Maximum number of disjoint coalesced periods retained per fact.
+    pub max_intervals_per_fact: u64,
+}
+
+impl Default for TemporalConfig {
+    fn default() -> Self {
+        Self {
+            max_intervals_per_fact: DEFAULT_MAX_INTERVALS_PER_FACT,
+        }
+    }
+}
 
 /// A Datalog term.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -153,6 +170,32 @@ pub enum Literal {
         function: AggregateFunction,
         input: Term,
         output: String,
+    },
+    /// Bounded DatalogMTL past-diamond: `atom` held at some instant within `[lower_ns, upper_ns]` ago.
+    DiamondMinus {
+        atom: Atom,
+        lower_ns: i128,
+        upper_ns: i128,
+    },
+    /// Bounded DatalogMTL past-box: `atom` held continuously over `[t - upper_ns, t - lower_ns]`.
+    BoxMinus {
+        atom: Atom,
+        lower_ns: i128,
+        upper_ns: i128,
+    },
+    /// Bounded DatalogMTL metric-since: `trigger` held within `[lower_ns, upper_ns]` ago and
+    /// `maintained` held continuously on `(t', t]`.
+    Since {
+        maintained: Atom,
+        trigger: Atom,
+        lower_ns: i128,
+        upper_ns: i128,
+    },
+    /// Opt-in non-sequenced Allen interval relation between two positive body atoms.
+    Allen {
+        relation: mneme_kernel::temporal::AllenRelation,
+        left: Atom,
+        right: Atom,
     },
     /// Explicitly unsupported external operation, rejected at registration.
     Forbidden(String),
@@ -544,6 +587,29 @@ impl Build {
             },
         )
     }
+    /// Inspect the structured coalesced temporal validity of a materialized fact.
+    pub fn fact_validity(
+        &self,
+        predicate: &str,
+        terms: &[mneme_core::Value],
+    ) -> Option<&FactValidity> {
+        self.facts
+            .get(predicate)
+            .and_then(|rows| rows.get(terms))
+            .filter(|data| data.is_active())
+            .map(|data| &data.validity)
+    }
+
+    /// Inspect the canonical coalesced [`IntervalSet`] of a materialized fact,
+    /// returning `None` if the fact is absent or has `Unknown` validity.
+    pub fn fact_intervals(
+        &self,
+        predicate: &str,
+        terms: &[mneme_core::Value],
+    ) -> Option<&IntervalSet> {
+        self.fact_validity(predicate, terms)
+            .and_then(FactValidity::as_interval_set)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -557,8 +623,8 @@ pub(crate) struct FactData {
     canonical_roots: std::collections::BTreeSet<mneme_core::RecordId>,
     /// Originating vault aliases this fact rests on transitively.
     vaults: std::collections::BTreeSet<String>,
-    /// Valid-time parameters the fact's claims carry.
-    temporal: Vec<String>,
+    /// Structured coalesced valid-time intervals (or fail-closed `Unknown`).
+    validity: FactValidity,
     /// Epistemic provenance union (`+`) over all derivations of this row.
     epistemic: EpistemicStatus,
 }
@@ -808,6 +874,8 @@ struct BuildInvocation {
     requested_was_head: bool,
     /// The instant taken before the snapshot and history were loaded.
     start: std::time::Instant,
+    /// Per-fact coalesced interval cap for bitemporal / DatalogMTL evaluation.
+    temporal_config: TemporalConfig,
 }
 
 /// The query cache identity.
@@ -886,15 +954,25 @@ impl<'w> Service<'w> {
 
     /// Build a private projection and optionally publish its pointer through
     /// the workspace projection registry.
-    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn build(&mut self, request: BuildRequest) -> Result<Build, Error> {
+        self.build_with_temporal_config(request, TemporalConfig::default())
+    }
+
+    /// Build a projection with an explicit [`TemporalConfig`] bounding
+    /// per-fact coalesced intervals.
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    pub fn build_with_temporal_config(
+        &mut self,
+        request: BuildRequest,
+        temporal_config: TemporalConfig,
+    ) -> Result<Build, Error> {
         // The clock starts before the snapshot and history are read, so the
         // wall-clock bound covers loading as well as evaluation.
         let start = engine::evaluation_start();
         let program = request.bundle.validate().map_err(Error::InvalidBundle)?;
         let generation = self.workspace.eligibility_generation()?;
         let head_revision = self.workspace.current_revision()?;
-        let build_id = rules::build_id(rules::BuildIdContext {
+        let mut build_id = rules::build_id(rules::BuildIdContext {
             revision: request.revision,
             scope: &request.scope,
             generation,
@@ -903,6 +981,9 @@ impl<'w> Service<'w> {
             incomplete_extents: &request.incomplete_extents,
             at: request.at,
         });
+        if temporal_config != TemporalConfig::default() {
+            build_id.push_str(&format!(":ti{}", temporal_config.max_intervals_per_fact));
+        }
         let is_cancellation_requested = request
             .cancellation
             .as_ref()
@@ -934,6 +1015,7 @@ impl<'w> Service<'w> {
                 generation,
                 requested_was_head: request.revision == head_revision,
                 start,
+                temporal_config,
             },
             snapshot,
         )?;
@@ -1071,6 +1153,7 @@ impl<'w> Service<'w> {
             generation,
             requested_was_head,
             start,
+            temporal_config,
         } = invocation;
         debug_assert!(!build_id.is_empty());
         debug_assert!(!program.bundle.id.is_empty());
@@ -1105,6 +1188,7 @@ impl<'w> Service<'w> {
             engine::BuildEnvironment {
                 start,
                 current_sources: &loaded.current_sources,
+                temporal_config,
             },
         );
         if self.workspace.eligibility_generation()? != generation {
@@ -1457,8 +1541,23 @@ pub(crate) fn dependency_coverage(build: &Build, predicate: &str) -> Vec<Coverag
             }
             for literal in &rule.body {
                 match literal {
-                    Literal::Positive(atom) | Literal::Negative(atom) => {
+                    Literal::Positive(atom)
+                    | Literal::Negative(atom)
+                    | Literal::DiamondMinus { atom, .. }
+                    | Literal::BoxMinus { atom, .. } => {
                         pending.push(atom.predicate.clone());
+                    }
+                    Literal::Since {
+                        maintained,
+                        trigger,
+                        ..
+                    } => {
+                        pending.push(maintained.predicate.clone());
+                        pending.push(trigger.predicate.clone());
+                    }
+                    Literal::Allen { left, right, .. } => {
+                        pending.push(left.predicate.clone());
+                        pending.push(right.predicate.clone());
                     }
                     Literal::Compare { .. } | Literal::Aggregate { .. } | Literal::Forbidden(_) => {
                     }

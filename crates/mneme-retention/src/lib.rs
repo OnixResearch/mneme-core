@@ -1215,24 +1215,25 @@ fn expired_time(
     valid_time: mneme_core::ValidTime,
     effective: mneme_core::Timestamp,
 ) -> Result<mneme_core::ValidTime> {
-    match valid_time {
+    let validity = mneme_memory::valid_time_to_kernel(valid_time);
+    match mneme_kernel::temporal::expire_bounds(validity, effective.nanos()) {
         // An unknown validity is not an open start bound: writing an end bound
         // over it would assert that the claim was valid at every earlier
         // instant, which was never recorded.
-        mneme_core::ValidTime::Unknown => Err(PolicyError::Conflict(
+        mneme_kernel::temporal::ExpiryDecision::UnknownValidity => Err(PolicyError::Conflict(
             "valid-time expiry requires a known validity interval",
         )),
-        mneme_core::ValidTime::Bounded { start, end } => {
-            if start.is_some_and(|start| effective < start) {
-                return Err(PolicyError::Conflict(
-                    "requested expiry precedes the valid-time start",
-                ));
-            }
-            if end.is_some_and(|end| end <= effective) {
-                return Err(PolicyError::Conflict(
-                    "valid time already ends at or before the requested expiry",
-                ));
-            }
+        mneme_kernel::temporal::ExpiryDecision::ExpiryNotAfterStart => Err(PolicyError::Conflict(
+            "requested expiry must follow the valid-time start under half-open semantics",
+        )),
+        mneme_kernel::temporal::ExpiryDecision::AlreadyExpired => Err(PolicyError::Conflict(
+            "valid time already ends at or before the requested expiry",
+        )),
+        mneme_kernel::temporal::ExpiryDecision::Allowed(_) => {
+            let start = match valid_time {
+                mneme_core::ValidTime::Bounded { start, .. } => start,
+                mneme_core::ValidTime::Unknown => None,
+            };
             Ok(mneme_core::ValidTime::Bounded {
                 start,
                 end: Some(effective),
