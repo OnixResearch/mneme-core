@@ -108,6 +108,9 @@ pub enum Failure {
 
     #[error("portable vault archive is invalid: {0}")]
     PortableArchive(String),
+
+    #[error("hybrid logical clock skew exceeded: {0}")]
+    ClockSkewExceeded(String),
 }
 
 impl Failure {

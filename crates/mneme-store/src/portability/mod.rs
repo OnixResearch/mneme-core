@@ -598,7 +598,7 @@ fn ordered_revisions(records: &[PortableRecord]) -> Vec<&PortableRevision> {
 }
 
 fn same_batch(a: &&PortableRevision, b: &&PortableRevision) -> bool {
-    a.commit.sequence == b.commit.sequence
+    a.commit.revision == b.commit.revision && a.commit.sequence == b.commit.sequence
 }
 
 /// The retained source a record revision names, when it retains bytes.

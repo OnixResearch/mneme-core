@@ -774,3 +774,191 @@ fn capability_attenuation_and_gset_revocation_dominance() {
     assert!(is_revoked_in_merge(&chain, &left, &right));
     assert!(is_revoked_in_merge(&chain, &right, &left));
 }
+
+#[test]
+fn calm_stratification_suppression_join_and_sealed_absence_gate() {
+    use mneme_kernel::calm::{
+        CalmSealFacts, CalmStratum, DistributedOp, FederatedNegationFacts, SuppressionLevel,
+        SuppressionState, classify_op, federated_absence_established, join_suppression,
+        join_suppression_level, requires_barrier, seal_valid,
+    };
+
+    assert_eq!(
+        classify_op(DistributedOp::AppendImmutableRecord),
+        CalmStratum::Monotonic
+    );
+    assert_eq!(
+        classify_op(DistributedOp::MergeRevocationTombstone),
+        CalmStratum::Monotonic
+    );
+    assert_eq!(
+        classify_op(DistributedOp::MergeSuppression),
+        CalmStratum::Monotonic
+    );
+    assert_eq!(
+        classify_op(DistributedOp::PositiveFederatedDatalog),
+        CalmStratum::Monotonic
+    );
+    assert!(!requires_barrier(DistributedOp::AppendImmutableRecord));
+    assert!(!requires_barrier(DistributedOp::PositiveFederatedDatalog));
+
+    assert_eq!(
+        classify_op(DistributedOp::PromoteDecision),
+        CalmStratum::Barrier
+    );
+    assert_eq!(
+        classify_op(DistributedOp::NegatedFederatedDatalog),
+        CalmStratum::Barrier
+    );
+    assert_eq!(
+        classify_op(DistributedOp::SharedBlobPhysicalGc),
+        CalmStratum::Barrier
+    );
+    assert!(requires_barrier(DistributedOp::PromoteDecision));
+    assert!(requires_barrier(DistributedOp::NegatedFederatedDatalog));
+    assert!(requires_barrier(DistributedOp::SharedBlobPhysicalGc));
+
+    let levels = [
+        SuppressionLevel::None,
+        SuppressionLevel::Withdrawn,
+        SuppressionLevel::Forgotten,
+    ];
+    for &a in &levels {
+        assert_eq!(join_suppression_level(a, a), a);
+        assert_eq!(
+            join_suppression_level(a, SuppressionLevel::Forgotten),
+            SuppressionLevel::Forgotten
+        );
+        for &b in &levels {
+            assert_eq!(join_suppression_level(a, b), join_suppression_level(b, a));
+            for &c in &levels {
+                assert_eq!(
+                    join_suppression_level(join_suppression_level(a, b), c),
+                    join_suppression_level(a, join_suppression_level(b, c))
+                );
+            }
+        }
+    }
+
+    let s1 = SuppressionState {
+        level: SuppressionLevel::Withdrawn,
+        generation: 4,
+    };
+    let s2 = SuppressionState {
+        level: SuppressionLevel::Forgotten,
+        generation: 2,
+    };
+    assert_eq!(
+        join_suppression(s1, s2),
+        SuppressionState {
+            level: SuppressionLevel::Forgotten,
+            generation: 4,
+        }
+    );
+    assert_eq!(join_suppression(s1, s2), join_suppression(s2, s1));
+
+    let unsealed = CalmSealFacts {
+        sealed: false,
+        quorum_satisfied: true,
+        epoch_matches: true,
+    };
+    let valid_seal = CalmSealFacts {
+        sealed: true,
+        quorum_satisfied: true,
+        epoch_matches: true,
+    };
+    assert!(!seal_valid(&unsealed));
+    assert!(seal_valid(&valid_seal));
+    assert!(!federated_absence_established(&FederatedNegationFacts {
+        local_absence_established: true,
+        stratum: CalmStratum::Barrier,
+        is_federated: true,
+        barrier_seal: unsealed,
+    }));
+    assert!(federated_absence_established(&FederatedNegationFacts {
+        local_absence_established: true,
+        stratum: CalmStratum::Barrier,
+        is_federated: true,
+        barrier_seal: valid_seal,
+    }));
+    assert!(federated_absence_established(&FederatedNegationFacts {
+        local_absence_established: true,
+        stratum: CalmStratum::Monotonic,
+        is_federated: true,
+        barrier_seal: unsealed,
+    }));
+}
+
+#[test]
+fn hlc_tick_receive_causal_monotonicity_and_skew_guard() {
+    use mneme_kernel::hlc::{
+        ClockOrder, DEFAULT_MAX_SKEW_NS, HlcError, HybridTimestamp, compare, is_before, receive,
+        tick_local, within_skew,
+    };
+
+    let base_ns: i64 = 1_700_000_000_000_000_000;
+    let t0 = HybridTimestamp {
+        physical_ns: base_ns,
+        logical: 0,
+    };
+
+    let t1 = HybridTimestamp {
+        physical_ns: base_ns + 500,
+        logical: 0,
+    };
+    assert_eq!(tick_local(t0, base_ns + 500, DEFAULT_MAX_SKEW_NS), Ok(t1));
+    assert!(is_before(t0, t1));
+
+    // Regressing physical clock bumps logical counter monotonically.
+    let t2 = HybridTimestamp {
+        physical_ns: base_ns + 500,
+        logical: 1,
+    };
+    assert_eq!(tick_local(t1, base_ns + 100, DEFAULT_MAX_SKEW_NS), Ok(t2));
+    assert_eq!(compare(t1, t2), ClockOrder::Less);
+
+    // Receiving a remote event within skew advances strictly past both local and remote.
+    let remote = HybridTimestamp {
+        physical_ns: base_ns + 1_000_000_000,
+        logical: 7,
+    };
+    let t3 = HybridTimestamp {
+        physical_ns: base_ns + 1_000_000_000,
+        logical: 8,
+    };
+    assert_eq!(
+        receive(t2, base_ns + 600, remote, DEFAULT_MAX_SKEW_NS),
+        Ok(t3)
+    );
+    assert!(is_before(t2, t3));
+    assert!(is_before(remote, t3));
+    assert!(within_skew(
+        t3.physical_ns,
+        base_ns + 600,
+        DEFAULT_MAX_SKEW_NS
+    ));
+
+    // Byzantine future remote timestamp fails closed with ClockSkewExceeded.
+    let byzantine = HybridTimestamp {
+        physical_ns: base_ns + 60_000_000_000,
+        logical: 0,
+    };
+    assert_eq!(
+        receive(t3, base_ns + 600, byzantine, DEFAULT_MAX_SKEW_NS),
+        Err(HlcError::ClockSkewExceeded)
+    );
+    assert_eq!(
+        receive(t3, base_ns + 600, remote, -1),
+        Err(HlcError::InvalidMaxSkew)
+    );
+
+    // Logical overflow fails closed.
+    let maxed = HybridTimestamp {
+        physical_ns: base_ns + 1_000,
+        logical: u32::MAX,
+    };
+    assert_eq!(
+        tick_local(maxed, base_ns + 500, DEFAULT_MAX_SKEW_NS),
+        Err(HlcError::LogicalOverflow)
+    );
+}

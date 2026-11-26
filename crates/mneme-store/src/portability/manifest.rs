@@ -806,24 +806,47 @@ impl super::PortableOmission {
 impl crate::coordinator::RevisionCommit {
     /// Encode as `<portable-commit …>`.
     fn to_value(&self) -> mneme_core::Value {
-        mneme_core::Value::record_named(
-            "portable-commit",
-            vec![
-                self.revision.to_value(),
-                mneme_core::Value::integer(self.sequence),
-                mneme_core::Value::string(self.actor.clone()),
-                mneme_core::Value::integer(self.committed_at_ns),
-            ],
-        )
+        let mut fields = vec![
+            self.revision.to_value(),
+            mneme_core::Value::integer(self.sequence),
+            mneme_core::Value::string(self.actor.clone()),
+            mneme_core::Value::integer(self.committed_at_ns),
+        ];
+        if let Some(ts) = self.hlc {
+            fields.push(mneme_core::Value::integer(ts.physical_ns));
+            fields.push(mneme_core::Value::integer(u64::from(ts.logical)));
+        }
+        mneme_core::Value::record_named("portable-commit", fields)
     }
 
     /// Decode one workspace commit attribution.
     fn from_value(value: &mneme_core::Value) -> crate::error::Result<Self> {
-        let fields = record_fields(value, "portable-commit", 4)?;
+        let record = value
+            .as_record()
+            .ok_or_else(|| invalid("expected record portable-commit"))?;
+        if record.label().as_symbol().map(mneme_core::Symbol::as_str) != Some("portable-commit") {
+            return Err(invalid("expected record portable-commit"));
+        }
+        let fields = record.fields();
+        if fields.len() != 4 && fields.len() != 6 {
+            return Err(invalid("portable-commit must have 4 or 6 fields"));
+        }
         let actor = text(&fields[2], "commit actor")?;
         if actor.is_empty() || actor.len() > 128 || actor.chars().any(char::is_control) {
             return Err(invalid("commit actor is malformed"));
         }
+        let hlc = if fields.len() == 6 {
+            let physical_ns = signed(&fields[4], "commit hlc physical_ns")?;
+            let logical_u64 = unsigned(&fields[5], "commit hlc logical")?;
+            let logical = u32::try_from(logical_u64)
+                .map_err(|_| invalid("commit hlc logical exceeds u32"))?;
+            Some(mneme_kernel::hlc::HybridTimestamp {
+                physical_ns,
+                logical,
+            })
+        } else {
+            None
+        };
         Ok(crate::coordinator::RevisionCommit {
             revision: mneme_core::WorkspaceRevisionId::from_value(
                 &fields[0],
@@ -833,6 +856,7 @@ impl crate::coordinator::RevisionCommit {
             sequence: unsigned(&fields[1], "commit sequence")?,
             actor: actor.to_owned(),
             committed_at_ns: signed(&fields[3], "commit time")?,
+            hlc,
         })
     }
 }

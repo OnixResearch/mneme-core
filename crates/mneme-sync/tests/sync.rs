@@ -526,6 +526,7 @@ fn allowlist_persistence_and_gossip_announcement_bounds() {
         seq: 3,
         bundle_hash: iroh_blobs::Hash::EMPTY.to_string(),
         bundle_bytes: 128,
+        hlc: None,
         origin: None,
         signature: None,
     }
@@ -2522,6 +2523,204 @@ async fn multi_mib_blake3_blob_transfers_zero_rehash_via_sidecar_and_enforces_li
         corrupt_res.is_err(),
         "corrupted on-disk .obao4 sidecar must fail closed on transfer"
     );
+
+    node_a.shutdown().await.expect("shutdown a");
+    node_b.shutdown().await.expect("shutdown b");
+}
+
+#[tokio::test]
+async fn incremental_sync_propagates_forget_barrier_and_converges_with_concurrent_append() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root_a = temp.path().join("peer-a");
+    let root_b = temp.path().join("peer-b");
+
+    let (mut ws_a, vault_id) = create_fixture_workspace(&root_a);
+    let target_record_id = mneme_core::RecordId::from_bytes([0x77; 16]);
+    let seed_base = ws_a.current_revision().expect("seed base A");
+    ws_a.commit(mneme_store::CommitCommand {
+        base: seed_base,
+        actor: "peer-a".to_owned(),
+        scope: scope(),
+        idempotency_key: "seed-forgettable-leaf".to_owned(),
+        records: vec![mneme_store::RecordDraft {
+            schema_version: 2,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: target_record_id,
+            revision_id: mneme_core::RevisionId::from_bytes([0x78; 16]),
+            predecessor: None,
+            scope: scope(),
+            payload: mneme_core::Payload::new([
+                (
+                    mneme_core::Symbol::from("entity-type"),
+                    mneme_core::Value::symbol("topic"),
+                ),
+                (
+                    mneme_core::Symbol::from("label"),
+                    mneme_core::Value::string("ephemeral-leaf"),
+                ),
+                (
+                    mneme_core::Symbol::from("properties"),
+                    mneme_core::Value::dictionary([]),
+                ),
+            ]),
+        }],
+        source_blobs: Vec::new(),
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: None,
+    })
+    .expect("commit forgettable leaf on peer A");
+
+    let allow_a = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    let allow_b = mneme_sync::SharedAllowlist::new(mneme_sync::PeerAllowlist::new());
+    let node_a = bind_loopback_node(91, allow_a.clone()).await;
+    let node_b = bind_loopback_node(92, allow_b.clone()).await;
+
+    allow_a
+        .allow(mneme_sync::AllowedPeer {
+            node_id: node_b.node_id(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::from_scopes([scope()]),
+        })
+        .expect("allow b");
+    allow_b
+        .allow(mneme_sync::AllowedPeer {
+            node_id: node_a.node_id(),
+            label: None,
+            allowance: mneme_sync::ScopeAllowance::from_scopes([scope()]),
+        })
+        .expect("allow a");
+
+    node_a.add_peer_addr(node_b.addr());
+    node_b.add_peer_addr(node_a.addr());
+
+    // Initial full sync from Peer A to Peer B.
+    let snap1 = node_a
+        .publish_workspace(&ws_a, &vault_id, &scope())
+        .await
+        .expect("publish initial");
+    assert!(snap1.hlc.is_some());
+    assert_eq!(snap1.eligibility_generation, 1);
+
+    let initial_pull = node_b
+        .pull_scope(mneme_sync::PullRequest {
+            peer: node_a.node_id(),
+            scope: scope(),
+            destination: root_b.clone(),
+            state_dir: None,
+            workspace_config: config_factory(),
+        })
+        .await
+        .expect("initial pull to peer B");
+    assert!(initial_pull.verify_report.is_healthy());
+
+    // Peer A forgets the seeded record (`gen=2`), while Peer B concurrently appends a new entity `q` (`gen=1`).
+    let base_a = ws_a.current_revision().expect("head A");
+    let next_gen = ws_a.eligibility_generation().expect("gen A") + 1;
+    ws_a.commit(mneme_store::CommitCommand {
+        base: base_a,
+        actor: "peer-a".to_owned(),
+        scope: scope(),
+        idempotency_key: "forget-seeded-source".to_owned(),
+        records: Vec::new(),
+        source_blobs: Vec::new(),
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: Some(mneme_store::RetentionCommit {
+            operation_id: "op-forget-seeded".to_owned(),
+            operation_kind: "forget".to_owned(),
+            policy_version: "1".to_owned(),
+            selectors: Vec::new(),
+            suppressions: vec![mneme_store::RetentionSuppression {
+                operation_id: "op-forget-seeded".to_owned(),
+                target: target_record_id,
+                revision: None,
+                target_kind: "entity".to_owned(),
+                mode: mneme_store::SuppressionMode::Forgotten,
+                content_digest: None,
+                generation: next_gen,
+            }],
+            locations: Vec::new(),
+            retained_metadata: Vec::new(),
+        }),
+    })
+    .expect("commit forget barrier on peer A");
+    assert_eq!(ws_a.eligibility_generation().expect("gen A2"), 2);
+
+    let appended_id = mneme_core::RecordId::from_bytes([0x88; 16]);
+    let mut ws_b =
+        mneme_store::Workspace::open(&root_b, (config_factory())()).expect("open peer B");
+    let base_b = ws_b.current_revision().expect("head B");
+    ws_b.commit(mneme_store::CommitCommand {
+        base: base_b,
+        actor: "peer-b".to_owned(),
+        scope: scope(),
+        idempotency_key: "append-q-on-b".to_owned(),
+        records: vec![mneme_store::RecordDraft {
+            schema_version: 2,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: appended_id,
+            revision_id: mneme_core::RevisionId::from_bytes([0x89; 16]),
+            predecessor: None,
+            scope: scope(),
+            payload: mneme_core::Payload::new([
+                (
+                    mneme_core::Symbol::from("entity-type"),
+                    mneme_core::Value::symbol("topic"),
+                ),
+                (
+                    mneme_core::Symbol::from("label"),
+                    mneme_core::Value::string("concurrent-proposed"),
+                ),
+                (
+                    mneme_core::Symbol::from("properties"),
+                    mneme_core::Value::symbol_dictionary([(
+                        mneme_core::Symbol::from("status"),
+                        mneme_core::Value::symbol("proposed"),
+                    )]),
+                ),
+            ]),
+        }],
+        source_blobs: Vec::new(),
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: None,
+    })
+    .expect("commit concurrent append on peer B");
+    drop(ws_b);
+
+    // Peer A republishes with the forget barrier and Peer B pulls incrementally:
+    // barrier-first ingestion suppresses `target_record_id`, keeps `appended_id`, advances gen to 2, and passes verify!
+    let snap2 = node_a
+        .publish_workspace(&ws_a, &vault_id, &scope())
+        .await
+        .expect("republish peer A with forget barrier");
+    assert_eq!(snap2.eligibility_generation, 2);
+
+    let pulled = node_b
+        .pull_scope(mneme_sync::PullRequest {
+            peer: node_a.node_id(),
+            scope: scope(),
+            destination: root_b.clone(),
+            state_dir: None,
+            workspace_config: config_factory(),
+        })
+        .await
+        .expect("incremental sync pull should apply forget barrier without resurrecting");
+    assert!(pulled.verify_report.is_healthy());
+
+    let ws_b_after =
+        mneme_store::Workspace::open_read_only(&root_b, (config_factory())()).expect("reopen B");
+    assert_eq!(ws_b_after.eligibility_generation().expect("gen B"), 2);
+    let ids_b: std::collections::BTreeSet<mneme_core::RecordId> = ws_b_after
+        .snapshot()
+        .expect("snap B")
+        .records
+        .iter()
+        .map(|rec| rec.record_id)
+        .collect();
+    assert!(!ids_b.contains(&target_record_id));
+    assert!(ids_b.contains(&appended_id));
 
     node_a.shutdown().await.expect("shutdown a");
     node_b.shutdown().await.expect("shutdown b");

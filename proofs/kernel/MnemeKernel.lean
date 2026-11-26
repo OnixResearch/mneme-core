@@ -383,6 +383,568 @@ def budget.charge
                   then ok o
                   else ok none
 
+/-- [mneme_kernel::calm::SUPPRESSION_RANK_NONE]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 13:0-13:36 -/
+@[global_simps, irreducible] def calm.SUPPRESSION_RANK_NONE : Std.U8 := 0#u8
+
+/-- [mneme_kernel::calm::SUPPRESSION_RANK_WITHDRAWN]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 14:0-14:41 -/
+@[global_simps, irreducible]
+def calm.SUPPRESSION_RANK_WITHDRAWN : Std.U8 := 1#u8
+
+/-- [mneme_kernel::calm::SUPPRESSION_RANK_FORGOTTEN]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 15:0-15:41 -/
+@[global_simps, irreducible]
+def calm.SUPPRESSION_RANK_FORGOTTEN : Std.U8 := 2#u8
+
+/-- [mneme_kernel::calm::CalmStratum]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 20:0-25:1
+    Visibility: public -/
+@[discriminant isize]
+inductive calm.CalmStratum where
+| Monotonic : calm.CalmStratum
+| Barrier : calm.CalmStratum
+
+/-- [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::CalmStratum}::clone]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 18:9-18:14
+    Visibility: public -/
+def calm.CalmStratum.Insts.CoreCloneClone.clone
+  (self : calm.CalmStratum) : Result calm.CalmStratum := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::CalmStratum}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 18:9-18:14 -/
+@[reducible]
+def calm.CalmStratum.Insts.CoreCloneClone : core.clone.Clone calm.CalmStratum
+  := {
+  clone := calm.CalmStratum.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::Copy for mneme_kernel::calm::CalmStratum}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 18:16-18:20 -/
+@[reducible]
+def calm.CalmStratum.Insts.CoreMarkerCopy : core.marker.Copy calm.CalmStratum
+  := {
+  cloneInst := calm.CalmStratum.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::StructuralPartialEq for mneme_kernel::calm::CalmStratum}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 18:22-18:31 -/
+@[reducible]
+def calm.CalmStratum.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq calm.CalmStratum := {
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::CalmStratum> for mneme_kernel::calm::CalmStratum}::eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 18:22-18:31
+    Visibility: public -/
+def calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum.eq
+  (self : calm.CalmStratum) (other : calm.CalmStratum) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::CalmStratum> for mneme_kernel::calm::CalmStratum}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 18:22-18:31 -/
+@[reducible]
+def calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum : core.cmp.PartialEq
+  calm.CalmStratum calm.CalmStratum := {
+  eq := calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum.eq
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::CalmStratum}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 18:33-18:35
+    Visibility: public -/
+def calm.CalmStratum.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : calm.CalmStratum) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::CalmStratum}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 18:33-18:35 -/
+@[reducible]
+def calm.CalmStratum.Insts.CoreCmpEq : core.cmp.Eq calm.CalmStratum := {
+  partialEqInst := calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum
+  assert_fields_are_eq := calm.CalmStratum.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::calm::DistributedOp]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 30:0-45:1
+    Visibility: public -/
+@[discriminant isize]
+inductive calm.DistributedOp where
+| AppendImmutableRecord : calm.DistributedOp
+| MergeRevocationTombstone : calm.DistributedOp
+| MergeSuppression : calm.DistributedOp
+| PositiveFederatedDatalog : calm.DistributedOp
+| PromoteDecision : calm.DistributedOp
+| NegatedFederatedDatalog : calm.DistributedOp
+| SharedBlobPhysicalGc : calm.DistributedOp
+
+/-- [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::DistributedOp}::clone]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 28:9-28:14
+    Visibility: public -/
+def calm.DistributedOp.Insts.CoreCloneClone.clone
+  (self : calm.DistributedOp) : Result calm.DistributedOp := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::DistributedOp}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 28:9-28:14 -/
+@[reducible]
+def calm.DistributedOp.Insts.CoreCloneClone : core.clone.Clone
+  calm.DistributedOp := {
+  clone := calm.DistributedOp.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::Copy for mneme_kernel::calm::DistributedOp}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 28:16-28:20 -/
+@[reducible]
+def calm.DistributedOp.Insts.CoreMarkerCopy : core.marker.Copy
+  calm.DistributedOp := {
+  cloneInst := calm.DistributedOp.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::StructuralPartialEq for mneme_kernel::calm::DistributedOp}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 28:22-28:31 -/
+@[reducible]
+def calm.DistributedOp.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq calm.DistributedOp := {
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::DistributedOp> for mneme_kernel::calm::DistributedOp}::eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 28:22-28:31
+    Visibility: public -/
+def calm.DistributedOp.Insts.CoreCmpPartialEqDistributedOp.eq
+  (self : calm.DistributedOp) (other : calm.DistributedOp) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::DistributedOp> for mneme_kernel::calm::DistributedOp}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 28:22-28:31 -/
+@[reducible]
+def calm.DistributedOp.Insts.CoreCmpPartialEqDistributedOp : core.cmp.PartialEq
+  calm.DistributedOp calm.DistributedOp := {
+  eq := calm.DistributedOp.Insts.CoreCmpPartialEqDistributedOp.eq
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::DistributedOp}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 28:33-28:35
+    Visibility: public -/
+def calm.DistributedOp.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : calm.DistributedOp) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::DistributedOp}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 28:33-28:35 -/
+@[reducible]
+def calm.DistributedOp.Insts.CoreCmpEq : core.cmp.Eq calm.DistributedOp := {
+  partialEqInst := calm.DistributedOp.Insts.CoreCmpPartialEqDistributedOp
+  assert_fields_are_eq :=
+    calm.DistributedOp.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::calm::classify_op]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 48:0-58:1
+    Visibility: public -/
+def calm.classify_op (op : calm.DistributedOp) : Result calm.CalmStratum := do
+  match op with
+  | calm.DistributedOp.AppendImmutableRecord => ok calm.CalmStratum.Monotonic
+  | calm.DistributedOp.MergeRevocationTombstone =>
+    ok calm.CalmStratum.Monotonic
+  | calm.DistributedOp.MergeSuppression => ok calm.CalmStratum.Monotonic
+  | calm.DistributedOp.PositiveFederatedDatalog =>
+    ok calm.CalmStratum.Monotonic
+  | calm.DistributedOp.PromoteDecision => ok calm.CalmStratum.Barrier
+  | calm.DistributedOp.NegatedFederatedDatalog => ok calm.CalmStratum.Barrier
+  | calm.DistributedOp.SharedBlobPhysicalGc => ok calm.CalmStratum.Barrier
+
+/-- [mneme_kernel::calm::requires_barrier]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 61:0-63:1
+    Visibility: public -/
+def calm.requires_barrier (op : calm.DistributedOp) : Result Bool := do
+  let cs ← calm.classify_op op
+  match cs with
+  | calm.CalmStratum.Monotonic => ok false
+  | calm.CalmStratum.Barrier => ok true
+
+/-- [mneme_kernel::calm::SuppressionLevel]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 68:0-75:1
+    Visibility: public -/
+@[discriminant isize]
+inductive calm.SuppressionLevel where
+| None : calm.SuppressionLevel
+| Withdrawn : calm.SuppressionLevel
+| Forgotten : calm.SuppressionLevel
+
+/-- [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::SuppressionLevel}::clone]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 66:9-66:14
+    Visibility: public -/
+def calm.SuppressionLevel.Insts.CoreCloneClone.clone
+  (self : calm.SuppressionLevel) : Result calm.SuppressionLevel := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::SuppressionLevel}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 66:9-66:14 -/
+@[reducible]
+def calm.SuppressionLevel.Insts.CoreCloneClone : core.clone.Clone
+  calm.SuppressionLevel := {
+  clone := calm.SuppressionLevel.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::Copy for mneme_kernel::calm::SuppressionLevel}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 66:16-66:20 -/
+@[reducible]
+def calm.SuppressionLevel.Insts.CoreMarkerCopy : core.marker.Copy
+  calm.SuppressionLevel := {
+  cloneInst := calm.SuppressionLevel.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::StructuralPartialEq for mneme_kernel::calm::SuppressionLevel}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 66:22-66:31 -/
+@[reducible]
+def calm.SuppressionLevel.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq calm.SuppressionLevel := {
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::SuppressionLevel> for mneme_kernel::calm::SuppressionLevel}::eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 66:22-66:31
+    Visibility: public -/
+def calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel.eq
+  (self : calm.SuppressionLevel) (other : calm.SuppressionLevel) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::SuppressionLevel> for mneme_kernel::calm::SuppressionLevel}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 66:22-66:31 -/
+@[reducible]
+def calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel :
+  core.cmp.PartialEq calm.SuppressionLevel calm.SuppressionLevel := {
+  eq := calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel.eq
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::SuppressionLevel}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 66:33-66:35
+    Visibility: public -/
+def calm.SuppressionLevel.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : calm.SuppressionLevel) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::SuppressionLevel}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 66:33-66:35 -/
+@[reducible]
+def calm.SuppressionLevel.Insts.CoreCmpEq : core.cmp.Eq calm.SuppressionLevel
+  := {
+  partialEqInst := calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel
+  assert_fields_are_eq :=
+    calm.SuppressionLevel.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::calm::suppression_rank]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 78:0-84:1
+    Visibility: public -/
+def calm.suppression_rank (level : calm.SuppressionLevel) : Result Std.U8 := do
+  match level with
+  | calm.SuppressionLevel.None => ok calm.SUPPRESSION_RANK_NONE
+  | calm.SuppressionLevel.Withdrawn => ok calm.SUPPRESSION_RANK_WITHDRAWN
+  | calm.SuppressionLevel.Forgotten => ok calm.SUPPRESSION_RANK_FORGOTTEN
+
+/-- [mneme_kernel::calm::join_suppression_level]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 87:0-93:1
+    Visibility: public -/
+def calm.join_suppression_level
+  (left : calm.SuppressionLevel) (right : calm.SuppressionLevel) :
+  Result calm.SuppressionLevel
+  := do
+  let i ← calm.suppression_rank left
+  let i1 ← calm.suppression_rank right
+  if i >= i1
+  then ok left
+  else ok right
+
+/-- [mneme_kernel::calm::SuppressionState]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 98:0-103:1
+    Visibility: public -/
+structure calm.SuppressionState where
+  level : calm.SuppressionLevel
+  generation : Std.U64
+
+/-- [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::SuppressionState}::clone]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 96:9-96:14
+    Visibility: public -/
+def calm.SuppressionState.Insts.CoreCloneClone.clone
+  (self : calm.SuppressionState) : Result calm.SuppressionState := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::SuppressionState}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 96:9-96:14 -/
+@[reducible]
+def calm.SuppressionState.Insts.CoreCloneClone : core.clone.Clone
+  calm.SuppressionState := {
+  clone := calm.SuppressionState.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::Copy for mneme_kernel::calm::SuppressionState}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 96:16-96:20 -/
+@[reducible]
+def calm.SuppressionState.Insts.CoreMarkerCopy : core.marker.Copy
+  calm.SuppressionState := {
+  cloneInst := calm.SuppressionState.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::StructuralPartialEq for mneme_kernel::calm::SuppressionState}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 96:22-96:31 -/
+@[reducible]
+def calm.SuppressionState.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq calm.SuppressionState := {
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::SuppressionState> for mneme_kernel::calm::SuppressionState}::eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 96:22-96:31
+    Visibility: public -/
+def calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState.eq
+  (self : calm.SuppressionState) (other : calm.SuppressionState) :
+  Result Bool
+  := do
+  if self.generation = other.generation
+  then
+    calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel.eq self.level
+      other.level
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::SuppressionState> for mneme_kernel::calm::SuppressionState}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 96:22-96:31 -/
+@[reducible]
+def calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState :
+  core.cmp.PartialEq calm.SuppressionState calm.SuppressionState := {
+  eq := calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState.eq
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::SuppressionState}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 96:33-96:35
+    Visibility: public -/
+def calm.SuppressionState.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : calm.SuppressionState) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::SuppressionState}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 96:33-96:35 -/
+@[reducible]
+def calm.SuppressionState.Insts.CoreCmpEq : core.cmp.Eq calm.SuppressionState
+  := {
+  partialEqInst := calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState
+  assert_fields_are_eq :=
+    calm.SuppressionState.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::calm::join_suppression]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 107:0-115:1
+    Visibility: public -/
+def calm.join_suppression
+  (left : calm.SuppressionState) (right : calm.SuppressionState) :
+  Result calm.SuppressionState
+  := do
+  let level ← calm.join_suppression_level left.level right.level
+  if left.generation >= right.generation
+  then ok { left with level }
+  else ok { right with level }
+
+/-- [mneme_kernel::calm::CalmSealFacts]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 120:0-127:1
+    Visibility: public -/
+structure calm.CalmSealFacts where
+  sealed : Bool
+  quorum_satisfied : Bool
+  epoch_matches : Bool
+
+/-- [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::CalmSealFacts}::clone]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 118:9-118:14
+    Visibility: public -/
+def calm.CalmSealFacts.Insts.CoreCloneClone.clone
+  (self : calm.CalmSealFacts) : Result calm.CalmSealFacts := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::CalmSealFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 118:9-118:14 -/
+@[reducible]
+def calm.CalmSealFacts.Insts.CoreCloneClone : core.clone.Clone
+  calm.CalmSealFacts := {
+  clone := calm.CalmSealFacts.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::Copy for mneme_kernel::calm::CalmSealFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 118:16-118:20 -/
+@[reducible]
+def calm.CalmSealFacts.Insts.CoreMarkerCopy : core.marker.Copy
+  calm.CalmSealFacts := {
+  cloneInst := calm.CalmSealFacts.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::StructuralPartialEq for mneme_kernel::calm::CalmSealFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 118:22-118:31 -/
+@[reducible]
+def calm.CalmSealFacts.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq calm.CalmSealFacts := {
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::CalmSealFacts> for mneme_kernel::calm::CalmSealFacts}::eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 118:22-118:31
+    Visibility: public -/
+def calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts.eq
+  (self : calm.CalmSealFacts) (other : calm.CalmSealFacts) : Result Bool := do
+  if self.sealed = other.sealed
+  then
+    if self.quorum_satisfied = other.quorum_satisfied
+    then ok (self.epoch_matches = other.epoch_matches)
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::CalmSealFacts> for mneme_kernel::calm::CalmSealFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 118:22-118:31 -/
+@[reducible]
+def calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts : core.cmp.PartialEq
+  calm.CalmSealFacts calm.CalmSealFacts := {
+  eq := calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts.eq
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::CalmSealFacts}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 118:33-118:35
+    Visibility: public -/
+def calm.CalmSealFacts.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : calm.CalmSealFacts) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::CalmSealFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 118:33-118:35 -/
+@[reducible]
+def calm.CalmSealFacts.Insts.CoreCmpEq : core.cmp.Eq calm.CalmSealFacts := {
+  partialEqInst := calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts
+  assert_fields_are_eq :=
+    calm.CalmSealFacts.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::calm::seal_valid]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 130:0-132:1
+    Visibility: public -/
+def calm.seal_valid (facts : calm.CalmSealFacts) : Result Bool := do
+  if facts.sealed
+  then if facts.quorum_satisfied
+       then ok facts.epoch_matches
+       else ok false
+  else ok false
+
+/-- [mneme_kernel::calm::FederatedNegationFacts]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 137:0-146:1
+    Visibility: public -/
+structure calm.FederatedNegationFacts where
+  local_absence_established : Bool
+  stratum : calm.CalmStratum
+  is_federated : Bool
+  barrier_seal : calm.CalmSealFacts
+
+/-- [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::FederatedNegationFacts}::clone]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 135:9-135:14
+    Visibility: public -/
+def calm.FederatedNegationFacts.Insts.CoreCloneClone.clone
+  (self : calm.FederatedNegationFacts) :
+  Result calm.FederatedNegationFacts
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::clone::Clone for mneme_kernel::calm::FederatedNegationFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 135:9-135:14 -/
+@[reducible]
+def calm.FederatedNegationFacts.Insts.CoreCloneClone : core.clone.Clone
+  calm.FederatedNegationFacts := {
+  clone := calm.FederatedNegationFacts.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::Copy for mneme_kernel::calm::FederatedNegationFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 135:16-135:20 -/
+@[reducible]
+def calm.FederatedNegationFacts.Insts.CoreMarkerCopy : core.marker.Copy
+  calm.FederatedNegationFacts := {
+  cloneInst := calm.FederatedNegationFacts.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::marker::StructuralPartialEq for mneme_kernel::calm::FederatedNegationFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 135:22-135:31 -/
+@[reducible]
+def calm.FederatedNegationFacts.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq calm.FederatedNegationFacts := {
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::FederatedNegationFacts> for mneme_kernel::calm::FederatedNegationFacts}::eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 135:22-135:31
+    Visibility: public -/
+def calm.FederatedNegationFacts.Insts.CoreCmpPartialEqFederatedNegationFacts.eq
+  (self : calm.FederatedNegationFacts) (other : calm.FederatedNegationFacts) :
+  Result Bool
+  := do
+  if self.local_absence_established = other.local_absence_established
+  then
+    if self.is_federated = other.is_federated
+    then
+      let b ←
+        calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum.eq self.stratum
+          other.stratum
+      if b
+      then
+        calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts.eq
+          self.barrier_seal other.barrier_seal
+      else ok false
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::FederatedNegationFacts> for mneme_kernel::calm::FederatedNegationFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 135:22-135:31 -/
+@[reducible]
+def calm.FederatedNegationFacts.Insts.CoreCmpPartialEqFederatedNegationFacts :
+  core.cmp.PartialEq calm.FederatedNegationFacts calm.FederatedNegationFacts
+  := {
+  eq :=
+    calm.FederatedNegationFacts.Insts.CoreCmpPartialEqFederatedNegationFacts.eq
+}
+
+/-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::FederatedNegationFacts}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 135:33-135:35
+    Visibility: public -/
+def calm.FederatedNegationFacts.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : calm.FederatedNegationFacts) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::FederatedNegationFacts}]
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 135:33-135:35 -/
+@[reducible]
+def calm.FederatedNegationFacts.Insts.CoreCmpEq : core.cmp.Eq
+  calm.FederatedNegationFacts := {
+  partialEqInst :=
+    calm.FederatedNegationFacts.Insts.CoreCmpPartialEqFederatedNegationFacts
+  assert_fields_are_eq :=
+    calm.FederatedNegationFacts.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::calm::federated_absence_established]:
+    Source: 'crates/mneme-kernel/src/calm.rs', lines 152:0-160:1
+    Visibility: public -/
+def calm.federated_absence_established
+  (facts : calm.FederatedNegationFacts) : Result Bool := do
+  if facts.local_absence_established
+  then
+    if facts.is_federated
+    then
+      let b ←
+        match facts.stratum with
+        | calm.CalmStratum.Monotonic => ok false
+        | calm.CalmStratum.Barrier => ok true
+      if b
+      then calm.seal_valid facts.barrier_seal
+      else ok true
+    else ok true
+  else ok false
+
 /-- [mneme_kernel::capability::Authority]
     Source: 'crates/mneme-kernel/src/capability.rs', lines 15:0-22:1
     Visibility: public -/
@@ -2150,6 +2712,411 @@ def hashing.optional_digest_eq
     match right with
     | none => ok false
     | some wanted => hashing.digest_eq found wanted
+
+/-- [mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 14:0-14:51
+    Visibility: public -/
+@[global_simps, irreducible]
+def hlc.DEFAULT_MAX_SKEW_NS : Std.I64 := 5000000000#i64
+
+/-- [mneme_kernel::hlc::HybridTimestamp]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 19:0-24:1
+    Visibility: public -/
+structure hlc.HybridTimestamp where
+  physical_ns : Std.I64
+  logical : Std.U32
+
+/-- [mneme_kernel::hlc::{impl core::clone::Clone for mneme_kernel::hlc::HybridTimestamp}::clone]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 17:9-17:14
+    Visibility: public -/
+def hlc.HybridTimestamp.Insts.CoreCloneClone.clone
+  (self : hlc.HybridTimestamp) : Result hlc.HybridTimestamp := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::clone::Clone for mneme_kernel::hlc::HybridTimestamp}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 17:9-17:14 -/
+@[reducible]
+def hlc.HybridTimestamp.Insts.CoreCloneClone : core.clone.Clone
+  hlc.HybridTimestamp := {
+  clone := hlc.HybridTimestamp.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::marker::Copy for mneme_kernel::hlc::HybridTimestamp}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 17:16-17:20 -/
+@[reducible]
+def hlc.HybridTimestamp.Insts.CoreMarkerCopy : core.marker.Copy
+  hlc.HybridTimestamp := {
+  cloneInst := hlc.HybridTimestamp.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::marker::StructuralPartialEq for mneme_kernel::hlc::HybridTimestamp}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 17:22-17:31 -/
+@[reducible]
+def hlc.HybridTimestamp.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq hlc.HybridTimestamp := {
+}
+
+/-- [mneme_kernel::hlc::{impl core::cmp::PartialEq<mneme_kernel::hlc::HybridTimestamp> for mneme_kernel::hlc::HybridTimestamp}::eq]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 17:22-17:31
+    Visibility: public -/
+def hlc.HybridTimestamp.Insts.CoreCmpPartialEqHybridTimestamp.eq
+  (self : hlc.HybridTimestamp) (other : hlc.HybridTimestamp) :
+  Result Bool
+  := do
+  if self.physical_ns = other.physical_ns
+  then ok (self.logical = other.logical)
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::cmp::PartialEq<mneme_kernel::hlc::HybridTimestamp> for mneme_kernel::hlc::HybridTimestamp}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 17:22-17:31 -/
+@[reducible]
+def hlc.HybridTimestamp.Insts.CoreCmpPartialEqHybridTimestamp :
+  core.cmp.PartialEq hlc.HybridTimestamp hlc.HybridTimestamp := {
+  eq := hlc.HybridTimestamp.Insts.CoreCmpPartialEqHybridTimestamp.eq
+}
+
+/-- [mneme_kernel::hlc::{impl core::cmp::Eq for mneme_kernel::hlc::HybridTimestamp}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 17:33-17:35
+    Visibility: public -/
+def hlc.HybridTimestamp.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : hlc.HybridTimestamp) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::cmp::Eq for mneme_kernel::hlc::HybridTimestamp}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 17:33-17:35 -/
+@[reducible]
+def hlc.HybridTimestamp.Insts.CoreCmpEq : core.cmp.Eq hlc.HybridTimestamp := {
+  partialEqInst := hlc.HybridTimestamp.Insts.CoreCmpPartialEqHybridTimestamp
+  assert_fields_are_eq :=
+    hlc.HybridTimestamp.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::hlc::ClockOrder]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 29:0-36:1
+    Visibility: public -/
+@[discriminant isize]
+inductive hlc.ClockOrder where
+| Less : hlc.ClockOrder
+| Equal : hlc.ClockOrder
+| Greater : hlc.ClockOrder
+
+/-- [mneme_kernel::hlc::{impl core::clone::Clone for mneme_kernel::hlc::ClockOrder}::clone]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 27:9-27:14
+    Visibility: public -/
+def hlc.ClockOrder.Insts.CoreCloneClone.clone
+  (self : hlc.ClockOrder) : Result hlc.ClockOrder := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::clone::Clone for mneme_kernel::hlc::ClockOrder}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 27:9-27:14 -/
+@[reducible]
+def hlc.ClockOrder.Insts.CoreCloneClone : core.clone.Clone hlc.ClockOrder := {
+  clone := hlc.ClockOrder.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::marker::Copy for mneme_kernel::hlc::ClockOrder}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 27:16-27:20 -/
+@[reducible]
+def hlc.ClockOrder.Insts.CoreMarkerCopy : core.marker.Copy hlc.ClockOrder := {
+  cloneInst := hlc.ClockOrder.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::marker::StructuralPartialEq for mneme_kernel::hlc::ClockOrder}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 27:22-27:31 -/
+@[reducible]
+def hlc.ClockOrder.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq hlc.ClockOrder := {
+}
+
+/-- [mneme_kernel::hlc::{impl core::cmp::PartialEq<mneme_kernel::hlc::ClockOrder> for mneme_kernel::hlc::ClockOrder}::eq]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 27:22-27:31
+    Visibility: public -/
+def hlc.ClockOrder.Insts.CoreCmpPartialEqClockOrder.eq
+  (self : hlc.ClockOrder) (other : hlc.ClockOrder) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::cmp::PartialEq<mneme_kernel::hlc::ClockOrder> for mneme_kernel::hlc::ClockOrder}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 27:22-27:31 -/
+@[reducible]
+def hlc.ClockOrder.Insts.CoreCmpPartialEqClockOrder : core.cmp.PartialEq
+  hlc.ClockOrder hlc.ClockOrder := {
+  eq := hlc.ClockOrder.Insts.CoreCmpPartialEqClockOrder.eq
+}
+
+/-- [mneme_kernel::hlc::{impl core::cmp::Eq for mneme_kernel::hlc::ClockOrder}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 27:33-27:35
+    Visibility: public -/
+def hlc.ClockOrder.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : hlc.ClockOrder) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::cmp::Eq for mneme_kernel::hlc::ClockOrder}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 27:33-27:35 -/
+@[reducible]
+def hlc.ClockOrder.Insts.CoreCmpEq : core.cmp.Eq hlc.ClockOrder := {
+  partialEqInst := hlc.ClockOrder.Insts.CoreCmpPartialEqClockOrder
+  assert_fields_are_eq := hlc.ClockOrder.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::hlc::HlcError]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 41:0-48:1
+    Visibility: public -/
+@[discriminant isize]
+inductive hlc.HlcError where
+| ClockSkewExceeded : hlc.HlcError
+| LogicalOverflow : hlc.HlcError
+| InvalidMaxSkew : hlc.HlcError
+
+/-- [mneme_kernel::hlc::{impl core::clone::Clone for mneme_kernel::hlc::HlcError}::clone]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 39:9-39:14
+    Visibility: public -/
+def hlc.HlcError.Insts.CoreCloneClone.clone
+  (self : hlc.HlcError) : Result hlc.HlcError := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::clone::Clone for mneme_kernel::hlc::HlcError}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 39:9-39:14 -/
+@[reducible]
+def hlc.HlcError.Insts.CoreCloneClone : core.clone.Clone hlc.HlcError := {
+  clone := hlc.HlcError.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::marker::Copy for mneme_kernel::hlc::HlcError}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 39:16-39:20 -/
+@[reducible]
+def hlc.HlcError.Insts.CoreMarkerCopy : core.marker.Copy hlc.HlcError := {
+  cloneInst := hlc.HlcError.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::marker::StructuralPartialEq for mneme_kernel::hlc::HlcError}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 39:22-39:31 -/
+@[reducible]
+def hlc.HlcError.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq hlc.HlcError := {
+}
+
+/-- [mneme_kernel::hlc::{impl core::cmp::PartialEq<mneme_kernel::hlc::HlcError> for mneme_kernel::hlc::HlcError}::eq]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 39:22-39:31
+    Visibility: public -/
+def hlc.HlcError.Insts.CoreCmpPartialEqHlcError.eq
+  (self : hlc.HlcError) (other : hlc.HlcError) : Result Bool := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::cmp::PartialEq<mneme_kernel::hlc::HlcError> for mneme_kernel::hlc::HlcError}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 39:22-39:31 -/
+@[reducible]
+def hlc.HlcError.Insts.CoreCmpPartialEqHlcError : core.cmp.PartialEq
+  hlc.HlcError hlc.HlcError := {
+  eq := hlc.HlcError.Insts.CoreCmpPartialEqHlcError.eq
+}
+
+/-- [mneme_kernel::hlc::{impl core::cmp::Eq for mneme_kernel::hlc::HlcError}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 39:33-39:35
+    Visibility: public -/
+def hlc.HlcError.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : hlc.HlcError) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::hlc::{impl core::cmp::Eq for mneme_kernel::hlc::HlcError}]
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 39:33-39:35 -/
+@[reducible]
+def hlc.HlcError.Insts.CoreCmpEq : core.cmp.Eq hlc.HlcError := {
+  partialEqInst := hlc.HlcError.Insts.CoreCmpPartialEqHlcError
+  assert_fields_are_eq := hlc.HlcError.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::hlc::compare]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 51:0-63:1
+    Visibility: public -/
+def hlc.compare
+  (left : hlc.HybridTimestamp) (right : hlc.HybridTimestamp) :
+  Result hlc.ClockOrder
+  := do
+  if left.physical_ns < right.physical_ns
+  then ok hlc.ClockOrder.Less
+  else
+    if left.physical_ns > right.physical_ns
+    then ok hlc.ClockOrder.Greater
+    else
+      if left.logical < right.logical
+      then ok hlc.ClockOrder.Less
+      else
+        if left.logical > right.logical
+        then ok hlc.ClockOrder.Greater
+        else ok hlc.ClockOrder.Equal
+
+/-- [mneme_kernel::hlc::is_before]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 66:0-68:1
+    Visibility: public -/
+def hlc.is_before
+  (left : hlc.HybridTimestamp) (right : hlc.HybridTimestamp) :
+  Result Bool
+  := do
+  let co ← hlc.compare left right
+  match co with
+  | hlc.ClockOrder.Less => ok true
+  | hlc.ClockOrder.Equal => ok false
+  | hlc.ClockOrder.Greater => ok false
+
+/-- [mneme_kernel::hlc::is_at_or_before]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 71:0-73:1
+    Visibility: public -/
+def hlc.is_at_or_before
+  (left : hlc.HybridTimestamp) (right : hlc.HybridTimestamp) :
+  Result Bool
+  := do
+  let co ← hlc.compare left right
+  let b ←
+    match co with
+    | hlc.ClockOrder.Less => ok false
+    | hlc.ClockOrder.Equal => ok false
+    | hlc.ClockOrder.Greater => ok true
+  ok (¬ b)
+
+/-- [mneme_kernel::hlc::within_skew]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 77:0-95:1
+    Visibility: public -/
+def hlc.within_skew
+  (sample_ns : Std.I64) (reference_ns : Std.I64) (max_skew_ns : Std.I64) :
+  Result Bool
+  := do
+  if max_skew_ns < 0#i64
+  then ok false
+  else
+    let ceiling ← core.num.I64.MAX - max_skew_ns
+    if reference_ns <= ceiling
+    then
+      let upper ← reference_ns + max_skew_ns
+      if sample_ns > upper
+      then ok false
+      else
+        if sample_ns <= ceiling
+        then
+          let lower ← sample_ns + max_skew_ns
+          if reference_ns > lower
+          then ok false
+          else ok true
+        else ok true
+    else
+      if sample_ns <= ceiling
+      then
+        let lower ← sample_ns + max_skew_ns
+        if reference_ns > lower
+        then ok false
+        else ok true
+      else ok true
+
+/-- [mneme_kernel::hlc::tick_local]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 103:0-125:1
+    Visibility: public -/
+def hlc.tick_local
+  (last : hlc.HybridTimestamp) (physical_ns : Std.I64) (max_skew_ns : Std.I64)
+  :
+  Result (core.result.Result hlc.HybridTimestamp hlc.HlcError)
+  := do
+  if max_skew_ns < 0#i64
+  then ok (core.result.Result.Err hlc.HlcError.InvalidMaxSkew)
+  else
+    if physical_ns > last.physical_ns
+    then ok (core.result.Result.Ok { physical_ns, logical := 0#u32 })
+    else
+      let b ← hlc.within_skew last.physical_ns physical_ns max_skew_ns
+      if b
+      then
+        if last.logical = core.num.U32.MAX
+        then ok (core.result.Result.Err hlc.HlcError.LogicalOverflow)
+        else
+          let i ← last.logical + 1#u32
+          ok (core.result.Result.Ok { last with logical := i })
+      else ok (core.result.Result.Err hlc.HlcError.ClockSkewExceeded)
+
+/-- [mneme_kernel::hlc::receive]:
+    Source: 'crates/mneme-kernel/src/hlc.rs', lines 132:0-194:1
+    Visibility: public -/
+def hlc.receive
+  (last : hlc.HybridTimestamp) (physical_ns : Std.I64)
+  (remote : hlc.HybridTimestamp) (max_skew_ns : Std.I64) :
+  Result (core.result.Result hlc.HybridTimestamp hlc.HlcError)
+  := do
+  if max_skew_ns < 0#i64
+  then ok (core.result.Result.Err hlc.HlcError.InvalidMaxSkew)
+  else
+    let b ← hlc.within_skew remote.physical_ns physical_ns max_skew_ns
+    if b
+    then
+      let max_lr ←
+        if last.physical_ns >= remote.physical_ns
+        then ok last.physical_ns
+        else ok remote.physical_ns
+      let next_physical ←
+        if max_lr >= physical_ns
+        then ok max_lr
+        else ok physical_ns
+      let b1 ← hlc.within_skew next_physical physical_ns max_skew_ns
+      if b1
+      then
+        if next_physical = last.physical_ns
+        then
+          if next_physical = remote.physical_ns
+          then
+            let max_logical ←
+              if last.logical >= remote.logical
+              then ok last.logical
+              else ok remote.logical
+            if max_logical = core.num.U32.MAX
+            then ok (core.result.Result.Err hlc.HlcError.LogicalOverflow)
+            else
+              let i ← max_logical + 1#u32
+              ok (core.result.Result.Ok
+                { physical_ns := next_physical, logical := i })
+          else
+            if next_physical = last.physical_ns
+            then
+              if last.logical = core.num.U32.MAX
+              then ok (core.result.Result.Err hlc.HlcError.LogicalOverflow)
+              else
+                let i ← last.logical + 1#u32
+                ok (core.result.Result.Ok
+                  { physical_ns := next_physical, logical := i })
+            else
+              if next_physical = remote.physical_ns
+              then
+                if remote.logical = core.num.U32.MAX
+                then ok (core.result.Result.Err hlc.HlcError.LogicalOverflow)
+                else
+                  let i ← remote.logical + 1#u32
+                  ok (core.result.Result.Ok
+                    { physical_ns := next_physical, logical := i })
+              else
+                ok (core.result.Result.Ok
+                  { physical_ns := next_physical, logical := 0#u32 })
+        else
+          if next_physical = last.physical_ns
+          then
+            if last.logical = core.num.U32.MAX
+            then ok (core.result.Result.Err hlc.HlcError.LogicalOverflow)
+            else
+              let i ← last.logical + 1#u32
+              ok (core.result.Result.Ok
+                { physical_ns := next_physical, logical := i })
+          else
+            if next_physical = remote.physical_ns
+            then
+              if remote.logical = core.num.U32.MAX
+              then ok (core.result.Result.Err hlc.HlcError.LogicalOverflow)
+              else
+                let i ← remote.logical + 1#u32
+                ok (core.result.Result.Ok
+                  { physical_ns := next_physical, logical := i })
+            else
+              ok (core.result.Result.Ok
+                { physical_ns := next_physical, logical := 0#u32 })
+      else ok (core.result.Result.Err hlc.HlcError.ClockSkewExceeded)
+    else ok (core.result.Result.Err hlc.HlcError.ClockSkewExceeded)
 
 /-- [mneme_kernel::isolation::ScopeClass]
     Source: 'crates/mneme-kernel/src/isolation.rs', lines 12:0-17:1

@@ -37,7 +37,7 @@ pub struct PortableDeltaBlob {
     pub bytes: Vec<u8>,
 }
 
-/// Verified incremental revisions and blobs isolated via set reconciliation.
+/// Verified incremental revisions, blobs, and retention barriers isolated via set reconciliation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortableDelta {
     pub scope: mneme_core::ScopeId,
@@ -45,6 +45,7 @@ pub struct PortableDelta {
     pub remote_sequence: u64,
     pub revisions: Vec<super::PortableRevision>,
     pub blobs: Vec<PortableDeltaBlob>,
+    pub retention: Option<super::PortableRetentionState>,
 }
 
 /// Summary of ingesting one verified portable archive into an existing workspace.
@@ -99,9 +100,12 @@ struct IngestContext<'a> {
 
 /// Verify `archive` and ingest any missing batches for its scope into `workspace`.
 ///
-/// Existing records in `manifest.scope` must be an exact prefix of the
-/// archive's retained history for each record. Re-ingesting an already-applied
-/// archive is idempotent and performs no commits.
+/// Retention barriers (`PortableRetentionState`) are unconditionally merged
+/// *before* applying records at any `sequence >= 0` so forgotten records are
+/// never resurrected across peers. Existing retained records in `manifest.scope`
+/// must be an exact prefix of the archive's non-forgotten history for each
+/// record. Re-ingesting an already-applied archive is idempotent and performs no
+/// commits.
 pub fn ingest_into(
     archive: &std::path::Path,
     workspace: &mut crate::Workspace,
@@ -111,23 +115,27 @@ pub fn ingest_into(
     let remote_revision = archive.manifest.revision;
     let remote_sequence = archive.manifest.sequence;
     let blobs_verified = archive.manifest.blobs.len() as u64;
+
+    // Barrier-first CALM Stratum M merge: install/strengthen suppressions and
+    // eligibility barriers BEFORE reading or applying any records at any sequence.
+    let retention_changed = workspace.merge_portable_retention(
+        &scope,
+        &super::PortableRetentionState {
+            generation: archive.manifest.generation,
+            suppressions: archive.manifest.suppressions.clone(),
+            prunings: archive.manifest.prunings.clone(),
+        },
+    )?;
+
+    let forgotten = workspace.forgotten_filter(&scope)?;
+    let eligible_records = filter_eligible_manifest_records(&archive.manifest.records, &forgotten)?;
     let snapshot = workspace.snapshot()?;
-    let existing = load_existing_histories(workspace, &snapshot, &archive.manifest)?;
-    let (known, mut last_committed) = check_history_prefixes(&archive.manifest, &existing)?;
+    let existing = load_existing_histories(workspace, &snapshot, &eligible_records)?;
+    let (known, mut last_committed) = check_history_prefixes(&eligible_records, &existing)?;
     let previous_paths = existing_publication_digests(&snapshot)?;
 
-    if workspace.current_sequence()? == 0 {
-        workspace.install_portable_retention(
-            &scope,
-            &super::PortableRetentionState {
-                generation: archive.manifest.generation,
-                suppressions: archive.manifest.suppressions.clone(),
-                prunings: archive.manifest.prunings.clone(),
-            },
-        )?;
-    }
-
-    let ordered = super::ordered_revisions(&archive.manifest.records);
+    let mut ordered = super::ordered_revisions(&eligible_records);
+    sort_revisions_causally(&mut ordered);
     let lookup = BlobLookup::Archive(&archive);
     let ctx = IngestContext {
         scope: &scope,
@@ -142,7 +150,13 @@ pub fn ingest_into(
         workspace.snapshot()?
     };
 
-    verify_scope_state(&archive.manifest, workspace, &updated_snapshot)?;
+    verify_scope_state(
+        &eligible_records,
+        &archive.manifest.blobs,
+        &forgotten,
+        workspace,
+        &updated_snapshot,
+    )?;
     let publications = if batches_applied == 0 {
         Vec::new()
     } else {
@@ -150,7 +164,7 @@ pub fn ingest_into(
     };
     archive.recheck()?;
 
-    let status = if batches_applied == 0 {
+    let status = if batches_applied == 0 && !retention_changed {
         IngestOutcomeStatus::AlreadyUpToDate
     } else {
         IngestOutcomeStatus::Updated
@@ -169,7 +183,13 @@ pub fn ingest_into(
     })
 }
 
-/// Verify and ingest an RBSR-isolated delta of revisions and source blobs into `workspace`.
+/// Verify and ingest an RBSR-isolated delta of revisions, blobs, and retention
+/// barriers into `workspace`.
+///
+/// Any supplied [`PortableDelta::retention`] state is unconditionally merged
+/// *before* applying records, and revisions matching active `Forgotten`
+/// suppressions are skipped so concurrent forget + append converges without
+/// resurrecting forgotten records.
 pub fn ingest_delta(
     delta: &PortableDelta,
     workspace: &mut crate::Workspace,
@@ -182,14 +202,28 @@ pub fn ingest_delta(
     let blob_map = validate_delta_blobs(&delta.blobs)?;
     validate_delta_revisions(&delta.scope, &delta.revisions)?;
 
+    // Barrier-first CALM Stratum M merge BEFORE reading or applying any records.
+    let retention_changed = if let Some(retention) = &delta.retention {
+        workspace.merge_portable_retention(&delta.scope, retention)?
+    } else {
+        false
+    };
+
+    let forgotten = workspace.forgotten_filter(&delta.scope)?;
+    let mut eligible_revisions = Vec::with_capacity(delta.revisions.len());
+    for revision in &delta.revisions {
+        if !forgotten.matches_revision(revision)? {
+            eligible_revisions.push(revision);
+        }
+    }
+
     let snapshot = workspace.snapshot()?;
-    let existing = load_delta_existing_histories(delta, workspace, &snapshot)?;
-    let (known, mut last_committed) = check_delta_prefixes(&delta.revisions, &existing)?;
+    let existing = load_delta_existing_histories(&eligible_revisions, workspace, &snapshot)?;
+    let (known, mut last_committed) = check_delta_prefixes(&eligible_revisions, &existing)?;
     let previous_paths = existing_publication_digests(&snapshot)?;
 
-    let mut ordered: Vec<&super::PortableRevision> = delta.revisions.iter().collect();
-    ordered
-        .sort_unstable_by_key(|revision| (revision.commit.sequence, revision.envelope.record_id));
+    let mut ordered: Vec<&super::PortableRevision> = eligible_revisions.clone();
+    sort_revisions_causally(&mut ordered);
 
     let workspace_root = workspace.root().to_path_buf();
     let lookup = BlobLookup::Delta {
@@ -209,15 +243,22 @@ pub fn ingest_delta(
     } else {
         workspace.snapshot()?
     };
-    stage_self_healed_blobs(delta, workspace, &updated_snapshot)?;
-    verify_delta_state(delta, &existing, workspace, &updated_snapshot)?;
+    stage_self_healed_blobs(delta, &forgotten, workspace, &updated_snapshot)?;
+    verify_delta_state(
+        delta,
+        &eligible_revisions,
+        &forgotten,
+        &existing,
+        workspace,
+        &updated_snapshot,
+    )?;
 
     let publications = if batches_applied == 0 {
         Vec::new()
     } else {
         publish_new_working_files(&ctx, workspace, &updated_snapshot, &previous_paths)?
     };
-    let status = if batches_applied == 0 {
+    let status = if batches_applied == 0 && !retention_changed {
         IngestOutcomeStatus::AlreadyUpToDate
     } else {
         IngestOutcomeStatus::Updated
@@ -236,13 +277,54 @@ pub fn ingest_delta(
     })
 }
 
+fn sort_revisions_causally(revisions: &mut [&super::PortableRevision]) {
+    revisions.sort_unstable_by_key(|revision| {
+        let hlc_key = revision
+            .commit
+            .hlc
+            .map(|ts| (0_u8, ts.physical_ns, ts.logical))
+            .unwrap_or((1_u8, 0, 0));
+        (
+            hlc_key,
+            revision.commit.sequence,
+            revision.commit.revision,
+            revision.envelope.record_id,
+        )
+    });
+}
+
+fn filter_eligible_manifest_records(
+    records: &[super::PortableRecord],
+    forgotten: &crate::coordinator::custody::ForgottenFilter,
+) -> crate::error::Result<Vec<super::PortableRecord>> {
+    let mut eligible = Vec::with_capacity(records.len());
+    for record in records {
+        if forgotten.matches_record_id(record.record_id) {
+            continue;
+        }
+        let mut kept = Vec::with_capacity(record.revisions.len());
+        for revision in &record.revisions {
+            if !forgotten.matches_revision(revision)? {
+                kept.push(revision.clone());
+            }
+        }
+        if !kept.is_empty() {
+            eligible.push(super::PortableRecord {
+                record_id: record.record_id,
+                scope: record.scope.clone(),
+                revisions: kept,
+            });
+        }
+    }
+    Ok(eligible)
+}
+
 fn load_delta_existing_histories(
-    delta: &PortableDelta,
+    revisions: &[&super::PortableRevision],
     workspace: &crate::Workspace,
     snapshot: &crate::Snapshot,
 ) -> crate::error::Result<HistoryMap> {
-    let delta_record_ids: std::collections::BTreeSet<_> = delta
-        .revisions
+    let delta_record_ids: std::collections::BTreeSet<_> = revisions
         .iter()
         .map(|revision| revision.envelope.record_id)
         .collect();
@@ -312,7 +394,7 @@ fn validate_delta_revisions(
 }
 
 fn check_delta_prefixes(
-    revisions: &[super::PortableRevision],
+    revisions: &[&super::PortableRevision],
     existing: &HistoryMap,
 ) -> crate::error::Result<(KnownRevisions, LastRevisions)> {
     let mut known = std::collections::BTreeSet::new();
@@ -343,11 +425,15 @@ fn check_delta_prefixes(
 
 fn stage_self_healed_blobs(
     delta: &PortableDelta,
+    forgotten: &crate::coordinator::custody::ForgottenFilter,
     workspace: &crate::Workspace,
     snapshot: &crate::Snapshot,
 ) -> crate::error::Result<()> {
     let mut missing = Vec::new();
     for blob in &delta.blobs {
+        if forgotten.matches_digest(blob.digest) {
+            continue;
+        }
         if !crate::payload::blob_is_present(workspace.root(), blob.digest, blob.bytes.len() as u64)?
         {
             missing.push(blob);
@@ -396,6 +482,8 @@ fn stage_self_healed_blobs(
 
 fn verify_delta_state(
     delta: &PortableDelta,
+    eligible_revisions: &[&super::PortableRevision],
+    forgotten: &crate::coordinator::custody::ForgottenFilter,
     prior_existing: &HistoryMap,
     workspace: &crate::Workspace,
     snapshot: &crate::Snapshot,
@@ -408,14 +496,14 @@ fn verify_delta_state(
         mneme_core::RecordId,
         Vec<&super::PortableRevision>,
     > = std::collections::BTreeMap::new();
-    for revision in &delta.revisions {
+    for revision in eligible_revisions {
         delta_grouped
             .entry(revision.envelope.record_id)
             .or_default()
-            .push(revision);
+            .push(*revision);
     }
     for (record_id, mut revisions) in delta_grouped {
-        revisions.sort_unstable_by_key(|revision| revision.commit.sequence);
+        sort_revisions_causally(&mut revisions);
         let mut combined = prior_existing.get(&record_id).cloned().unwrap_or_default();
         for revision in revisions {
             if !combined
@@ -458,6 +546,9 @@ fn verify_delta_state(
         }
     }
     for blob in &delta.blobs {
+        if forgotten.matches_digest(blob.digest) {
+            continue;
+        }
         crate::payload::verify(workspace.root(), blob.digest, blob.bytes.len() as u64)?;
     }
     Ok(())
@@ -466,13 +557,10 @@ fn verify_delta_state(
 fn load_existing_histories(
     workspace: &crate::Workspace,
     snapshot: &crate::Snapshot,
-    manifest: &super::PortableManifest,
+    records: &[super::PortableRecord],
 ) -> crate::error::Result<HistoryMap> {
-    let record_ids: std::collections::BTreeSet<_> = manifest
-        .records
-        .iter()
-        .map(|record| record.record_id)
-        .collect();
+    let record_ids: std::collections::BTreeSet<_> =
+        records.iter().map(|record| record.record_id).collect();
     if record_ids.is_empty() {
         return Ok(std::collections::BTreeMap::new());
     }
@@ -480,12 +568,12 @@ fn load_existing_histories(
 }
 
 fn check_history_prefixes(
-    manifest: &super::PortableManifest,
+    records: &[super::PortableRecord],
     existing: &HistoryMap,
 ) -> crate::error::Result<(KnownRevisions, LastRevisions)> {
     let mut known = std::collections::BTreeSet::new();
     let mut last_committed = std::collections::BTreeMap::new();
-    for expected in &manifest.records {
+    for expected in records {
         let Some(local_history) = existing.get(&expected.record_id) else {
             continue;
         };
@@ -623,17 +711,20 @@ fn source_blobs(
 }
 
 fn verify_scope_state(
-    manifest: &super::PortableManifest,
+    records_list: &[super::PortableRecord],
+    blobs: &[super::PortableBlob],
+    forgotten: &crate::coordinator::custody::ForgottenFilter,
     workspace: &crate::Workspace,
     snapshot: &crate::Snapshot,
 ) -> crate::error::Result<()> {
-    let records: std::collections::BTreeSet<_> = manifest
-        .records
-        .iter()
-        .map(|record| record.record_id)
-        .collect();
-    let histories = workspace.record_histories_of(snapshot, &records)?;
-    for expected in &manifest.records {
+    let records: std::collections::BTreeSet<_> =
+        records_list.iter().map(|record| record.record_id).collect();
+    let histories = if records.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        workspace.record_histories_of(snapshot, &records)?
+    };
+    for expected in records_list {
         let Some(history) = histories.get(&expected.record_id) else {
             return Err(crate::error::Failure::PortableArchive(
                 "synced workspace is missing one record history".to_owned(),
@@ -659,7 +750,10 @@ fn verify_scope_state(
             previous = Some(actual.revision_id);
         }
     }
-    for blob in &manifest.blobs {
+    for blob in blobs {
+        if forgotten.matches_digest(blob.digest) {
+            continue;
+        }
         crate::payload::verify(workspace.root(), blob.digest, blob.length)?;
     }
     Ok(())

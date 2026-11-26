@@ -19,10 +19,10 @@ pub use client::{
     RemoteViewFetchOptions, VaultFederationClient, parse_attachment_spec,
 };
 pub use protocol::{
-    FEDERATION_ALPN, FederationLimits, HeadState, PROTOCOL_VERSION, PinnedSnapshotPayload,
-    RemoteCoverage, RemoteDatalogResult, RemoteDerivation, RemotePremise, RemoteQueryRow, RpcError,
-    RpcErrorCode, StalePolicy, VaultFederationMessage, VaultFederationProtocol, VaultMetadata,
-    scoped_manifest_digest,
+    CalmSeal, CalmSealSignature, FEDERATION_ALPN, FederationLimits, HeadState, PROTOCOL_VERSION,
+    PinnedSnapshotPayload, RemoteCoverage, RemoteDatalogResult, RemoteDerivation, RemotePremise,
+    RemoteQueryRow, RpcError, RpcErrorCode, StalePolicy, VaultFederationMessage,
+    VaultFederationProtocol, VaultMetadata, WireHybridTimestamp, scoped_manifest_digest,
 };
 pub use quinn::{
     authenticated_peer_id, make_authenticated_client_endpoint, make_authenticated_server_endpoint,

@@ -184,6 +184,9 @@ impl ApiError {
                 ApiErrorCode::InvalidInput,
                 "command is not admissible in this workspace",
             ),
+            mneme_store::Failure::ClockSkewExceeded(message) => {
+                Self::refused(ApiErrorCode::InvalidInput, message)
+            }
             mneme_store::Failure::UnsupportedLayout(_) => {
                 Self::new(ApiErrorCode::Failed, "workspace layout is not supported")
             }

@@ -21,6 +21,8 @@ pub enum FederationError {
     Unavailable(String),
     #[error("remote protocol violation: {0}")]
     ProtocolError(String),
+    #[error("clock skew exceeded: {0}")]
+    ClockSkewExceeded(String),
     #[error("federation transport error: {0}")]
     Transport(String),
 }
@@ -45,6 +47,9 @@ impl From<super::protocol::RpcError> for FederationError {
             }
             super::protocol::RpcErrorCode::ProtocolError => {
                 FederationError::ProtocolError(error.message)
+            }
+            super::protocol::RpcErrorCode::ClockSkewExceeded => {
+                FederationError::ClockSkewExceeded(error.message)
             }
         }
     }
@@ -166,6 +171,8 @@ fn parse_local_attachment(
 pub struct RemoteDatalogRequest {
     pub scope: mneme_core::ScopeId,
     pub revision: Option<mneme_core::WorkspaceRevisionId>,
+    pub read_hlc: Option<mneme_kernel::hlc::HybridTimestamp>,
+    pub calm_seal: Option<super::protocol::CalmSeal>,
     pub bundle: mneme_datalog::RuleBundle,
     pub predicate: String,
     pub constants: Vec<Option<mneme_core::Value>>,
@@ -181,6 +188,7 @@ pub struct RemoteDatalogRequest {
 pub struct RemoteExplainMissingRequest {
     pub scope: mneme_core::ScopeId,
     pub revision: Option<mneme_core::WorkspaceRevisionId>,
+    pub read_hlc: Option<mneme_kernel::hlc::HybridTimestamp>,
     pub bundle: mneme_datalog::RuleBundle,
     pub predicate: String,
     pub terms: Vec<mneme_core::Value>,
@@ -198,41 +206,66 @@ pub struct RemoteViewFetchOptions<'a> {
     pub locator: &'a str,
     pub scope: &'a mneme_core::ScopeId,
     pub revision: Option<mneme_core::WorkspaceRevisionId>,
+    pub read_hlc: Option<mneme_kernel::hlc::HybridTimestamp>,
     pub limits: super::protocol::FederationLimits,
     pub access: &'a mneme_memory::Access,
 }
 
 /// Transport-uniform client for [`super::protocol::VaultFederationProtocol`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[allow(unknown_lints, path_segment_repetition)] // public API compatibility type name
 pub struct VaultFederationClient {
     inner: irpc::Client<super::protocol::VaultFederationProtocol>,
     capability_document: Option<String>,
+    clock: std::sync::Arc<dyn mneme_store::Clock>,
+    hlc: std::sync::Arc<std::sync::Mutex<mneme_kernel::hlc::HybridTimestamp>>,
+    max_skew_ns: i64,
+}
+
+impl std::fmt::Debug for VaultFederationClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VaultFederationClient")
+            .field("has_capability", &self.capability_document.is_some())
+            .field("max_skew_ns", &self.max_skew_ns)
+            .finish()
+    }
 }
 
 impl VaultFederationClient {
+    fn with_inner(inner: irpc::Client<super::protocol::VaultFederationProtocol>) -> Self {
+        let clock: std::sync::Arc<dyn mneme_store::Clock> =
+            std::sync::Arc::new(mneme_store::SystemClock);
+        let init_ns = clock.now().nanos();
+        Self {
+            inner,
+            capability_document: None,
+            clock,
+            hlc: std::sync::Arc::new(std::sync::Mutex::new(mneme_kernel::hlc::HybridTimestamp {
+                physical_ns: init_ns,
+                logical: 0,
+            })),
+            max_skew_ns: mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS,
+        }
+    }
+
     /// Wrap an existing `irpc::Client` (for in-memory or custom transports).
     pub fn from_irpc(client: irpc::Client<super::protocol::VaultFederationProtocol>) -> Self {
-        Self {
-            inner: client,
-            capability_document: None,
-        }
+        Self::with_inner(client)
     }
 
     /// Connect over Quinn (`noq`) to `addr`.
     pub fn connect_noq(endpoint: noq::Endpoint, addr: std::net::SocketAddr) -> Self {
-        Self {
-            inner: irpc::Client::noq(endpoint, addr),
-            capability_document: None,
-        }
+        Self::with_inner(irpc::Client::noq(endpoint, addr))
     }
 
     /// Connect over Iroh to `addr` using [`super::protocol::FEDERATION_ALPN`].
     pub fn connect_iroh(endpoint: iroh::Endpoint, addr: impl Into<iroh::EndpointAddr>) -> Self {
-        Self {
-            inner: irpc_iroh::client(endpoint, addr, super::protocol::FEDERATION_ALPN),
-            capability_document: None,
-        }
+        Self::with_inner(irpc_iroh::client(
+            endpoint,
+            addr,
+            super::protocol::FEDERATION_ALPN,
+        ))
     }
 
     /// Attach a serialized `concap` capability token JSON document to subsequent RPCs.
@@ -241,21 +274,94 @@ impl VaultFederationClient {
         self
     }
 
+    /// Configure an explicit physical clock source for this client's HLC.
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn mneme_store::Clock>) -> Self {
+        let init_ns = clock.now().nanos();
+        self.clock = clock;
+        self.hlc = std::sync::Arc::new(std::sync::Mutex::new(mneme_kernel::hlc::HybridTimestamp {
+            physical_ns: init_ns,
+            logical: 0,
+        }));
+        self
+    }
+
+    /// Configure the maximum permitted HLC physical clock skew in nanoseconds.
+    pub fn with_max_skew_ns(mut self, max_skew_ns: i64) -> Self {
+        self.max_skew_ns = max_skew_ns;
+        self
+    }
+
+    /// Return this client's current HLC watermark.
+    pub fn current_hlc(&self) -> mneme_kernel::hlc::HybridTimestamp {
+        self.hlc
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or(mneme_kernel::hlc::HybridTimestamp {
+                physical_ns: 0,
+                logical: 0,
+            })
+    }
+
+    /// Advance this client's HLC for an outbound request or multi-vault causal cut.
+    pub fn tick_hlc(&self) -> Result<mneme_kernel::hlc::HybridTimestamp, FederationError> {
+        let mut guard = self
+            .hlc
+            .lock()
+            .map_err(|_| FederationError::ProtocolError("client HLC mutex poisoned".to_owned()))?;
+        let pt_ns = self.clock.now().nanos();
+        let next = mneme_kernel::hlc::tick_local(*guard, pt_ns, self.max_skew_ns)
+            .map_err(map_client_hlc_error)?;
+        *guard = next;
+        Ok(next)
+    }
+
+    /// Observe a remote HLC timestamp, advancing this client's HLC causally
+    /// and failing closed on excessive clock skew.
+    pub fn observe_hlc(
+        &self,
+        remote: mneme_kernel::hlc::HybridTimestamp,
+    ) -> Result<mneme_kernel::hlc::HybridTimestamp, FederationError> {
+        let mut guard = self
+            .hlc
+            .lock()
+            .map_err(|_| FederationError::ProtocolError("client HLC mutex poisoned".to_owned()))?;
+        let pt_ns = self.clock.now().nanos();
+        let next = mneme_kernel::hlc::receive(*guard, pt_ns, remote, self.max_skew_ns)
+            .map_err(map_client_hlc_error)?;
+        *guard = next;
+        Ok(next)
+    }
+
+    fn observe_reply_hlc(
+        &self,
+        remote: Option<super::protocol::WireHybridTimestamp>,
+    ) -> Result<(), FederationError> {
+        if let Some(ts) = remote {
+            let _ = self.observe_hlc(ts.to_kernel())?;
+        }
+        Ok(())
+    }
+
     /// Query the remote vault's current head revision and eligibility generation.
     pub async fn query_head(
         &self,
         scope: &mneme_core::ScopeId,
     ) -> Result<super::protocol::HeadState, FederationError> {
+        let sender_hlc = Some(super::protocol::WireHybridTimestamp::from_kernel(
+            self.tick_hlc()?,
+        ));
         let reply = self
             .inner
             .rpc(super::protocol::QueryHeadRequest {
                 scope: scope.to_string(),
+                sender_hlc,
                 capability_document: self.capability_document.clone(),
             })
             .await
             .map_err(transport_error)?
             .map_err(FederationError::from)?;
         check_protocol_version(reply.protocol_version)?;
+        self.observe_reply_hlc(reply.sender_hlc)?;
         Ok(reply)
     }
 
@@ -265,17 +371,23 @@ impl VaultFederationClient {
         scope: &mneme_core::ScopeId,
         revision: Option<mneme_core::WorkspaceRevisionId>,
     ) -> Result<super::protocol::VaultMetadata, FederationError> {
+        let sender_hlc = Some(super::protocol::WireHybridTimestamp::from_kernel(
+            self.tick_hlc()?,
+        ));
         let reply = self
             .inner
             .rpc(super::protocol::QueryMetadataRequest {
                 scope: scope.to_string(),
                 revision: revision.map(|rev| *rev.as_bytes()),
+                read_hlc: None,
+                sender_hlc,
                 capability_document: self.capability_document.clone(),
             })
             .await
             .map_err(transport_error)?
             .map_err(FederationError::from)?;
         check_protocol_version(reply.protocol_version)?;
+        self.observe_reply_hlc(reply.sender_hlc)?;
         if let Some(expected) = revision
             && reply.served_revision != *expected.as_bytes()
         {
@@ -295,12 +407,30 @@ impl VaultFederationClient {
         revision: Option<mneme_core::WorkspaceRevisionId>,
         limits: super::protocol::FederationLimits,
     ) -> Result<super::protocol::PinnedSnapshotPayload, FederationError> {
+        self.fetch_pinned_snapshot_at_hlc(scope, revision, None, limits)
+            .await
+    }
+
+    /// Fetch a strictly read-only, scope-filtered snapshot payload pinned by
+    /// explicit `revision` or causal `read_hlc` cut.
+    pub async fn fetch_pinned_snapshot_at_hlc(
+        &self,
+        scope: &mneme_core::ScopeId,
+        revision: Option<mneme_core::WorkspaceRevisionId>,
+        read_hlc: Option<mneme_kernel::hlc::HybridTimestamp>,
+        limits: super::protocol::FederationLimits,
+    ) -> Result<super::protocol::PinnedSnapshotPayload, FederationError> {
         limits.validate().map_err(FederationError::from)?;
+        let sender_hlc = Some(super::protocol::WireHybridTimestamp::from_kernel(
+            self.tick_hlc()?,
+        ));
         let reply = self
             .inner
             .rpc(super::protocol::FetchPinnedSnapshotRequest {
                 scope: scope.to_string(),
                 revision: revision.map(|rev| *rev.as_bytes()),
+                read_hlc: read_hlc.map(super::protocol::WireHybridTimestamp::from_kernel),
+                sender_hlc,
                 limits,
                 capability_document: self.capability_document.clone(),
             })
@@ -308,6 +438,7 @@ impl VaultFederationClient {
             .map_err(transport_error)?
             .map_err(FederationError::from)?;
         check_protocol_version(reply.protocol_version)?;
+        self.observe_reply_hlc(reply.sender_hlc)?;
         if let Some(expected) = revision
             && reply.served_revision != *expected.as_bytes()
         {
@@ -326,6 +457,9 @@ impl VaultFederationClient {
         request: RemoteDatalogRequest,
     ) -> Result<super::protocol::RemoteDatalogResult, FederationError> {
         request.limits.validate().map_err(FederationError::from)?;
+        let sender_hlc = Some(super::protocol::WireHybridTimestamp::from_kernel(
+            self.tick_hlc()?,
+        ));
         let bundle_value = bundle_to_value(&request.bundle);
         let constant_documents = request
             .constants
@@ -337,6 +471,11 @@ impl VaultFederationClient {
             .rpc(super::protocol::EvaluateDatalogRequest {
                 scope: request.scope.to_string(),
                 revision: request.revision.map(|rev| *rev.as_bytes()),
+                read_hlc: request
+                    .read_hlc
+                    .map(super::protocol::WireHybridTimestamp::from_kernel),
+                sender_hlc,
+                calm_seal: request.calm_seal,
                 bundle_document: mneme_core::encode_document_string(&bundle_value),
                 predicate: request.predicate,
                 constant_documents,
@@ -351,6 +490,7 @@ impl VaultFederationClient {
             .map_err(transport_error)?
             .map_err(FederationError::from)?;
         check_protocol_version(reply.protocol_version)?;
+        self.observe_reply_hlc(reply.sender_hlc)?;
         if let Some(expected) = request.revision
             && reply.served_revision != *expected.as_bytes()
         {
@@ -377,6 +517,9 @@ impl VaultFederationClient {
             .explain_limits
             .validate()
             .map_err(FederationError::from)?;
+        let sender_hlc = Some(super::protocol::WireHybridTimestamp::from_kernel(
+            self.tick_hlc()?,
+        ));
         let bundle_value = bundle_to_value(&request.bundle);
         let term_documents = request
             .terms
@@ -388,6 +531,10 @@ impl VaultFederationClient {
             .rpc(super::protocol::ExplainMissingRpcRequest {
                 scope: request.scope.to_string(),
                 revision: request.revision.map(|rev| *rev.as_bytes()),
+                read_hlc: request
+                    .read_hlc
+                    .map(super::protocol::WireHybridTimestamp::from_kernel),
+                sender_hlc,
                 bundle_document: mneme_core::encode_document_string(&bundle_value),
                 predicate: request.predicate,
                 term_documents,
@@ -402,6 +549,7 @@ impl VaultFederationClient {
             .map_err(transport_error)?
             .map_err(FederationError::from)?;
         check_protocol_version(reply.protocol_version)?;
+        self.observe_reply_hlc(reply.sender_hlc)?;
         if let Some(expected) = request.revision
             && reply.served_revision != *expected.as_bytes()
         {
@@ -427,9 +575,28 @@ impl VaultFederationClient {
         mneme_datalog::validate_vault_alias(options.alias)
             .map_err(|error| FederationError::InvalidInput(error.to_string()))?;
         let payload = self
-            .fetch_pinned_snapshot(options.scope, options.revision, options.limits)
+            .fetch_pinned_snapshot_at_hlc(
+                options.scope,
+                options.revision,
+                options.read_hlc,
+                options.limits,
+            )
             .await?;
         decode_external_vault_view(&options, payload)
+    }
+}
+
+fn map_client_hlc_error(error: mneme_kernel::hlc::HlcError) -> FederationError {
+    match error {
+        mneme_kernel::hlc::HlcError::ClockSkewExceeded => FederationError::ClockSkewExceeded(
+            "remote federation HLC exceeded maximum permitted physical clock skew".to_owned(),
+        ),
+        mneme_kernel::hlc::HlcError::LogicalOverflow => FederationError::ClockSkewExceeded(
+            "client federation HLC logical counter overflowed".to_owned(),
+        ),
+        mneme_kernel::hlc::HlcError::InvalidMaxSkew => {
+            FederationError::InvalidInput("client HLC max_skew_ns must be non-negative".to_owned())
+        }
     }
 }
 

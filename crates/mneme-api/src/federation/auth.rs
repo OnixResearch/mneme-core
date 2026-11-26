@@ -785,6 +785,19 @@ impl SharedFederationAuthorizer {
             .unwrap_or_default()
     }
 
+    /// Snapshot the set of peers authorized to sign cross-vault `CalmSeal` barriers
+    /// (trusted capability roots and allowlisted peers).
+    pub fn authorized_seal_signers(&self) -> std::collections::BTreeSet<iroh::EndpointId> {
+        let Ok(guard) = self.inner.read() else {
+            return std::collections::BTreeSet::new();
+        };
+        let mut signers = guard.trusted_roots.clone();
+        for peer in guard.allowlist.peer_ids() {
+            signers.insert(peer);
+        }
+        signers
+    }
+
     /// Whether `peer` is permitted to establish a transport connection (allowlisted OR capability auth enabled).
     pub fn can_connect(&self, peer: &iroh::EndpointId) -> bool {
         let Ok(guard) = self.inner.read() else {

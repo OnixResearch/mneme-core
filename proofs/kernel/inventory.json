@@ -1493,6 +1493,370 @@
         "verdict::case_status"
       ],
       "statement": "(observed : Status) (h : observed ≠ Status.Failed) : case_status SkipDeclaration.Declared observed = ok Status.Skipped"
+    },
+    {
+      "name": "mneme_kernel.calm.classify_op_total",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::classify_op"
+      ],
+      "statement": "(op : DistributedOp) : ∃ s, classify_op op = ok s"
+    },
+    {
+      "name": "mneme_kernel.calm.classify_op_monotonic",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::classify_op"
+      ],
+      "statement": ": classify_op DistributedOp.AppendImmutableRecord = ok CalmStratum.Monotonic ∧ classify_op DistributedOp.MergeRevocationTombstone = ok CalmStratum.Monotonic ∧ classify_op DistributedOp.MergeSuppression = ok CalmStratum.Monotonic ∧ classify_op DistributedOp.PositiveFederatedDatalog = ok CalmStratum.Monotonic"
+    },
+    {
+      "name": "mneme_kernel.calm.classify_op_barrier",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::classify_op"
+      ],
+      "statement": ": classify_op DistributedOp.PromoteDecision = ok CalmStratum.Barrier ∧ classify_op DistributedOp.NegatedFederatedDatalog = ok CalmStratum.Barrier ∧ classify_op DistributedOp.SharedBlobPhysicalGc = ok CalmStratum.Barrier"
+    },
+    {
+      "name": "mneme_kernel.calm.requires_barrier_total",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::requires_barrier",
+        "calm::classify_op"
+      ],
+      "statement": "(op : DistributedOp) : ∃ b, requires_barrier op = ok b"
+    },
+    {
+      "name": "mneme_kernel.calm.requires_barrier_iff",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::requires_barrier",
+        "calm::classify_op"
+      ],
+      "statement": "(op : DistributedOp) : requires_barrier op = ok true ↔ classify_op op = ok CalmStratum.Barrier"
+    },
+    {
+      "name": "mneme_kernel.calm.suppression_rank_total",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::suppression_rank"
+      ],
+      "statement": "(level : SuppressionLevel) : ∃ r, suppression_rank level = ok r"
+    },
+    {
+      "name": "mneme_kernel.calm.suppression_rank_order",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::suppression_rank"
+      ],
+      "statement": ": suppression_rank SuppressionLevel.None = ok 0#u8 ∧ suppression_rank SuppressionLevel.Withdrawn = ok 1#u8 ∧ suppression_rank SuppressionLevel.Forgotten = ok 2#u8"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_level_total",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression_level",
+        "calm::suppression_rank"
+      ],
+      "statement": "(left right : SuppressionLevel) : ∃ joined, join_suppression_level left right = ok joined"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_level_comm",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression_level",
+        "calm::suppression_rank"
+      ],
+      "statement": "(left right : SuppressionLevel) : ∃ joined, join_suppression_level left right = ok joined ∧ join_suppression_level right left = ok joined"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_level_assoc",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression_level",
+        "calm::suppression_rank"
+      ],
+      "statement": "(a b c : SuppressionLevel) : ∃ ab bc r, join_suppression_level a b = ok ab ∧ join_suppression_level b c = ok bc ∧ join_suppression_level ab c = ok r ∧ join_suppression_level a bc = ok r"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_level_idem",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression_level",
+        "calm::suppression_rank"
+      ],
+      "statement": "(a : SuppressionLevel) : join_suppression_level a a = ok a"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_level_inflationary",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression_level",
+        "calm::suppression_rank"
+      ],
+      "statement": "(left right : SuppressionLevel) : ∃ joined rl rr rj, join_suppression_level left right = ok joined ∧ suppression_rank left = ok rl ∧ suppression_rank right = ok rr ∧ suppression_rank joined = ok rj ∧ rl.val ≤ rj.val ∧ rr.val ≤ rj.val"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_level_absorbing_forgotten",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression_level",
+        "calm::suppression_rank"
+      ],
+      "statement": "(a : SuppressionLevel) : join_suppression_level SuppressionLevel.Forgotten a = ok SuppressionLevel.Forgotten ∧ join_suppression_level a SuppressionLevel.Forgotten = ok SuppressionLevel.Forgotten"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_total",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression",
+        "calm::join_suppression_level"
+      ],
+      "statement": "(left right : SuppressionState) : ∃ joined, join_suppression left right = ok joined"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_comm",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression",
+        "calm::join_suppression_level"
+      ],
+      "statement": "(left right : SuppressionState) : ∃ joined, join_suppression left right = ok joined ∧ join_suppression right left = ok joined"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_assoc",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression",
+        "calm::join_suppression_level"
+      ],
+      "statement": "(a b c : SuppressionState) : ∃ ab bc joined, join_suppression a b = ok ab ∧ join_suppression b c = ok bc ∧ join_suppression ab c = ok joined ∧ join_suppression a bc = ok joined"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_idem",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression",
+        "calm::join_suppression_level"
+      ],
+      "statement": "(a : SuppressionState) : join_suppression a a = ok a"
+    },
+    {
+      "name": "mneme_kernel.calm.join_suppression_inflationary",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::join_suppression",
+        "calm::join_suppression_level"
+      ],
+      "statement": "(left right : SuppressionState) : ∃ joined rl rr rj, join_suppression left right = ok joined ∧ suppression_rank left.level = ok rl ∧ suppression_rank right.level = ok rr ∧ suppression_rank joined.level = ok rj ∧ rl.val ≤ rj.val ∧ rr.val ≤ rj.val ∧ left.generation.val ≤ joined.generation.val ∧ right.generation.val ≤ joined.generation.val"
+    },
+    {
+      "name": "mneme_kernel.calm.seal_valid_total",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::seal_valid"
+      ],
+      "statement": "(facts : CalmSealFacts) : ∃ valid, seal_valid facts = ok valid"
+    },
+    {
+      "name": "mneme_kernel.calm.seal_valid_iff",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::seal_valid"
+      ],
+      "statement": "(facts : CalmSealFacts) : seal_valid facts = ok true ↔ facts.sealed = true ∧ facts.quorum_satisfied = true ∧ facts.epoch_matches = true"
+    },
+    {
+      "name": "mneme_kernel.calm.federated_absence_established_total",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::federated_absence_established",
+        "calm::seal_valid"
+      ],
+      "statement": "(facts : FederatedNegationFacts) : ∃ established, federated_absence_established facts = ok established"
+    },
+    {
+      "name": "mneme_kernel.calm.federated_absence_established_iff",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::federated_absence_established",
+        "calm::seal_valid"
+      ],
+      "statement": "(facts : FederatedNegationFacts) : federated_absence_established facts = ok true ↔ facts.local_absence_established = true ∧ (facts.is_federated = true ∧ facts.stratum = CalmStratum.Barrier → facts.barrier_seal.sealed = true ∧ facts.barrier_seal.quorum_satisfied = true ∧ facts.barrier_seal.epoch_matches = true)"
+    },
+    {
+      "name": "mneme_kernel.calm.unsealed_federated_negation_refuses_absence",
+      "file": "MnemeKernelProofs/Calm.lean",
+      "subjects": [
+        "calm::federated_absence_established",
+        "calm::seal_valid"
+      ],
+      "statement": "(facts : FederatedNegationFacts) (hfed : facts.is_federated = true) (hbarrier : facts.stratum = CalmStratum.Barrier) (hunsealed : facts.barrier_seal.sealed = false) : federated_absence_established facts = ok false"
+    },
+    {
+      "name": "mneme_kernel.hlc.compare_total",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::compare"
+      ],
+      "statement": "(left right : HybridTimestamp) : ∃ ord, compare left right = ok ord"
+    },
+    {
+      "name": "mneme_kernel.hlc.compare_eq_iff",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::compare"
+      ],
+      "statement": "(left right : HybridTimestamp) : compare left right = ok ClockOrder.Equal ↔ left = right"
+    },
+    {
+      "name": "mneme_kernel.hlc.is_before_total",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::is_before",
+        "hlc::compare"
+      ],
+      "statement": "(left right : HybridTimestamp) : ∃ b, is_before left right = ok b"
+    },
+    {
+      "name": "mneme_kernel.hlc.is_before_iff",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::is_before",
+        "hlc::compare"
+      ],
+      "statement": "(left right : HybridTimestamp) : is_before left right = ok true ↔ left.physical_ns.val < right.physical_ns.val ∨ (left.physical_ns.val = right.physical_ns.val ∧ left.logical.val < right.logical.val)"
+    },
+    {
+      "name": "mneme_kernel.hlc.is_before_irrefl",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::is_before",
+        "hlc::compare"
+      ],
+      "statement": "(ts : HybridTimestamp) : is_before ts ts = ok false"
+    },
+    {
+      "name": "mneme_kernel.hlc.is_before_trans",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::is_before",
+        "hlc::compare"
+      ],
+      "statement": "(a b c : HybridTimestamp) (hab : is_before a b = ok true) (hbc : is_before b c = ok true) : is_before a c = ok true"
+    },
+    {
+      "name": "mneme_kernel.hlc.is_at_or_before_total",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::is_at_or_before",
+        "hlc::compare"
+      ],
+      "statement": "(left right : HybridTimestamp) : ∃ b, is_at_or_before left right = ok b"
+    },
+    {
+      "name": "mneme_kernel.hlc.is_at_or_before_iff",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::is_at_or_before",
+        "hlc::compare"
+      ],
+      "statement": "(left right : HybridTimestamp) : is_at_or_before left right = ok true ↔ left.physical_ns.val < right.physical_ns.val ∨ (left.physical_ns.val = right.physical_ns.val ∧ left.logical.val ≤ right.logical.val)"
+    },
+    {
+      "name": "mneme_kernel.hlc.within_skew_total",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::within_skew"
+      ],
+      "statement": "(sample_ns reference_ns max_skew_ns : I64) : ∃ ok_skew, within_skew sample_ns reference_ns max_skew_ns = ok ok_skew"
+    },
+    {
+      "name": "mneme_kernel.hlc.within_skew_iff",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::within_skew"
+      ],
+      "statement": "(sample_ns reference_ns max_skew_ns : I64) : within_skew sample_ns reference_ns max_skew_ns = ok true ↔ 0 ≤ max_skew_ns.val ∧ sample_ns.val - reference_ns.val ≤ max_skew_ns.val ∧ reference_ns.val - sample_ns.val ≤ max_skew_ns.val"
+    },
+    {
+      "name": "mneme_kernel.hlc.within_skew_symm",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::within_skew"
+      ],
+      "statement": "(a b max_skew_ns : I64) : within_skew a b max_skew_ns = within_skew b a max_skew_ns"
+    },
+    {
+      "name": "mneme_kernel.hlc.tick_local_total",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::tick_local",
+        "hlc::within_skew",
+        "hlc::is_before"
+      ],
+      "statement": "(last : HybridTimestamp) (physical_ns max_skew_ns : I64) : ∃ res, tick_local last physical_ns max_skew_ns = ok res"
+    },
+    {
+      "name": "mneme_kernel.hlc.tick_local_causal_monotonic",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::tick_local",
+        "hlc::within_skew",
+        "hlc::is_before"
+      ],
+      "statement": "(last next : HybridTimestamp) (physical_ns max_skew_ns : I64) (h : tick_local last physical_ns max_skew_ns = ok (core.result.Result.Ok next)) : is_before last next = ok true"
+    },
+    {
+      "name": "mneme_kernel.hlc.tick_local_bounded_drift",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::tick_local",
+        "hlc::within_skew",
+        "hlc::is_before"
+      ],
+      "statement": "(last next : HybridTimestamp) (physical_ns max_skew_ns : I64) (h : tick_local last physical_ns max_skew_ns = ok (core.result.Result.Ok next)) : physical_ns.val ≤ next.physical_ns.val ∧ next.physical_ns.val - physical_ns.val ≤ max_skew_ns.val"
+    },
+    {
+      "name": "mneme_kernel.hlc.receive_total",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::receive",
+        "hlc::within_skew",
+        "hlc::is_before"
+      ],
+      "statement": "(last : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) : ∃ res, receive last physical_ns remote max_skew_ns = ok res"
+    },
+    {
+      "name": "mneme_kernel.hlc.receive_rejects_excessive_skew",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::receive",
+        "hlc::within_skew",
+        "hlc::is_before"
+      ],
+      "statement": "(last : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (hnonneg : 0 ≤ max_skew_ns.val) (hskew : within_skew remote.physical_ns physical_ns max_skew_ns = ok false) : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Err HlcError.ClockSkewExceeded)"
+    },
+    {
+      "name": "mneme_kernel.hlc.receive_causal_monotonic",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::receive",
+        "hlc::within_skew",
+        "hlc::is_before"
+      ],
+      "statement": "(last next : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (h : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Ok next)) : is_before last next = ok true ∧ is_before remote next = ok true"
+    },
+    {
+      "name": "mneme_kernel.hlc.receive_bounded_drift",
+      "file": "MnemeKernelProofs/Hlc.lean",
+      "subjects": [
+        "hlc::receive",
+        "hlc::within_skew",
+        "hlc::is_before"
+      ],
+      "statement": "(last next : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (h : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Ok next)) : physical_ns.val ≤ next.physical_ns.val ∧ next.physical_ns.val - physical_ns.val ≤ max_skew_ns.val"
     }
   ]
 }

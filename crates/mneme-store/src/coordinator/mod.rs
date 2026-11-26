@@ -790,6 +790,7 @@ struct PreparedCommit {
     generation: u64,
     next_generation: u64,
     recorded: mneme_core::RecordedTime,
+    hlc: mneme_kernel::hlc::HybridTimestamp,
     new_records: Vec<mneme_core::RecordEnvelope>,
     staged: BlobIndex,
     /// Identity of each staged record blob file at the moment its bytes were
@@ -833,7 +834,9 @@ CREATE TABLE IF NOT EXISTS revisions (
     eligibility_generation INTEGER NOT NULL,
     manifest BLOB NOT NULL,
     manifest_digest BLOB NOT NULL,
-    manifest_algorithm TEXT
+    manifest_algorithm TEXT,
+    hlc_physical_ns INTEGER,
+    hlc_logical INTEGER
 );
 CREATE TABLE IF NOT EXISTS records (
     record_id BLOB NOT NULL,
@@ -1128,6 +1131,7 @@ pub struct RevisionCommit {
     pub sequence: u64,
     pub actor: String,
     pub committed_at_ns: i64,
+    pub hlc: Option<mneme_kernel::hlc::HybridTimestamp>,
 }
 
 /// A retained record revision and the workspace commit that introduced it.
@@ -1247,6 +1251,10 @@ pub struct Workspace {
     shared: Option<SharedRecordCache>,
     /// Whether this handle was opened in strictly read-only mode.
     is_read_only: bool,
+    /// Last observed Hybrid Logical Clock timestamp for this handle.
+    hlc_last: std::cell::Cell<mneme_kernel::hlc::HybridTimestamp>,
+    /// Maximum permitted HLC physical clock skew in nanoseconds.
+    hlc_max_skew_ns: i64,
 }
 
 impl std::fmt::Debug for Workspace {
@@ -1476,8 +1484,8 @@ impl Workspace {
         transaction.execute(
             "INSERT INTO revisions (sequence, revision_id, parent_revision_id, committed_at_ns,
                  actor, scope, command_id, request_digest, eligibility_generation, manifest,
-                 manifest_digest, manifest_algorithm)
-             VALUES (0, ?1, NULL, ?2, 'system', ?3, 'genesis', ?4, 1, ?5, ?6, ?7)",
+                 manifest_digest, manifest_algorithm, hlc_physical_ns, hlc_logical)
+             VALUES (0, ?1, NULL, ?2, 'system', ?3, 'genesis', ?4, 1, ?5, ?6, ?7, ?8, 0)",
             rusqlite::params![
                 revision.as_bytes().as_slice(),
                 committed_at,
@@ -1486,6 +1494,7 @@ impl Workspace {
                 Vec::<u8>::new(),
                 manifest_digest.as_bytes().as_slice(),
                 manifest_digest.algorithm().symbol(),
+                committed_at,
             ],
         )?;
         set_meta(&transaction, META_LAYOUT, b"1")?;
@@ -1582,6 +1591,7 @@ impl Workspace {
             }
             None => None,
         };
+        let hlc_last = read_max_hlc(&connection)?;
         Ok(Workspace {
             root,
             connection,
@@ -1594,6 +1604,8 @@ impl Workspace {
             records: std::cell::RefCell::new(RecordCache::default()),
             shared,
             is_read_only: false,
+            hlc_last: std::cell::Cell::new(hlc_last),
+            hlc_max_skew_ns: mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS,
         })
     }
 
@@ -1721,6 +1733,7 @@ impl Workspace {
             }
             None => None,
         };
+        let hlc_last = read_max_hlc(&connection)?;
         Ok(Workspace {
             root,
             connection,
@@ -1733,12 +1746,146 @@ impl Workspace {
             records: std::cell::RefCell::new(RecordCache::default()),
             shared,
             is_read_only: true,
+            hlc_last: std::cell::Cell::new(hlc_last),
+            hlc_max_skew_ns: mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS,
         })
     }
 
     /// Whether this handle was opened strictly read-only.
     pub fn is_read_only(&self) -> bool {
         self.is_read_only
+    }
+
+    /// The maximum permitted HLC physical clock skew in nanoseconds for this handle.
+    pub fn hlc_max_skew_ns(&self) -> i64 {
+        self.hlc_max_skew_ns
+    }
+
+    /// Configure the maximum permitted HLC physical clock skew in nanoseconds.
+    pub fn set_hlc_max_skew_ns(&mut self, max_skew_ns: i64) {
+        self.hlc_max_skew_ns = max_skew_ns;
+    }
+
+    /// Current Hybrid Logical Clock watermark observed by this workspace handle
+    /// or persisted in the ledger, whichever is newer.
+    pub fn current_hlc(&self) -> crate::error::Result<mneme_kernel::hlc::HybridTimestamp> {
+        let stored = read_max_hlc(&self.connection)?;
+        let local = self.hlc_last.get();
+        let newest = if mneme_kernel::hlc::is_before(local, stored) {
+            self.hlc_last.set(stored);
+            stored
+        } else {
+            local
+        };
+        Ok(newest)
+    }
+
+    /// Advance this handle's Hybrid Logical Clock for a local event or causal cut.
+    pub fn tick_hlc(&self) -> crate::error::Result<mneme_kernel::hlc::HybridTimestamp> {
+        let last = self.current_hlc()?;
+        let pt_ns = self.clock.now().nanos();
+        let next = mneme_kernel::hlc::tick_local(last, pt_ns, self.hlc_max_skew_ns)
+            .map_err(hlc_error_to_failure)?;
+        self.hlc_last.set(next);
+        Ok(next)
+    }
+
+    /// Observe a remote Hybrid Logical Clock timestamp, advancing this handle's
+    /// clock causally and failing closed on excessive clock skew.
+    pub fn observe_remote_hlc(
+        &self,
+        remote: mneme_kernel::hlc::HybridTimestamp,
+    ) -> crate::error::Result<mneme_kernel::hlc::HybridTimestamp> {
+        let last = self.current_hlc()?;
+        let pt_ns = self.clock.now().nanos();
+        let next = mneme_kernel::hlc::receive(last, pt_ns, remote, self.hlc_max_skew_ns)
+            .map_err(hlc_error_to_failure)?;
+        self.hlc_last.set(next);
+        Ok(next)
+    }
+
+    /// Return the persisted Hybrid Logical Clock timestamp for one committed revision.
+    pub fn revision_hlc(
+        &self,
+        revision: mneme_core::WorkspaceRevisionId,
+    ) -> crate::error::Result<Option<mneme_kernel::hlc::HybridTimestamp>> {
+        let has_hlc = has_revision_hlc_columns(&self.connection)?;
+        let row: Option<(i64, Option<i64>, Option<i64>)> = if has_hlc {
+            self.connection
+                .query_row(
+                    "SELECT committed_at_ns, hlc_physical_ns, hlc_logical
+                     FROM revisions WHERE revision_id = ?1",
+                    rusqlite::params![revision.as_bytes().as_slice()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?
+        } else {
+            self.connection
+                .query_row(
+                    "SELECT committed_at_ns FROM revisions WHERE revision_id = ?1",
+                    rusqlite::params![revision.as_bytes().as_slice()],
+                    |row| Ok((row.get(0)?, None, None)),
+                )
+                .optional()?
+        };
+        let Some((committed_at_ns, hlc_physical_ns, hlc_logical)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(decode_row_hlc(
+            committed_at_ns,
+            hlc_physical_ns,
+            hlc_logical,
+        )?))
+    }
+
+    /// Resolve the latest committed revision whose HLC is at or before `read_hlc`.
+    ///
+    /// Fails closed with [`crate::error::Failure::BarrierAdvanced`] if an
+    /// `eligibility_generation` barrier crossed `read_hlc`.
+    pub fn resolve_revision_at_hlc(
+        &self,
+        read_hlc: mneme_kernel::hlc::HybridTimestamp,
+    ) -> crate::error::Result<mneme_core::WorkspaceRevisionId> {
+        let current_generation = self.eligibility_generation()?;
+        let has_hlc = has_revision_hlc_columns(&self.connection)?;
+        let query = if has_hlc {
+            "SELECT sequence, revision_id, committed_at_ns, eligibility_generation,
+                    hlc_physical_ns, hlc_logical
+             FROM revisions ORDER BY sequence DESC"
+        } else {
+            "SELECT sequence, revision_id, committed_at_ns, eligibility_generation,
+                    NULL, NULL
+             FROM revisions ORDER BY sequence DESC"
+        };
+        let mut statement = self.connection.prepare(query)?;
+        let mut rows = statement.query([])?;
+        let mut selected: Option<(mneme_core::WorkspaceRevisionId, u64)> = None;
+        let mut genesis: Option<(mneme_core::WorkspaceRevisionId, u64)> = None;
+        while let Some(row) = rows.next()? {
+            let sequence = db_u64(row.get::<_, i64>(0)?, "sequence")?;
+            let revision = revision_from_blob(&row.get::<_, Vec<u8>>(1)?)?;
+            let committed_at_ns: i64 = row.get(2)?;
+            let row_generation = db_u64(row.get::<_, i64>(3)?, "eligibility_generation")?;
+            let hlc_physical_ns: Option<i64> = row.get(4)?;
+            let hlc_logical: Option<i64> = row.get(5)?;
+            let row_hlc = decode_row_hlc(committed_at_ns, hlc_physical_ns, hlc_logical)?;
+            if sequence == 0 {
+                genesis = Some((revision, row_generation));
+            }
+            if selected.is_none() && mneme_kernel::hlc::is_at_or_before(row_hlc, read_hlc) {
+                selected = Some((revision, row_generation));
+            }
+        }
+        let (revision, resolved_generation) = selected.or(genesis).ok_or_else(|| {
+            crate::error::Failure::UnsupportedLayout("ledger has no revisions".to_owned())
+        })?;
+        if resolved_generation != current_generation {
+            return Err(crate::error::Failure::BarrierAdvanced {
+                pinned: resolved_generation,
+                current: current_generation,
+            });
+        }
+        Ok(revision)
     }
 
     fn require_writable(&self) -> crate::error::Result<()> {
@@ -3176,16 +3323,29 @@ impl Workspace {
         let before = before_sequence
             .map(|sequence| db_i64(sequence, "sequence"))
             .transpose()?;
-        let mut statement = connection.prepare(
+        let has_hlc = has_revision_hlc_columns(connection)?;
+        let query = if has_hlc {
             "SELECT records.revision_id, records.kind, records.envelope_digest,
                     records.payload_digest, records.full_digest, records.recorded_order,
-                    revisions.revision_id, revisions.actor, revisions.committed_at_ns
+                    revisions.revision_id, revisions.actor, revisions.committed_at_ns,
+                    revisions.hlc_physical_ns, revisions.hlc_logical
              FROM records LEFT JOIN revisions ON revisions.sequence = records.recorded_order
              WHERE records.record_id = ?1
                AND (?2 IS NULL OR records.recorded_order < ?2)
              ORDER BY records.recorded_order DESC, records.recorded_at_ns DESC,
-                      records.revision_id DESC",
-        )?;
+                      records.revision_id DESC"
+        } else {
+            "SELECT records.revision_id, records.kind, records.envelope_digest,
+                    records.payload_digest, records.full_digest, records.recorded_order,
+                    revisions.revision_id, revisions.actor, revisions.committed_at_ns,
+                    NULL, NULL
+             FROM records LEFT JOIN revisions ON revisions.sequence = records.recorded_order
+             WHERE records.record_id = ?1
+               AND (?2 IS NULL OR records.recorded_order < ?2)
+             ORDER BY records.recorded_order DESC, records.recorded_at_ns DESC,
+                      records.revision_id DESC"
+        };
+        let mut statement = connection.prepare(query)?;
         let mut rows =
             statement.query(rusqlite::params![record_id.as_bytes().as_slice(), before])?;
         let mut stored = Vec::with_capacity(MAX_RECORD_REVISION_PAGE + 1);
@@ -3567,11 +3727,21 @@ fn read_record_commit_row(
             reason: "record revision has no introducing workspace commit".to_owned(),
         });
     };
+    let hlc_physical_ns = row.get::<_, Option<i64>>(9)?;
+    let hlc_logical = row.get::<_, Option<i64>>(10)?;
+    let hlc = match (hlc_physical_ns, hlc_logical) {
+        (Some(physical_ns), Some(logical)) => Some(mneme_kernel::hlc::HybridTimestamp {
+            physical_ns,
+            logical: db_u32(logical, "hlc_logical")?,
+        }),
+        _ => None,
+    };
     let commit = RevisionCommit {
         revision: revision_from_blob(&workspace_revision)?,
         sequence: db_u64(row.get::<_, i64>(5)?, "sequence")?,
         actor,
         committed_at_ns,
+        hlc,
     };
     Ok(StoredRecordCommit {
         record_revision,
@@ -3641,10 +3811,18 @@ fn revision_commits_lookup(
         .map(|position| format!("?{position}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let query = format!(
-        "SELECT revision_id, sequence, actor, committed_at_ns FROM revisions \
-         WHERE revision_id IN ({placeholders})"
-    );
+    let has_hlc = has_revision_hlc_columns(connection)?;
+    let query = if has_hlc {
+        format!(
+            "SELECT revision_id, sequence, actor, committed_at_ns, hlc_physical_ns, hlc_logical \
+             FROM revisions WHERE revision_id IN ({placeholders})"
+        )
+    } else {
+        format!(
+            "SELECT revision_id, sequence, actor, committed_at_ns, NULL, NULL \
+             FROM revisions WHERE revision_id IN ({placeholders})"
+        )
+    };
     let mut statement = connection.prepare(&query)?;
     let mut rows = statement.query(rusqlite::params_from_iter(
         revisions
@@ -3658,6 +3836,15 @@ fn revision_commits_lookup(
             ));
         }
         let revision = revision_from_blob(&row.get::<_, Vec<u8>>(0)?)?;
+        let hlc_physical_ns = row.get::<_, Option<i64>>(4)?;
+        let hlc_logical = row.get::<_, Option<i64>>(5)?;
+        let hlc = match (hlc_physical_ns, hlc_logical) {
+            (Some(physical_ns), Some(logical)) => Some(mneme_kernel::hlc::HybridTimestamp {
+                physical_ns,
+                logical: db_u32(logical, "hlc_logical")?,
+            }),
+            _ => None,
+        };
         commits.insert(
             revision,
             RevisionCommit {
@@ -3665,6 +3852,7 @@ fn revision_commits_lookup(
                 sequence: db_u64(row.get::<_, i64>(1)?, "sequence")?,
                 actor: row.get(2)?,
                 committed_at_ns: row.get(3)?,
+                hlc,
             },
         );
     }
@@ -3798,6 +3986,7 @@ fn open_connection(root: &std::path::Path) -> crate::error::Result<rusqlite::Con
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     add_command_fingerprint_column(&connection)?;
     add_revision_manifest_algorithm_column(&connection)?;
+    add_revision_hlc_columns(&connection)?;
     add_publication_intent_algorithm_columns(&connection)?;
     Ok(connection)
 }
@@ -3925,6 +4114,90 @@ fn add_revision_manifest_algorithm_column(
         )?;
     }
     Ok(())
+}
+
+/// Add Hybrid Logical Clock columns to a ledger written before HLC persistence.
+///
+/// Both columns are additive and nullable, so `LAYOUT_VERSION` stays unchanged:
+/// legacy rows fall back to `(committed_at_ns, 0)`.
+fn add_revision_hlc_columns(connection: &rusqlite::Connection) -> crate::error::Result<()> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version != LAYOUT_VERSION {
+        return Ok(());
+    }
+    if !table_exists(connection, "revisions")? {
+        return Ok(());
+    }
+    if !has_column(connection, "revisions", "hlc_physical_ns")? {
+        connection.execute(
+            "ALTER TABLE revisions ADD COLUMN hlc_physical_ns INTEGER",
+            [],
+        )?;
+    }
+    if !has_column(connection, "revisions", "hlc_logical")? {
+        connection.execute("ALTER TABLE revisions ADD COLUMN hlc_logical INTEGER", [])?;
+    }
+    Ok(())
+}
+
+fn has_revision_hlc_columns(connection: &rusqlite::Connection) -> crate::error::Result<bool> {
+    Ok(has_column(connection, "revisions", "hlc_physical_ns")?
+        && has_column(connection, "revisions", "hlc_logical")?)
+}
+
+fn decode_row_hlc(
+    committed_at_ns: i64,
+    hlc_physical_ns: Option<i64>,
+    hlc_logical: Option<i64>,
+) -> crate::error::Result<mneme_kernel::hlc::HybridTimestamp> {
+    match (hlc_physical_ns, hlc_logical) {
+        (Some(physical_ns), Some(logical)) => Ok(mneme_kernel::hlc::HybridTimestamp {
+            physical_ns,
+            logical: db_u32(logical, "hlc_logical")?,
+        }),
+        _ => Ok(mneme_kernel::hlc::HybridTimestamp {
+            physical_ns: committed_at_ns,
+            logical: 0,
+        }),
+    }
+}
+
+fn read_max_hlc(
+    connection: &rusqlite::Connection,
+) -> crate::error::Result<mneme_kernel::hlc::HybridTimestamp> {
+    let has_hlc = has_revision_hlc_columns(connection)?;
+    let query = if has_hlc {
+        "SELECT committed_at_ns, hlc_physical_ns, hlc_logical FROM revisions"
+    } else {
+        "SELECT committed_at_ns, NULL, NULL FROM revisions"
+    };
+    let mut statement = connection.prepare(query)?;
+    let mut rows = statement.query([])?;
+    let mut max_hlc: Option<mneme_kernel::hlc::HybridTimestamp> = None;
+    while let Some(row) = rows.next()? {
+        let candidate = decode_row_hlc(row.get(0)?, row.get(1)?, row.get(2)?)?;
+        if max_hlc.is_none_or(|current| mneme_kernel::hlc::is_before(current, candidate)) {
+            max_hlc = Some(candidate);
+        }
+    }
+    Ok(max_hlc.unwrap_or(mneme_kernel::hlc::HybridTimestamp {
+        physical_ns: 0,
+        logical: 0,
+    }))
+}
+
+fn hlc_error_to_failure(error: mneme_kernel::hlc::HlcError) -> crate::error::Failure {
+    match error {
+        mneme_kernel::hlc::HlcError::ClockSkewExceeded => crate::error::Failure::ClockSkewExceeded(
+            "physical clock skew exceeded configured HLC bound".to_owned(),
+        ),
+        mneme_kernel::hlc::HlcError::LogicalOverflow => crate::error::Failure::ClockSkewExceeded(
+            "HLC logical counter overflowed u32::MAX".to_owned(),
+        ),
+        mneme_kernel::hlc::HlcError::InvalidMaxSkew => {
+            crate::error::Failure::InvalidCommand("HLC max_skew_ns must be non-negative".to_owned())
+        }
+    }
 }
 
 /// Add algorithm columns to `publication_intents` written before BLAKE3 support.
