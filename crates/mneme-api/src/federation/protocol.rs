@@ -11,6 +11,9 @@ const DEFAULT_MAX_TIME_MS: u64 = 2_000;
 const DEFAULT_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_MAX_SUPPORTS_PER_FACT: u64 = 8;
 const DEFAULT_MAX_RECURSION_DEPTH: u64 = 32;
+const DEFAULT_EXPLAIN_MAX_WORK: u64 = 10_000;
+const DEFAULT_EXPLAIN_MAX_DEPTH: u32 = 16;
+const DEFAULT_EXPLAIN_MAX_REASONS: u32 = 64;
 
 /// Protocol wire version.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -258,9 +261,18 @@ pub struct EvaluateDatalogRequest {
     pub predicate: String,
     pub constant_documents: Vec<Option<String>>,
     pub max_rows: u64,
+    pub at: Option<i64>,
+    pub incomplete_extents: Vec<String>,
     pub stale_policy: StalePolicy,
     pub limits: FederationLimits,
     pub capability_document: Option<String>,
+}
+
+/// Wire representation of one `(record_id, revision_id)` source provenance key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RemoteSourceKey {
+    pub record_id: [u8; 16],
+    pub revision_id: [u8; 16],
 }
 
 /// Remote predicate coverage status.
@@ -276,10 +288,15 @@ pub struct RemoteCoverage {
 pub struct RemotePremise {
     pub predicate: String,
     pub term_documents: Vec<String>,
+    pub canonical: Option<[u8; 16]>,
+    pub canonical_roots: Vec<[u8; 16]>,
+    pub sources: Vec<RemoteSourceKey>,
     pub vault: Option<String>,
     pub vaults: Vec<String>,
     pub absent: bool,
+    pub coverage: Option<String>,
     pub source_availability: Option<String>,
+    pub epistemic: String,
 }
 
 /// Remote derivation support for one answer row.
@@ -288,8 +305,11 @@ pub struct RemoteDerivation {
     pub rule_id: String,
     pub rule_version: String,
     pub premises: Vec<RemotePremise>,
+    pub sources: Vec<RemoteSourceKey>,
     pub vaults: Vec<String>,
+    pub temporal_parameters: Vec<String>,
     pub truncated: bool,
+    pub epistemic: String,
 }
 
 /// One row returned by [`EvaluateDatalogRequest`].
@@ -298,6 +318,7 @@ pub struct RemoteQueryRow {
     pub value_documents: Vec<String>,
     pub supports: Vec<RemoteDerivation>,
     pub support_truncated: bool,
+    pub epistemic: String,
 }
 
 /// Bounded Datalog evaluation result returned by [`EvaluateDatalogRequest`].
@@ -309,6 +330,8 @@ pub struct RemoteDatalogResult {
     pub requested_revision: [u8; 16],
     pub served_revision: [u8; 16],
     pub eligibility_generation: u64,
+    pub at: Option<i64>,
+    pub incomplete_extents: Vec<String>,
     pub coverage: Vec<RemoteCoverage>,
     pub rows: Vec<RemoteQueryRow>,
     pub exhaustive: bool,
@@ -316,6 +339,125 @@ pub struct RemoteDatalogResult {
     pub absence_established: bool,
     pub stale: bool,
     pub reason: Option<String>,
+    pub work: u64,
+}
+
+/// Explicit traversal bounds for a remote Why-Not [`ExplainMissingRpcRequest`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RemoteExplainLimits {
+    pub max_work: u64,
+    pub max_depth: u32,
+    pub max_reasons: u32,
+}
+
+impl Default for RemoteExplainLimits {
+    fn default() -> Self {
+        Self::standard()
+    }
+}
+
+impl RemoteExplainLimits {
+    /// Standard bounded Why-Not traversal limits.
+    pub const fn standard() -> Self {
+        Self {
+            max_work: DEFAULT_EXPLAIN_MAX_WORK,
+            max_depth: DEFAULT_EXPLAIN_MAX_DEPTH,
+            max_reasons: DEFAULT_EXPLAIN_MAX_REASONS,
+        }
+    }
+
+    /// Validate that every explain bound is strictly positive.
+    pub fn validate(&self) -> Result<(), RpcError> {
+        if self.max_work == 0 || self.max_depth == 0 || self.max_reasons == 0 {
+            return Err(RpcError::new(
+                RpcErrorCode::InvalidInput,
+                "explain-missing limits must all be non-zero",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Fail closed if any explain bound exceeds `ceiling`.
+    pub fn check_within(&self, ceiling: &FederationLimits) -> Result<(), RpcError> {
+        self.validate()?;
+        if self.max_work > ceiling.max_work
+            || u64::from(self.max_depth) > ceiling.max_recursion_depth
+            || u64::from(self.max_reasons) > ceiling.max_rows
+        {
+            return Err(RpcError::new(
+                RpcErrorCode::BudgetExceeded,
+                "requested explain-missing limits exceed server federation ceiling",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Convert into `mneme_datalog::ExplainLimits`.
+    pub const fn to_datalog_limits(&self) -> mneme_datalog::ExplainLimits {
+        mneme_datalog::ExplainLimits {
+            max_work: self.max_work,
+            max_depth: self.max_depth,
+            max_reasons: self.max_reasons,
+        }
+    }
+}
+
+/// Request a bounded remote Why-Not explanation over one pinned vault revision.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExplainMissingRpcRequest {
+    pub scope: String,
+    pub revision: Option<[u8; 16]>,
+    pub bundle_document: String,
+    pub predicate: String,
+    pub term_documents: Vec<String>,
+    pub at: Option<i64>,
+    pub incomplete_extents: Vec<String>,
+    pub stale_policy: StalePolicy,
+    pub limits: FederationLimits,
+    pub explain_limits: RemoteExplainLimits,
+    pub capability_document: Option<String>,
+}
+
+/// Wire representation of one term inside a [`RemoteMissingReason`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RemoteMissingTerm {
+    Variable(String),
+    Constant(String),
+}
+
+/// Wire representation of one structured Why-Not cause.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RemoteMissingReason {
+    pub kind: String,
+    pub rule_id: Option<String>,
+    pub predicate: Option<String>,
+    pub terms: Vec<RemoteMissingTerm>,
+    pub detail: String,
+    pub blocker_epistemic: Option<String>,
+    pub blocker_supports: Vec<RemoteDerivation>,
+    pub causes: Vec<RemoteMissingReason>,
+}
+
+/// Bounded remote Why-Not explanation returned by [`ExplainMissingRpcRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RemoteMissingExplanation {
+    pub protocol_version: u32,
+    pub predicate: String,
+    pub term_documents: Vec<String>,
+    pub status: String,
+    pub build_status: String,
+    pub requested_revision: [u8; 16],
+    pub served_revision: [u8; 16],
+    pub eligibility_generation: u64,
+    pub at: Option<i64>,
+    pub incomplete_extents: Vec<String>,
+    pub coverage: Vec<RemoteCoverage>,
+    pub present_epistemic: Option<String>,
+    pub present_supports: Vec<RemoteDerivation>,
+    pub reasons: Vec<RemoteMissingReason>,
+    pub truncated: bool,
+    pub exhaustive: bool,
+    pub stale: bool,
     pub work: u64,
 }
 
@@ -331,6 +473,8 @@ pub enum VaultFederationProtocol {
     FetchPinnedSnapshot(FetchPinnedSnapshotRequest),
     #[rpc(tx = irpc::channel::oneshot::Sender<Result<RemoteDatalogResult, RpcError>>)]
     EvaluateDatalog(EvaluateDatalogRequest),
+    #[rpc(tx = irpc::channel::oneshot::Sender<Result<RemoteMissingExplanation, RpcError>>)]
+    ExplainMissing(ExplainMissingRpcRequest),
 }
 
 /// Compute the deterministic scoped manifest digest binding `revision`, `parent`,

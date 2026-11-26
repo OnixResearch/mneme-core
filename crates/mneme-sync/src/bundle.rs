@@ -46,43 +46,31 @@ impl PullDisposition {
     }
 }
 
-/// Export `scope` from `workspace` and load the portable archive, source blobs, and RBSR index.
+/// Export `scope` from `workspace` and register the portable archive, source blobs, and RBSR index
+/// directly against disk in `blobs` without loading payloads into RAM or re-hashing BLAKE3 blobs.
 pub async fn export_scope_to_store(
     workspace: &mneme_store::Workspace,
     vault_id: &str,
     scope: &mneme_core::ScopeId,
-    blobs: &iroh_blobs::api::Store,
+    blobs: &crate::blobstore::DiskBlobStore,
 ) -> crate::error::Result<ExportedSyncBundle> {
     let head_revision = workspace.current_revision()?;
     let head_revision_digest = workspace.head_revision_digest()?;
     let sequence = workspace.current_sequence()?;
 
-    let temp_dir = tempfile::tempdir()
-        .map_err(|error| crate::error::Failure::Io(format!("export tempdir: {error}")))?;
-    let archive_path = temp_dir.path().join("bundle.mneme");
+    let archive_path = blobs.allocate_staged_bundle_path();
     let export_report = workspace.export_portable(&archive_path, scope)?;
 
     if export_report.revision != head_revision || export_report.sequence != sequence {
+        let _removed = std::fs::remove_file(&archive_path).is_ok();
         return Err(crate::error::Failure::Protocol(
             "workspace advanced while exporting sync bundle; retry".to_owned(),
         ));
     }
 
     let manifest = mneme_store::portability::read_archive_manifest(&archive_path)?;
-    let archive_bytes = std::fs::read(&archive_path)
-        .map_err(|error| crate::error::Failure::Io(format!("read exported bundle: {error}")))?;
-    let archive_len = archive_bytes.len() as u64;
-    if archive_len > crate::protocol::MAX_SYNC_BUNDLE_BYTES {
-        return Err(crate::error::Failure::SizeLimitExceeded {
-            actual_bytes: archive_len,
-            limit_bytes: crate::protocol::MAX_SYNC_BUNDLE_BYTES,
-        });
-    }
-    let archive_tag = blobs
-        .blobs()
-        .add_bytes(archive_bytes)
-        .await
-        .map_err(|error| crate::error::Failure::Transport(format!("stage bundle blob: {error}")))?;
+    let (archive_hash, archive_len) =
+        blobs.register_staged_file(archive_path, crate::protocol::MAX_SYNC_BUNDLE_BYTES)?;
 
     let mut rbsr_keys = Vec::new();
     let mut revisions_map = std::collections::BTreeMap::new();
@@ -94,8 +82,10 @@ pub async fn export_scope_to_store(
         }
     }
 
-    let (blob_refs, blobs_by_digest) =
-        export_manifest_blobs(workspace, &manifest.blobs, blobs, &mut rbsr_keys).await?;
+    let ExportedManifestBlobs {
+        refs: blob_refs,
+        by_digest: blobs_by_digest,
+    } = export_manifest_blobs(workspace, &manifest.blobs, blobs, &mut rbsr_keys)?;
     let rbsr_set = crate::rbsr::RbsrSet::from_keys(rbsr_keys);
 
     let info = crate::protocol::VaultSnapshotInfo {
@@ -104,61 +94,46 @@ pub async fn export_scope_to_store(
         head_revision: head_revision.to_hex(),
         head_revision_digest: crate::protocol::WireDigest::from_digest(head_revision_digest),
         sequence,
-        bundle_hash: archive_tag.hash.to_string(),
+        bundle_hash: archive_hash.to_string(),
         bundle_bytes: archive_len,
         blobs: blob_refs,
     };
 
     Ok(ExportedSyncBundle {
         info,
-        archive_hash: archive_tag.hash,
+        archive_hash,
         rbsr_set,
         revisions: revisions_map,
         blobs_by_digest,
     })
 }
 
-async fn export_manifest_blobs(
+struct ExportedManifestBlobs {
+    refs: Vec<crate::protocol::BlobDigestRef>,
+    by_digest: std::collections::BTreeMap<[u8; 32], crate::protocol::BlobDigestRef>,
+}
+
+fn export_manifest_blobs(
     workspace: &mneme_store::Workspace,
     manifest_blobs: &[mneme_store::portability::PortableBlob],
-    blobs: &iroh_blobs::api::Store,
+    blobs: &crate::blobstore::DiskBlobStore,
     rbsr_keys: &mut Vec<crate::rbsr::RbsrKey>,
-) -> crate::error::Result<(
-    Vec<crate::protocol::BlobDigestRef>,
-    std::collections::BTreeMap<[u8; 32], crate::protocol::BlobDigestRef>,
-)> {
+) -> crate::error::Result<ExportedManifestBlobs> {
     let mut refs = Vec::with_capacity(manifest_blobs.len());
     let mut by_digest = std::collections::BTreeMap::new();
     for blob in manifest_blobs {
-        let bytes = mneme_store::payload::read(workspace.root(), blob.digest)?;
-        let byte_length = bytes.len() as u64;
-        if byte_length != blob.length {
-            return Err(crate::error::Failure::VerificationFailed(format!(
-                "source blob {} length {byte_length} differs from manifest {}",
-                blob.digest.to_hex(),
-                blob.length
-            )));
-        }
-        let tag = blobs.blobs().add_bytes(bytes).await.map_err(|error| {
-            crate::error::Failure::Transport(format!("stage source blob: {error}"))
-        })?;
-        if blob.digest.algorithm() == mneme_core::HashAlgorithm::Blake3
-            && tag.hash.as_bytes() != blob.digest.as_bytes()
-        {
-            return Err(crate::error::Failure::VerificationFailed(
-                "iroh-blobs BLAKE3 hash diverged from Mneme ContentDigest".to_owned(),
-            ));
-        }
+        let transport_hash =
+            blobs.register_workspace_blob(workspace.root(), blob.digest, blob.length)?;
         rbsr_keys.push(crate::rbsr::RbsrKey::from_blob_digest(blob.digest));
         let blob_ref = crate::protocol::BlobDigestRef {
             content_digest: crate::protocol::WireDigest::from_digest(blob.digest),
-            transport_hash: tag.hash.to_string(),
-            byte_length,
+            transport_hash: transport_hash.to_string(),
+            byte_length: blob.length,
         };
         by_digest.insert(*blob.digest.as_bytes(), blob_ref.clone());
         refs.push(blob_ref);
     }
-    Ok((refs, by_digest))
+    Ok(ExportedManifestBlobs { refs, by_digest })
 }
 
 /// Collect the local workspace's sorted `(revision_id / blob_digest)` RBSR set for `scope`.

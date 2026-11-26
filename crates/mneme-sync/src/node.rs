@@ -219,7 +219,7 @@ pub struct SyncNode {
     secret_key: iroh::SecretKey,
     endpoint: iroh::Endpoint,
     router: iroh::protocol::Router,
-    blobs: iroh_blobs::store::mem::MemStore,
+    blobs: crate::blobstore::DiskBlobStore,
     gossip: iroh_gossip::Gossip,
     memory_lookup: iroh::address_lookup::memory::MemoryLookup,
     allowlist: crate::trust::SharedAllowlist,
@@ -247,7 +247,7 @@ impl SyncNode {
         trusted_roots.insert(config.secret_key.public());
         let endpoint = bind_iroh_endpoint(&config, &memory_lookup).await?;
 
-        let blobs = iroh_blobs::store::mem::MemStore::new();
+        let blobs = crate::blobstore::DiskBlobStore::new()?;
         let gossip = iroh_gossip::Gossip::builder().spawn(endpoint.clone());
         let scopes: crate::protocol::SharedScopeTable = std::sync::Arc::new(
             std::sync::RwLock::new(crate::protocol::SyncScopeTable::new()),
@@ -268,7 +268,7 @@ impl SyncNode {
         let blobs_handler = crate::protocol::CapabilityProtocol::new(
             auth.clone(),
             crate::capability::CapabilityAuthority::SyncPull,
-            iroh_blobs::BlobsProtocol::new(&blobs, Some(blobs_events)),
+            crate::blobstore::DiskBlobsProtocol::new(blobs.clone(), blobs_events),
         );
         let gossip_handler = crate::protocol::CapabilityProtocol::new(
             auth.clone(),
@@ -333,6 +333,11 @@ impl SyncNode {
     /// Access the underlying Iroh endpoint (for address lookup or diagnostics).
     pub const fn endpoint(&self) -> &iroh::Endpoint {
         &self.endpoint
+    }
+
+    /// Access the disk-backed blob store backing `iroh-blobs` transfers.
+    pub const fn blob_store(&self) -> &crate::blobstore::DiskBlobStore {
+        &self.blobs
     }
 
     /// Return the most recent authorized `PushHead` announcement received for `scope`.
@@ -801,7 +806,7 @@ impl SyncNode {
         stats.control_bytes_received = stats.control_bytes_received.saturating_add(meta_recv);
 
         let (fetched_blobs, blob_bytes_fetched) = self
-            .download_delta_blobs(request.peer, &delta_blob_refs)
+            .download_delta_blobs(request.peer, &request.destination, &delta_blob_refs)
             .await?;
         stats.blobs_fetched = fetched_blobs.len() as u64;
         stats.blob_bytes_fetched = blob_bytes_fetched;
@@ -951,29 +956,34 @@ impl SyncNode {
         let max_bundle_bytes = snapshot
             .bundle_bytes
             .min(crate::protocol::MAX_SYNC_BUNDLE_BYTES);
-        self.download_bundle_only(request.peer, bundle_hash, max_bundle_bytes)
+        let staging_dir =
+            create_pull_staging_dir(request.state_dir.as_deref(), &request.destination)?;
+        let archive_path = staging_dir.path().join("pulled.mneme");
+        let downloaded = self
+            .download_bundle_to_path(request.peer, bundle_hash, max_bundle_bytes, &archive_path)
             .await?;
+        if downloaded.byte_length != snapshot.bundle_bytes {
+            return Err(crate::error::Failure::VerificationFailed(format!(
+                "downloaded bundle length {} differs from snapshot metadata {}",
+                downloaded.byte_length, snapshot.bundle_bytes
+            )));
+        }
         stats.blobs_fetched = 1;
-        stats.blob_bytes_fetched = snapshot.bundle_bytes;
-
-        let temp_dir = tempfile::tempdir()
-            .map_err(|error| crate::error::Failure::Io(format!("pull tempdir: {error}")))?;
-        let archive_path = temp_dir.path().join("pulled.mneme");
-        self.blobs
-            .blobs()
-            .export(bundle_hash, &archive_path)
-            .await
-            .map_err(|error| {
-                crate::error::Failure::Transport(format!("export fetched bundle: {error}"))
-            })?;
+        stats.blob_bytes_fetched = downloaded.byte_length;
 
         let destination = request.destination.clone();
         let workspace_config = (request.workspace_config)();
+        let archive_for_ingest = archive_path.clone();
         let ingested = tokio::task::spawn_blocking(move || {
-            crate::bundle::ingest_downloaded_archive(&archive_path, &destination, workspace_config)
+            crate::bundle::ingest_downloaded_archive(
+                &archive_for_ingest,
+                &destination,
+                workspace_config,
+            )
         })
         .await
         .map_err(|error| crate::error::Failure::Io(format!("ingest task join: {error}")))??;
+        drop(staging_dir);
 
         if let Some(state_dir) = &request.state_dir {
             record_pull_receipt(state_dir, &request, &snapshot, ingested.local_sequence)?;
@@ -1082,59 +1092,13 @@ impl SyncNode {
         }))
     }
 
-    async fn fetch_blob_bounded(
-        &self,
-        conn: iroh::endpoint::Connection,
-        hash: iroh_blobs::Hash,
-        max_bytes: u64,
-    ) -> crate::error::Result<()> {
-        let mut stream = self.blobs.remote().fetch(conn.clone(), hash).stream();
-        while let Some(item) = stream.next().await {
-            match item {
-                iroh_blobs::api::remote::GetProgressItem::Progress(offset) => {
-                    if offset > max_bytes {
-                        drop(stream);
-                        conn.close(0_u32.into(), b"size-limit-exceeded");
-                        return Err(crate::error::Failure::SizeLimitExceeded {
-                            actual_bytes: offset,
-                            limit_bytes: max_bytes,
-                        });
-                    }
-                }
-                iroh_blobs::api::remote::GetProgressItem::Done(_stats) => {
-                    let status = self.blobs.blobs().status(hash).await.map_err(|error| {
-                        crate::error::Failure::Transport(format!(
-                            "inspect fetched blob {hash}: {error}"
-                        ))
-                    })?;
-                    if let iroh_blobs::api::blobs::BlobStatus::Complete { size } = status
-                        && size > max_bytes
-                    {
-                        return Err(crate::error::Failure::SizeLimitExceeded {
-                            actual_bytes: size,
-                            limit_bytes: max_bytes,
-                        });
-                    }
-                    return Ok(());
-                }
-                iroh_blobs::api::remote::GetProgressItem::Error(error) => {
-                    return Err(crate::error::Failure::Transport(format!(
-                        "fetch blob {hash}: {error}"
-                    )));
-                }
-            }
-        }
-        Err(crate::error::Failure::Transport(format!(
-            "blob fetch stream for {hash} ended unexpectedly"
-        )))
-    }
-
-    async fn download_bundle_only(
+    async fn download_bundle_to_path(
         &self,
         peer: iroh::EndpointId,
         bundle_hash: iroh_blobs::Hash,
         max_bytes: u64,
-    ) -> crate::error::Result<()> {
+        target_path: &std::path::Path,
+    ) -> crate::error::Result<crate::blobstore::DownloadedBlob> {
         let conn = self
             .endpoint
             .connect(peer, iroh_blobs::ALPN)
@@ -1142,17 +1106,20 @@ impl SyncNode {
             .map_err(|error| {
                 crate::error::Failure::Transport(format!("connect blobs to {peer}: {error}"))
             })?;
-        self.fetch_blob_bounded(conn, bundle_hash, max_bytes).await
+        crate::blobstore::download_blob_to_file(&conn, bundle_hash, max_bytes, target_path, None)
+            .await
     }
 
     async fn download_delta_blobs(
         &self,
         peer: iroh::EndpointId,
+        destination: &std::path::Path,
         blobs: &[crate::protocol::BlobDigestRef],
     ) -> crate::error::Result<(Vec<mneme_store::portability::PortableDeltaBlob>, u64)> {
         if blobs.is_empty() {
             return Ok((Vec::new(), 0));
         }
+        let staging_dir = create_pull_staging_dir(None, destination)?;
         let conn = self
             .endpoint
             .connect(peer, iroh_blobs::ALPN)
@@ -1162,12 +1129,20 @@ impl SyncNode {
             })?;
         let mut out = Vec::with_capacity(blobs.len());
         let mut bytes_fetched = 0_u64;
-        for blob_ref in blobs {
+        for (idx, blob_ref) in blobs.iter().enumerate() {
             let expected_digest = blob_ref.content_digest.to_digest()?;
             let transport_hash =
                 iroh_blobs::Hash::from_str(&blob_ref.transport_hash).map_err(|error| {
                     crate::error::Failure::Protocol(format!("invalid blob hash: {error}"))
                 })?;
+            if expected_digest.algorithm() == mneme_core::HashAlgorithm::Blake3
+                && transport_hash.as_bytes() != expected_digest.as_bytes()
+            {
+                return Err(crate::error::Failure::VerificationFailed(format!(
+                    "peer transport hash for BLAKE3 blob {} disagrees with content digest",
+                    expected_digest.to_hex()
+                )));
+            }
             let remaining = crate::protocol::MAX_SYNC_BUNDLE_BYTES.saturating_sub(bytes_fetched);
             if blob_ref.byte_length > remaining {
                 return Err(crate::error::Failure::SizeLimitExceeded {
@@ -1176,35 +1151,69 @@ impl SyncNode {
                 });
             }
             let blob_cap = blob_ref.byte_length.min(remaining);
-            self.fetch_blob_bounded(conn.clone(), transport_hash, blob_cap)
-                .await?;
-            let bytes = self
-                .blobs
-                .blobs()
-                .get_bytes(transport_hash)
-                .await
-                .map_err(|error| {
-                    crate::error::Failure::Transport(format!("read fetched blob: {error}"))
-                })?;
-            if bytes.len() as u64 != blob_ref.byte_length
-                || mneme_core::ContentDigest::of_source_bytes_with(
-                    &bytes,
-                    expected_digest.algorithm(),
-                ) != expected_digest
-            {
+            let extra_alg = if expected_digest.algorithm() == mneme_core::HashAlgorithm::Blake3 {
+                None
+            } else {
+                Some(expected_digest.algorithm())
+            };
+            let staged_path = staging_dir.path().join(format!("delta-blob-{idx}.part"));
+            let downloaded = crate::blobstore::download_blob_to_file(
+                &conn,
+                transport_hash,
+                blob_cap,
+                &staged_path,
+                extra_alg,
+            )
+            .await?;
+            let extra_matches = match downloaded.extra_digest {
+                Some(actual) => actual == *expected_digest.as_bytes(),
+                None => expected_digest.algorithm() == mneme_core::HashAlgorithm::Blake3,
+            };
+            if downloaded.byte_length != blob_ref.byte_length || !extra_matches {
                 return Err(crate::error::Failure::VerificationFailed(format!(
                     "downloaded blob {} failed Mneme digest verification",
                     expected_digest.to_hex()
                 )));
             }
-            bytes_fetched = bytes_fetched.saturating_add(bytes.len() as u64);
+            let bytes = std::fs::read(&staged_path).map_err(|error| {
+                crate::error::Failure::Io(format!("read verified staged delta blob: {error}"))
+            })?;
+            let _removed = std::fs::remove_file(&staged_path).is_ok();
+            bytes_fetched = bytes_fetched.saturating_add(downloaded.byte_length);
             out.push(mneme_store::portability::PortableDeltaBlob {
                 digest: expected_digest,
-                bytes: bytes.to_vec(),
+                bytes,
             });
         }
         Ok((out, bytes_fetched))
     }
+}
+
+fn create_pull_staging_dir(
+    state_dir: Option<&std::path::Path>,
+    destination: &std::path::Path,
+) -> crate::error::Result<tempfile::TempDir> {
+    let base = if destination.is_dir() {
+        Some(destination.join(mneme_store::payload::STAGING_DIRECTORY))
+    } else {
+        state_dir.map(|dir| dir.join(mneme_store::payload::STAGING_DIRECTORY))
+    };
+    if let Some(staging_root) = base {
+        std::fs::create_dir_all(&staging_root).map_err(|error| {
+            crate::error::Failure::Io(format!(
+                "create sync staging directory {}: {error}",
+                staging_root.display()
+            ))
+        })?;
+        return tempfile::tempdir_in(&staging_root).map_err(|error| {
+            crate::error::Failure::Io(format!(
+                "create staged sync tempdir in {}: {error}",
+                staging_root.display()
+            ))
+        });
+    }
+    tempfile::tempdir()
+        .map_err(|error| crate::error::Failure::Io(format!("create sync staging tempdir: {error}")))
 }
 
 async fn send_control_on_conn(

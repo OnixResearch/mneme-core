@@ -170,8 +170,25 @@ pub struct RemoteDatalogRequest {
     pub predicate: String,
     pub constants: Vec<Option<mneme_core::Value>>,
     pub limit: u64,
+    pub at: Option<mneme_core::Timestamp>,
+    pub incomplete_extents: std::collections::BTreeSet<String>,
     pub stale_policy: super::protocol::StalePolicy,
     pub limits: super::protocol::FederationLimits,
+}
+
+/// Parameters for [`VaultFederationClient::explain_missing`].
+#[derive(Clone, Debug)]
+pub struct RemoteExplainMissingRequest {
+    pub scope: mneme_core::ScopeId,
+    pub revision: Option<mneme_core::WorkspaceRevisionId>,
+    pub bundle: mneme_datalog::RuleBundle,
+    pub predicate: String,
+    pub terms: Vec<mneme_core::Value>,
+    pub at: Option<mneme_core::Timestamp>,
+    pub incomplete_extents: std::collections::BTreeSet<String>,
+    pub stale_policy: super::protocol::StalePolicy,
+    pub limits: super::protocol::FederationLimits,
+    pub explain_limits: super::protocol::RemoteExplainLimits,
 }
 
 /// Options for fetching and validating a remote vault view into memory.
@@ -324,6 +341,8 @@ impl VaultFederationClient {
                 predicate: request.predicate,
                 constant_documents,
                 max_rows: request.limit,
+                at: request.at.map(mneme_core::Timestamp::nanos),
+                incomplete_extents: request.incomplete_extents.into_iter().collect(),
                 stale_policy: request.stale_policy,
                 limits: request.limits,
                 capability_document: self.capability_document.clone(),
@@ -337,6 +356,57 @@ impl VaultFederationClient {
         {
             return Err(FederationError::ProtocolError(
                 "remote Datalog evaluation served revision does not match requested pin".to_owned(),
+            ));
+        }
+        assert_eq!(reply.protocol_version, super::protocol::PROTOCOL_VERSION);
+        assert!(
+            request
+                .revision
+                .is_none_or(|rev| reply.served_revision == *rev.as_bytes())
+        );
+        Ok(reply)
+    }
+
+    /// Explain why a ground atom was or was not derived on the remote peer.
+    pub async fn explain_missing(
+        &self,
+        request: RemoteExplainMissingRequest,
+    ) -> Result<super::protocol::RemoteMissingExplanation, FederationError> {
+        request.limits.validate().map_err(FederationError::from)?;
+        request
+            .explain_limits
+            .validate()
+            .map_err(FederationError::from)?;
+        let bundle_value = bundle_to_value(&request.bundle);
+        let term_documents = request
+            .terms
+            .iter()
+            .map(mneme_core::encode_document_string)
+            .collect();
+        let reply = self
+            .inner
+            .rpc(super::protocol::ExplainMissingRpcRequest {
+                scope: request.scope.to_string(),
+                revision: request.revision.map(|rev| *rev.as_bytes()),
+                bundle_document: mneme_core::encode_document_string(&bundle_value),
+                predicate: request.predicate,
+                term_documents,
+                at: request.at.map(mneme_core::Timestamp::nanos),
+                incomplete_extents: request.incomplete_extents.into_iter().collect(),
+                stale_policy: request.stale_policy,
+                limits: request.limits,
+                explain_limits: request.explain_limits,
+                capability_document: self.capability_document.clone(),
+            })
+            .await
+            .map_err(transport_error)?
+            .map_err(FederationError::from)?;
+        check_protocol_version(reply.protocol_version)?;
+        if let Some(expected) = request.revision
+            && reply.served_revision != *expected.as_bytes()
+        {
+            return Err(FederationError::ProtocolError(
+                "remote explain-missing served revision does not match requested pin".to_owned(),
             ));
         }
         assert_eq!(reply.protocol_version, super::protocol::PROTOCOL_VERSION);
