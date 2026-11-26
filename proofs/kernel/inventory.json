@@ -1030,6 +1030,469 @@
         "verdict::acceptance_satisfied"
       ],
       "statement": "(s : Slice Status) (h : s.val = []) : acceptance_satisfied s = ok false"
+    },
+    {
+      "name": "mneme_kernel.admission.assertion_admissible_total",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::assertion_admissible"
+      ],
+      "statement": "(input : AssertionAdmissionInput) : ∃ admitted, assertion_admissible input = ok admitted"
+    },
+    {
+      "name": "mneme_kernel.admission.assertion_admissible_iff",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::assertion_admissible"
+      ],
+      "statement": "(input : AssertionAdmissionInput) : assertion_admissible input = ok true ↔ input.has_accepted_decision = true ∧ input.has_current_basis = true ∧ input.suppressed = false ∧ input.subject_live = true"
+    },
+    {
+      "name": "mneme_kernel.admission.suppressed_assertion_never_admitted",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::assertion_admissible"
+      ],
+      "statement": "(input : AssertionAdmissionInput) (h : input.suppressed = true) : assertion_admissible input = ok false"
+    },
+    {
+      "name": "mneme_kernel.admission.unbacked_assertion_never_admitted",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::assertion_admissible"
+      ],
+      "statement": "(input : AssertionAdmissionInput) (h : input.has_current_basis = false) : assertion_admissible input = ok false"
+    },
+    {
+      "name": "mneme_kernel.admission.unaccepted_assertion_never_admitted",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::assertion_admissible"
+      ],
+      "statement": "(input : AssertionAdmissionInput) (h : input.has_accepted_decision = false) : assertion_admissible input = ok false"
+    },
+    {
+      "name": "mneme_kernel.admission.dangling_subject_assertion_never_admitted",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::assertion_admissible"
+      ],
+      "statement": "(input : AssertionAdmissionInput) (h : input.subject_live = false) : assertion_admissible input = ok false"
+    },
+    {
+      "name": "mneme_kernel.admission.non_monotonic_rule_admissible_total",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::non_monotonic_rule_admissible"
+      ],
+      "statement": "(coverage : completeness.Coverage) : ∃ admitted, non_monotonic_rule_admissible coverage = ok admitted"
+    },
+    {
+      "name": "mneme_kernel.admission.non_monotonic_rule_admissible_iff",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::non_monotonic_rule_admissible"
+      ],
+      "statement": "(coverage : completeness.Coverage) : non_monotonic_rule_admissible coverage = ok true ↔ coverage = completeness.Coverage.Complete"
+    },
+    {
+      "name": "mneme_kernel.admission.incomplete_coverage_never_admits_non_monotonic",
+      "file": "MnemeKernelProofs/Admission.lean",
+      "subjects": [
+        "admission::non_monotonic_rule_admissible"
+      ],
+      "statement": "(coverage : completeness.Coverage) (h : coverage ≠ completeness.Coverage.Complete) : non_monotonic_rule_admissible coverage = ok false"
+    },
+    {
+      "name": "mneme_kernel.capability.authority_rank_order",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::authority_rank"
+      ],
+      "statement": ": authority_rank Authority.ReadOnly = ok 1#u8 ∧ authority_rank Authority.SyncPull = ok 2#u8 ∧ authority_rank Authority.SyncPush = ok 3#u8"
+    },
+    {
+      "name": "mneme_kernel.capability.authority_permits_iff",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::authority_permits",
+        "capability::authority_attenuates"
+      ],
+      "statement": "(held required : Authority) : ∃ r, authority_permits held required = ok r ∧ (r = true ↔ authority_attenuates held required = ok true)"
+    },
+    {
+      "name": "mneme_kernel.capability.authority_attenuates_refl",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::authority_attenuates"
+      ],
+      "statement": "(level : Authority) : authority_attenuates level level = ok true"
+    },
+    {
+      "name": "mneme_kernel.capability.authority_attenuates_trans",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::authority_attenuates"
+      ],
+      "statement": "(root mid leaf : Authority) (h1 : authority_attenuates root mid = ok true) (h2 : authority_attenuates mid leaf = ok true) : authority_attenuates root leaf = ok true"
+    },
+    {
+      "name": "mneme_kernel.capability.digest_in_slice_iff",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::digest_in_slice"
+      ],
+      "statement": "(needle : hashing.Digest) (haystack : Slice hashing.Digest) : ∃ found, digest_in_slice needle haystack = ok found ∧ (found = true ↔ needle ∈ haystack.val)"
+    },
+    {
+      "name": "mneme_kernel.capability.slice_is_subset_iff",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::slice_is_subset"
+      ],
+      "statement": "(child parent : Slice hashing.Digest) : ∃ ok_sub, slice_is_subset child parent = ok ok_sub ∧ (ok_sub = true ↔ ∀ x, x ∈ child.val → x ∈ parent.val)"
+    },
+    {
+      "name": "mneme_kernel.capability.scope_subset_total",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::scope_subset"
+      ],
+      "statement": "(child_mode : ScopeMode) (child_scopes : Slice hashing.Digest) (parent_mode : ScopeMode) (parent_scopes : Slice hashing.Digest) : ∃ allowed, scope_subset child_mode child_scopes parent_mode parent_scopes = ok allowed"
+    },
+    {
+      "name": "mneme_kernel.capability.scope_subset_iff",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::scope_subset"
+      ],
+      "statement": "(child_mode : ScopeMode) (child_scopes : Slice hashing.Digest) (parent_mode : ScopeMode) (parent_scopes : Slice hashing.Digest) : scope_subset child_mode child_scopes parent_mode parent_scopes = ok true ↔ (child_mode = ScopeMode.Wildcard ∧ parent_mode = ScopeMode.Wildcard) ∨ (child_mode = ScopeMode.Explicit ∧ child_scopes.val ≠ [] ∧ parent_mode = ScopeMode.Wildcard) ∨ (child_mode = ScopeMode.Explicit ∧ parent_mode = ScopeMode.Explicit ∧ child_scopes.val ≠ [] ∧ parent_scopes.val ≠ [] ∧ ∀ x, x ∈ child_scopes.val → x ∈ parent_scopes.val)"
+    },
+    {
+      "name": "mneme_kernel.capability.scope_subset_trans",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::scope_subset"
+      ],
+      "statement": "(c_mode : ScopeMode) (c_scopes : Slice hashing.Digest) (m_mode : ScopeMode) (m_scopes : Slice hashing.Digest) (p_mode : ScopeMode) (p_scopes : Slice hashing.Digest) (hcm : scope_subset c_mode c_scopes m_mode m_scopes = ok true) (hmp : scope_subset m_mode m_scopes p_mode p_scopes = ok true) : scope_subset c_mode c_scopes p_mode p_scopes = ok true"
+    },
+    {
+      "name": "mneme_kernel.capability.attenuation_valid_total",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::attenuation_valid"
+      ],
+      "statement": "(parent : LinkPolicy) (parent_scopes : Slice hashing.Digest) (child : LinkPolicy) (child_scopes : Slice hashing.Digest) (depth max_depth : U8) : ∃ ok_att, attenuation_valid parent parent_scopes child child_scopes depth max_depth = ok ok_att"
+    },
+    {
+      "name": "mneme_kernel.capability.attenuation_valid_iff",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::attenuation_valid"
+      ],
+      "statement": "(parent : LinkPolicy) (parent_scopes : Slice hashing.Digest) (child : LinkPolicy) (child_scopes : Slice hashing.Digest) (depth max_depth : U8) : attenuation_valid parent parent_scopes child child_scopes depth max_depth = ok true ↔ child.vault_id = parent.vault_id ∧ authority_attenuates parent.authority child.authority = ok true ∧ scope_subset child.scope_mode child_scopes parent.scope_mode parent_scopes = ok true ∧ child.expires_at.val ≤ parent.expires_at.val ∧ child.remaining_depth.val < parent.remaining_depth.val ∧ depth.val ≤ max_depth.val"
+    },
+    {
+      "name": "mneme_kernel.capability.chain_non_escalation",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::attenuation_valid",
+        "capability::authority_attenuates",
+        "capability::scope_subset"
+      ],
+      "statement": "(max_depth : U8) (root leaf : LinkPolicy × Slice hashing.Digest) (middle : List (LinkPolicy × Slice hashing.Digest)) (hvalid : ValidChain max_depth (root :: (middle ++ [leaf]))) : leaf.1.vault_id = root.1.vault_id ∧ authority_attenuates root.1.authority leaf.1.authority = ok true ∧ scope_subset leaf.1.scope_mode leaf.2 root.1.scope_mode root.2 = ok true ∧ leaf.1.expires_at.val ≤ root.1.expires_at.val ∧ leaf.1.remaining_depth.val < root.1.remaining_depth.val"
+    },
+    {
+      "name": "mneme_kernel.capability.token_in_revocations_iff",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::token_in_revocations"
+      ],
+      "statement": "(token : U128) (revocations : Slice U128) : ∃ found, token_in_revocations token revocations = ok found ∧ (found = true ↔ token ∈ revocations.val)"
+    },
+    {
+      "name": "mneme_kernel.capability.is_revoked_iff",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::is_revoked"
+      ],
+      "statement": "(chain_ids revocations : Slice U128) : ∃ revoked, is_revoked chain_ids revocations = ok revoked ∧ (revoked = true ↔ ∃ id, id ∈ chain_ids.val ∧ id ∈ revocations.val)"
+    },
+    {
+      "name": "mneme_kernel.capability.is_revoked_monotone",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::is_revoked"
+      ],
+      "statement": "(chain_ids revs1 revs2 : Slice U128) (hsub : ∀ x, x ∈ revs1.val → x ∈ revs2.val) (hrev : is_revoked chain_ids revs1 = ok true) : is_revoked chain_ids revs2 = ok true"
+    },
+    {
+      "name": "mneme_kernel.capability.revocation_state_iff",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::revocation_state"
+      ],
+      "statement": "(chain_ids revocations : Slice U128) : ∃ state, revocation_state chain_ids revocations = ok state ∧ (state = RevocationState.Revoked ↔ ∃ id, id ∈ chain_ids.val ∧ id ∈ revocations.val)"
+    },
+    {
+      "name": "mneme_kernel.capability.merge_revocation_state_comm",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::merge_revocation_state"
+      ],
+      "statement": "(left right : RevocationState) : ∃ r, merge_revocation_state left right = ok r ∧ merge_revocation_state right left = ok r"
+    },
+    {
+      "name": "mneme_kernel.capability.merge_revocation_state_assoc",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::merge_revocation_state"
+      ],
+      "statement": "(a b c : RevocationState) : ∃ ab bc r, merge_revocation_state a b = ok ab ∧ merge_revocation_state b c = ok bc ∧ merge_revocation_state ab c = ok r ∧ merge_revocation_state a bc = ok r"
+    },
+    {
+      "name": "mneme_kernel.capability.merge_revocation_state_idem",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::merge_revocation_state"
+      ],
+      "statement": "(state : RevocationState) : merge_revocation_state state state = ok state"
+    },
+    {
+      "name": "mneme_kernel.capability.merge_revocation_state_dominance",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::merge_revocation_state"
+      ],
+      "statement": "(left right : RevocationState) (h : left = RevocationState.Revoked ∨ right = RevocationState.Revoked) : merge_revocation_state left right = ok RevocationState.Revoked"
+    },
+    {
+      "name": "mneme_kernel.capability.is_revoked_in_merge_iff",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::is_revoked_in_merge"
+      ],
+      "statement": "(chain_ids left right : Slice U128) : ∃ revoked, is_revoked_in_merge chain_ids left right = ok revoked ∧ (revoked = true ↔ (∃ id, id ∈ chain_ids.val ∧ id ∈ left.val) ∨ (∃ id, id ∈ chain_ids.val ∧ id ∈ right.val))"
+    },
+    {
+      "name": "mneme_kernel.capability.is_revoked_in_merge_comm",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::is_revoked_in_merge"
+      ],
+      "statement": "(chain_ids left right : Slice U128) : ∃ revoked, is_revoked_in_merge chain_ids left right = ok revoked ∧ is_revoked_in_merge chain_ids right left = ok revoked"
+    },
+    {
+      "name": "mneme_kernel.capability.is_revoked_in_merge_idem",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::is_revoked_in_merge",
+        "capability::is_revoked"
+      ],
+      "statement": "(chain_ids revs : Slice U128) : ∃ revoked, is_revoked_in_merge chain_ids revs revs = ok revoked ∧ is_revoked chain_ids revs = ok revoked"
+    },
+    {
+      "name": "mneme_kernel.capability.is_revoked_in_merge_monotone",
+      "file": "MnemeKernelProofs/Capability.lean",
+      "subjects": [
+        "capability::is_revoked_in_merge",
+        "capability::is_revoked"
+      ],
+      "statement": "(chain_ids left right : Slice U128) (h : is_revoked chain_ids left = ok true ∨ is_revoked chain_ids right = ok true) : is_revoked_in_merge chain_ids left right = ok true"
+    },
+    {
+      "name": "mneme_kernel.epistemic.rank_total",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::rank"
+      ],
+      "statement": "(status : EpistemicStatus) : ∃ r, rank status = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.rank_order",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::rank"
+      ],
+      "statement": ": rank EpistemicStatus.Rejected = ok 0#u8 ∧ rank EpistemicStatus.Proposed = ok 1#u8 ∧ rank EpistemicStatus.Accepted = ok 2#u8"
+    },
+    {
+      "name": "mneme_kernel.epistemic.join_total",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::join"
+      ],
+      "statement": "(a b : EpistemicStatus) : ∃ r, join a b = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.join_comm",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::join"
+      ],
+      "statement": "(a b : EpistemicStatus) : ∃ r, join a b = ok r ∧ join b a = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.join_assoc",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::join"
+      ],
+      "statement": "(a b c : EpistemicStatus) : ∃ ab bc r, join a b = ok ab ∧ join b c = ok bc ∧ join ab c = ok r ∧ join a bc = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.join_idem",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::join"
+      ],
+      "statement": "(a : EpistemicStatus) : join a a = ok a"
+    },
+    {
+      "name": "mneme_kernel.epistemic.join_identity_accepted",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::join"
+      ],
+      "statement": "(a : EpistemicStatus) : join EpistemicStatus.Accepted a = ok a ∧ join a EpistemicStatus.Accepted = ok a"
+    },
+    {
+      "name": "mneme_kernel.epistemic.join_annihilator_rejected",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::join"
+      ],
+      "statement": "(a : EpistemicStatus) : join EpistemicStatus.Rejected a = ok EpistemicStatus.Rejected ∧ join a EpistemicStatus.Rejected = ok EpistemicStatus.Rejected"
+    },
+    {
+      "name": "mneme_kernel.epistemic.join_non_promoting",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::join",
+        "epistemic::rank"
+      ],
+      "statement": "(a b : EpistemicStatus) : ∃ r ra rb rr, join a b = ok r ∧ rank a = ok ra ∧ rank b = ok rb ∧ rank r = ok rr ∧ rr.val ≤ ra.val ∧ rr.val ≤ rb.val"
+    },
+    {
+      "name": "mneme_kernel.epistemic.union_total",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::union"
+      ],
+      "statement": "(a b : EpistemicStatus) : ∃ r, union a b = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.union_comm",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::union"
+      ],
+      "statement": "(a b : EpistemicStatus) : ∃ r, union a b = ok r ∧ union b a = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.union_assoc",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::union"
+      ],
+      "statement": "(a b c : EpistemicStatus) : ∃ ab bc r, union a b = ok ab ∧ union b c = ok bc ∧ union ab c = ok r ∧ union a bc = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.union_idem",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::union"
+      ],
+      "statement": "(a : EpistemicStatus) : union a a = ok a"
+    },
+    {
+      "name": "mneme_kernel.epistemic.union_identity_rejected",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::union"
+      ],
+      "statement": "(a : EpistemicStatus) : union EpistemicStatus.Rejected a = ok a ∧ union a EpistemicStatus.Rejected = ok a"
+    },
+    {
+      "name": "mneme_kernel.epistemic.union_absorbing_accepted",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::union"
+      ],
+      "statement": "(a : EpistemicStatus) : union EpistemicStatus.Accepted a = ok EpistemicStatus.Accepted ∧ union a EpistemicStatus.Accepted = ok EpistemicStatus.Accepted"
+    },
+    {
+      "name": "mneme_kernel.epistemic.join_distributes_over_union",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::join",
+        "epistemic::union"
+      ],
+      "statement": "(a b c : EpistemicStatus) : ∃ bc ab ac r, union b c = ok bc ∧ join a bc = ok r ∧ join a b = ok ab ∧ join a c = ok ac ∧ union ab ac = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.is_active_total",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::is_active"
+      ],
+      "statement": "(status : EpistemicStatus) : ∃ active, is_active status = ok active"
+    },
+    {
+      "name": "mneme_kernel.epistemic.is_active_rejected_false",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::is_active"
+      ],
+      "statement": ": is_active EpistemicStatus.Rejected = ok false"
+    },
+    {
+      "name": "mneme_kernel.epistemic.is_active_iff",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::is_active"
+      ],
+      "statement": "(status : EpistemicStatus) : is_active status = ok true ↔ status ≠ EpistemicStatus.Rejected"
+    },
+    {
+      "name": "mneme_kernel.epistemic.negation_blocks_total",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::negation_blocks"
+      ],
+      "statement": "(status : EpistemicStatus) : ∃ blocks, negation_blocks status = ok blocks"
+    },
+    {
+      "name": "mneme_kernel.epistemic.negation_blocks_rejected_false",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::negation_blocks"
+      ],
+      "statement": ": negation_blocks EpistemicStatus.Rejected = ok false"
+    },
+    {
+      "name": "mneme_kernel.epistemic.negation_blocks_iff",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::negation_blocks"
+      ],
+      "statement": "(status : EpistemicStatus) : negation_blocks status = ok true ↔ status ≠ EpistemicStatus.Rejected"
+    },
+    {
+      "name": "mneme_kernel.claim.proposed_allows_any_transition",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::transition_allowed"
+      ],
+      "statement": "(next : Lifecycle) : transition_allowed (some Lifecycle.Proposed) next = ok true"
+    },
+    {
+      "name": "mneme_kernel.verdict.case_status_declared_non_failed",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::case_status"
+      ],
+      "statement": "(observed : Status) (h : observed ≠ Status.Failed) : case_status SkipDeclaration.Declared observed = ok Status.Skipped"
     }
   ]
 }

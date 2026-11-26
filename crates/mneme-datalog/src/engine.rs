@@ -817,20 +817,19 @@ fn load_assertion_fact(
     let Ok(assertion) = mneme_memory::AssertionView::parse(record.clone()) else {
         return;
     };
-    if assertion.lifecycle != mneme_core::Lifecycle::Accepted
-        || !ctx.view.accepted_decision(&assertion).unwrap_or(false)
-        || !ctx.view.assertion_has_current_basis(&assertion)
-    {
+    let admission = mneme_kernel::admission::AssertionAdmissionInput {
+        has_accepted_decision: assertion.lifecycle == mneme_core::Lifecycle::Accepted
+            && ctx.view.accepted_decision(&assertion).unwrap_or(false),
+        has_current_basis: ctx.view.assertion_has_current_basis(&assertion),
+        suppressed: is_suppressed(ctx.view, record),
+        subject_live: ctx.has_record(assertion.subject),
+    };
+    if !mneme_kernel::admission::assertion_admissible(&admission) {
         return;
     }
     let Some(extent) = stance_extent(&assertion, &evaluation.context.scope) else {
         return;
     };
-    // An out-of-scope subject would leak a record identity the caller cannot
-    // see, so the whole assertion stays out of the projection.
-    if !ctx.has_record(assertion.subject) {
-        return;
-    }
     if let Some(at) = evaluation.at
         && !valid_at(assertion.valid_time, at)
     {
@@ -1387,7 +1386,7 @@ fn insert_new_fact(store: &mut FactStore, contents: FactContents) {
     } = contents;
     assert!(!support.rule_id.is_empty());
     assert_eq!(support.epistemic, epistemic);
-    if epistemic != crate::EpistemicStatus::Rejected {
+    if epistemic.is_active() {
         index_active_terms(store, &terms);
     }
     store.rows.insert(
@@ -1534,8 +1533,16 @@ struct AggregateSpec {
     output: String,
 }
 
+fn kernel_coverage(status: crate::CoverageStatus) -> mneme_kernel::completeness::Coverage {
+    match status {
+        crate::CoverageStatus::Complete => mneme_kernel::completeness::Coverage::Complete,
+        crate::CoverageStatus::Incomplete => mneme_kernel::completeness::Coverage::Incomplete,
+        crate::CoverageStatus::Unknown => mneme_kernel::completeness::Coverage::Unknown,
+    }
+}
+
 fn evaluate_rule(evaluation: &mut Evaluation<'_>, rule: &crate::Rule) -> RuleOutcome {
-    let Some(is_body_complete) = body_is_complete(evaluation, rule) else {
+    let Some(body_coverage) = rule_body_coverage(evaluation, rule) else {
         return RuleOutcome::Skipped;
     };
     let aggregate = rule.body.iter().find_map(|literal| {
@@ -1558,7 +1565,9 @@ fn evaluate_rule(evaluation: &mut Evaluation<'_>, rule: &crate::Rule) -> RuleOut
         .body
         .iter()
         .any(|literal| matches!(literal, crate::Literal::Negative(_)));
-    if (aggregate.is_some() || has_negative) && !is_body_complete {
+    if (aggregate.is_some() || has_negative)
+        && !mneme_kernel::admission::non_monotonic_rule_admissible(body_coverage)
+    {
         return RuleOutcome::Skipped;
     }
     let positive_count = rule
@@ -1619,21 +1628,25 @@ enum IndexState {
     Empty,
 }
 
-fn body_is_complete(evaluation: &Evaluation<'_>, rule: &crate::Rule) -> Option<bool> {
-    let mut is_body_complete = true;
+fn rule_body_coverage(
+    evaluation: &Evaluation<'_>,
+    rule: &crate::Rule,
+) -> Option<mneme_kernel::completeness::Coverage> {
+    let mut combined = mneme_kernel::completeness::Coverage::Complete;
     for literal in &rule.body {
         match literal {
             crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
-                if evaluation.coverage_status(&atom.predicate) != crate::CoverageStatus::Complete {
-                    is_body_complete = false;
-                }
+                combined = mneme_kernel::completeness::combine_coverage(
+                    combined,
+                    kernel_coverage(evaluation.coverage_status(&atom.predicate)),
+                );
             }
             crate::Literal::Aggregate { .. } => {}
             crate::Literal::Forbidden(_) => return None,
             crate::Literal::Compare { .. } => {}
         }
     }
-    Some(is_body_complete)
+    Some(combined)
 }
 
 /// Plan body execution greedily: run ready comparisons/negations as soon as
@@ -1854,7 +1867,9 @@ fn execute_plan(
                 let crate::Literal::Negative(atom) = &rule.body[*body_index] else {
                     continue;
                 };
-                if evaluation.coverage_status(&atom.predicate) != crate::CoverageStatus::Complete {
+                if !mneme_kernel::admission::non_monotonic_rule_admissible(kernel_coverage(
+                    evaluation.coverage_status(&atom.predicate),
+                )) {
                     return Err(RuleOutcome::Skipped);
                 }
                 let mut kept = Vec::with_capacity(bindings.len());
@@ -1960,7 +1975,7 @@ fn evaluate_aggregate_rule(
             }
             continue;
         };
-        if contents.epistemic == crate::EpistemicStatus::Rejected {
+        if !contents.epistemic.is_active() {
             continue;
         }
         if add_fact(evaluation, &rule.head.predicate, contents) {
@@ -2009,7 +2024,7 @@ fn evaluate_ordinary_rule(
             }
             continue;
         };
-        if contents.epistemic == crate::EpistemicStatus::Rejected {
+        if !contents.epistemic.is_active() {
             continue;
         }
         if add_fact(evaluation, &rule.head.predicate, contents) {
@@ -2319,7 +2334,11 @@ pub(super) fn matches_atom(
         if !evaluation.budget.charge(1) {
             return Err(RuleOutcome::Skipped);
         }
-        if data.is_active() && terms.len() == arity && atom_matches_row(atom, terms, binding) {
+        if data.is_active()
+            && data.epistemic.negation_blocks()
+            && terms.len() == arity
+            && atom_matches_row(atom, terms, binding)
+        {
             return Ok(true);
         }
     }
@@ -4324,7 +4343,7 @@ fn merge_fact_contents(
     assert!(!predicate.is_empty());
     let max_supports = budget.limits.max_supports_per_fact;
     assert!(max_supports > 0);
-    if !budget.is_active() || contents.epistemic == crate::EpistemicStatus::Rejected {
+    if !budget.is_active() || !contents.epistemic.is_active() {
         return;
     }
     if !budget.charge(1) {
@@ -4603,7 +4622,7 @@ mod tests {
 
     fn evaluate_rule_binary(evaluation: &mut Evaluation<'_>, rule: &crate::Rule) -> RuleOutcome {
         debug_assert!(!rule.head.predicate.is_empty());
-        let Some(is_body_complete) = body_is_complete(evaluation, rule) else {
+        let Some(body_coverage) = rule_body_coverage(evaluation, rule) else {
             return RuleOutcome::Skipped;
         };
         let aggregate = rule.body.iter().find_map(|literal| {
@@ -4626,7 +4645,9 @@ mod tests {
             .body
             .iter()
             .any(|literal| matches!(literal, crate::Literal::Negative(_)));
-        if (aggregate.is_some() || has_negative) && !is_body_complete {
+        if (aggregate.is_some() || has_negative)
+            && !mneme_kernel::admission::non_monotonic_rule_admissible(body_coverage)
+        {
             return RuleOutcome::Skipped;
         }
         let bindings = match evaluate_planned_body(evaluation, rule) {
@@ -4681,7 +4702,7 @@ mod tests {
     }
 
     fn evaluate_rule_naive(evaluation: &mut Evaluation<'_>, rule: &crate::Rule) -> RuleOutcome {
-        let Some(is_body_complete) = body_is_complete(evaluation, rule) else {
+        let Some(body_coverage) = rule_body_coverage(evaluation, rule) else {
             return RuleOutcome::Skipped;
         };
         let aggregate = rule.body.iter().find_map(|literal| {
@@ -4704,7 +4725,9 @@ mod tests {
             .body
             .iter()
             .any(|literal| matches!(literal, crate::Literal::Negative(_)));
-        if (aggregate.is_some() || has_negative) && !is_body_complete {
+        if (aggregate.is_some() || has_negative)
+            && !mneme_kernel::admission::non_monotonic_rule_admissible(body_coverage)
+        {
             return RuleOutcome::Skipped;
         }
         let mut bindings = match positive_bindings_naive(evaluation, rule) {

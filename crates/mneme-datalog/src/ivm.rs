@@ -247,8 +247,9 @@ impl RuleState {
         }
         for index in 0..self.negatives.len() {
             let neg_atom = &self.negatives[index];
-            if coverage_status_of(coverage, &neg_atom.predicate) != crate::CoverageStatus::Complete
-            {
+            if !mneme_kernel::admission::non_monotonic_rule_admissible(kernel_coverage(
+                coverage_status_of(coverage, &neg_atom.predicate),
+            )) {
                 return Ok(crate::zset::ZSet::new());
             }
             let delta_neg_raw =
@@ -1601,18 +1602,33 @@ fn coverage_status_of(
         .unwrap_or(crate::CoverageStatus::Unknown)
 }
 
+fn kernel_coverage(status: crate::CoverageStatus) -> mneme_kernel::completeness::Coverage {
+    match status {
+        crate::CoverageStatus::Complete => mneme_kernel::completeness::Coverage::Complete,
+        crate::CoverageStatus::Incomplete => mneme_kernel::completeness::Coverage::Incomplete,
+        crate::CoverageStatus::Unknown => mneme_kernel::completeness::Coverage::Unknown,
+    }
+}
+
 fn is_rule_body_complete(
     rule: &crate::Rule,
     coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
 ) -> bool {
     assert!(!rule.head.predicate.is_empty());
-    rule.body.iter().all(|literal| {
-        if let crate::Literal::Positive(atom) | crate::Literal::Negative(atom) = literal {
-            coverage_status_of(coverage, &atom.predicate) == crate::CoverageStatus::Complete
-        } else {
-            !matches!(literal, crate::Literal::Forbidden(_))
+    let mut combined = mneme_kernel::completeness::Coverage::Complete;
+    for literal in &rule.body {
+        match literal {
+            crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
+                combined = mneme_kernel::completeness::combine_coverage(
+                    combined,
+                    kernel_coverage(coverage_status_of(coverage, &atom.predicate)),
+                );
+            }
+            crate::Literal::Forbidden(_) => return false,
+            crate::Literal::Compare { .. } | crate::Literal::Aggregate { .. } => {}
         }
-    })
+    }
+    mneme_kernel::admission::non_monotonic_rule_admissible(combined)
 }
 
 fn component_has_incomplete_non_monotonic(

@@ -44,6 +44,11 @@ theorem no_return_to_proposed (previous : Lifecycle)
     transition_allowed (some previous) Lifecycle.Proposed = ok false := by
   cases previous <;> simp_all [transition_allowed]
 
+/-- A proposed assertion may transition to any lifecycle state. -/
+theorem proposed_allows_any_transition (next : Lifecycle) :
+    transition_allowed (some Lifecycle.Proposed) next = ok true := by
+  cases next <;> simp [transition_allowed]
+
 /-! ## `required_decision` -/
 
 /-- `required_decision` never fails or diverges. -/

@@ -26,22 +26,48 @@ impl EpistemicStatus {
     /// Multiplicative identity (`1 = Accepted`).
     pub const ONE: Self = Self::Accepted;
 
-    /// Semiring multiplication (`×`): conjunction over rule premises.
-    pub const fn join(self, other: Self) -> Self {
-        if (self as u8) <= (other as u8) {
-            self
-        } else {
-            other
+    /// Convert to the formally verified kernel epistemic status.
+    pub const fn to_kernel(self) -> mneme_kernel::epistemic::EpistemicStatus {
+        match self {
+            Self::Rejected => mneme_kernel::epistemic::EpistemicStatus::Rejected,
+            Self::Proposed => mneme_kernel::epistemic::EpistemicStatus::Proposed,
+            Self::Accepted => mneme_kernel::epistemic::EpistemicStatus::Accepted,
         }
     }
 
-    /// Semiring addition (`+`): disjunction over independent derivations.
-    pub const fn union(self, other: Self) -> Self {
-        if (self as u8) >= (other as u8) {
-            self
-        } else {
-            other
+    /// Construct from the formally verified kernel epistemic status.
+    pub const fn from_kernel(status: mneme_kernel::epistemic::EpistemicStatus) -> Self {
+        match status {
+            mneme_kernel::epistemic::EpistemicStatus::Rejected => Self::Rejected,
+            mneme_kernel::epistemic::EpistemicStatus::Proposed => Self::Proposed,
+            mneme_kernel::epistemic::EpistemicStatus::Accepted => Self::Accepted,
         }
+    }
+
+    /// Semiring multiplication (`×`): conjunction over rule premises.
+    pub fn join(self, other: Self) -> Self {
+        Self::from_kernel(mneme_kernel::epistemic::join(
+            self.to_kernel(),
+            other.to_kernel(),
+        ))
+    }
+
+    /// Semiring addition (`+`): disjunction over independent derivations.
+    pub fn union(self, other: Self) -> Self {
+        Self::from_kernel(mneme_kernel::epistemic::union(
+            self.to_kernel(),
+            other.to_kernel(),
+        ))
+    }
+
+    /// Whether a fact with this epistemic status is active (not `ZERO` / `Rejected`).
+    pub fn is_active(self) -> bool {
+        mneme_kernel::epistemic::is_active(self.to_kernel())
+    }
+
+    /// Whether a fact with this epistemic status blocks a negated literal (`not p(...)`).
+    pub fn negation_blocks(self) -> bool {
+        mneme_kernel::epistemic::negation_blocks(self.to_kernel())
     }
 
     /// Stable lower-case symbol name.
@@ -1054,7 +1080,7 @@ fn check_ground_negative(
         .facts
         .get(&atom.predicate)
         .and_then(|rows| rows.get(&terms))
-        .filter(|data| data.is_active())
+        .filter(|data| data.is_active() && data.epistemic.negation_blocks())
     else {
         return GroundCheck::Satisfied;
     };

@@ -920,12 +920,16 @@ fn is_assertion_admissible(
     assertion: &mneme_memory::AssertionView,
 ) -> bool {
     assert!(!all_views.is_empty());
-    assertion.lifecycle == mneme_core::Lifecycle::Accepted
-        && &assertion.record.scope == scope
-        && !is_suppressed(view, &assertion.record)
-        && view.accepted_decision(assertion).unwrap_or(false)
-        && view.assertion_has_current_basis(assertion)
-        && view_has_record(all_views, assertion.subject)
+    &assertion.record.scope == scope
+        && mneme_kernel::admission::assertion_admissible(
+            &mneme_kernel::admission::AssertionAdmissionInput {
+                has_accepted_decision: assertion.lifecycle == mneme_core::Lifecycle::Accepted
+                    && view.accepted_decision(assertion).unwrap_or(false),
+                has_current_basis: view.assertion_has_current_basis(assertion),
+                suppressed: is_suppressed(view, &assertion.record),
+                subject_live: view_has_record(all_views, assertion.subject),
+            },
+        )
 }
 
 fn canonical_facts(
@@ -986,7 +990,7 @@ fn collect_vault_facts(
     for record in &view.snapshot().records {
         if &record.scope != scope
             || is_suppressed(view, record)
-            || record_epistemic_status(record) == mneme_datalog::EpistemicStatus::Rejected
+            || !record_epistemic_status(record).is_active()
         {
             continue;
         }
@@ -1083,7 +1087,7 @@ fn push_assertion_vault_fact(
         return;
     }
     let epistemic = record_epistemic_status(&assertion.record);
-    if epistemic == mneme_datalog::EpistemicStatus::Rejected {
+    if !epistemic.is_active() {
         return;
     }
     match assertion.stance {

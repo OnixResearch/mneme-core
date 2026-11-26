@@ -2199,3 +2199,124 @@ async fn cross_vault_lease_poisoning_untrusted_tombstone_flood_rollback_and_cloc
     node_a.shutdown().await.expect("shutdown a");
     node_b.shutdown().await.expect("shutdown b");
 }
+
+#[test]
+fn capability_kernel_attenuation_and_gset_revocation_dominance() {
+    let root_key = iroh::SecretKey::from_bytes(&[0x31; 32]);
+    let mid_key = iroh::SecretKey::from_bytes(&[0x32; 32]);
+    let leaf_key = iroh::SecretKey::from_bytes(&[0x33; 32]);
+    let scope_alpha =
+        mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "alpha").expect("alpha");
+    let scope_beta =
+        mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "beta").expect("beta");
+    let now_secs = 1_700_000_000_u64;
+
+    let root = mneme_sync::CapabilityToken::grant(
+        &root_key,
+        mneme_sync::GrantRequest {
+            vault_id: "vault-kernel".to_owned(),
+            subject: mid_key.public(),
+            scope: mneme_sync::CapabilityScope::from_scopes([
+                scope_alpha.clone(),
+                scope_beta.clone(),
+            ])
+            .expect("root scope"),
+            authority: mneme_sync::CapabilityAuthority::SyncPush,
+            issued_at_secs: now_secs,
+            expires_at_secs: now_secs + 3_600,
+            max_delegation_depth: 3,
+        },
+    )
+    .expect("root grant");
+
+    // Scope escalation (Wildcard beneath Explicit) must fail.
+    let scope_escalation = root.delegate(
+        &mid_key,
+        mneme_sync::DelegateRequest {
+            subject: leaf_key.public(),
+            scope: mneme_sync::CapabilityScope::wildcard(),
+            authority: mneme_sync::CapabilityAuthority::ReadOnly,
+            issued_at_secs: now_secs + 10,
+            expires_at_secs: now_secs + 1_800,
+            remaining_depth: Some(1),
+        },
+    );
+    assert!(scope_escalation.is_err());
+
+    // Valid attenuated chain: SyncPush/{alpha,beta} -> ReadOnly/{alpha}.
+    let leaf = root
+        .delegate(
+            &mid_key,
+            mneme_sync::DelegateRequest {
+                subject: leaf_key.public(),
+                scope: mneme_sync::CapabilityScope::from_scopes([scope_alpha.clone()])
+                    .expect("leaf scope"),
+                authority: mneme_sync::CapabilityAuthority::ReadOnly,
+                issued_at_secs: now_secs + 10,
+                expires_at_secs: now_secs + 1_800,
+                remaining_depth: Some(1),
+            },
+        )
+        .expect("leaf delegate");
+
+    let trusted_roots = std::collections::BTreeSet::from([root_key.public()]);
+    let empty_revs = mneme_sync::RevocationSet::new();
+    let verified = mneme_sync::verify_capability(&mneme_sync::VerificationRequest {
+        token: &leaf,
+        presenter: leaf_key.public(),
+        vault_id: "vault-kernel",
+        scope: &scope_alpha,
+        required_authority: mneme_sync::CapabilityAuthority::ReadOnly,
+        now_secs: now_secs + 20,
+        trusted_roots: &trusted_roots,
+        revocations: &empty_revs,
+    })
+    .expect("valid attenuated leaf");
+    assert_eq!(verified.chain_depth, 2);
+
+    // G-Set revocation dominance: revoking the root link dominates under any merge order.
+    let tomb_root = mneme_sync::RevocationTombstone::issue(
+        &root_key,
+        "vault-kernel",
+        root.root_id().expect("root id"),
+        now_secs + 30,
+        Some("compromised root"),
+    )
+    .expect("issue tombstone");
+    let tomb_other = mneme_sync::RevocationTombstone::issue(
+        &mid_key,
+        "vault-kernel",
+        mneme_sync::TokenId::from_bytes([0xee; 16]),
+        now_secs + 31,
+        Some("unrelated"),
+    )
+    .expect("issue unrelated tombstone");
+
+    let mut replica_ab = mneme_sync::RevocationSet::new();
+    replica_ab.insert(tomb_root.clone()).expect("insert root");
+    replica_ab.insert(tomb_other.clone()).expect("insert other");
+
+    let mut replica_ba = mneme_sync::RevocationSet::new();
+    replica_ba.insert(tomb_other).expect("insert other");
+    replica_ba.insert(tomb_root).expect("insert root");
+    assert_eq!(replica_ab, replica_ba);
+
+    // Idempotent re-merge keeps the revocation dominant.
+    let added = replica_ab.merge(&replica_ba).expect("idempotent merge");
+    assert_eq!(added, 0);
+
+    let revoked_res = mneme_sync::verify_capability(&mneme_sync::VerificationRequest {
+        token: &leaf,
+        presenter: leaf_key.public(),
+        vault_id: "vault-kernel",
+        scope: &scope_alpha,
+        required_authority: mneme_sync::CapabilityAuthority::ReadOnly,
+        now_secs: now_secs + 40,
+        trusted_roots: &trusted_roots,
+        revocations: &replica_ab,
+    });
+    assert!(matches!(
+        revoked_res,
+        Err(mneme_sync::Failure::CapabilityRevoked { .. })
+    ));
+}

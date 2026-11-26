@@ -77,6 +77,11 @@ theorem case_status_passed_iff (declaration : SkipDeclaration) (observed : Statu
         declaration = SkipDeclaration.NotDeclared ∧ observed = Status.Passed) := by
   cases declaration <;> cases observed <;> simp [case_status]
 
+/-- A declared skip yields `Skipped` whenever the observed status is not `Failed`. -/
+theorem case_status_declared_non_failed (observed : Status) (h : observed ≠ Status.Failed) :
+    case_status SkipDeclaration.Declared observed = ok Status.Skipped := by
+  cases observed <;> simp_all [case_status]
+
 /-! ## `aggregate` -/
 
 /-- The generated loop of `aggregate`, started as `aggregate` starts it.

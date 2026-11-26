@@ -1140,3 +1140,74 @@ async fn client_rejects_cross_scope_records_and_tampered_manifest_digest()
     assert!(honest_ok.is_ok());
     Ok(())
 }
+
+#[test]
+fn federation_auth_kernel_attenuation_and_revocation_dominance()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root_key = iroh::SecretKey::from_bytes(&[0x41; 32]);
+    let peer_key = iroh::SecretKey::from_bytes(&[0x42; 32]);
+    let scope_a = mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "fed-a")?;
+    let scope_b = mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "fed-b")?;
+    let now_secs = 1_700_000_000_u64;
+
+    let parent_scope = mneme_api::federation::CapabilityScope::from_scopes([scope_a.clone()])?;
+    let child_wildcard = mneme_api::federation::CapabilityScope::Wildcard;
+    assert!(!child_wildcard.is_attenuation_of(&parent_scope));
+    assert!(parent_scope.is_attenuation_of(&mneme_api::federation::CapabilityScope::Wildcard));
+    assert!(
+        mneme_api::federation::CapabilityAuthority::SyncPush
+            .allows_attenuation_to(mneme_api::federation::CapabilityAuthority::ReadOnly)
+    );
+    assert!(
+        !mneme_api::federation::CapabilityAuthority::ReadOnly
+            .allows_attenuation_to(mneme_api::federation::CapabilityAuthority::SyncPull)
+    );
+
+    let token_id = mneme_api::federation::TokenId::from_bytes([0x55; 16]);
+    let token = mneme_api::federation::CapabilityToken::grant(
+        &root_key,
+        mneme_api::federation::GrantParams {
+            token_id,
+            vault_id: "fed-vault".to_owned(),
+            subject: peer_key.public(),
+            scope: parent_scope,
+            authority: mneme_api::federation::CapabilityAuthority::ReadOnly,
+            issued_at_secs: now_secs,
+            expires_at_secs: now_secs + 600,
+            max_delegation_depth: 2,
+        },
+    )?;
+    let doc = token.to_json()?;
+
+    let auth = mneme_api::federation::SharedFederationAuthorizer::from_allowlist(
+        mneme_api::federation::PeerAllowlist::empty(),
+    );
+    auth.set_vault_id("fed-vault")?;
+    auth.add_trusted_root(root_key.public())?;
+
+    assert!(
+        auth.authorize_scope(peer_key.public(), &scope_a, Some(&doc), now_secs + 10)
+            .is_ok()
+    );
+    assert!(
+        auth.authorize_scope(peer_key.public(), &scope_b, Some(&doc), now_secs + 10)
+            .is_err()
+    );
+
+    let tomb = mneme_api::federation::RevocationTombstone::issue(
+        &root_key,
+        &mneme_api::federation::RevocationParams {
+            tombstone_id: mneme_api::federation::TombstoneId::from_bytes([0x66; 16]),
+            vault_id: "fed-vault",
+            target_token_id: token_id,
+            revoked_at_secs: now_secs + 20,
+            reason: Some("revoked-by-root"),
+        },
+    )?;
+    auth.insert_revocation(tomb)?;
+    assert!(
+        auth.authorize_scope(peer_key.public(), &scope_a, Some(&doc), now_secs + 30)
+            .is_err()
+    );
+    Ok(())
+}
