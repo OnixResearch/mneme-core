@@ -3142,8 +3142,13 @@ impl Workspace {
     ) -> crate::error::Result<RevisionDelta> {
         self.facts().align(generation);
         let forgotten = sweep::forgotten_suppressions_in(connection)?;
-        let (removed_entries, added_entries) =
-            differential_membership_entries(connection, row_from.sequence, row_to.sequence)?;
+        let (removed_entries, added_entries) = differential_membership_entries(
+            connection,
+            SequenceWindow {
+                earlier: row_from.sequence,
+                later: row_to.sequence,
+            },
+        )?;
         let mut removed = Vec::with_capacity(removed_entries.len());
         for entry in &removed_entries {
             let (record_id, revision_id, kind) = membership_record(entry, row_from.revision)?;
@@ -3252,47 +3257,70 @@ fn require_revision_row(
     })
 }
 
+struct SequenceWindow {
+    earlier: u64,
+    later: u64,
+}
+
+const SQL_MEMBERSHIP_CLOSED_BETWEEN: &str =
+    "SELECT r.record_id, r.revision_id, r.kind, r.envelope_digest, r.payload_digest,
+        r.full_digest
+ FROM record_membership m
+ JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
+ WHERE m.first_sequence <= ?1
+   AND m.last_sequence IS NOT NULL
+   AND m.last_sequence >= ?1
+   AND m.last_sequence < ?2
+ ORDER BY r.record_id";
+
+const SQL_MEMBERSHIP_OPENED_BETWEEN: &str =
+    "SELECT r.record_id, r.revision_id, r.kind, r.envelope_digest, r.payload_digest,
+        r.full_digest
+ FROM record_membership m
+ JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
+ WHERE m.first_sequence > ?1
+   AND m.first_sequence <= ?2
+   AND (m.last_sequence IS NULL OR m.last_sequence >= ?2)
+ ORDER BY r.record_id";
+
 fn differential_membership_entries(
     connection: &rusqlite::Connection,
-    from_sequence: u64,
-    to_sequence: u64,
+    window: SequenceWindow,
 ) -> crate::error::Result<(Vec<MembershipEntry>, Vec<MembershipEntry>)> {
-    if from_sequence == to_sequence {
+    if window.earlier == window.later {
         return Ok((Vec::new(), Vec::new()));
     }
-    if from_sequence < to_sequence {
-        let removed = membership_closed_between(connection, from_sequence, to_sequence)?;
-        let added = membership_opened_between(connection, from_sequence, to_sequence)?;
-        debug_assert!(from_sequence < to_sequence);
+    if window.earlier < window.later {
+        let removed = query_membership_entries(connection, SQL_MEMBERSHIP_CLOSED_BETWEEN, &window)?;
+        let added = query_membership_entries(connection, SQL_MEMBERSHIP_OPENED_BETWEEN, &window)?;
+        debug_assert!(window.earlier < window.later);
         debug_assert!(removed.len().saturating_add(added.len()) < usize::MAX);
         return Ok((removed, added));
     }
-    let removed = membership_opened_between(connection, to_sequence, from_sequence)?;
-    let added = membership_closed_between(connection, to_sequence, from_sequence)?;
-    debug_assert!(to_sequence < from_sequence);
+    let reverse = SequenceWindow {
+        earlier: window.later,
+        later: window.earlier,
+    };
+    let removed = query_membership_entries(connection, SQL_MEMBERSHIP_OPENED_BETWEEN, &reverse)?;
+    let added = query_membership_entries(connection, SQL_MEMBERSHIP_CLOSED_BETWEEN, &reverse)?;
+    debug_assert!(reverse.earlier < reverse.later);
     debug_assert!(removed.len().saturating_add(added.len()) < usize::MAX);
     Ok((removed, added))
 }
 
-fn membership_closed_between(
+fn query_membership_entries(
     connection: &rusqlite::Connection,
-    earlier: u64,
-    later: u64,
+    sql: &str,
+    window: &SequenceWindow,
 ) -> crate::error::Result<Vec<MembershipEntry>> {
-    let mut statement = connection.prepare(
-        "SELECT r.record_id, r.revision_id, r.kind, r.envelope_digest, r.payload_digest,
-                r.full_digest
-         FROM record_membership m
-         JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
-         WHERE m.first_sequence <= ?1
-           AND m.last_sequence IS NOT NULL
-           AND m.last_sequence >= ?1
-           AND m.last_sequence < ?2
-         ORDER BY r.record_id",
-    )?;
+    assert!(window.earlier < window.later);
+    let mut statement = connection.prepare(sql)?;
     let rows = statement
         .query_map(
-            rusqlite::params![db_i64(earlier, "sequence")?, db_i64(later, "sequence")?],
+            rusqlite::params![
+                db_i64(window.earlier, "sequence")?,
+                db_i64(window.later, "sequence")?,
+            ],
             |row| {
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
@@ -3305,39 +3333,7 @@ fn membership_closed_between(
             },
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(rows)
-}
-
-fn membership_opened_between(
-    connection: &rusqlite::Connection,
-    earlier: u64,
-    later: u64,
-) -> crate::error::Result<Vec<MembershipEntry>> {
-    let mut statement = connection.prepare(
-        "SELECT r.record_id, r.revision_id, r.kind, r.envelope_digest, r.payload_digest,
-                r.full_digest
-         FROM record_membership m
-         JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
-         WHERE m.first_sequence > ?1
-           AND m.first_sequence <= ?2
-           AND (m.last_sequence IS NULL OR m.last_sequence >= ?2)
-         ORDER BY r.record_id",
-    )?;
-    let rows = statement
-        .query_map(
-            rusqlite::params![db_i64(earlier, "sequence")?, db_i64(later, "sequence")?],
-            |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                    row.get::<_, Vec<u8>>(5)?,
-                ))
-            },
-        )?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    debug_assert!(rows.len() < usize::MAX);
     Ok(rows)
 }
 

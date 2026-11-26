@@ -103,9 +103,7 @@ impl<K: Ord + Clone> ZSet<K> {
     pub fn negate(&self) -> Result<Self, crate::Error> {
         let mut out = ZSet::new();
         for (key, weight) in self.iter() {
-            let negated = weight
-                .checked_neg()
-                .ok_or_else(|| crate::Error::LimitExceeded("Z-set negation overflow".to_owned()))?;
+            let negated = weight.checked_neg().ok_or_else(negation_overflow)?;
             out.weights.insert(key.clone(), negated);
         }
         debug_assert_eq!(out.weights.len(), self.weights.len());
@@ -117,9 +115,7 @@ impl<K: Ord + Clone> ZSet<K> {
     pub fn subtract(&self, other: &Self) -> Result<Self, crate::Error> {
         let mut out = self.clone();
         for (key, weight) in other.iter() {
-            let negated = weight
-                .checked_neg()
-                .ok_or_else(|| crate::Error::LimitExceeded("Z-set negation overflow".to_owned()))?;
+            let negated = weight.checked_neg().ok_or_else(negation_overflow)?;
             out.insert_weighted(key.clone(), negated)?;
         }
         debug_assert!(out.weights.values().all(|weight| *weight != 0));
@@ -148,7 +144,7 @@ impl<K: Ord + Clone> ZSet<K> {
             let old_weight = self.weight(key);
             let new_weight = old_weight
                 .checked_add(delta_weight)
-                .ok_or_else(|| crate::Error::LimitExceeded("Z-set weight overflow".to_owned()))?;
+                .ok_or_else(weight_overflow)?;
             if old_weight <= 0 && new_weight > 0 {
                 out.weights.insert(key.clone(), 1);
             } else if old_weight > 0 && new_weight <= 0 {
@@ -398,9 +394,7 @@ where
     for (v1, w1) in left_bucket.iter() {
         for (v2, w2) in right_bucket.iter() {
             charge(1)?;
-            let weight = w1.checked_mul(w2).ok_or_else(|| {
-                crate::Error::LimitExceeded("Z-set join weight overflow".to_owned())
-            })?;
+            let weight = w1.checked_mul(w2).ok_or_else(join_weight_overflow)?;
             if let Some(combined) = combine(v1, v2) {
                 output.insert_weighted(combined, weight)?;
             }
@@ -409,10 +403,22 @@ where
     Ok(())
 }
 
+fn negation_overflow() -> crate::Error {
+    crate::Error::LimitExceeded("Z-set negation overflow".to_owned())
+}
+
+fn weight_overflow() -> crate::Error {
+    crate::Error::LimitExceeded("Z-set weight overflow".to_owned())
+}
+
+fn join_weight_overflow() -> crate::Error {
+    crate::Error::LimitExceeded("Z-set join weight overflow".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
-    fn zset_compacts_zero_weights_and_computes_delta_distinct() {
+    fn compacts_zero_weights_and_computes_delta_distinct() {
         let mut a = super::ZSet::from_entries([("x", 1), ("y", 2)]).expect("zset");
         a.insert_weighted("x", -1).expect("compact x");
         assert_eq!(a.weight(&"x"), 0);

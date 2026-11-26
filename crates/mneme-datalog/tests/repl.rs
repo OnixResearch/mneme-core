@@ -479,17 +479,17 @@ fn repl_enforces_rule_work_and_row_limits_and_revision_pinning() {
     assert_eq!(stale_view.served_revision, rev1);
 }
 
-fn id_with_tag(tag: u8, idx: u8) -> mneme_core::RecordId {
+fn id_with_tag(parts: [u8; 2]) -> mneme_core::RecordId {
     let mut bytes = [0_u8; 16];
-    bytes[0] = tag;
-    bytes[15] = idx;
+    bytes[0] = parts[0];
+    bytes[15] = parts[1];
     mneme_core::RecordId::from_bytes(bytes)
 }
 
-fn rev_with_tag(tag: u8, idx: u8) -> mneme_core::RevisionId {
+fn rev_with_tag(parts: [u8; 2]) -> mneme_core::RevisionId {
     let mut bytes = [0_u8; 16];
-    bytes[0] = tag;
-    bytes[15] = idx;
+    bytes[0] = parts[0];
+    bytes[15] = parts[1];
     mneme_core::RevisionId::from_bytes(bytes)
 }
 
@@ -529,33 +529,19 @@ struct AcceptedAssertionFixture<'a> {
     key_prefix: &'a str,
 }
 
-fn commit_accepted_assertion(
+fn propose_assertion_for_fixture(
     workspace: &mut mneme_store::Workspace,
-    fixture: AcceptedAssertionFixture<'_>,
-) {
-    let AcceptedAssertionFixture {
-        assertion_id,
-        proposed_rev,
-        accepted_rev,
-        evidence_id,
-        evidence_rev,
-        decision_id,
-        decision_rev,
-        subject,
-        source_id,
-        source_rev,
-        claim_value,
-        key_prefix,
-    } = fixture;
+    fixture: &AcceptedAssertionFixture<'_>,
+) -> mneme_core::WorkspaceRevisionId {
     let span = mneme_core::SourceSpan::new(0, 10).expect("span");
     let evidence = mneme_memory::build_evidence(
-        evidence_id,
-        evidence_rev,
+        fixture.evidence_id,
+        fixture.evidence_rev,
         &scope(),
         mneme_memory::EvidenceOptions {
-            assertion: assertion_id,
-            source: source_id,
-            source_revision: source_rev,
+            assertion: fixture.assertion_id,
+            source: fixture.source_id,
+            source_revision: fixture.source_rev,
             span: Some(span),
             anchor: Some("anchor"),
             relation: mneme_memory::SupportRelation::Supports,
@@ -564,19 +550,19 @@ fn commit_accepted_assertion(
         },
     );
     let assertion = mneme_memory::build_proposed_assertion(
-        assertion_id,
-        proposed_rev,
+        fixture.assertion_id,
+        fixture.proposed_rev,
         &scope(),
         mneme_memory::ProposedAssertionOptions {
-            subject,
+            subject: fixture.subject,
             predicate: "topic",
-            value: mneme_core::Value::string(claim_value.to_owned()),
+            value: mneme_core::Value::string(fixture.claim_value.to_owned()),
             stance: mneme_memory::Stance::Affirm,
             origin: mneme_core::Origin::AuthoredStatement,
             asserted_by: "repl-test",
             valid_time: mneme_core::ValidTime::always(),
             evidence: &[mneme_core::Reference::local(
-                evidence_id,
+                fixture.evidence_id,
                 mneme_core::RecordKind::Evidence,
             )],
             extraction: None,
@@ -589,7 +575,7 @@ fn commit_accepted_assertion(
             base,
             actor: "repl-test".to_owned(),
             scope: scope(),
-            idempotency_key: format!("{key_prefix}-propose"),
+            idempotency_key: format!("{}-propose", fixture.key_prefix),
             records: vec![evidence, assertion],
             source_blobs: Vec::new(),
             publications: Vec::new(),
@@ -598,19 +584,29 @@ fn commit_accepted_assertion(
         })
         .expect("commit proposal")
         .revision;
+    assert_ne!(proposed_workspace_rev, base);
+    assert!(!fixture.claim_value.is_empty());
+    proposed_workspace_rev
+}
+
+fn commit_accepted_assertion(
+    workspace: &mut mneme_store::Workspace,
+    fixture: AcceptedAssertionFixture<'_>,
+) {
+    let proposed_workspace_rev = propose_assertion_for_fixture(workspace, &fixture);
     let current = workspace
-        .record_revisions(assertion_id)
+        .record_revisions(fixture.assertion_id)
         .expect("assertion revisions")
         .into_iter()
         .last()
         .expect("latest assertion");
     let decision = mneme_memory::build_decision(
-        decision_id,
-        decision_rev,
+        fixture.decision_id,
+        fixture.decision_rev,
         &scope(),
         mneme_memory::DecisionOptions {
             kind: mneme_memory::DecisionKind::Acceptance,
-            target: assertion_id,
+            target: fixture.assertion_id,
             actor: "repl-test",
             policy: "repl-policy/v1",
             input_revision: proposed_workspace_rev,
@@ -622,17 +618,17 @@ fn commit_accepted_assertion(
     );
     let accepted = mneme_memory::build_assertion_revision(
         &current,
-        accepted_rev,
+        fixture.accepted_rev,
         mneme_core::Lifecycle::Accepted,
-        mneme_core::Reference::local(decision_id, mneme_core::RecordKind::Decision),
+        mneme_core::Reference::local(fixture.decision_id, mneme_core::RecordKind::Decision),
         None,
     );
-    workspace
+    let committed = workspace
         .commit(mneme_store::CommitCommand {
             base: proposed_workspace_rev,
             actor: "repl-test".to_owned(),
             scope: scope(),
-            idempotency_key: format!("{key_prefix}-accept"),
+            idempotency_key: format!("{}-accept", fixture.key_prefix),
             records: vec![decision, accepted],
             source_blobs: Vec::new(),
             publications: Vec::new(),
@@ -640,9 +636,17 @@ fn commit_accepted_assertion(
             retention: None,
         })
         .expect("commit acceptance");
+    assert_ne!(committed.revision, proposed_workspace_rev);
+    assert!(committed.sequence > 0);
 }
 
 fn dbsp_test_rules() -> Vec<mneme_datalog::Rule> {
+    let mut rules = dbsp_join_union_rules();
+    rules.extend(dbsp_reach_aggregate_rules());
+    rules
+}
+
+fn dbsp_join_union_rules() -> Vec<mneme_datalog::Rule> {
     vec![
         paper_rule(),
         bridged_rule(),
@@ -695,6 +699,17 @@ fn dbsp_test_rules() -> Vec<mneme_datalog::Rule> {
                 ],
             ))],
         ),
+    ]
+}
+
+fn dbsp_reach_aggregate_rules() -> Vec<mneme_datalog::Rule> {
+    let mut rules = dbsp_reach_rules();
+    rules.push(dbsp_claim_count_rule());
+    rules
+}
+
+fn dbsp_reach_rules() -> Vec<mneme_datalog::Rule> {
+    vec![
         mneme_datalog::Rule::new(
             "r-union-concept",
             mneme_datalog::Atom::new("active_node", vec![mneme_datalog::Term::var("E")]),
@@ -743,30 +758,33 @@ fn dbsp_test_rules() -> Vec<mneme_datalog::Rule> {
                 )),
             ],
         ),
-        mneme_datalog::Rule::new(
-            "r-claim-count",
-            mneme_datalog::Atom::new(
-                "claim_count",
-                vec![mneme_datalog::Term::var("E"), mneme_datalog::Term::var("N")],
-            ),
-            vec![
-                mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
-                    "assertion",
-                    vec![
-                        mneme_datalog::Term::var("E"),
-                        mneme_datalog::Term::var("Pred"),
-                        mneme_datalog::Term::var("Val"),
-                        mneme_datalog::Term::var("Aid"),
-                    ],
-                )),
-                mneme_datalog::Literal::Aggregate {
-                    function: mneme_datalog::AggregateFunction::Count,
-                    input: mneme_datalog::Term::var("Aid"),
-                    output: "N".to_owned(),
-                },
-            ],
-        ),
     ]
+}
+
+fn dbsp_claim_count_rule() -> mneme_datalog::Rule {
+    mneme_datalog::Rule::new(
+        "r-claim-count",
+        mneme_datalog::Atom::new(
+            "claim_count",
+            vec![mneme_datalog::Term::var("E"), mneme_datalog::Term::var("N")],
+        ),
+        vec![
+            mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                "assertion",
+                vec![
+                    mneme_datalog::Term::var("E"),
+                    mneme_datalog::Term::var("Pred"),
+                    mneme_datalog::Term::var("Val"),
+                    mneme_datalog::Term::var("Aid"),
+                ],
+            )),
+            mneme_datalog::Literal::Aggregate {
+                function: mneme_datalog::AggregateFunction::Count,
+                input: mneme_datalog::Term::var("Aid"),
+                output: "N".to_owned(),
+            },
+        ],
+    )
 }
 
 #[test]
@@ -785,19 +803,19 @@ fn dbsp_zset_incremental_advance_matches_from_scratch_and_reduces_work() {
     let genesis = workspace.current_revision().expect("genesis");
 
     // Seed rev0 with 30 papers, 30 concepts, 20 bridges, 20 chain links, and 2 sources + assertions.
-    let mut records = Vec::new();
-    let mut blobs = Vec::new();
+    let mut records = Vec::with_capacity(97);
+    let mut blobs = Vec::with_capacity(2);
     for idx in 1..=30_u8 {
         records.push(draft(
-            id_with_tag(0x10, idx),
-            rev_with_tag(0x10, idx),
+            id_with_tag([0x10, idx]),
+            rev_with_tag([0x10, idx]),
             mneme_core::RecordKind::Entity,
             scope(),
             paper_payload(&format!("Paper {idx}")),
         ));
         records.push(draft(
-            id_with_tag(0x20, idx),
-            rev_with_tag(0x20, idx),
+            id_with_tag([0x20, idx]),
+            rev_with_tag([0x20, idx]),
             mneme_core::RecordKind::Entity,
             scope(),
             concept_payload(&format!("Concept {idx}")),
@@ -805,33 +823,41 @@ fn dbsp_zset_incremental_advance_matches_from_scratch_and_reduces_work() {
     }
     for idx in 1..=20_u8 {
         records.push(draft(
-            id_with_tag(0x30, idx),
-            rev_with_tag(0x30, idx),
+            id_with_tag([0x30, idx]),
+            rev_with_tag([0x30, idx]),
             mneme_core::RecordKind::Relation,
             scope(),
-            relation_payload("bridges", id_with_tag(0x10, idx), id_with_tag(0x20, idx)),
+            relation_payload(
+                "bridges",
+                id_with_tag([0x10, idx]),
+                id_with_tag([0x20, idx]),
+            ),
         ));
     }
     for idx in 1..=15_u8 {
         records.push(draft(
-            id_with_tag(0x40, idx),
-            rev_with_tag(0x40, idx),
+            id_with_tag([0x40, idx]),
+            rev_with_tag([0x40, idx]),
             mneme_core::RecordKind::Relation,
             scope(),
-            relation_payload("links", id_with_tag(0x10, idx), id_with_tag(0x10, idx + 1)),
+            relation_payload(
+                "links",
+                id_with_tag([0x10, idx]),
+                id_with_tag([0x10, idx + 1]),
+            ),
         ));
     }
     let (src1, blob1) = source_draft(
-        id_with_tag(0x50, 1),
-        rev_with_tag(0x50, 1),
-        id_with_tag(0x10, 1),
+        id_with_tag([0x50, 1]),
+        rev_with_tag([0x50, 1]),
+        id_with_tag([0x10, 1]),
         b"= Source One\n\nEvidence one.",
         "s1.adoc",
     );
     let (src2, blob2) = source_draft(
-        id_with_tag(0x50, 2),
-        rev_with_tag(0x50, 2),
-        id_with_tag(0x10, 2),
+        id_with_tag([0x50, 2]),
+        rev_with_tag([0x50, 2]),
+        id_with_tag([0x10, 2]),
         b"= Source Two\n\nEvidence two.",
         "s2.adoc",
     );
@@ -857,16 +883,16 @@ fn dbsp_zset_incremental_advance_matches_from_scratch_and_reduces_work() {
     commit_accepted_assertion(
         &mut workspace,
         AcceptedAssertionFixture {
-            assertion_id: id_with_tag(0x60, 1),
-            proposed_rev: rev_with_tag(0x60, 1),
-            accepted_rev: rev_with_tag(0x63, 1),
-            evidence_id: id_with_tag(0x61, 1),
-            evidence_rev: rev_with_tag(0x61, 1),
-            decision_id: id_with_tag(0x62, 1),
-            decision_rev: rev_with_tag(0x62, 1),
-            subject: id_with_tag(0x10, 1),
-            source_id: id_with_tag(0x50, 1),
-            source_rev: rev_with_tag(0x50, 1),
+            assertion_id: id_with_tag([0x60, 1]),
+            proposed_rev: rev_with_tag([0x60, 1]),
+            accepted_rev: rev_with_tag([0x63, 1]),
+            evidence_id: id_with_tag([0x61, 1]),
+            evidence_rev: rev_with_tag([0x61, 1]),
+            decision_id: id_with_tag([0x62, 1]),
+            decision_rev: rev_with_tag([0x62, 1]),
+            subject: id_with_tag([0x10, 1]),
+            source_id: id_with_tag([0x50, 1]),
+            source_rev: rev_with_tag([0x50, 1]),
             claim_value: "retained-claim",
             key_prefix: "claim-1",
         },
@@ -874,16 +900,16 @@ fn dbsp_zset_incremental_advance_matches_from_scratch_and_reduces_work() {
     commit_accepted_assertion(
         &mut workspace,
         AcceptedAssertionFixture {
-            assertion_id: id_with_tag(0x60, 2),
-            proposed_rev: rev_with_tag(0x60, 2),
-            accepted_rev: rev_with_tag(0x63, 2),
-            evidence_id: id_with_tag(0x61, 2),
-            evidence_rev: rev_with_tag(0x61, 2),
-            decision_id: id_with_tag(0x62, 2),
-            decision_rev: rev_with_tag(0x62, 2),
-            subject: id_with_tag(0x10, 2),
-            source_id: id_with_tag(0x50, 2),
-            source_rev: rev_with_tag(0x50, 2),
+            assertion_id: id_with_tag([0x60, 2]),
+            proposed_rev: rev_with_tag([0x60, 2]),
+            accepted_rev: rev_with_tag([0x63, 2]),
+            evidence_id: id_with_tag([0x61, 2]),
+            evidence_rev: rev_with_tag([0x61, 2]),
+            decision_id: id_with_tag([0x62, 2]),
+            decision_rev: rev_with_tag([0x62, 2]),
+            subject: id_with_tag([0x10, 2]),
+            source_id: id_with_tag([0x50, 2]),
+            source_rev: rev_with_tag([0x50, 2]),
             claim_value: "forgotten-claim",
             key_prefix: "claim-2",
         },
@@ -902,33 +928,33 @@ fn dbsp_zset_incremental_advance_matches_from_scratch_and_reduces_work() {
     // rev1: insert 1 new paper (idx 31), 1 link closing a path (16 -> 17), 1 bridge,
     // and replace Paper 1's label.
     let new_paper = draft(
-        id_with_tag(0x10, 31),
-        rev_with_tag(0x10, 31),
+        id_with_tag([0x10, 31]),
+        rev_with_tag([0x10, 31]),
         mneme_core::RecordKind::Entity,
         scope(),
         paper_payload("Paper 31"),
     );
     let mut updated_paper_1 = draft(
-        id_with_tag(0x10, 1),
-        rev_with_tag(0x11, 1),
+        id_with_tag([0x10, 1]),
+        rev_with_tag([0x11, 1]),
         mneme_core::RecordKind::Entity,
         scope(),
         paper_payload("Paper One Revised"),
     );
-    updated_paper_1.predecessor = Some(rev_with_tag(0x10, 1));
+    updated_paper_1.predecessor = Some(rev_with_tag([0x10, 1]));
     let new_bridge = draft(
-        id_with_tag(0x30, 31),
-        rev_with_tag(0x30, 31),
+        id_with_tag([0x30, 31]),
+        rev_with_tag([0x30, 31]),
         mneme_core::RecordKind::Relation,
         scope(),
-        relation_payload("bridges", id_with_tag(0x10, 31), id_with_tag(0x20, 1)),
+        relation_payload("bridges", id_with_tag([0x10, 31]), id_with_tag([0x20, 1])),
     );
     let new_link = draft(
-        id_with_tag(0x40, 16),
-        rev_with_tag(0x40, 16),
+        id_with_tag([0x40, 16]),
+        rev_with_tag([0x40, 16]),
         mneme_core::RecordKind::Relation,
         scope(),
-        relation_payload("links", id_with_tag(0x10, 16), id_with_tag(0x10, 31)),
+        relation_payload("links", id_with_tag([0x10, 16]), id_with_tag([0x10, 31])),
     );
     let rev1 = workspace
         .commit(mneme_store::CommitCommand {
@@ -976,7 +1002,7 @@ fn dbsp_zset_incremental_advance_matches_from_scratch_and_reduces_work() {
             base_revision: rev1,
             idempotency_key: "forget-src2".to_owned(),
             operation: mneme_retention::OperationKind::Forget,
-            selector: mneme_retention::Selector::Source(id_with_tag(0x50, 2)),
+            selector: mneme_retention::Selector::Source(id_with_tag([0x50, 2])),
             effective: None,
             policy: mneme_retention::Policy {
                 version: mneme_retention::POLICY_VERSION.to_owned(),
@@ -988,13 +1014,13 @@ fn dbsp_zset_incremental_advance_matches_from_scratch_and_reduces_work() {
         .expect("forget src2");
     let after_forget = workspace.current_revision().expect("after forget");
     let mut updated_paper_31 = draft(
-        id_with_tag(0x10, 31),
-        rev_with_tag(0x11, 31),
+        id_with_tag([0x10, 31]),
+        rev_with_tag([0x11, 31]),
         mneme_core::RecordKind::Entity,
         scope(),
         paper_payload("Paper 31 Revised"),
     );
-    updated_paper_31.predecessor = Some(rev_with_tag(0x10, 31));
+    updated_paper_31.predecessor = Some(rev_with_tag([0x10, 31]));
     let rev2 = workspace
         .commit(mneme_store::CommitCommand {
             base: after_forget,
@@ -1094,13 +1120,13 @@ fn dbsp_recursive_cycle_retraction_and_union_support_match_from_scratch() {
     .expect("create");
     let genesis = workspace.current_revision().expect("genesis");
 
-    let n1 = id_with_tag(0x70, 1);
-    let n2 = id_with_tag(0x70, 2);
-    let n3 = id_with_tag(0x70, 3);
-    let e12 = id_with_tag(0x71, 1);
-    let e23 = id_with_tag(0x71, 2);
-    let e31 = id_with_tag(0x71, 3);
-    let b1 = id_with_tag(0x72, 1);
+    let n1 = id_with_tag([0x70, 1]);
+    let n2 = id_with_tag([0x70, 2]);
+    let n3 = id_with_tag([0x70, 3]);
+    let e12 = id_with_tag([0x71, 1]);
+    let e23 = id_with_tag([0x71, 2]);
+    let e31 = id_with_tag([0x71, 3]);
+    let b1 = id_with_tag([0x72, 1]);
 
     let rev0 = workspace
         .commit(mneme_store::CommitCommand {
@@ -1111,49 +1137,49 @@ fn dbsp_recursive_cycle_retraction_and_union_support_match_from_scratch() {
             records: vec![
                 draft(
                     n1,
-                    rev_with_tag(0x70, 1),
+                    rev_with_tag([0x70, 1]),
                     mneme_core::RecordKind::Entity,
                     scope(),
                     paper_payload("N1"),
                 ),
                 draft(
                     n2,
-                    rev_with_tag(0x70, 2),
+                    rev_with_tag([0x70, 2]),
                     mneme_core::RecordKind::Entity,
                     scope(),
                     paper_payload("N2"),
                 ),
                 draft(
                     n3,
-                    rev_with_tag(0x70, 3),
+                    rev_with_tag([0x70, 3]),
                     mneme_core::RecordKind::Entity,
                     scope(),
                     paper_payload("N3"),
                 ),
                 draft(
                     e12,
-                    rev_with_tag(0x71, 1),
+                    rev_with_tag([0x71, 1]),
                     mneme_core::RecordKind::Relation,
                     scope(),
                     relation_payload("links", n1, n2),
                 ),
                 draft(
                     e23,
-                    rev_with_tag(0x71, 2),
+                    rev_with_tag([0x71, 2]),
                     mneme_core::RecordKind::Relation,
                     scope(),
                     relation_payload("links", n2, n3),
                 ),
                 draft(
                     e31,
-                    rev_with_tag(0x71, 3),
+                    rev_with_tag([0x71, 3]),
                     mneme_core::RecordKind::Relation,
                     scope(),
                     relation_payload("links", n3, n1),
                 ),
                 draft(
                     b1,
-                    rev_with_tag(0x72, 1),
+                    rev_with_tag([0x72, 1]),
                     mneme_core::RecordKind::Relation,
                     scope(),
                     relation_payload("bridges", n1, n2),
@@ -1248,12 +1274,12 @@ fn dbsp_recursive_cycle_retraction_and_union_support_match_from_scratch() {
     // Break the cycle at rev1 by replacing edge e12 (n1 -> n2) with an unrelated relation kind.
     let mut broken_e12 = draft(
         e12,
-        rev_with_tag(0x73, 1),
+        rev_with_tag([0x73, 1]),
         mneme_core::RecordKind::Relation,
         scope(),
         relation_payload("other", n1, n2),
     );
-    broken_e12.predecessor = Some(rev_with_tag(0x71, 1));
+    broken_e12.predecessor = Some(rev_with_tag([0x71, 1]));
     let rev1 = workspace
         .commit(mneme_store::CommitCommand {
             base: rev0,

@@ -43,9 +43,11 @@ pub(crate) struct RuleState {
 
 impl RuleState {
     pub(crate) fn new(rule: crate::Rule) -> Self {
-        let mut positive_atoms = Vec::new();
-        let mut compares = Vec::new();
-        let mut negatives = Vec::new();
+        assert!(!rule.head.predicate.is_empty());
+        let cap = rule.body.len();
+        let mut positive_atoms = Vec::with_capacity(cap);
+        let mut compares = Vec::with_capacity(cap);
+        let mut negatives = Vec::with_capacity(cap);
         let mut aggregate = None;
         for literal in &rule.body {
             match literal {
@@ -59,21 +61,22 @@ impl RuleState {
                     input,
                     output,
                 } => {
-                    let group_vars =
-                        crate::engine::aggregate_group_variables_crate(&rule.head, output);
                     aggregate = Some(AggSpec {
                         function: *function,
                         input: input.clone(),
                         output: output.clone(),
-                        group_vars,
+                        group_vars: crate::engine::aggregate_group_variables_crate(
+                            &rule.head, output,
+                        ),
                     });
                 }
-                crate::Literal::Forbidden(_) => {}
+                _ => {}
             }
         }
         let shared_vars = compute_shared_vars(&positive_atoms);
         let join_count = positive_atoms.len().saturating_sub(1);
         let neg_count = negatives.len();
+        debug_assert!(positive_atoms.len() <= rule.body.len());
         RuleState {
             rule,
             atom_bindings: vec![crate::zset::ZSet::new(); positive_atoms.len()],
@@ -134,16 +137,15 @@ impl RuleState {
         input_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
         budget: &mut crate::engine::Budget<'_>,
     ) -> Result<crate::zset::ZSet<Binding>, crate::Error> {
+        assert_eq!(self.atom_bindings.len(), self.positive_atoms.len());
+        assert_eq!(self.join_steps.len(), self.positive_atoms.len());
         if self.positive_atoms.is_empty() {
             return Ok(crate::zset::ZSet::new());
         }
         let mut delta_join = crate::zset::ZSet::new();
         for index in 0..self.positive_atoms.len() {
             let atom = &self.positive_atoms[index];
-            let delta_atom = match input_deltas.get(&atom.predicate) {
-                Some(delta) if !delta.is_empty() => bind_atom_zset(atom, delta, budget)?,
-                _ => crate::zset::ZSet::new(),
-            };
+            let delta_atom = bind_optional_delta(atom, input_deltas.get(&atom.predicate), budget)?;
             if index == 0 {
                 delta_join = delta_atom.clone();
                 self.atom_bindings[0].add_in_place(&delta_atom)?;
@@ -151,10 +153,10 @@ impl RuleState {
                 continue;
             }
             let join_idx = index.saturating_sub(1);
-            let vars = &self.shared_vars[join_idx];
             if delta_join.is_empty() && delta_atom.is_empty() {
                 continue;
             }
+            let vars = &self.shared_vars[join_idx];
             let delta_left =
                 crate::zset::IndexedZSet::from_zset(&delta_join, |b| project_vars(b, vars))?;
             let delta_right =
@@ -206,12 +208,12 @@ impl RuleState {
         mut delta_cur: crate::zset::ZSet<Binding>,
         budget: &mut crate::engine::Budget<'_>,
     ) -> Result<crate::zset::ZSet<Binding>, crate::Error> {
+        assert_eq!(self.neg_steps.len(), self.negatives.len());
+        assert_eq!(self.neg_left_indexes.len(), self.negatives.len());
         for index in 0..self.negatives.len() {
             let neg_atom = &self.negatives[index];
-            let delta_neg_raw = match input_deltas.get(&neg_atom.predicate) {
-                Some(delta) if !delta.is_empty() => filter_neg_atom(neg_atom, delta, budget)?,
-                _ => crate::zset::ZSet::new(),
-            };
+            let delta_neg_raw =
+                filter_optional_neg(neg_atom, input_deltas.get(&neg_atom.predicate), budget)?;
             if delta_cur.is_empty() && delta_neg_raw.is_empty() {
                 continue;
             }
@@ -249,6 +251,7 @@ impl RuleState {
         budget: &mut crate::engine::Budget<'_>,
         coverage_reasons: &mut std::collections::BTreeMap<String, String>,
     ) -> Result<crate::zset::ZSet<FactKey>, crate::Error> {
+        assert!(!self.rule.head.predicate.is_empty());
         if delta_bindings.is_empty() {
             return Ok(crate::zset::ZSet::new());
         }
@@ -259,9 +262,12 @@ impl RuleState {
         for (binding, weight) in delta_bindings.iter() {
             charge_budget(budget, 1)?;
             let Some(terms) = crate::engine::head_terms_crate(&self.rule.head, binding) else {
-                coverage_reasons.insert(
-                    self.rule.head.predicate.clone(),
-                    "rule head has an unbound variable".to_owned(),
+                record_coverage_reason(
+                    coverage_reasons,
+                    PredicateReason {
+                        predicate: &self.rule.head.predicate,
+                        reason: "rule head has an unbound variable",
+                    },
                 );
                 continue;
             };
@@ -269,6 +275,7 @@ impl RuleState {
             delta_out.insert_weighted(terms, weight)?;
         }
         self.output.add_in_place(&delta_out)?;
+        debug_assert!(!self.output.is_empty() || delta_out.is_empty());
         Ok(delta_out)
     }
 
@@ -279,12 +286,11 @@ impl RuleState {
         budget: &mut crate::engine::Budget<'_>,
         coverage_reasons: &mut std::collections::BTreeMap<String, String>,
     ) -> Result<crate::zset::ZSet<FactKey>, crate::Error> {
-        let mut affected_groups = std::collections::BTreeSet::new();
-        for (binding, _) in delta_bindings.iter() {
-            if let Some(group_key) = aggregate_group_key(&agg.group_vars, binding) {
-                affected_groups.insert(group_key);
-            }
-        }
+        assert!(self.aggregate.is_some());
+        let affected_groups: std::collections::BTreeSet<JoinKey> = delta_bindings
+            .iter()
+            .filter_map(|(binding, _)| aggregate_group_key(&agg.group_vars, binding))
+            .collect();
         self.agg_groups
             .apply_delta_with(delta_bindings, |binding| {
                 aggregate_group_key(&agg.group_vars, binding).unwrap_or_default()
@@ -305,11 +311,18 @@ impl RuleState {
                 }
                 Ok(None) => {}
                 Err(reason) => {
-                    coverage_reasons.insert(self.rule.head.predicate.clone(), reason.to_owned());
+                    record_coverage_reason(
+                        coverage_reasons,
+                        PredicateReason {
+                            predicate: &self.rule.head.predicate,
+                            reason,
+                        },
+                    );
                 }
             }
         }
         self.output.add_in_place(&delta_out)?;
+        debug_assert!(!self.output.is_empty() || delta_out.is_empty());
         Ok(delta_out)
     }
 
@@ -321,10 +334,10 @@ impl RuleState {
     }
 
     pub(crate) fn aggregate_bindings_for(&self, head_terms: &FactKey) -> Vec<Binding> {
-        let Some(agg) = &self.aggregate else {
+        if self.aggregate.is_none() {
             return Vec::new();
-        };
-        let mut matched = Vec::new();
+        }
+        let mut matched = Vec::with_capacity(self.agg_group_outputs.len());
         for (group_key, output_row) in &self.agg_group_outputs {
             if output_row != head_terms {
                 continue;
@@ -337,7 +350,8 @@ impl RuleState {
                 }
             }
         }
-        let _ = agg;
+        debug_assert!(matched.len() < usize::MAX);
+        debug_assert!(self.aggregate.is_some());
         matched
     }
 
@@ -346,16 +360,7 @@ impl RuleState {
         dirty_inputs: &std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
         out: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
     ) {
-        let has_dirty_input = self.positive_atoms.iter().any(|atom| {
-            dirty_inputs
-                .get(&atom.predicate)
-                .is_some_and(|s| !s.is_empty())
-        });
-        if !has_dirty_input {
-            return;
-        }
-        let mut dirty_bindings: std::collections::BTreeSet<Binding> =
-            std::collections::BTreeSet::new();
+        assert!(!self.rule.head.predicate.is_empty());
         for atom in &self.positive_atoms {
             let Some(keys) = dirty_inputs.get(&atom.predicate) else {
                 continue;
@@ -363,38 +368,51 @@ impl RuleState {
             if keys.is_empty() {
                 continue;
             }
-            for (head_key, bindings) in &self.head_bindings {
-                for binding in bindings {
-                    if let Some(inst) = instantiate_atom(atom, binding)
-                        && keys.contains(&inst)
-                    {
-                        out.entry(self.rule.head.predicate.clone())
-                            .or_default()
-                            .insert(head_key.clone());
-                        dirty_bindings.insert(binding.clone());
-                    }
-                }
-            }
-            if let Some(agg) = &self.aggregate {
-                for (group_key, output_row) in &self.agg_group_outputs {
-                    let Some(bucket) = self.agg_groups.get(group_key) else {
-                        continue;
-                    };
-                    for (binding, weight) in bucket.iter() {
-                        if weight > 0
-                            && let Some(inst) = instantiate_atom(atom, binding)
-                            && keys.contains(&inst)
-                        {
-                            out.entry(self.rule.head.predicate.clone())
-                                .or_default()
-                                .insert(output_row.clone());
-                        }
-                    }
-                }
-                let _ = agg;
+            self.collect_dirty_ordinary_heads(atom, keys, out);
+            self.collect_dirty_aggregate_heads(atom, keys, out);
+        }
+        debug_assert!(self.positive_atoms.len() <= self.rule.body.len());
+    }
+
+    fn collect_dirty_ordinary_heads(
+        &self,
+        atom: &crate::Atom,
+        keys: &std::collections::BTreeSet<FactKey>,
+        out: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
+    ) {
+        for (head_key, bindings) in &self.head_bindings {
+            if bindings.iter().any(|binding| {
+                instantiate_atom(atom, binding).is_some_and(|inst| keys.contains(&inst))
+            }) {
+                out.entry(self.rule.head.predicate.clone())
+                    .or_default()
+                    .insert(head_key.clone());
             }
         }
-        let _ = dirty_bindings;
+    }
+
+    fn collect_dirty_aggregate_heads(
+        &self,
+        atom: &crate::Atom,
+        keys: &std::collections::BTreeSet<FactKey>,
+        out: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
+    ) {
+        if self.aggregate.is_none() {
+            return;
+        }
+        for (group_key, output_row) in &self.agg_group_outputs {
+            let Some(bucket) = self.agg_groups.get(group_key) else {
+                continue;
+            };
+            if bucket.iter().any(|(binding, weight)| {
+                weight > 0
+                    && instantiate_atom(atom, binding).is_some_and(|inst| keys.contains(&inst))
+            }) {
+                out.entry(self.rule.head.predicate.clone())
+                    .or_default()
+                    .insert(output_row.clone());
+            }
+        }
     }
 }
 
@@ -419,25 +437,28 @@ pub(crate) struct ComponentState {
 
 /// Complete DBSP incremental view state across all strata of a [`crate::RuleProgram`].
 #[derive(Clone, Debug, Default)]
-pub(crate) struct IvmState {
+pub(crate) struct ViewState {
     pub(crate) relations: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
     pub(crate) components: Vec<ComponentState>,
 }
 
-impl IvmState {
+impl ViewState {
     /// Initialize DBSP state from loaded base facts with no derived rules.
     pub(crate) fn from_base_facts(
         facts: &std::collections::BTreeMap<String, crate::engine::FactStore>,
     ) -> Result<Self, crate::Error> {
-        let mut relations = std::collections::BTreeMap::new();
-        for (predicate, store) in facts {
-            let mut zset = crate::zset::ZSet::new();
-            for key in store.rows.keys() {
-                zset.insert_weighted(key.clone(), 1)?;
-            }
-            relations.insert(predicate.clone(), zset);
-        }
-        Ok(IvmState {
+        let pairs = facts
+            .iter()
+            .map(|(predicate, store)| {
+                let entries: Vec<(FactKey, i64)> =
+                    store.rows.keys().map(|key| (key.clone(), 1)).collect();
+                Ok((predicate.clone(), crate::zset::ZSet::from_entries(entries)?))
+            })
+            .collect::<Result<Vec<_>, crate::Error>>()?;
+        let relations: std::collections::BTreeMap<_, _> = pairs.into_iter().collect();
+        debug_assert_eq!(relations.len(), facts.len());
+        debug_assert!(relations.len() < usize::MAX);
+        Ok(ViewState {
             relations,
             components: Vec::new(),
         })
@@ -447,86 +468,124 @@ impl IvmState {
     pub(crate) fn sync_after_rule_change(
         &mut self,
         program: &crate::RuleProgram,
-        base_facts: &std::collections::BTreeMap<String, crate::engine::FactStore>,
+        _base_facts: &std::collections::BTreeMap<String, crate::engine::FactStore>,
         build_facts: &std::collections::BTreeMap<
             String,
             std::collections::BTreeMap<FactKey, crate::FactData>,
         >,
         affected: &std::collections::BTreeSet<String>,
     ) -> Result<(), crate::Error> {
-        let _ = base_facts;
-        let mut next_relations = std::collections::BTreeMap::new();
-        for (predicate, rows) in build_facts {
-            let mut zset = crate::zset::ZSet::new();
-            for key in rows.keys() {
-                zset.insert_weighted(key.clone(), 1)?;
-            }
-            next_relations.insert(predicate.clone(), zset);
-        }
+        let next_relations = build_relations_map(build_facts)?;
         let specs = partition_program_components(program);
         let existing_by_key: std::collections::BTreeMap<(usize, String), ComponentState> = self
             .components
             .drain(..)
             .map(|comp| ((comp.stratum, comp.id.clone()), comp))
             .collect();
-        let mut next_components = Vec::with_capacity(specs.len());
-        let unlimited = crate::Limits {
-            max_work: u64::MAX,
-            max_time_ms: u128::from(u64::MAX),
-            max_result_rows: usize::MAX,
-            max_supports_per_fact: usize::MAX,
-            max_recursion_depth: usize::MAX / 2,
-        };
-        let start = crate::engine::evaluation_start();
-        let mut noop_budget = crate::engine::Budget {
-            limits: &unlimited,
-            work: 0,
-            stored_rows: 0,
-            start,
-            cancellation: None,
-            status: crate::ExecutionStatus::Complete,
-            limit_reached: false,
-            support_truncated: false,
-        };
-        let mut noop_reasons = std::collections::BTreeMap::new();
-        for spec in specs {
-            let touches_affected = spec
-                .predicates
-                .iter()
-                .any(|predicate| affected.contains(predicate));
-            if !touches_affected
-                && let Some(existing) = existing_by_key.get(&(spec.stratum, spec.id.clone()))
-                && existing.rule_ids == spec.rule_ids
-                && existing.predicates == spec.predicates
-            {
-                next_components.push(existing.clone());
-                continue;
-            }
-            let mut comp = ComponentState {
-                stratum: spec.stratum,
-                id: spec.id,
-                predicates: spec.predicates,
-                rule_ids: spec.rule_ids.clone(),
-                is_recursive: spec.is_recursive,
-                rounds: Vec::new(),
-            };
-            let initial_deltas = external_inputs_for_component(program, &comp, &next_relations);
-            let _ = comp.step_component_delta(
-                program,
-                &initial_deltas,
-                &mut noop_budget,
-                &mut noop_reasons,
-                usize::MAX / 4,
-            )?;
-            next_components.push(comp);
-        }
+        let next_components =
+            rebuild_components(program, specs, &existing_by_key, &next_relations, affected)?;
         self.relations = next_relations;
         self.components = next_components;
         Ok(())
     }
 }
 
-pub(crate) struct AdvanceIvmRequest<'a> {
+fn build_relations_map(
+    build_facts: &std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<FactKey, crate::FactData>,
+    >,
+) -> Result<std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>, crate::Error> {
+    assert!(build_facts.len() < usize::MAX);
+    let pairs = build_facts
+        .iter()
+        .map(|(predicate, rows)| {
+            let entries: Vec<(FactKey, i64)> = rows.keys().map(|key| (key.clone(), 1)).collect();
+            Ok((predicate.clone(), crate::zset::ZSet::from_entries(entries)?))
+        })
+        .collect::<Result<Vec<_>, crate::Error>>()?;
+    let map: std::collections::BTreeMap<_, _> = pairs.into_iter().collect();
+    debug_assert_eq!(map.len(), build_facts.len());
+    Ok(map)
+}
+
+fn can_reuse_component(
+    existing: Option<&ComponentState>,
+    spec: &ComponentSpec,
+    has_affected: bool,
+) -> bool {
+    if has_affected {
+        return false;
+    }
+    let Some(comp) = existing else {
+        return false;
+    };
+    comp.rule_ids == spec.rule_ids && comp.predicates == spec.predicates
+}
+
+fn rebuild_components(
+    program: &crate::RuleProgram,
+    specs: Vec<ComponentSpec>,
+    existing_by_key: &std::collections::BTreeMap<(usize, String), ComponentState>,
+    next_relations: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    affected: &std::collections::BTreeSet<String>,
+) -> Result<Vec<ComponentState>, crate::Error> {
+    assert!(specs.len() <= program.bundle.rules.len());
+    let mut next_components = Vec::with_capacity(specs.len());
+    let unlimited = crate::Limits {
+        max_work: u64::MAX,
+        max_time_ms: u128::from(u64::MAX),
+        max_result_rows: usize::MAX,
+        max_supports_per_fact: usize::MAX,
+        max_recursion_depth: usize::MAX / 2,
+    };
+    let start = crate::engine::evaluation_start();
+    let mut noop_budget = crate::engine::Budget {
+        limits: &unlimited,
+        work: 0,
+        stored_rows: 0,
+        start,
+        cancellation: None,
+        status: crate::ExecutionStatus::Complete,
+        limit_reached: false,
+        support_truncated: false,
+    };
+    let mut noop_reasons = std::collections::BTreeMap::new();
+    for spec in specs {
+        let has_affected = spec
+            .predicates
+            .iter()
+            .any(|predicate| affected.contains(predicate));
+        let existing = existing_by_key.get(&(spec.stratum, spec.id.clone()));
+        if can_reuse_component(existing, &spec, has_affected) {
+            if let Some(comp) = existing {
+                next_components.push(comp.clone());
+            }
+            continue;
+        }
+        let mut comp = ComponentState {
+            stratum: spec.stratum,
+            id: spec.id,
+            predicates: spec.predicates,
+            rule_ids: spec.rule_ids,
+            is_recursive: spec.is_recursive,
+            rounds: Vec::new(),
+        };
+        let initial_deltas = external_inputs_for_component(program, &comp, next_relations);
+        let _ = comp.step_component_delta(
+            program,
+            &initial_deltas,
+            &mut noop_budget,
+            &mut noop_reasons,
+            usize::MAX / 4,
+        )?;
+        next_components.push(comp);
+    }
+    debug_assert!(next_components.len() <= program.bundle.rules.len());
+    Ok(next_components)
+}
+
+pub(crate) struct AdvanceViewRequest<'a> {
     pub(crate) program: &'a crate::RuleProgram,
     pub(crate) base_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
     pub(crate) dirty_provenance: std::collections::BTreeSet<(String, FactKey)>,
@@ -542,8 +601,8 @@ pub(crate) struct AdvanceIvmRequest<'a> {
     pub(crate) start: std::time::Instant,
 }
 
-pub(crate) struct AdvanceIvmResult {
-    pub(crate) next_ivm: IvmState,
+pub(crate) struct AdvanceViewResult {
+    pub(crate) next_view: ViewState,
     pub(crate) next_facts:
         std::collections::BTreeMap<String, std::collections::BTreeMap<FactKey, crate::FactData>>,
     pub(crate) coverage: Vec<crate::Coverage>,
@@ -556,28 +615,12 @@ pub(crate) struct AdvanceIvmResult {
 }
 
 /// Propagate base Z-set deltas through all strata and refresh affected `FactData`.
-pub(crate) fn advance_ivm(
-    ivm: &IvmState,
-    request: AdvanceIvmRequest<'_>,
-) -> Result<AdvanceIvmResult, crate::Error> {
-    let mut next_ivm = ivm.clone();
-    let mut all_deltas = request.base_deltas;
-    let mut multiset_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> =
-        std::collections::BTreeMap::new();
-    let mut dirty_by_pred: std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>> =
-        std::collections::BTreeMap::new();
-    for (pred, key) in request.dirty_provenance {
-        dirty_by_pred.entry(pred).or_default().insert(key);
-    }
-
-    for (pred, delta) in &all_deltas {
-        next_ivm
-            .relations
-            .entry(pred.clone())
-            .or_default()
-            .add_in_place(delta)?;
-    }
-
+pub(crate) fn advance_view(
+    view: &ViewState,
+    request: AdvanceViewRequest<'_>,
+) -> Result<AdvanceViewResult, crate::Error> {
+    assert!(request.limits.max_work > 0);
+    let mut state = AdvanceAccumulator::new(view, &request)?;
     let mut budget = crate::engine::Budget {
         limits: request.limits,
         work: request.initial_work,
@@ -589,119 +632,205 @@ pub(crate) fn advance_ivm(
         support_truncated: request.next_base.support_truncated,
     };
     let mut coverage_reasons = request.next_base.coverage_reasons.clone();
-    let mut affected_set: std::collections::BTreeSet<String> = all_deltas
-        .iter()
-        .filter(|(_, d)| !d.is_empty())
-        .map(|(p, _)| p.clone())
-        .collect();
-    let mut reused_predicates = Vec::new();
+    let is_ok = state.step_all_components(&request, &mut budget, &mut coverage_reasons)?;
+    if !is_ok || budget.limit_reached {
+        return Ok(limit_reached_result(state.next_view, &budget));
+    }
+    debug_assert!(!budget.limit_reached);
+    finish_advance_view(state, &request, &budget, &coverage_reasons)
+}
 
-    for component in &mut next_ivm.components {
-        if !budget.is_active() {
-            break;
+struct AdvanceAccumulator {
+    next_view: ViewState,
+    all_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    multiset_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    dirty_by_pred: std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
+    affected_set: std::collections::BTreeSet<String>,
+    reused_predicates: Vec<String>,
+}
+
+impl AdvanceAccumulator {
+    fn new(view: &ViewState, request: &AdvanceViewRequest<'_>) -> Result<Self, crate::Error> {
+        let mut next_view = view.clone();
+        let all_deltas = request.base_deltas.clone();
+        let mut dirty_by_pred: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<FactKey>,
+        > = std::collections::BTreeMap::new();
+        for (pred, key) in &request.dirty_provenance {
+            dirty_by_pred
+                .entry(pred.clone())
+                .or_default()
+                .insert(key.clone());
         }
-        let step_result = component.step_component_delta(
-            request.program,
-            &all_deltas,
-            &mut budget,
-            &mut coverage_reasons,
-            request.limits.max_recursion_depth,
-        );
-        let (comp_deltas, comp_multiset_deltas) = match step_result {
-            Ok(res) => res,
-            Err(crate::Error::LimitExceeded(_)) => {
-                return Ok(AdvanceIvmResult {
-                    next_ivm,
-                    next_facts: std::collections::BTreeMap::new(),
-                    coverage: Vec::new(),
-                    status: budget.status,
-                    work: budget.work,
-                    support_truncated: budget.support_truncated,
-                    limit_reached: true,
-                    affected_predicates: Vec::new(),
-                    reused_predicates: Vec::new(),
-                });
-            }
-            Err(err) => return Err(err),
-        };
+        for (pred, delta) in &all_deltas {
+            next_view
+                .relations
+                .entry(pred.clone())
+                .or_default()
+                .add_in_place(delta)?;
+        }
+        let affected_set = all_deltas
+            .iter()
+            .filter(|(_, delta)| !delta.is_empty())
+            .map(|(pred, _)| pred.clone())
+            .collect();
+        let reused_cap = next_view
+            .components
+            .iter()
+            .map(|comp| comp.predicates.len())
+            .sum();
+        debug_assert!(dirty_by_pred.len() <= request.dirty_provenance.len());
+        debug_assert!(all_deltas.len() < usize::MAX);
+        Ok(Self {
+            next_view,
+            all_deltas,
+            multiset_deltas: std::collections::BTreeMap::new(),
+            dirty_by_pred,
+            affected_set,
+            reused_predicates: Vec::with_capacity(reused_cap),
+        })
+    }
 
+    fn step_all_components(
+        &mut self,
+        request: &AdvanceViewRequest<'_>,
+        budget: &mut crate::engine::Budget<'_>,
+        coverage_reasons: &mut std::collections::BTreeMap<String, String>,
+    ) -> Result<bool, crate::Error> {
+        let count = self.next_view.components.len();
+        assert!(count <= request.program.bundle.rules.len());
+        for idx in 0..count {
+            if !budget.is_active() {
+                break;
+            }
+            let step_result = self.next_view.components[idx].step_component_delta(
+                request.program,
+                &self.all_deltas,
+                budget,
+                coverage_reasons,
+                request.limits.max_recursion_depth,
+            );
+            let (comp_deltas, comp_multiset_deltas) = match step_result {
+                Ok(res) => res,
+                Err(crate::Error::LimitExceeded(_)) => return Ok(false),
+                Err(err) => return Err(err),
+            };
+            self.record_component_step(idx, comp_deltas, comp_multiset_deltas)?;
+        }
+        debug_assert!(self.reused_predicates.len() < usize::MAX);
+        Ok(true)
+    }
+
+    fn record_component_step(
+        &mut self,
+        comp_idx: usize,
+        comp_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+        comp_multiset_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    ) -> Result<(), crate::Error> {
+        let component = &self.next_view.components[comp_idx];
+        assert!(!component.predicates.is_empty());
         let mut is_component_affected = false;
         for (pred, delta) in comp_deltas {
             if !delta.is_empty() {
                 is_component_affected = true;
-                affected_set.insert(pred.clone());
-                next_ivm
+                self.affected_set.insert(pred.clone());
+                self.next_view
                     .relations
                     .entry(pred.clone())
                     .or_default()
                     .add_in_place(&delta)?;
             }
-            all_deltas.insert(pred, delta);
+            self.all_deltas.insert(pred, delta);
         }
         for (pred, m_delta) in comp_multiset_deltas {
             if !m_delta.is_empty() {
                 is_component_affected = true;
-                affected_set.insert(pred.clone());
-                let dirty_entry = dirty_by_pred.entry(pred.clone()).or_default();
+                self.affected_set.insert(pred.clone());
+                let dirty_entry = self.dirty_by_pred.entry(pred.clone()).or_default();
                 for (key, weight) in m_delta.iter() {
                     if weight != 0 {
                         dirty_entry.insert(key.clone());
                     }
                 }
             }
-            multiset_deltas.insert(pred, m_delta);
+            self.multiset_deltas.insert(pred, m_delta);
         }
-        if let Some(last_round) = component.rounds.last() {
-            let max_passes = component.rounds.len().saturating_add(1);
-            for _ in 0..max_passes {
-                let mut new_dirty = std::collections::BTreeMap::new();
-                for rule_id in &component.rule_ids {
-                    if let Some(rule_state) = last_round.rule_states.get(rule_id) {
-                        rule_state.collect_dirty_heads_for_inputs(&dirty_by_pred, &mut new_dirty);
-                    }
-                }
-                let mut is_any_added = false;
-                for (pred, keys) in new_dirty {
-                    let entry = dirty_by_pred.entry(pred).or_default();
-                    for key in keys {
-                        if entry.insert(key) {
-                            is_any_added = true;
-                        }
-                    }
-                }
-                if !is_any_added {
-                    break;
-                }
-            }
-        }
+        propagate_component_dirty_heads(component, &mut self.dirty_by_pred);
         if !is_component_affected {
             for pred in &component.predicates {
-                if dirty_by_pred
+                let is_clean = self
+                    .dirty_by_pred
                     .get(pred)
-                    .is_none_or(std::collections::BTreeSet::is_empty)
-                {
-                    reused_predicates.push(pred.clone());
+                    .is_none_or(std::collections::BTreeSet::is_empty);
+                if is_clean {
+                    self.reused_predicates.push(pred.clone());
                 } else {
-                    affected_set.insert(pred.clone());
+                    self.affected_set.insert(pred.clone());
                 }
             }
         }
+        debug_assert!(self.all_deltas.len() >= component.predicates.len());
+        Ok(())
     }
+}
 
-    if budget.limit_reached {
-        return Ok(AdvanceIvmResult {
-            next_ivm,
-            next_facts: std::collections::BTreeMap::new(),
-            coverage: Vec::new(),
-            status: budget.status,
-            work: budget.work,
-            support_truncated: budget.support_truncated,
-            limit_reached: true,
-            affected_predicates: Vec::new(),
-            reused_predicates: Vec::new(),
-        });
+fn propagate_component_dirty_heads(
+    component: &ComponentState,
+    dirty_by_pred: &mut std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
+) {
+    assert!(!component.predicates.is_empty());
+    let Some(last_round) = component.rounds.last() else {
+        return;
+    };
+    let max_passes = component.rounds.len().saturating_add(1);
+    debug_assert!(max_passes > 0);
+    for _ in 0..max_passes {
+        let mut new_dirty = std::collections::BTreeMap::new();
+        for rule_id in &component.rule_ids {
+            if let Some(rule_state) = last_round.rule_states.get(rule_id) {
+                rule_state.collect_dirty_heads_for_inputs(dirty_by_pred, &mut new_dirty);
+            }
+        }
+        let mut is_any_added = false;
+        for (pred, keys) in new_dirty {
+            let entry = dirty_by_pred.entry(pred).or_default();
+            for key in keys {
+                if entry.insert(key) {
+                    is_any_added = true;
+                }
+            }
+        }
+        if !is_any_added {
+            break;
+        }
     }
+}
 
+fn limit_reached_result(
+    next_view: ViewState,
+    budget: &crate::engine::Budget<'_>,
+) -> AdvanceViewResult {
+    AdvanceViewResult {
+        next_view,
+        next_facts: std::collections::BTreeMap::new(),
+        coverage: Vec::new(),
+        status: budget.status,
+        work: budget.work,
+        support_truncated: budget.support_truncated,
+        limit_reached: true,
+        affected_predicates: Vec::new(),
+        reused_predicates: Vec::new(),
+    }
+}
+
+fn finish_advance_view(
+    mut state: AdvanceAccumulator,
+    request: &AdvanceViewRequest<'_>,
+    budget: &crate::engine::Budget<'_>,
+    coverage_reasons: &std::collections::BTreeMap<String, String>,
+) -> Result<AdvanceViewResult, crate::Error> {
+    assert!(!budget.limit_reached);
     let mut next_facts = build_next_fact_stores(
         request.next_base,
         request.current_facts,
@@ -709,9 +838,7 @@ pub(crate) fn advance_ivm(
     );
     let mut fact_predicates: std::collections::BTreeSet<String> =
         next_facts.keys().cloned().collect();
-    for pred in next_ivm.relations.keys() {
-        fact_predicates.insert(pred.clone());
-    }
+    fact_predicates.extend(state.next_view.relations.keys().cloned());
     let (coverage_map, coverage, coverage_status) =
         crate::engine::compute_coverage_for_facts(crate::engine::CoverageCheckRequest {
             base: request.next_base,
@@ -719,41 +846,43 @@ pub(crate) fn advance_ivm(
             context: request.next_context,
             limits: request.limits,
             fact_predicates: &fact_predicates,
-            coverage_reasons: &coverage_reasons,
+            coverage_reasons,
             at: request.at,
             start: request.start,
         });
-
     let is_truncated = refresh_derived_fact_data(
-        &next_ivm,
-        &all_deltas,
-        &multiset_deltas,
-        &dirty_by_pred,
-        request.next_base,
-        request.next_context,
-        request.limits,
-        &coverage_map,
-        request.at,
-        request.start,
+        RefreshFactDataRequest {
+            view: &state.next_view,
+            all_deltas: &state.all_deltas,
+            multiset_deltas: &state.multiset_deltas,
+            dirty_by_pred: &state.dirty_by_pred,
+            next_base: request.next_base,
+            next_context: request.next_context,
+            limits: request.limits,
+            coverage_map: &coverage_map,
+            at: request.at,
+            start: request.start,
+        },
         &mut next_facts,
     );
-    let support_truncated = budget.support_truncated || is_truncated;
+    let is_support_truncated = budget.support_truncated || is_truncated;
     let status = if budget.status != crate::ExecutionStatus::Complete {
         budget.status
     } else {
         coverage_status
     };
-    reused_predicates.sort();
-    Ok(AdvanceIvmResult {
-        next_ivm,
+    state.reused_predicates.sort();
+    debug_assert!(fact_predicates.len() >= next_facts.len());
+    Ok(AdvanceViewResult {
+        next_view: state.next_view,
         next_facts,
         coverage,
         status,
         work: budget.work,
-        support_truncated,
+        support_truncated: is_support_truncated,
         limit_reached: false,
-        affected_predicates: affected_set.into_iter().collect(),
-        reused_predicates,
+        affected_predicates: state.affected_set.into_iter().collect(),
+        reused_predicates: state.reused_predicates,
     })
 }
 
@@ -765,36 +894,42 @@ fn build_next_fact_stores(
     >,
     target_revision: mneme_core::WorkspaceRevisionId,
 ) -> std::collections::BTreeMap<String, std::collections::BTreeMap<FactKey, crate::FactData>> {
-    let mut next_facts = std::collections::BTreeMap::new();
-    for (pred, rows) in current_facts {
-        if !next_base.facts.contains_key(pred) {
+    let mut next_facts: std::collections::BTreeMap<_, _> = current_facts
+        .iter()
+        .filter(|(pred, _)| !next_base.facts.contains_key(*pred))
+        .map(|(pred, rows)| {
             let mut cloned = rows.clone();
             for data in cloned.values_mut() {
                 for support in &mut data.supports {
                     support.revision = target_revision;
                 }
             }
-            next_facts.insert(pred.clone(), cloned);
-        }
-    }
+            (pred.clone(), cloned)
+        })
+        .collect();
     for (pred, store) in &next_base.facts {
         next_facts.insert(pred.clone(), store.rows.clone());
     }
+    debug_assert!(next_facts.len() >= next_base.facts.len());
+    debug_assert!(next_facts.len() < usize::MAX);
     next_facts
 }
 
-#[allow(clippy::too_many_arguments)]
-fn refresh_derived_fact_data(
-    ivm: &IvmState,
-    all_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
-    multiset_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
-    dirty_by_pred: &std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
-    next_base: &crate::engine::BaseSnapshot,
-    next_context: &crate::BuildContext,
-    limits: &crate::Limits,
-    coverage_map: &std::collections::BTreeMap<String, crate::CoverageStatus>,
+struct RefreshFactDataRequest<'a> {
+    view: &'a ViewState,
+    all_deltas: &'a std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    multiset_deltas: &'a std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    dirty_by_pred: &'a std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
+    next_base: &'a crate::engine::BaseSnapshot,
+    next_context: &'a crate::BuildContext,
+    limits: &'a crate::Limits,
+    coverage_map: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
     at: Option<mneme_core::Timestamp>,
     start: std::time::Instant,
+}
+
+fn refresh_derived_fact_data(
+    request: RefreshFactDataRequest<'_>,
     next_facts: &mut std::collections::BTreeMap<
         String,
         std::collections::BTreeMap<FactKey, crate::FactData>,
@@ -813,144 +948,186 @@ fn refresh_derived_fact_data(
         })
         .collect();
     let mut is_any_truncated = false;
-    for component in &ivm.components {
-        for pred in &component.predicates {
-            if let Some(delta) = all_deltas.get(pred)
-                && let Some(store) = store_map.get_mut(pred)
-            {
-                for (key, weight) in delta.iter() {
-                    if weight < 0 {
-                        store.rows.remove(key);
-                    }
-                }
-            }
-        }
-        let mut keys_to_refresh: std::collections::BTreeMap<
-            String,
-            std::collections::BTreeSet<FactKey>,
-        > = std::collections::BTreeMap::new();
-        for pred in &component.predicates {
-            let set = keys_to_refresh.entry(pred.clone()).or_default();
-            if let Some(delta) = all_deltas.get(pred) {
-                for (key, weight) in delta.iter() {
-                    if weight > 0 {
-                        set.insert(key.clone());
-                    }
-                }
-            }
-            if let Some(m_delta) = multiset_deltas.get(pred) {
-                for (key, weight) in m_delta.iter() {
-                    if weight != 0
-                        && ivm
-                            .relations
-                            .get(pred)
-                            .is_some_and(|rel| rel.weight(key) > 0)
-                    {
-                        set.insert(key.clone());
-                    }
-                }
-            }
-            if let Some(dirty) = dirty_by_pred.get(pred) {
-                for key in dirty {
-                    if ivm
-                        .relations
-                        .get(pred)
-                        .is_some_and(|rel| rel.weight(key) > 0)
-                    {
-                        set.insert(key.clone());
-                    }
-                }
-            }
-            if let Some(store) = store_map.get_mut(pred) {
-                for key in set.iter() {
-                    store.rows.remove(key);
-                }
-            }
-        }
-        let mut populated: std::collections::BTreeSet<(String, FactKey)> =
-            std::collections::BTreeSet::new();
-        for round in &component.rounds {
-            for pred in &component.predicates {
-                let Some(keys) = keys_to_refresh.get(pred) else {
-                    continue;
-                };
-                if keys.is_empty() {
-                    continue;
-                }
-                let Some(round_set) = round.derived_sets.get(pred) else {
-                    continue;
-                };
-                for key in keys {
-                    if round_set.weight(key) <= 0
-                        || populated.contains(&(pred.clone(), key.clone()))
-                    {
-                        continue;
-                    }
-                    let mut target_store = store_map.get(pred).cloned().unwrap_or_default();
-                    for rule_id in &component.rule_ids {
-                        let Some(rule_state) = round.rule_states.get(rule_id) else {
-                            continue;
-                        };
-                        if &rule_state.rule.head.predicate != pred {
-                            continue;
-                        }
-                        let truncated = if rule_state.aggregate.is_some() {
-                            let bindings = rule_state.aggregate_bindings_for(key);
-                            if bindings.is_empty() {
-                                false
-                            } else {
-                                crate::engine::build_aggregate_fact_data_from_bindings(
-                                    crate::engine::FactDataBuildRequest {
-                                        rule: &rule_state.rule,
-                                        context: next_context,
-                                        limits,
-                                        facts: &store_map,
-                                        coverage_map,
-                                        current_sources: &next_base.current_sources,
-                                        at,
-                                        start,
-                                        bindings: &bindings,
-                                        target_terms: key,
-                                    },
-                                    &mut target_store,
-                                )
-                            }
-                        } else {
-                            let bindings = rule_state.ordinary_bindings_for(key);
-                            if bindings.is_empty() {
-                                false
-                            } else {
-                                crate::engine::build_ordinary_fact_data_from_bindings(
-                                    crate::engine::FactDataBuildRequest {
-                                        rule: &rule_state.rule,
-                                        context: next_context,
-                                        limits,
-                                        facts: &store_map,
-                                        coverage_map,
-                                        current_sources: &next_base.current_sources,
-                                        at,
-                                        start,
-                                        bindings: &bindings,
-                                        target_terms: key,
-                                    },
-                                    &mut target_store,
-                                )
-                            }
-                        };
-                        if truncated {
-                            is_any_truncated = true;
-                        }
-                    }
-                    store_map.insert(pred.clone(), target_store);
-                    populated.insert((pred.clone(), key.clone()));
-                }
-            }
+    for component in &request.view.components {
+        remove_retracted_rows(component, request.all_deltas, &mut store_map);
+        let keys_to_refresh = collect_keys_to_refresh(component, &request, &mut store_map);
+        if populate_refreshed_component_rows(component, &request, &keys_to_refresh, &mut store_map)
+        {
+            is_any_truncated = true;
         }
     }
     *next_facts = store_map
         .into_iter()
         .map(|(pred, store)| (pred, store.rows))
         .collect();
+    debug_assert!(next_facts.len() < usize::MAX);
+    debug_assert!(request.limits.max_supports_per_fact > 0);
+    is_any_truncated
+}
+
+fn remove_retracted_rows(
+    component: &ComponentState,
+    all_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    store_map: &mut std::collections::BTreeMap<String, crate::engine::FactStore>,
+) {
+    for pred in &component.predicates {
+        if let Some(delta) = all_deltas.get(pred)
+            && let Some(store) = store_map.get_mut(pred)
+        {
+            for (key, weight) in delta.iter() {
+                if weight < 0 {
+                    store.rows.remove(key);
+                }
+            }
+        }
+    }
+}
+
+fn collect_keys_to_refresh(
+    component: &ComponentState,
+    request: &RefreshFactDataRequest<'_>,
+    store_map: &mut std::collections::BTreeMap<String, crate::engine::FactStore>,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>> {
+    assert!(!component.predicates.is_empty());
+    let pairs: Vec<_> = component
+        .predicates
+        .iter()
+        .map(|pred| {
+            let mut set = std::collections::BTreeSet::new();
+            if let Some(delta) = request.all_deltas.get(pred) {
+                set.extend(delta.iter().filter(|(_, w)| *w > 0).map(|(k, _)| k.clone()));
+            }
+            let is_positive_rel = |key: &FactKey| {
+                request
+                    .view
+                    .relations
+                    .get(pred)
+                    .is_some_and(|rel| rel.weight(key) > 0)
+            };
+            if let Some(m_delta) = request.multiset_deltas.get(pred) {
+                set.extend(
+                    m_delta
+                        .iter()
+                        .filter(|(k, w)| *w != 0 && is_positive_rel(k))
+                        .map(|(k, _)| k.clone()),
+                );
+            }
+            if let Some(dirty) = request.dirty_by_pred.get(pred) {
+                set.extend(dirty.iter().filter(|k| is_positive_rel(k)).cloned());
+            }
+            if let Some(store) = store_map.get_mut(pred) {
+                for key in &set {
+                    store.rows.remove(key);
+                }
+            }
+            (pred.clone(), set)
+        })
+        .collect();
+    let keys_to_refresh: std::collections::BTreeMap<_, _> = pairs.into_iter().collect();
+    debug_assert_eq!(keys_to_refresh.len(), component.predicates.len());
+    keys_to_refresh
+}
+
+fn populate_refreshed_component_rows(
+    component: &ComponentState,
+    request: &RefreshFactDataRequest<'_>,
+    keys_to_refresh: &std::collections::BTreeMap<String, std::collections::BTreeSet<FactKey>>,
+    store_map: &mut std::collections::BTreeMap<String, crate::engine::FactStore>,
+) -> bool {
+    assert!(request.limits.max_supports_per_fact > 0);
+    let mut is_any_truncated = false;
+    let mut populated = std::collections::BTreeSet::new();
+    for round in &component.rounds {
+        for pred in &component.predicates {
+            let Some(keys) = keys_to_refresh.get(pred) else {
+                continue;
+            };
+            let Some(round_set) = round.derived_sets.get(pred) else {
+                continue;
+            };
+            for key in keys {
+                if round_set.weight(key) <= 0 || populated.contains(&(pred.clone(), key.clone())) {
+                    continue;
+                }
+                if rebuild_fact_key_from_round(
+                    RoundKeyTarget {
+                        component,
+                        round,
+                        pred,
+                        key,
+                    },
+                    request,
+                    store_map,
+                ) {
+                    is_any_truncated = true;
+                }
+                populated.insert((pred.clone(), key.clone()));
+            }
+        }
+    }
+    debug_assert!(populated.len() < usize::MAX);
+    is_any_truncated
+}
+
+struct RoundKeyTarget<'a> {
+    component: &'a ComponentState,
+    round: &'a ComponentRoundState,
+    pred: &'a str,
+    key: &'a FactKey,
+}
+
+fn rebuild_fact_key_from_round(
+    target: RoundKeyTarget<'_>,
+    request: &RefreshFactDataRequest<'_>,
+    store_map: &mut std::collections::BTreeMap<String, crate::engine::FactStore>,
+) -> bool {
+    let RoundKeyTarget {
+        component,
+        round,
+        pred,
+        key,
+    } = target;
+    assert!(!pred.is_empty());
+    let mut is_any_truncated = false;
+    let mut target_store = store_map.get(pred).cloned().unwrap_or_default();
+    for rule_id in &component.rule_ids {
+        let Some(rule_state) = round.rule_states.get(rule_id) else {
+            continue;
+        };
+        if rule_state.rule.head.predicate != pred {
+            continue;
+        }
+        let bindings = if rule_state.aggregate.is_some() {
+            rule_state.aggregate_bindings_for(key)
+        } else {
+            rule_state.ordinary_bindings_for(key)
+        };
+        if bindings.is_empty() {
+            continue;
+        }
+        let build_req = crate::engine::FactDataBuildRequest {
+            rule: &rule_state.rule,
+            context: request.next_context,
+            limits: request.limits,
+            facts: store_map,
+            coverage_map: request.coverage_map,
+            current_sources: &request.next_base.current_sources,
+            at: request.at,
+            start: request.start,
+            bindings: &bindings,
+            target_terms: key,
+        };
+        let is_truncated = if rule_state.aggregate.is_some() {
+            crate::engine::build_aggregate_fact_data_from_bindings(build_req, &mut target_store)
+        } else {
+            crate::engine::build_ordinary_fact_data_from_bindings(build_req, &mut target_store)
+        };
+        if is_truncated {
+            is_any_truncated = true;
+        }
+    }
+    store_map.insert(pred.to_owned(), target_store);
+    debug_assert!(store_map.contains_key(pred));
     is_any_truncated
 }
 
@@ -958,6 +1135,14 @@ type ComponentStepDelta = (
     std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
     std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
 );
+
+struct ComponentLoopState<'a> {
+    program: &'a crate::RuleProgram,
+    external_deltas: &'a std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    prev_round_new_sets: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    prev_round_delta_x: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    next_rounds: Vec<ComponentRoundState>,
+}
 
 impl ComponentState {
     fn step_component_delta(
@@ -968,17 +1153,8 @@ impl ComponentState {
         coverage_reasons: &mut std::collections::BTreeMap<String, String>,
         max_recursion_depth: usize,
     ) -> Result<ComponentStepDelta, crate::Error> {
-        let prev_final_sets = self
-            .rounds
-            .last()
-            .map(|r| r.derived_sets.clone())
-            .unwrap_or_default();
-        let prev_final_multisets = self
-            .rounds
-            .last()
-            .map(|r| r.derived_multisets.clone())
-            .unwrap_or_default();
-
+        let prev_sets = last_derived_sets(&self.rounds);
+        let prev_multisets = last_derived_multisets(&self.rounds);
         let has_ext_delta = component_has_external_delta(program, self, external_deltas);
         if !self.rounds.is_empty() && !has_ext_delta {
             return Ok((
@@ -992,141 +1168,242 @@ impl ComponentState {
         } else {
             1
         };
-
-        let mut next_rounds: Vec<ComponentRoundState> = Vec::new();
-        let mut prev_round_new_sets: std::collections::BTreeMap<
-            String,
-            crate::zset::ZSet<FactKey>,
-        > = self
-            .predicates
-            .iter()
-            .map(|p| (p.clone(), crate::zset::ZSet::new()))
-            .collect();
-        let mut prev_round_delta_x: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> =
-            std::collections::BTreeMap::new();
-
-        let mut converged = false;
+        let mut loop_state = ComponentLoopState {
+            program,
+            external_deltas,
+            prev_round_new_sets: self
+                .predicates
+                .iter()
+                .map(|p| (p.clone(), crate::zset::ZSet::new()))
+                .collect(),
+            prev_round_delta_x: std::collections::BTreeMap::new(),
+            next_rounds: Vec::with_capacity(max_rounds.min(64)),
+        };
         let is_initial_build = self.rounds.is_empty();
+        let mut has_converged = false;
         for round_idx in 0..max_rounds {
-            if !budget.is_active() {
-                return Err(crate::Error::LimitExceeded(
-                    "budget exhausted during incremental fixpoint".to_owned(),
-                ));
-            }
-            let (mut round, use_ext_deltas) = if round_idx < self.rounds.len() {
-                (self.rounds[round_idx].clone(), true)
-            } else if is_initial_build {
-                if let Some(last_new) = next_rounds.last() {
-                    (last_new.clone(), false)
-                } else {
-                    (empty_round_for_component(program, self), true)
-                }
-            } else if let Some(last) = self.rounds.last() {
-                (last.clone(), true)
-            } else {
-                (empty_round_for_component(program, self), true)
-            };
-
-            let mut round_input_deltas = if use_ext_deltas {
-                external_deltas.clone()
-            } else {
-                std::collections::BTreeMap::new()
-            };
-            for pred in &self.predicates {
-                if let Some(dx) = prev_round_delta_x.get(pred) {
-                    round_input_deltas.insert(pred.clone(), dx.clone());
-                } else {
-                    round_input_deltas.remove(pred);
-                }
-            }
-
-            let mut round_m_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> =
-                std::collections::BTreeMap::new();
-            for rule_id in &self.rule_ids {
-                let Some(rule_state) = round.rule_states.get_mut(rule_id) else {
-                    continue;
-                };
-                let delta_out =
-                    rule_state.step_delta(&round_input_deltas, budget, coverage_reasons)?;
-                if !delta_out.is_empty() {
-                    round_m_deltas
-                        .entry(rule_state.rule.head.predicate.clone())
-                        .or_default()
-                        .add_in_place(&delta_out)?;
-                }
-            }
-
-            let mut round_x_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> =
-                std::collections::BTreeMap::new();
-            let mut round_new_sets: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> =
-                std::collections::BTreeMap::new();
-            for pred in &self.predicates {
-                let m_prev = round.derived_multisets.entry(pred.clone()).or_default();
-                let x_prev = round.derived_sets.entry(pred.clone()).or_default();
-                let x_delta = if let Some(m_delta) = round_m_deltas.get(pred) {
-                    let dx = m_prev.delta_distinct(m_delta)?;
-                    m_prev.add_in_place(m_delta)?;
-                    x_prev.add_in_place(&dx)?;
-                    dx
-                } else {
-                    crate::zset::ZSet::new()
-                };
-                if is_initial_build {
-                    let prev_s = prev_round_new_sets.get(pred).cloned().unwrap_or_default();
-                    round_x_deltas.insert(pred.clone(), x_prev.subtract(&prev_s)?);
-                } else {
-                    round_x_deltas.insert(pred.clone(), x_delta);
-                }
-                round_new_sets.insert(pred.clone(), x_prev.clone());
-            }
-
-            let is_fixpoint = !self.is_recursive || round_new_sets == prev_round_new_sets;
-            next_rounds.push(round);
-            prev_round_new_sets = round_new_sets;
-            prev_round_delta_x = round_x_deltas;
-
-            if is_fixpoint {
-                converged = true;
+            if self.advance_component_round(
+                round_idx,
+                is_initial_build,
+                &mut loop_state,
+                budget,
+                coverage_reasons,
+            )? {
+                has_converged = true;
                 break;
             }
         }
-
-        if !converged && self.is_recursive {
+        if !has_converged && self.is_recursive {
             budget.stop(crate::ExecutionStatus::Partial);
             return Err(crate::Error::LimitExceeded(
                 "incremental fixpoint exceeded max_recursion_depth".to_owned(),
             ));
         }
+        self.rounds = loop_state.next_rounds;
+        debug_assert!(!self.rounds.is_empty() || self.rule_ids.is_empty());
+        debug_assert!(self.rounds.len() <= max_rounds);
+        compute_outer_component_deltas(&self.predicates, &prev_sets, &prev_multisets, &self.rounds)
+    }
 
-        self.rounds = next_rounds;
-        let final_sets = self
-            .rounds
-            .last()
-            .map(|r| &r.derived_sets)
-            .cloned()
-            .unwrap_or_default();
-        let final_multisets = self
-            .rounds
-            .last()
-            .map(|r| &r.derived_multisets)
-            .cloned()
-            .unwrap_or_default();
+    fn advance_component_round(
+        &self,
+        round_idx: usize,
+        is_initial_build: bool,
+        loop_state: &mut ComponentLoopState<'_>,
+        budget: &mut crate::engine::Budget<'_>,
+        coverage_reasons: &mut std::collections::BTreeMap<String, String>,
+    ) -> Result<bool, crate::Error> {
+        if !budget.is_active() {
+            return Err(crate::Error::LimitExceeded(
+                "budget exhausted during incremental fixpoint".to_owned(),
+            ));
+        }
+        let (mut round, use_ext_deltas) =
+            self.select_round_template(round_idx, is_initial_build, loop_state);
+        let round_input_deltas = build_round_inputs(
+            &self.predicates,
+            use_ext_deltas,
+            loop_state.external_deltas,
+            &loop_state.prev_round_delta_x,
+        );
+        let round_m_deltas = step_round_rules(
+            &self.rule_ids,
+            &mut round,
+            &round_input_deltas,
+            budget,
+            coverage_reasons,
+        )?;
+        let (round_x_deltas, round_new_sets) = apply_round_distinct_deltas(
+            &self.predicates,
+            &mut round,
+            &round_m_deltas,
+            is_initial_build,
+            &loop_state.prev_round_new_sets,
+        )?;
+        let is_fixpoint = !self.is_recursive || round_new_sets == loop_state.prev_round_new_sets;
+        assert!(!self.predicates.is_empty());
+        loop_state.next_rounds.push(round);
+        loop_state.prev_round_new_sets = round_new_sets;
+        loop_state.prev_round_delta_x = round_x_deltas;
+        debug_assert_eq!(loop_state.next_rounds.len(), round_idx.saturating_add(1));
+        Ok(is_fixpoint)
+    }
 
-        let mut outer_deltas = std::collections::BTreeMap::new();
-        let mut outer_m_deltas = std::collections::BTreeMap::new();
-        for pred in &self.predicates {
+    fn select_round_template(
+        &self,
+        round_idx: usize,
+        is_initial_build: bool,
+        loop_state: &ComponentLoopState<'_>,
+    ) -> (ComponentRoundState, bool) {
+        if round_idx < self.rounds.len() {
+            (self.rounds[round_idx].clone(), true)
+        } else if is_initial_build {
+            if let Some(last_new) = loop_state.next_rounds.last() {
+                (last_new.clone(), false)
+            } else {
+                (empty_round_for_component(loop_state.program, self), true)
+            }
+        } else if let Some(last) = self.rounds.last() {
+            (last.clone(), true)
+        } else {
+            (empty_round_for_component(loop_state.program, self), true)
+        }
+    }
+}
+
+fn last_derived_sets(
+    rounds: &[ComponentRoundState],
+) -> std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> {
+    rounds
+        .last()
+        .map(|r| r.derived_sets.clone())
+        .unwrap_or_default()
+}
+
+fn last_derived_multisets(
+    rounds: &[ComponentRoundState],
+) -> std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> {
+    rounds
+        .last()
+        .map(|r| r.derived_multisets.clone())
+        .unwrap_or_default()
+}
+
+fn build_round_inputs(
+    predicates: &std::collections::BTreeSet<String>,
+    use_ext_deltas: bool,
+    external_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    prev_round_delta_x: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+) -> std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> {
+    let mut round_input_deltas = if use_ext_deltas {
+        external_deltas.clone()
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    for pred in predicates {
+        if let Some(dx) = prev_round_delta_x.get(pred) {
+            round_input_deltas.insert(pred.clone(), dx.clone());
+        } else {
+            round_input_deltas.remove(pred);
+        }
+    }
+    debug_assert!(!predicates.is_empty());
+    debug_assert!(round_input_deltas.len() < usize::MAX);
+    round_input_deltas
+}
+
+fn step_round_rules(
+    rule_ids: &[String],
+    round: &mut ComponentRoundState,
+    round_input_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    budget: &mut crate::engine::Budget<'_>,
+    coverage_reasons: &mut std::collections::BTreeMap<String, String>,
+) -> Result<std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>, crate::Error> {
+    assert!(!rule_ids.is_empty());
+    let mut round_m_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> =
+        std::collections::BTreeMap::new();
+    for rule_id in rule_ids {
+        let Some(rule_state) = round.rule_states.get_mut(rule_id) else {
+            continue;
+        };
+        let delta_out = rule_state.step_delta(round_input_deltas, budget, coverage_reasons)?;
+        if !delta_out.is_empty() {
+            round_m_deltas
+                .entry(rule_state.rule.head.predicate.clone())
+                .or_default()
+                .add_in_place(&delta_out)?;
+        }
+    }
+    debug_assert!(round_m_deltas.len() <= rule_ids.len());
+    Ok(round_m_deltas)
+}
+
+fn apply_round_distinct_deltas(
+    predicates: &std::collections::BTreeSet<String>,
+    round: &mut ComponentRoundState,
+    round_m_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    is_initial_build: bool,
+    prev_round_new_sets: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+) -> Result<ComponentStepDelta, crate::Error> {
+    assert!(!predicates.is_empty());
+    let mut x_delta_entries = Vec::with_capacity(predicates.len());
+    let mut new_set_entries = Vec::with_capacity(predicates.len());
+    for pred in predicates {
+        let m_prev = round.derived_multisets.entry(pred.clone()).or_default();
+        let x_prev = round.derived_sets.entry(pred.clone()).or_default();
+        let x_delta = if let Some(m_delta) = round_m_deltas.get(pred) {
+            let dx = m_prev.delta_distinct(m_delta)?;
+            m_prev.add_in_place(m_delta)?;
+            x_prev.add_in_place(&dx)?;
+            dx
+        } else {
+            crate::zset::ZSet::new()
+        };
+        let effective_delta = if is_initial_build {
+            let prev_s = prev_round_new_sets.get(pred).cloned().unwrap_or_default();
+            x_prev.subtract(&prev_s)?
+        } else {
+            x_delta
+        };
+        x_delta_entries.push((pred.clone(), effective_delta));
+        new_set_entries.push((pred.clone(), x_prev.clone()));
+    }
+    let round_x_deltas: std::collections::BTreeMap<_, _> = x_delta_entries.into_iter().collect();
+    let round_new_sets: std::collections::BTreeMap<_, _> = new_set_entries.into_iter().collect();
+    debug_assert_eq!(round_x_deltas.len(), predicates.len());
+    Ok((round_x_deltas, round_new_sets))
+}
+
+fn compute_outer_component_deltas(
+    predicates: &std::collections::BTreeSet<String>,
+    prev_final_sets: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    prev_final_multisets: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    rounds: &[ComponentRoundState],
+) -> Result<ComponentStepDelta, crate::Error> {
+    assert!(!predicates.is_empty());
+    let final_sets = last_derived_sets(rounds);
+    let final_multisets = last_derived_multisets(rounds);
+    let set_pairs = predicates
+        .iter()
+        .map(|pred| {
             let old_s = prev_final_sets.get(pred).cloned().unwrap_or_default();
             let new_s = final_sets.get(pred).cloned().unwrap_or_default();
-            let diff_s = new_s.subtract(&old_s)?;
-            outer_deltas.insert(pred.clone(), diff_s);
-
+            Ok((pred.clone(), new_s.subtract(&old_s)?))
+        })
+        .collect::<Result<Vec<_>, crate::Error>>()?;
+    let multiset_pairs = predicates
+        .iter()
+        .map(|pred| {
             let old_m = prev_final_multisets.get(pred).cloned().unwrap_or_default();
             let new_m = final_multisets.get(pred).cloned().unwrap_or_default();
-            let diff_m = new_m.subtract(&old_m)?;
-            outer_m_deltas.insert(pred.clone(), diff_m);
-        }
-        Ok((outer_deltas, outer_m_deltas))
-    }
+            Ok((pred.clone(), new_m.subtract(&old_m)?))
+        })
+        .collect::<Result<Vec<_>, crate::Error>>()?;
+    debug_assert_eq!(set_pairs.len(), predicates.len());
+    Ok((
+        set_pairs.into_iter().collect(),
+        multiset_pairs.into_iter().collect(),
+    ))
 }
 
 struct ComponentSpec {
@@ -1148,85 +1425,133 @@ fn partition_program_components(program: &crate::RuleProgram) -> Vec<ComponentSp
             .unwrap_or(0);
         by_stratum.entry(stratum).or_default().push(rule);
     }
-    let mut specs = Vec::new();
+    let mut specs = Vec::with_capacity(program.bundle.rules.len());
     for (stratum, rules) in by_stratum {
-        let heads: std::collections::BTreeSet<String> = rules
-            .iter()
-            .map(|rule| rule.head.predicate.clone())
-            .collect();
-        let mut adj: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = heads
-            .iter()
-            .map(|head| (head.clone(), std::collections::BTreeSet::new()))
-            .collect();
-        for rule in &rules {
-            let head = &rule.head.predicate;
-            for literal in &rule.body {
-                if let crate::Literal::Positive(atom) = literal
-                    && heads.contains(&atom.predicate)
-                {
-                    adj.entry(head.clone())
-                        .or_default()
-                        .insert(atom.predicate.clone());
-                    adj.entry(atom.predicate.clone())
-                        .or_default()
-                        .insert(head.clone());
-                }
-            }
+        partition_stratum_components(stratum, &rules, &mut specs);
+    }
+    debug_assert!(specs.len() <= program.bundle.rules.len());
+    debug_assert!(by_stratum_count_ok(program));
+    specs
+}
+
+fn by_stratum_count_ok(program: &crate::RuleProgram) -> bool {
+    program.bundle.rules.len() < usize::MAX
+}
+
+fn partition_stratum_components(
+    stratum: usize,
+    rules: &[&crate::Rule],
+    specs: &mut Vec<ComponentSpec>,
+) {
+    assert!(!rules.is_empty());
+    let heads: std::collections::BTreeSet<String> = rules
+        .iter()
+        .map(|rule| rule.head.predicate.clone())
+        .collect();
+    let adj = build_stratum_adjacency(rules, &heads);
+    let mut visited = std::collections::BTreeSet::new();
+    for head in &heads {
+        if visited.contains(head) {
+            continue;
         }
-        let mut visited = std::collections::BTreeSet::new();
-        for head in &heads {
-            if visited.contains(head) {
-                continue;
+        let comp_preds = collect_connected_predicates(head, &adj, &mut visited);
+        specs.push(build_component_spec(stratum, rules, comp_preds));
+    }
+    debug_assert!(visited.len() == heads.len());
+}
+
+fn build_stratum_adjacency(
+    rules: &[&crate::Rule],
+    heads: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    assert!(!heads.is_empty());
+    let mut adj: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = heads
+        .iter()
+        .map(|head| (head.clone(), std::collections::BTreeSet::new()))
+        .collect();
+    for rule in rules {
+        let head = &rule.head.predicate;
+        for literal in &rule.body {
+            if let crate::Literal::Positive(atom) = literal
+                && heads.contains(&atom.predicate)
+            {
+                adj.entry(head.clone())
+                    .or_default()
+                    .insert(atom.predicate.clone());
+                adj.entry(atom.predicate.clone())
+                    .or_default()
+                    .insert(head.clone());
             }
-            let mut comp_preds = std::collections::BTreeSet::new();
-            let mut queue = std::collections::VecDeque::from([head.clone()]);
-            while let Some(cur) = queue.pop_front() {
-                if !visited.insert(cur.clone()) {
-                    continue;
-                }
-                comp_preds.insert(cur.clone());
-                if let Some(neighbors) = adj.get(&cur) {
-                    for next in neighbors {
-                        if !visited.contains(next) {
-                            queue.push_back(next.clone());
-                        }
-                    }
-                }
-            }
-            let comp_rules: Vec<&crate::Rule> = rules
-                .iter()
-                .copied()
-                .filter(|rule| comp_preds.contains(&rule.head.predicate))
-                .collect();
-            let is_recursive = comp_rules.iter().any(|rule| {
-                rule.body.iter().any(|literal| {
-                    matches!(literal, crate::Literal::Positive(atom) if comp_preds.contains(&atom.predicate))
-                })
-            });
-            let id = comp_preds.iter().next().cloned().unwrap_or_default();
-            let rule_ids = comp_rules.iter().map(|rule| rule.id.clone()).collect();
-            specs.push(ComponentSpec {
-                stratum,
-                id,
-                predicates: comp_preds,
-                rule_ids,
-                is_recursive,
-            });
         }
     }
-    specs
+    debug_assert_eq!(adj.len(), heads.len());
+    adj
+}
+
+fn collect_connected_predicates(
+    start_head: &str,
+    adj: &std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    assert!(adj.contains_key(start_head));
+    let mut comp_preds = std::collections::BTreeSet::new();
+    let mut queue = std::collections::VecDeque::from([start_head.to_owned()]);
+    while let Some(cur) = queue.pop_front() {
+        if !visited.insert(cur.clone()) {
+            continue;
+        }
+        comp_preds.insert(cur.clone());
+        if let Some(neighbors) = adj.get(&cur) {
+            for next in neighbors {
+                if !visited.contains(next) {
+                    queue.push_back(next.clone());
+                }
+            }
+        }
+    }
+    debug_assert!(!comp_preds.is_empty());
+    comp_preds
+}
+
+fn build_component_spec(
+    stratum: usize,
+    rules: &[&crate::Rule],
+    comp_preds: std::collections::BTreeSet<String>,
+) -> ComponentSpec {
+    assert!(!comp_preds.is_empty());
+    let comp_rules: Vec<&crate::Rule> = rules
+        .iter()
+        .copied()
+        .filter(|rule| comp_preds.contains(&rule.head.predicate))
+        .collect();
+    let is_recursive = comp_rules.iter().any(|rule| {
+        rule.body.iter().any(|literal| {
+            matches!(literal, crate::Literal::Positive(atom) if comp_preds.contains(&atom.predicate))
+        })
+    });
+    let id = comp_preds.iter().next().cloned().unwrap_or_default();
+    let rule_ids = comp_rules.iter().map(|rule| rule.id.clone()).collect();
+    debug_assert!(!id.is_empty());
+    ComponentSpec {
+        stratum,
+        id,
+        predicates: comp_preds,
+        rule_ids,
+        is_recursive,
+    }
 }
 
 fn empty_round_for_component(
     program: &crate::RuleProgram,
     comp: &ComponentState,
 ) -> ComponentRoundState {
-    let mut rule_states = std::collections::BTreeMap::new();
-    for rule in &program.bundle.rules {
-        if comp.predicates.contains(&rule.head.predicate) {
-            rule_states.insert(rule.id.clone(), RuleState::new(rule.clone()));
-        }
-    }
+    let rule_states = program
+        .bundle
+        .rules
+        .iter()
+        .filter(|rule| comp.predicates.contains(&rule.head.predicate))
+        .map(|rule| (rule.id.clone(), RuleState::new(rule.clone())))
+        .collect();
     ComponentRoundState {
         rule_states,
         derived_multisets: std::collections::BTreeMap::new(),
@@ -1239,20 +1564,26 @@ fn external_inputs_for_component(
     comp: &ComponentState,
     relations: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
 ) -> std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>> {
-    let mut inputs = std::collections::BTreeMap::new();
-    for rule in &program.bundle.rules {
-        if !comp.predicates.contains(&rule.head.predicate) {
-            continue;
-        }
-        for literal in &rule.body {
+    assert!(!comp.predicates.is_empty());
+    let inputs: std::collections::BTreeMap<_, _> = program
+        .bundle
+        .rules
+        .iter()
+        .filter(|rule| comp.predicates.contains(&rule.head.predicate))
+        .flat_map(|rule| rule.body.iter())
+        .filter_map(|literal| {
             if let crate::Literal::Positive(atom) | crate::Literal::Negative(atom) = literal
                 && !comp.predicates.contains(&atom.predicate)
-                && let Some(rel) = relations.get(&atom.predicate)
             {
-                inputs.insert(atom.predicate.clone(), rel.clone());
+                relations
+                    .get(&atom.predicate)
+                    .map(|rel| (atom.predicate.clone(), rel.clone()))
+            } else {
+                None
             }
-        }
-    }
+        })
+        .collect();
+    debug_assert!(inputs.len() <= relations.len());
     inputs
 }
 
@@ -1261,22 +1592,24 @@ fn component_has_external_delta(
     comp: &ComponentState,
     external_deltas: &std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
 ) -> bool {
-    for rule in &program.bundle.rules {
-        if !comp.predicates.contains(&rule.head.predicate) {
-            continue;
-        }
-        for literal in &rule.body {
-            if let crate::Literal::Positive(atom) | crate::Literal::Negative(atom) = literal
-                && !comp.predicates.contains(&atom.predicate)
-                && external_deltas
-                    .get(&atom.predicate)
-                    .is_some_and(|delta| !delta.is_empty())
-            {
-                return true;
+    assert!(!comp.predicates.is_empty());
+    debug_assert!(comp.rule_ids.len() <= program.bundle.rules.len());
+    program
+        .bundle
+        .rules
+        .iter()
+        .filter(|rule| comp.predicates.contains(&rule.head.predicate))
+        .flat_map(|rule| rule.body.iter())
+        .any(|literal| {
+            if let crate::Literal::Positive(atom) | crate::Literal::Negative(atom) = literal {
+                !comp.predicates.contains(&atom.predicate)
+                    && external_deltas
+                        .get(&atom.predicate)
+                        .is_some_and(|delta| !delta.is_empty())
+            } else {
+                false
             }
-        }
-    }
-    false
+        })
 }
 
 fn charge_budget(budget: &mut crate::engine::Budget<'_>, amount: u64) -> Result<(), crate::Error> {
@@ -1289,6 +1622,44 @@ fn charge_budget(budget: &mut crate::engine::Budget<'_>, amount: u64) -> Result<
     }
 }
 
+struct PredicateReason<'a> {
+    predicate: &'a str,
+    reason: &'a str,
+}
+
+fn record_coverage_reason(
+    coverage_reasons: &mut std::collections::BTreeMap<String, String>,
+    entry: PredicateReason<'_>,
+) {
+    coverage_reasons.insert(entry.predicate.to_owned(), entry.reason.to_owned());
+}
+
+fn bind_optional_delta(
+    atom: &crate::Atom,
+    maybe_delta: Option<&crate::zset::ZSet<FactKey>>,
+    budget: &mut crate::engine::Budget<'_>,
+) -> Result<crate::zset::ZSet<Binding>, crate::Error> {
+    if let Some(delta) = maybe_delta
+        && !delta.is_empty()
+    {
+        return bind_atom_zset(atom, delta, budget);
+    }
+    Ok(crate::zset::ZSet::new())
+}
+
+fn filter_optional_neg(
+    atom: &crate::Atom,
+    maybe_delta: Option<&crate::zset::ZSet<FactKey>>,
+    budget: &mut crate::engine::Budget<'_>,
+) -> Result<crate::zset::ZSet<FactKey>, crate::Error> {
+    if let Some(delta) = maybe_delta
+        && !delta.is_empty()
+    {
+        return filter_neg_atom(atom, delta, budget);
+    }
+    Ok(crate::zset::ZSet::new())
+}
+
 fn compute_shared_vars(atoms: &[crate::Atom]) -> Vec<Vec<String>> {
     let mut seen_vars = std::collections::BTreeSet::new();
     let mut shared = Vec::with_capacity(atoms.len().saturating_sub(1));
@@ -1296,9 +1667,12 @@ fn compute_shared_vars(atoms: &[crate::Atom]) -> Vec<Vec<String>> {
         let atom_vars: std::collections::BTreeSet<String> = atom
             .terms
             .iter()
-            .filter_map(|term| match term {
-                crate::Term::Variable(name) => Some(name.clone()),
-                crate::Term::Constant(_) => None,
+            .filter_map(|term| {
+                if let crate::Term::Variable(name) = term {
+                    Some(name.clone())
+                } else {
+                    None
+                }
             })
             .collect();
         if idx > 0 {
@@ -1307,6 +1681,8 @@ fn compute_shared_vars(atoms: &[crate::Atom]) -> Vec<Vec<String>> {
         }
         seen_vars.extend(atom_vars);
     }
+    debug_assert_eq!(shared.len(), atoms.len().saturating_sub(1));
+    debug_assert!(seen_vars.len() < usize::MAX);
     shared
 }
 
@@ -1329,28 +1705,31 @@ fn bind_atom_zset(
 }
 
 fn unify_atom_terms(atom: &crate::Atom, terms: &[mneme_core::Value]) -> Option<Binding> {
+    assert!(!atom.predicate.is_empty());
     if atom.terms.len() != terms.len() {
         return None;
     }
-    let mut binding = Binding::new();
-    for (term, value) in atom.terms.iter().zip(terms) {
-        match term {
-            crate::Term::Constant(expected) => {
-                if expected != value {
-                    return None;
-                }
-            }
-            crate::Term::Variable(name) => {
-                if let Some(existing) = binding.get(name) {
-                    if existing != value {
+    let binding =
+        atom.terms
+            .iter()
+            .zip(terms)
+            .try_fold(Binding::new(), |mut acc, (term, value)| {
+                if let crate::Term::Constant(expected) = term {
+                    if expected != value {
                         return None;
                     }
-                } else {
-                    binding.insert(name.clone(), value.clone());
+                } else if let crate::Term::Variable(name) = term {
+                    if let Some(existing) = acc.get(name) {
+                        if existing != value {
+                            return None;
+                        }
+                    } else {
+                        acc.insert(name.clone(), value.clone());
+                    }
                 }
-            }
-        }
-    }
+                Some(acc)
+            })?;
+    debug_assert!(binding.len() <= atom.terms.len());
     Some(binding)
 }
 
@@ -1454,6 +1833,7 @@ fn compute_group_head_row(
     agg: &AggSpec,
     bucket: &crate::zset::ZSet<Binding>,
 ) -> Result<Option<FactKey>, &'static str> {
+    assert!(!head.predicate.is_empty());
     let mut values = Vec::new();
     let mut first_binding: Option<&Binding> = None;
     for (binding, weight) in bucket.iter() {
@@ -1465,7 +1845,9 @@ fn compute_group_head_row(
         }
         let val = crate::engine::term_value_crate(&agg.input, binding)
             .ok_or("aggregate input is unbound")?;
-        for _ in 0..weight {
+        let repeat = usize::try_from(weight).map_err(|_| "aggregate weight overflow")?;
+        values.reserve(repeat);
+        for _ in 0..repeat {
             values.push(val.clone());
         }
     }
@@ -1473,13 +1855,22 @@ fn compute_group_head_row(
         return Ok(None);
     };
     let agg_val = crate::engine::aggregate_value_crate(agg.function, values)?;
+    debug_assert!(!head.terms.is_empty());
     let head_terms = head
         .terms
         .iter()
-        .map(|term| match term {
-            crate::Term::Constant(value) => Some(value.clone()),
-            crate::Term::Variable(name) if name == &agg.output => Some(agg_val.clone()),
-            crate::Term::Variable(name) => first.get(name).cloned(),
+        .map(|term| {
+            if let crate::Term::Constant(value) = term {
+                Some(value.clone())
+            } else if let crate::Term::Variable(name) = term {
+                if name == &agg.output {
+                    Some(agg_val.clone())
+                } else {
+                    first.get(name).cloned()
+                }
+            } else {
+                None
+            }
         })
         .collect::<Option<Vec<_>>>()
         .ok_or("aggregate head variable is unbound")?;

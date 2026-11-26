@@ -67,13 +67,19 @@ pub struct ReplStepSummary {
 /// A bounded, read-only, revision-pinned Dynamic Datalog REPL session.
 pub struct ReplSession {
     base: crate::engine::BaseSnapshot,
-    ivm: crate::ivm::IvmState,
+    ivm: crate::ivm::ViewState,
     build: crate::Build,
     program: crate::RuleProgram,
     repl_limits: ReplLimits,
     total_work: u64,
     incomplete_extents: std::collections::BTreeSet<String>,
     at: Option<mneme_core::Timestamp>,
+}
+
+struct PreparedAdvance {
+    target_revision: mneme_core::WorkspaceRevisionId,
+    step_limits: crate::Limits,
+    next_context: crate::BuildContext,
 }
 
 impl ReplSession {
@@ -103,7 +109,7 @@ impl ReplSession {
                 "session row limit exceeded while loading base extents".to_owned(),
             ));
         }
-        let ivm = crate::ivm::IvmState::from_base_facts(&base.facts)?;
+        let ivm = crate::ivm::ViewState::from_base_facts(&base.facts)?;
         let build = crate::Build {
             context,
             status: base.status,
@@ -494,6 +500,39 @@ impl ReplSession {
         workspace: &mut mneme_store::Workspace,
         revision: Option<mneme_core::WorkspaceRevisionId>,
     ) -> Result<ReplStepSummary, crate::Error> {
+        let remaining_work = self.remaining_total_work()?;
+        let start = crate::engine::evaluation_start();
+        let mut prepared = self.prepare_advance(workspace, revision, remaining_work)?;
+        let base_advance = crate::engine::advance_base_snapshot(
+            &self.base,
+            crate::engine::BaseAdvanceRequest {
+                workspace,
+                target_revision: prepared.target_revision,
+                next_context: &prepared.next_context,
+                bundle: &self.program.bundle,
+                limits: &prepared.step_limits,
+                incomplete_extents: &self.incomplete_extents,
+                at: self.at,
+                start,
+            },
+        )?;
+        self.sync_advance_generation(
+            &mut prepared.next_context,
+            base_advance.eligibility_generation,
+        );
+        if base_advance.limit_reached {
+            self.total_work = self.total_work.saturating_add(base_advance.work);
+            return Err(crate::Error::LimitExceeded(format!(
+                "advance base delta limit reached ({})",
+                base_advance.status.name()
+            )));
+        }
+
+        let ivm_result = self.run_advance_ivm(&base_advance, &prepared, start)?;
+        self.commit_advance_state(base_advance.next_base, ivm_result, prepared.next_context)
+    }
+
+    fn remaining_total_work(&self) -> Result<u64, crate::Error> {
         let remaining_work = self
             .repl_limits
             .max_total_work
@@ -503,13 +542,22 @@ impl ReplSession {
                 "session total work budget exhausted".to_owned(),
             ));
         }
+        Ok(remaining_work)
+    }
 
-        let start = crate::engine::evaluation_start();
+    fn prepare_advance(
+        &self,
+        workspace: &mneme_store::Workspace,
+        revision: Option<mneme_core::WorkspaceRevisionId>,
+        remaining_work: u64,
+    ) -> Result<PreparedAdvance, crate::Error> {
+        assert!(remaining_work > 0);
+        assert!(self.repl_limits.max_total_rows > 0);
         let target_revision = match revision {
             Some(rev) => rev,
             None => workspace.current_revision()?,
         };
-        let requested_was_head = revision.is_none();
+        let was_head_requested = revision.is_none();
         let generation = workspace.eligibility_generation()?;
         let mut step_limits = self.repl_limits.per_step.clone();
         step_limits.max_work = step_limits.max_work.min(remaining_work);
@@ -522,60 +570,55 @@ impl ReplSession {
         next_context.requested_revision = target_revision;
         next_context.served_revision = target_revision;
         next_context.eligibility_generation = generation;
-        next_context.requested_was_head = requested_was_head;
-        next_context.projection_build_id = crate::rules::build_id(crate::rules::BuildIdContext {
-            revision: target_revision,
+        next_context.requested_was_head = was_head_requested;
+        next_context.projection_build_id = self.advance_build_id(target_revision, generation);
+        Ok(PreparedAdvance {
+            target_revision,
+            step_limits,
+            next_context,
+        })
+    }
+
+    fn advance_build_id(
+        &self,
+        revision: mneme_core::WorkspaceRevisionId,
+        generation: u64,
+    ) -> String {
+        crate::rules::build_id(crate::rules::BuildIdContext {
+            revision,
             scope: &self.build.context.scope,
             generation,
             bundle: &self.program.bundle,
             limits: &self.repl_limits.per_step,
             incomplete_extents: &self.incomplete_extents,
             at: self.at,
-        });
+        })
+    }
 
-        let base_advance = crate::engine::advance_base_snapshot(
-            &self.base,
-            crate::engine::BaseAdvanceRequest {
-                workspace,
-                target_revision,
-                next_context: &next_context,
-                bundle: &self.program.bundle,
-                limits: &step_limits,
-                incomplete_extents: &self.incomplete_extents,
-                at: self.at,
-                start,
-            },
-        )?;
-        if base_advance.eligibility_generation != generation {
-            next_context.eligibility_generation = base_advance.eligibility_generation;
+    fn sync_advance_generation(&self, next_context: &mut crate::BuildContext, generation: u64) {
+        if next_context.eligibility_generation != generation {
+            next_context.eligibility_generation = generation;
             next_context.projection_build_id =
-                crate::rules::build_id(crate::rules::BuildIdContext {
-                    revision: target_revision,
-                    scope: &self.build.context.scope,
-                    generation: base_advance.eligibility_generation,
-                    bundle: &self.program.bundle,
-                    limits: &self.repl_limits.per_step,
-                    incomplete_extents: &self.incomplete_extents,
-                    at: self.at,
-                });
+                self.advance_build_id(next_context.served_revision, generation);
         }
-        if base_advance.limit_reached {
-            self.total_work = self.total_work.saturating_add(base_advance.work);
-            return Err(crate::Error::LimitExceeded(format!(
-                "advance base delta limit reached ({})",
-                base_advance.status.name()
-            )));
-        }
+    }
 
-        let ivm_result = crate::ivm::advance_ivm(
+    fn run_advance_ivm(
+        &mut self,
+        base_advance: &crate::engine::BaseAdvanceResult,
+        prepared: &PreparedAdvance,
+        start: std::time::Instant,
+    ) -> Result<crate::ivm::AdvanceViewResult, crate::Error> {
+        assert!(prepared.step_limits.max_work > 0);
+        let ivm_result = crate::ivm::advance_view(
             &self.ivm,
-            crate::ivm::AdvanceIvmRequest {
+            crate::ivm::AdvanceViewRequest {
                 program: &self.program,
-                base_deltas: base_advance.base_deltas,
-                dirty_provenance: base_advance.dirty_provenance,
+                base_deltas: base_advance.base_deltas.clone(),
+                dirty_provenance: base_advance.dirty_provenance.clone(),
                 next_base: &base_advance.next_base,
-                next_context: &next_context,
-                limits: &step_limits,
+                next_context: &prepared.next_context,
+                limits: &prepared.step_limits,
                 initial_work: base_advance.work,
                 current_facts: &self.build.facts,
                 at: self.at,
@@ -583,12 +626,22 @@ impl ReplSession {
             },
         )?;
         self.total_work = self.total_work.saturating_add(ivm_result.work);
+        debug_assert!(ivm_result.work >= base_advance.work);
         if ivm_result.limit_reached {
             return Err(crate::Error::LimitExceeded(format!(
                 "advance incremental limit reached ({})",
                 ivm_result.status.name()
             )));
         }
+        Ok(ivm_result)
+    }
+
+    fn commit_advance_state(
+        &mut self,
+        next_base: crate::engine::BaseSnapshot,
+        ivm_result: crate::ivm::AdvanceViewResult,
+        next_context: crate::BuildContext,
+    ) -> Result<ReplStepSummary, crate::Error> {
         let next_total_rows = count_fact_rows(&ivm_result.next_facts)?;
         if next_total_rows > self.repl_limits.max_total_rows {
             return Err(crate::Error::LimitExceeded(format!(
@@ -597,8 +650,8 @@ impl ReplSession {
             )));
         }
 
-        self.base = base_advance.next_base;
-        self.ivm = ivm_result.next_ivm;
+        self.base = next_base;
+        self.ivm = ivm_result.next_view;
         self.build = crate::Build {
             context: next_context.clone(),
             status: ivm_result.status,
@@ -643,6 +696,8 @@ fn build_session_context(
     bundle: &crate::RuleBundle,
     requested_was_head: bool,
 ) -> crate::BuildContext {
+    assert!(!bundle.id.is_empty());
+    assert!(bundle.schema_version > 0);
     let build_id = crate::rules::build_id(crate::rules::BuildIdContext {
         revision,
         scope: &request.scope,
@@ -672,6 +727,8 @@ fn load_session_base(
     context: &crate::BuildContext,
     start: std::time::Instant,
 ) -> Result<crate::engine::BaseSnapshot, crate::Error> {
+    assert!(request.limits.max_total_work > 0);
+    assert!(request.limits.max_total_rows > 0);
     let revision = context.served_revision;
     let snapshot = workspace.snapshot_at(revision, None)?;
     let snapshot = crate::visible_snapshot(snapshot, &request.scope, &request.access);
