@@ -1561,7 +1561,7 @@ fn lexical_rank(
     let mut entries = Vec::with_capacity(index.documents.len());
     for document in &index.documents {
         budget.charge(1)?;
-        let Some(weighted) = bm25(&index.lexical, document, &weights) else {
+        let Some(weighted) = bm25f(&index.lexical, document, &weights) else {
             continue;
         };
         let is_phrase = !query_lower.is_empty() && document.normalized.contains(&query_lower);
@@ -1573,30 +1573,45 @@ fn lexical_rank(
     Ok(entries)
 }
 
-/// BM25 term-frequency saturation for lexical ranking.
+/// BM25F term-frequency saturation for lexical ranking.
 const LEXICAL_K1: f64 = 1.2;
-/// BM25 length normalisation for lexical ranking. It is mild because indexed
-/// records range from three-word path hints to whole notes: full normalisation
-/// would rank short records first for being short.
-const LEXICAL_B: f64 = 0.25;
 
-/// The BM25 sum of the query terms a document contains, or nothing when it
-/// contains none of them.
-fn bm25(
+/// Pre-saturation BM25F sum of the query terms a document contains, or nothing
+/// when it contains none of them.
+///
+/// Each typed field contributes length-normalised, boost-weighted term
+/// frequency before saturation, preserving Robertson/Zaragoza/Taylor BM25F
+/// non-linear diminishing returns across fields and matching single-field BM25
+/// (`b = 0.75`) on plain-body documents.
+fn bm25f(
     statistics: &crate::model::LexicalStatistics,
     document: &crate::model::IndexedDocument,
     weights: &[(&str, f64)],
 ) -> Option<f64> {
-    let norm = LEXICAL_K1 * (1.0 - LEXICAL_B + LEXICAL_B * statistics.relative_length(document));
+    let field_factors: [f64; crate::model::LEXICAL_FIELD_COUNT] = std::array::from_fn(|index| {
+        let field = crate::model::LexicalField::ALL[index];
+        let b = field.length_norm();
+        let denominator = 1.0 - b + b * statistics.relative_field_length(document, field);
+        if denominator > 0.0 {
+            field.weight() / denominator
+        } else {
+            field.weight()
+        }
+    });
     let mut sum = 0.0;
     let mut is_matched = false;
     for (term, idf) in weights {
-        let Some(count) = document.term_counts.get(*term) else {
-            continue;
-        };
-        let frequency = f64::from(*count);
-        sum += idf * frequency * (LEXICAL_K1 + 1.0) / (frequency + norm);
-        is_matched = true;
+        let mut pseudo_tf = 0.0;
+        for field in crate::model::LexicalField::ALL {
+            let count = document.field_term_count(field, term);
+            if count > 0 {
+                pseudo_tf += f64::from(count) * field_factors[field.index()];
+            }
+        }
+        if pseudo_tf > 0.0 {
+            sum += idf * pseudo_tf * (LEXICAL_K1 + 1.0) / (pseudo_tf + LEXICAL_K1);
+            is_matched = true;
+        }
     }
     is_matched.then_some(sum)
 }

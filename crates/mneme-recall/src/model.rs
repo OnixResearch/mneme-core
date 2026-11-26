@@ -562,6 +562,73 @@ impl CachedIndex {
     }
 }
 
+/// Typed fields weighted independently before BM25F saturation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LexicalField {
+    /// Document titles, H1s, entity labels, merged source path hints, claim subjects.
+    TitleOrLabel = 0,
+    /// Section headings, code symbol identifiers, claim predicates.
+    HeadingOrSymbol = 1,
+    /// Source prose, claim values, episode summaries.
+    BodyOrValue = 2,
+    /// Entity properties/types, claim authors, episode actors.
+    Metadata = 3,
+}
+
+pub(crate) const LEXICAL_FIELD_COUNT: usize = 4;
+
+const TITLE_FIELD_WEIGHT: f64 = 2.5;
+const TITLE_FIELD_B: f64 = 0.4;
+const HEADING_FIELD_WEIGHT: f64 = 2.0;
+const HEADING_FIELD_B: f64 = 0.5;
+const BODY_FIELD_WEIGHT: f64 = 1.0;
+const BODY_FIELD_B: f64 = 0.75;
+const METADATA_FIELD_WEIGHT: f64 = 0.4;
+const METADATA_FIELD_B: f64 = 0.25;
+
+impl LexicalField {
+    /// All fields in canonical index order.
+    pub const ALL: [Self; LEXICAL_FIELD_COUNT] = [
+        Self::TitleOrLabel,
+        Self::HeadingOrSymbol,
+        Self::BodyOrValue,
+        Self::Metadata,
+    ];
+
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Pre-saturation BM25F field boost `w_f`.
+    pub const fn weight(self) -> f64 {
+        match self {
+            Self::TitleOrLabel => TITLE_FIELD_WEIGHT,
+            Self::HeadingOrSymbol => HEADING_FIELD_WEIGHT,
+            Self::BodyOrValue => BODY_FIELD_WEIGHT,
+            Self::Metadata => METADATA_FIELD_WEIGHT,
+        }
+    }
+
+    /// Per-field BM25F length normalisation `b_f`.
+    pub const fn length_norm(self) -> f64 {
+        match self {
+            Self::TitleOrLabel => TITLE_FIELD_B,
+            Self::HeadingOrSymbol => HEADING_FIELD_B,
+            Self::BodyOrValue => BODY_FIELD_B,
+            Self::Metadata => METADATA_FIELD_B,
+        }
+    }
+}
+
+/// Stem counts and total length for one typed field of an indexed document.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FieldTerms {
+    /// Occurrences of each lexical stem in this field.
+    pub counts: std::collections::BTreeMap<String, u32>,
+    /// Number of lexical stems in this field, repeats included.
+    pub total: usize,
+}
+
 /// The corpus statistics lexical ranking weights terms with.
 ///
 /// They are computed from the documents of one index and nothing else. An index
@@ -572,37 +639,50 @@ impl CachedIndex {
 #[derive(Clone, Debug)]
 pub(crate) struct LexicalStatistics {
     documents: usize,
-    /// Number of documents that contain each stem.
+    /// Number of documents that contain each stem in at least one field.
     frequencies: std::collections::BTreeMap<String, usize>,
-    /// Mean number of stems per document.
-    average_length: f64,
+    /// Mean number of stems per non-empty document for each typed field.
+    average_field_lengths: [f64; LEXICAL_FIELD_COUNT],
 }
 
 impl LexicalStatistics {
     fn of(documents: &[IndexedDocument]) -> Self {
-        // Every document lists each of its stems once, so after sorting the
-        // run length of a stem is the number of documents that contain it.
-        let mut stems: Vec<&String> = documents
-            .iter()
-            .flat_map(|document| document.term_counts.keys())
-            .collect();
+        // Count each stem at most once per document across all fields so
+        // multi-field occurrences never inflate document frequency.
+        let mut stems: Vec<&str> = Vec::new();
+        let mut field_totals = [0_usize; LEXICAL_FIELD_COUNT];
+        let mut field_non_empty = [0_usize; LEXICAL_FIELD_COUNT];
+        for document in documents {
+            let mut seen = std::collections::BTreeSet::new();
+            for field in LexicalField::ALL {
+                let idx = field.index();
+                let terms = &document.fields[idx];
+                if terms.total > 0 {
+                    field_totals[idx] = field_totals[idx].saturating_add(terms.total);
+                    field_non_empty[idx] = field_non_empty[idx].saturating_add(1);
+                }
+                for term in terms.counts.keys() {
+                    seen.insert(term.as_str());
+                }
+            }
+            stems.extend(seen);
+        }
         stems.sort_unstable();
         let frequencies = stems
             .chunk_by(|left, right| left == right)
-            .filter_map(|run| run.first().map(|stem| ((*stem).clone(), run.len())))
+            .filter_map(|run| run.first().map(|stem| ((*stem).to_owned(), run.len())))
             .collect();
-        let total_length = documents.iter().fold(0_usize, |total, document| {
-            total.saturating_add(document.term_total)
+        let average_field_lengths = std::array::from_fn(|idx| {
+            if field_non_empty[idx] == 0 {
+                0.0
+            } else {
+                count(field_totals[idx]) / count(field_non_empty[idx])
+            }
         });
-        let average_length = if documents.is_empty() {
-            0.0
-        } else {
-            count(total_length) / count(documents.len())
-        };
         LexicalStatistics {
             documents: documents.len(),
             frequencies,
-            average_length,
+            average_field_lengths,
         }
     }
 
@@ -615,11 +695,16 @@ impl LexicalStatistics {
         ((count(self.documents) - containing + 0.5) / (containing + 0.5)).ln_1p()
     }
 
-    /// A document's length relative to the mean, for length normalisation.
-    /// An index whose documents hold no terms has no length to normalise.
-    pub(crate) fn relative_length(&self, document: &IndexedDocument) -> f64 {
-        if self.average_length > 0.0 {
-            count(document.term_total) / self.average_length
+    /// A document's length in `field` relative to the mean across non-empty
+    /// documents in that field.
+    pub(crate) fn relative_field_length(
+        &self,
+        document: &IndexedDocument,
+        field: LexicalField,
+    ) -> f64 {
+        let average = self.average_field_lengths[field.index()];
+        if average > 0.0 {
+            count(document.field_term_total(field)) / average
         } else {
             1.0
         }
@@ -639,10 +724,8 @@ pub(crate) struct IndexedDocument {
     pub kind: ContentKind,
     pub text: String,
     pub normalized: String,
-    /// Occurrences of each lexical stem.
-    pub term_counts: std::collections::BTreeMap<String, u32>,
-    /// Number of lexical stems, repeats included.
-    pub term_total: usize,
+    /// Per-field lexical stems and counts, indexed by [`LexicalField::index`].
+    pub fields: [FieldTerms; LEXICAL_FIELD_COUNT],
     pub trigrams: std::collections::BTreeMap<u64, u32>,
     pub trigram_norm: f64,
     pub field_path: String,
@@ -658,6 +741,20 @@ pub(crate) struct IndexedDocument {
     pub media_locations: Vec<MediaCitation>,
 }
 
+impl IndexedDocument {
+    pub(crate) fn field_term_count(&self, field: LexicalField, term: &str) -> u32 {
+        self.fields[field.index()]
+            .counts
+            .get(term)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn field_term_total(&self, field: LexicalField) -> usize {
+        self.fields[field.index()].total
+    }
+}
+
 /// Constants exported for evaluation and cache identity.
 pub const RECALL_CONTEXT_SCHEMA_VERSION: u32 = crate::INDEX_SCHEMA_VERSION;
 
@@ -670,7 +767,7 @@ mod idf_tests {
                 .iter()
                 .map(|(term, containing)| ((*term).to_owned(), *containing))
                 .collect(),
-            average_length: 4.0,
+            average_field_lengths: [4.0; super::LEXICAL_FIELD_COUNT],
         }
     }
 
