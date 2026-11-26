@@ -4061,10 +4061,10 @@ fn workspace_zstd_compression_preserves_digests_and_reads_legacy_blobs() {
             &scope_id,
             "k1",
             vec![entity_record.clone(), s1_record.clone()],
-            vec![mneme_store::SourceBlobDraft {
-                bytes: text_bytes.clone(),
-                media_type: mneme_core::Symbol::from("text/asciidoc"),
-            }],
+            vec![mneme_store::SourceBlobDraft::inline(
+                text_bytes.clone(),
+                mneme_core::Symbol::from("text/asciidoc"),
+            )],
             Vec::new(),
         ))
         .expect("baseline commit");
@@ -4080,10 +4080,10 @@ fn workspace_zstd_compression_preserves_digests_and_reads_legacy_blobs() {
             &scope_id,
             "k1",
             vec![entity_record.clone(), s1_record.clone()],
-            vec![mneme_store::SourceBlobDraft {
-                bytes: text_bytes.clone(),
-                media_type: mneme_core::Symbol::from("text/asciidoc"),
-            }],
+            vec![mneme_store::SourceBlobDraft::inline(
+                text_bytes.clone(),
+                mneme_core::Symbol::from("text/asciidoc"),
+            )],
             Vec::new(),
         ))
         .expect("zstd fresh commit");
@@ -4114,10 +4114,10 @@ fn workspace_zstd_compression_preserves_digests_and_reads_legacy_blobs() {
             &scope_id,
             "legacy",
             vec![entity_record, s0_record],
-            vec![mneme_store::SourceBlobDraft {
-                bytes: legacy_text.clone(),
-                media_type: mneme_core::Symbol::from("text/asciidoc"),
-            }],
+            vec![mneme_store::SourceBlobDraft::inline(
+                legacy_text.clone(),
+                mneme_core::Symbol::from("text/asciidoc"),
+            )],
             Vec::new(),
         ))
         .expect("legacy commit");
@@ -4136,10 +4136,10 @@ fn workspace_zstd_compression_preserves_digests_and_reads_legacy_blobs() {
             &scope_id,
             "k1",
             vec![s1_record],
-            vec![mneme_store::SourceBlobDraft {
-                bytes: text_bytes.clone(),
-                media_type: mneme_core::Symbol::from("text/asciidoc"),
-            }],
+            vec![mneme_store::SourceBlobDraft::inline(
+                text_bytes.clone(),
+                mneme_core::Symbol::from("text/asciidoc"),
+            )],
             Vec::new(),
         ))
         .expect("zstd commit s1");
@@ -4169,10 +4169,10 @@ fn workspace_zstd_compression_preserves_digests_and_reads_legacy_blobs() {
             &scope_id,
             "k2",
             vec![s2_record],
-            vec![mneme_store::SourceBlobDraft {
-                bytes: binary_bytes.clone(),
-                media_type: mneme_core::Symbol::from("application/pdf"),
-            }],
+            vec![mneme_store::SourceBlobDraft::inline(
+                binary_bytes.clone(),
+                mneme_core::Symbol::from("application/pdf"),
+            )],
             Vec::new(),
         ))
         .expect("zstd commit s2");
@@ -4375,14 +4375,14 @@ fn workspace_zstd_dictionary_and_fastcdc_deduplication() {
                 doc_v1_record.clone(),
             ],
             vec![
-                mneme_store::SourceBlobDraft {
-                    bytes: small_payload.clone(),
-                    media_type: mneme_core::Symbol::from("application/preserves"),
-                },
-                mneme_store::SourceBlobDraft {
-                    bytes: doc_v1.clone(),
-                    media_type: mneme_core::Symbol::from("text/asciidoc"),
-                },
+                mneme_store::SourceBlobDraft::inline(
+                    small_payload.clone(),
+                    mneme_core::Symbol::from("application/preserves"),
+                ),
+                mneme_store::SourceBlobDraft::inline(
+                    doc_v1.clone(),
+                    mneme_core::Symbol::from("text/asciidoc"),
+                ),
             ],
             Vec::new(),
         ))
@@ -4399,10 +4399,10 @@ fn workspace_zstd_dictionary_and_fastcdc_deduplication() {
             &scope_id,
             "plain-1",
             vec![entity_record.clone(), small_record.clone()],
-            vec![mneme_store::SourceBlobDraft {
-                bytes: small_payload.clone(),
-                media_type: mneme_core::Symbol::from("application/preserves"),
-            }],
+            vec![mneme_store::SourceBlobDraft::inline(
+                small_payload.clone(),
+                mneme_core::Symbol::from("application/preserves"),
+            )],
             Vec::new(),
         ))
         .expect("plain zstd commit");
@@ -4428,14 +4428,14 @@ fn workspace_zstd_dictionary_and_fastcdc_deduplication() {
             "cdc-1",
             vec![entity_record, small_record, doc_v1_record],
             vec![
-                mneme_store::SourceBlobDraft {
-                    bytes: small_payload.clone(),
-                    media_type: mneme_core::Symbol::from("application/preserves"),
-                },
-                mneme_store::SourceBlobDraft {
-                    bytes: doc_v1.clone(),
-                    media_type: mneme_core::Symbol::from("text/asciidoc"),
-                },
+                mneme_store::SourceBlobDraft::inline(
+                    small_payload.clone(),
+                    mneme_core::Symbol::from("application/preserves"),
+                ),
+                mneme_store::SourceBlobDraft::inline(
+                    doc_v1.clone(),
+                    mneme_core::Symbol::from("text/asciidoc"),
+                ),
             ],
             Vec::new(),
         ))
@@ -4489,10 +4489,10 @@ fn workspace_zstd_dictionary_and_fastcdc_deduplication() {
             &scope_id,
             "cdc-2",
             vec![doc_v2_record],
-            vec![mneme_store::SourceBlobDraft {
-                bytes: doc_v2.clone(),
-                media_type: mneme_core::Symbol::from("text/asciidoc"),
-            }],
+            vec![mneme_store::SourceBlobDraft::inline(
+                doc_v2.clone(),
+                mneme_core::Symbol::from("text/asciidoc"),
+            )],
             Vec::new(),
         ))
         .expect("cdc v2 commit");

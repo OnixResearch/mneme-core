@@ -36,10 +36,10 @@ fn fixture_command(base: mneme_core::WorkspaceRevisionId, key: &str) -> mneme_st
         scope: test_scope(),
         idempotency_key: key.to_owned(),
         records,
-        source_blobs: vec![mneme_store::SourceBlobDraft {
-            bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
-            media_type: mneme_core::Symbol::from("text/asciidoc"),
-        }],
+        source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+            mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
+            mneme_core::Symbol::from("text/asciidoc"),
+        )],
         publications: Vec::new(),
         import_candidates: Vec::new(),
         retention: None,
@@ -91,10 +91,10 @@ fn populated_workspace(root: &std::path::Path) -> mneme_store::Workspace {
     let mut command = fixture_command(outcome.revision, "second");
     let source_bytes = b"retained source payload bytes for scrub test";
     command.records = vec![retained_source_record(source_bytes)];
-    command.source_blobs = vec![mneme_store::SourceBlobDraft {
-        bytes: source_bytes.to_vec(),
-        media_type: mneme_core::Symbol::from("text/asciidoc"),
-    }];
+    command.source_blobs = vec![mneme_store::SourceBlobDraft::inline(
+        source_bytes.to_vec(),
+        mneme_core::Symbol::from("text/asciidoc"),
+    )];
     let second = workspace.commit(command).expect("commit retained source");
     assert_eq!(second.sequence, 2);
     workspace
@@ -550,10 +550,10 @@ fn source_commit(
         scope: test_scope(),
         idempotency_key: key.to_owned(),
         records: vec![record],
-        source_blobs: vec![mneme_store::SourceBlobDraft {
-            bytes: bytes.to_vec(),
-            media_type: mneme_core::Symbol::from("text/asciidoc"),
-        }],
+        source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+            bytes.to_vec(),
+            mneme_core::Symbol::from("text/asciidoc"),
+        )],
         publications: Vec::new(),
         import_candidates: Vec::new(),
         retention: None,

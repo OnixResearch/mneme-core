@@ -379,13 +379,7 @@ pub fn stage_dictionary(
     }
     debug_assert!(!dict_bytes.is_empty());
     debug_assert!(len_bytes <= MAX_ZSTD_DICTIONARY_BYTES);
-    let digest = mneme_core::ContentDigest::from_parts(
-        mneme_core::HashAlgorithm::Sha256,
-        mneme_core::EncodingProfile::RawBytesV1,
-        mneme_core::ValueBoundary::SourceBytes,
-        crate::payload::sha256(dict_bytes),
-    )
-    .map_err(|reason| crate::error::Failure::InvalidCommand(reason.to_owned()))?;
+    let digest = mneme_core::ContentDigest::of_source_bytes(dict_bytes);
     let target = dictionary_path(root, digest);
     if target.exists() {
         let existing = read_dictionary(root, digest)?;
@@ -542,7 +536,7 @@ fn parse_cdc_entry(
         ));
     }
     let chunk_digest = mneme_core::ContentDigest::from_parts(
-        mneme_core::HashAlgorithm::Sha256,
+        digest.algorithm(),
         mneme_core::EncodingProfile::RawBytesV1,
         mneme_core::ValueBoundary::SourceBytes,
         chunk_hash,
@@ -550,7 +544,7 @@ fn parse_cdc_entry(
     .map_err(|reason| corrupt_manifest(digest, reason))?;
     debug_assert!(chunk_len > 0);
     debug_assert!(chunk_len <= u64::from(MAX_FASTCDC_CHUNK_BYTES));
-    debug_assert_eq!(chunk_digest.algorithm(), mneme_core::HashAlgorithm::Sha256);
+    debug_assert_eq!(chunk_digest.algorithm(), digest.algorithm());
     Ok((chunk_digest, chunk_len))
 }
 

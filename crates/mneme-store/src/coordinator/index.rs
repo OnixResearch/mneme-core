@@ -266,9 +266,11 @@ fn verify_and_upsert_active_row(
         return Ok(());
     }
     let (_, _, _, envelope_digest, payload_digest, full_digest) = entry;
-    let digest = verify_envelope_digest(&envelope_digest, &full_digest, context)?;
+    let algorithm = super::blob_algorithm(transaction, &full_digest)?;
+    let digest = verify_envelope_digest(&envelope_digest, &full_digest, algorithm, context)?;
     let payload_digest = super::digest_with(
         &payload_digest,
+        algorithm.symbol(),
         "preserves-canonical-binary-v1",
         "payload",
         context,
@@ -290,10 +292,12 @@ fn verify_and_upsert_active_row(
 fn verify_envelope_digest(
     envelope_digest: &[u8],
     full_digest: &[u8],
+    algorithm: mneme_core::HashAlgorithm,
     context: mneme_core::WorkspaceRevisionId,
 ) -> crate::error::Result<mneme_core::ContentDigest> {
     let digest = super::digest_with(
         envelope_digest,
+        algorithm.symbol(),
         "preserves-canonical-binary-v1",
         "full-record",
         context,
@@ -1301,10 +1305,10 @@ mod tests {
                         ]),
                     },
                 ],
-                source_blobs: vec![crate::SourceBlobDraft {
-                    bytes: source_bytes,
-                    media_type: mneme_core::Symbol::from("text/asciidoc"),
-                }],
+                source_blobs: vec![crate::SourceBlobDraft::inline(
+                    source_bytes,
+                    mneme_core::Symbol::from("text/asciidoc"),
+                )],
                 publications: Vec::new(),
                 import_candidates: Vec::new(),
                 retention: None,

@@ -183,10 +183,7 @@ fn retained_source_record(
 }
 
 fn source_blob(bytes: &[u8]) -> mneme_store::SourceBlobDraft {
-    mneme_store::SourceBlobDraft {
-        bytes: bytes.to_vec(),
-        media_type: mneme_core::Symbol::from("text/asciidoc"),
-    }
+    mneme_store::SourceBlobDraft::inline(bytes.to_vec(), mneme_core::Symbol::from("text/asciidoc"))
 }
 
 fn entity_from_envelope(record: &mneme_core::RecordEnvelope) -> mneme_store::EntityMetadata {

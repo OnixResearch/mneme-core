@@ -68,10 +68,10 @@ fn source_commit(
         scope: test_scope(),
         idempotency_key: key.to_owned(),
         records: vec![draft],
-        source_blobs: vec![mneme_store::SourceBlobDraft {
-            bytes: bytes.to_vec(),
-            media_type: mneme_core::Symbol::from("application/octet-stream"),
-        }],
+        source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+            bytes.to_vec(),
+            mneme_core::Symbol::from("application/octet-stream"),
+        )],
         publications: Vec::new(),
         import_candidates: Vec::new(),
         retention: None,
