@@ -2,7 +2,7 @@
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 type FactKey = Vec<mneme_core::Value>;
-type Binding = std::collections::BTreeMap<String, mneme_core::Value>;
+pub(super) type Binding = std::collections::BTreeMap<String, mneme_core::Value>;
 pub(crate) type AvailabilityMap =
     std::collections::BTreeMap<mneme_core::RecordId, mneme_memory::SourceAvailability>;
 
@@ -22,6 +22,7 @@ pub(crate) struct FactStore {
     pub rows: std::collections::BTreeMap<FactKey, crate::FactData>,
     pub truncated: bool,
     indexes: std::collections::BTreeMap<(usize, Vec<usize>), FactColumnIndex>,
+    pub(super) tries: std::collections::BTreeMap<(usize, Vec<usize>), crate::freejoin::FactTrie>,
 }
 
 pub(crate) struct BuildFacts {
@@ -63,8 +64,8 @@ struct PremiseSupport {
 ///
 /// Kept apart from the fact store so a join can charge while it holds a shared
 /// borrow of the store: the two are disjoint fields of [`Evaluation`].
-struct Budget<'a> {
-    limits: &'a crate::Limits,
+pub(super) struct Budget<'a> {
+    pub(super) limits: &'a crate::Limits,
     work: u64,
     stored_rows: u64,
     start: std::time::Instant,
@@ -94,7 +95,7 @@ impl<'a> Budget<'a> {
 
     /// Charge work before it is spent, and notice cancellation and the clock.
     #[allow(unknown_lints, ambient_clock)] // wall-clock budget is the evaluation shell
-    fn charge(&mut self, amount: u64) -> bool {
+    pub(super) fn charge(&mut self, amount: u64) -> bool {
         if self.cancelled() {
             self.stop(crate::ExecutionStatus::Cancelled);
             return false;
@@ -136,11 +137,11 @@ impl<'a> Budget<'a> {
     }
 }
 
-struct Evaluation<'a> {
+pub(super) struct Evaluation<'a> {
     bundle: &'a crate::RuleBundle,
     context: &'a crate::BuildContext,
-    budget: Budget<'a>,
-    facts: std::collections::BTreeMap<String, FactStore>,
+    pub(super) budget: Budget<'a>,
+    pub(super) facts: std::collections::BTreeMap<String, FactStore>,
     coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
     base_coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
     coverage_reasons: std::collections::BTreeMap<String, String>,
@@ -153,7 +154,7 @@ struct Evaluation<'a> {
 }
 
 impl Evaluation<'_> {
-    fn coverage_status(&self, predicate: &str) -> crate::CoverageStatus {
+    pub(super) fn coverage_status(&self, predicate: &str) -> crate::CoverageStatus {
         self.coverage
             .get(predicate)
             .copied()
@@ -846,6 +847,13 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
             }
         }
     }
+    if !store.tries.is_empty() {
+        for ((arity, cols), trie) in &mut store.tries {
+            if terms.len() == *arity {
+                trie.insert(&terms, cols);
+            }
+        }
+    }
     store.rows.insert(
         terms,
         crate::FactData {
@@ -956,7 +964,7 @@ fn evaluate_rules(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RuleOutcome {
+pub(super) enum RuleOutcome {
     Changed,
     Stable,
     Skipped,
@@ -995,21 +1003,38 @@ fn evaluate_rule(evaluation: &mut Evaluation<'_>, rule: &crate::Rule) -> RuleOut
     if (aggregate.is_some() || has_negative) && !is_body_complete {
         return RuleOutcome::Skipped;
     }
-    let plan = plan_rule_body(rule, &evaluation.facts);
-    let mut bindings = match execute_plan(evaluation, rule, &plan) {
+    let positive_count = rule
+        .body
+        .iter()
+        .filter(|literal| matches!(literal, crate::Literal::Positive(_)))
+        .count();
+    let bindings = match if positive_count >= 2 {
+        crate::freejoin::evaluate_free_join_body(evaluation, rule)
+    } else {
+        evaluate_planned_body(evaluation, rule)
+    } {
         Ok(bindings) => bindings,
         Err(outcome) => return outcome,
     };
-    if plan.positive_reordered && bindings.len() > 1 {
-        sort_bindings_by_written_order(rule, &mut bindings);
-    }
     if let Some(aggregate) = aggregate {
         return evaluate_aggregate_rule(evaluation, rule, &aggregate, &bindings);
     }
     evaluate_ordinary_rule(evaluation, rule, &bindings)
 }
 
-type RuleBindings = Vec<Binding>;
+fn evaluate_planned_body(
+    evaluation: &mut Evaluation<'_>,
+    rule: &crate::Rule,
+) -> Result<RuleBindings, RuleOutcome> {
+    let plan = plan_rule_body(rule, &evaluation.facts);
+    let mut bindings = execute_plan(evaluation, rule, &plan)?;
+    if plan.positive_reordered && bindings.len() > 1 {
+        sort_bindings_by_written_order(rule, &mut bindings);
+    }
+    Ok(bindings)
+}
+
+pub(super) type RuleBindings = Vec<Binding>;
 
 #[derive(Clone, Debug)]
 enum PlanStep {
@@ -1312,7 +1337,7 @@ fn execute_plan(
     Ok(bindings)
 }
 
-fn sort_bindings_by_written_order(rule: &crate::Rule, bindings: &mut [Binding]) {
+pub(super) fn sort_bindings_by_written_order(rule: &crate::Rule, bindings: &mut [Binding]) {
     let written_positives = rule
         .body
         .iter()
@@ -1472,7 +1497,7 @@ fn ensure_column_index(
     Ok(IndexState::Ready)
 }
 
-fn push_extended_binding(
+pub(super) fn push_extended_binding(
     output: &mut RuleBindings,
     extended: Binding,
     max_bindings: usize,
@@ -1637,7 +1662,7 @@ fn join_by_column_index(
     Ok(output)
 }
 
-fn matches_atom(
+pub(super) fn matches_atom(
     evaluation: &mut Evaluation<'_>,
     atom: &crate::Atom,
     binding: &Binding,
@@ -1778,7 +1803,7 @@ fn unify(
     Some(extended)
 }
 
-fn term_value(term: &crate::Term, binding: &Binding) -> Option<mneme_core::Value> {
+pub(super) fn term_value(term: &crate::Term, binding: &Binding) -> Option<mneme_core::Value> {
     match term {
         crate::Term::Constant(value) => Some(value.clone()),
         crate::Term::Variable(name) => binding.get(name).cloned(),
@@ -1795,7 +1820,7 @@ fn term_value_ref<'a>(
     }
 }
 
-fn compare_values(
+pub(super) fn compare_values(
     op: crate::CompareOp,
     left: &mneme_core::Value,
     right: &mneme_core::Value,
@@ -2491,6 +2516,87 @@ mod tests {
             );
         }
         evaluation
+    }
+
+    // --- Reference binary indexed evaluator (#98 greedy + column indexes) ---
+
+    fn evaluate_rules_binary(
+        evaluation: &mut Evaluation<'_>,
+        rule_strata: &std::collections::BTreeMap<String, usize>,
+    ) {
+        debug_assert!(!evaluation.bundle.rules.is_empty());
+        let mut strata: std::collections::BTreeMap<usize, Vec<&crate::Rule>> =
+            std::collections::BTreeMap::new();
+        for rule in &evaluation.bundle.rules {
+            let stratum = rule_strata.get(&rule.head.predicate).copied().unwrap_or(0);
+            strata.entry(stratum).or_default().push(rule);
+        }
+        for rules in strata.values() {
+            let mut rounds = 0_usize;
+            loop {
+                if !evaluation.budget.is_active() {
+                    break;
+                }
+                let mut is_changed = false;
+                for rule in rules {
+                    if evaluate_rule_binary(evaluation, rule) == RuleOutcome::Changed {
+                        is_changed = true;
+                    }
+                    if !evaluation.budget.is_active() {
+                        break;
+                    }
+                }
+                rounds = rounds.saturating_add(1);
+                if !is_changed || !evaluation.budget.is_active() {
+                    break;
+                }
+                if rounds > evaluation.budget.limits.max_recursion_depth {
+                    evaluation.budget.stop(crate::ExecutionStatus::Partial);
+                    break;
+                }
+            }
+            update_derived_coverage(evaluation);
+        }
+        debug_assert!(!strata.is_empty());
+    }
+
+    fn evaluate_rule_binary(evaluation: &mut Evaluation<'_>, rule: &crate::Rule) -> RuleOutcome {
+        debug_assert!(!rule.head.predicate.is_empty());
+        let Some(is_body_complete) = body_is_complete(evaluation, rule) else {
+            return RuleOutcome::Skipped;
+        };
+        let aggregate = rule.body.iter().find_map(|literal| {
+            if let crate::Literal::Aggregate {
+                function,
+                input,
+                output,
+            } = literal
+            {
+                Some(AggregateSpec {
+                    function: *function,
+                    input: input.clone(),
+                    output: output.clone(),
+                })
+            } else {
+                None
+            }
+        });
+        let has_negative = rule
+            .body
+            .iter()
+            .any(|literal| matches!(literal, crate::Literal::Negative(_)));
+        if (aggregate.is_some() || has_negative) && !is_body_complete {
+            return RuleOutcome::Skipped;
+        }
+        let bindings = match evaluate_planned_body(evaluation, rule) {
+            Ok(bindings) => bindings,
+            Err(outcome) => return outcome,
+        };
+        debug_assert!(!bindings.is_empty());
+        if let Some(aggregate) = aggregate {
+            return evaluate_aggregate_rule(evaluation, rule, &aggregate, &bindings);
+        }
+        evaluate_ordinary_rule(evaluation, rule, &bindings)
     }
 
     // --- Reference naive evaluator (pre-optimization written-order scan) ---
@@ -3193,7 +3299,7 @@ mod tests {
         let vars = ["a", "b", "c", "d"];
 
         for case_idx in 0..30_usize {
-            let mut base_facts = Vec::new();
+            let mut base_facts = Vec::with_capacity(60);
             let mut next_rid = 1_u16;
             for (pred_idx, pred) in preds.iter().enumerate() {
                 // Deliberately skew extent sizes (some empty, some small, some medium).
@@ -3443,5 +3549,416 @@ mod tests {
         eprintln!("indexed-probe: naive_work={naive_work}, planned_work={planned_work}");
         assert!(naive_work > 4_000);
         assert!(planned_work < 800);
+    }
+
+    fn assert_evaluations_match(expected: &Evaluation<'_>, actual: &Evaluation<'_>) {
+        assert_eq!(actual.budget.status, expected.budget.status);
+        assert_eq!(actual.budget.limit_reached, expected.budget.limit_reached);
+        assert_eq!(
+            actual.budget.support_truncated,
+            expected.budget.support_truncated
+        );
+        assert_eq!(final_coverage(actual), final_coverage(expected));
+        assert_eq!(
+            actual.facts.keys().collect::<Vec<_>>(),
+            expected.facts.keys().collect::<Vec<_>>()
+        );
+        for (predicate, expected_store) in &expected.facts {
+            let actual_store = actual.facts.get(predicate).expect("matching predicate");
+            assert_eq!(actual_store.truncated, expected_store.truncated);
+            assert_eq!(
+                actual_store.rows.keys().collect::<Vec<_>>(),
+                expected_store.rows.keys().collect::<Vec<_>>()
+            );
+            for (key, expected_data) in &expected_store.rows {
+                let actual_data = actual_store.rows.get(key).expect("matching row");
+                assert_eq!(actual_data.supports, expected_data.supports);
+                assert_eq!(actual_data.sources, expected_data.sources);
+                assert_eq!(actual_data.truncated, expected_data.truncated);
+                assert_eq!(actual_data.canonical, expected_data.canonical);
+                assert_eq!(actual_data.canonical_roots, expected_data.canonical_roots);
+                assert_eq!(actual_data.temporal, expected_data.temporal);
+            }
+        }
+    }
+
+    fn assert_equivalent_to_binary(
+        bundle: &crate::RuleBundle,
+        base_facts: &[(String, FactKey, mneme_core::RecordId)],
+        limits: &crate::Limits,
+    ) -> (u64, u64) {
+        let program = bundle.validate().expect("valid bundle");
+        let context = test_context(bundle);
+        let current_sources = AvailabilityMap::new();
+        let fixture = EvaluationFixture {
+            bundle,
+            context: &context,
+            limits,
+            current_sources: &current_sources,
+            base_facts,
+        };
+        let mut binary = make_evaluation(&fixture);
+        evaluate_rules_binary(&mut binary, &program.strata);
+
+        let mut free_join = make_evaluation(&fixture);
+        evaluate_rules(&mut free_join, &program.strata);
+
+        assert_evaluations_match(&binary, &free_join);
+        (binary.budget.work, free_join.budget.work)
+    }
+
+    fn assert_equivalent_to_binary_and_naive(
+        bundle: &crate::RuleBundle,
+        base_facts: &[(String, FactKey, mneme_core::RecordId)],
+        limits: &crate::Limits,
+    ) -> (u64, u64, u64) {
+        assert!(!bundle.rules.is_empty());
+        let program = bundle.validate().expect("valid bundle");
+        assert!(!program.strata.is_empty());
+        let context = test_context(bundle);
+        let current_sources = AvailabilityMap::new();
+        let fixture = EvaluationFixture {
+            bundle,
+            context: &context,
+            limits,
+            current_sources: &current_sources,
+            base_facts,
+        };
+        let mut naive = make_evaluation(&fixture);
+        evaluate_rules_naive(&mut naive, &program.strata);
+
+        let mut binary = make_evaluation(&fixture);
+        evaluate_rules_binary(&mut binary, &program.strata);
+
+        let mut free_join = make_evaluation(&fixture);
+        evaluate_rules(&mut free_join, &program.strata);
+
+        assert_evaluations_match(&naive, &binary);
+        assert_evaluations_match(&naive, &free_join);
+        (naive.budget.work, binary.budget.work, free_join.budget.work)
+    }
+
+    #[test]
+    fn cyclic_triangle_hub_query_completes_under_default_limits_vs_binary_blowup() {
+        // Hub node 0 has 120 incoming edges (1..=120 -> 0) and 120 outgoing edges
+        // (0 -> 121..=240). Nodes 1..=120 also each have 1 incoming edge from
+        // 301..=420 so `edge(c, a)` cannot reject them before `a` is inspected.
+        // Plus 5 disjoint triangles on 501..=515 (15 edges) -> 375 edges total.
+        let mut base_facts = Vec::new();
+        let mut next_id = 1_u16;
+        let mut push_edge = |src: i64, dst: i64| {
+            let id = rid(next_id);
+            next_id = next_id.saturating_add(1);
+            base_facts.push((
+                "edge".to_owned(),
+                vec![
+                    mneme_core::Value::integer(src),
+                    mneme_core::Value::integer(dst),
+                ],
+                id,
+            ));
+        };
+        for idx in 1..=120_i64 {
+            push_edge(idx, 0);
+            push_edge(0, 120 + idx);
+            push_edge(300 + idx, idx);
+        }
+        for tri in 0..5_i64 {
+            let base = 500 + tri * 3;
+            push_edge(base, base + 1);
+            push_edge(base + 1, base + 2);
+            push_edge(base + 2, base);
+        }
+
+        assert_eq!(base_facts.len(), 375);
+
+        assert_eq!(base_facts.len(), 375);
+
+        let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
+            id: "cyclic-triangle-hub".to_owned(),
+            version: "1".to_owned(),
+            schema_version: 3,
+            base_predicates: std::collections::BTreeMap::from([("edge".to_owned(), 2)]),
+            complete_predicates: std::collections::BTreeSet::from(["edge".to_owned()]),
+            rules: vec![crate::Rule::new(
+                "triangle",
+                atom("triangle", vec![var("a"), var("b"), var("c")]),
+                vec![
+                    crate::Literal::Positive(atom("edge", vec![var("a"), var("b")])),
+                    crate::Literal::Positive(atom("edge", vec![var("b"), var("c")])),
+                    crate::Literal::Positive(atom("edge", vec![var("c"), var("a")])),
+                ],
+            )],
+        });
+
+        let default_limits = crate::Limits::default();
+        let program = bundle.validate().expect("valid");
+        let context = test_context(&bundle);
+        let sources = AvailabilityMap::new();
+        let fixture = EvaluationFixture {
+            bundle: &bundle,
+            context: &context,
+            limits: &default_limits,
+            current_sources: &sources,
+            base_facts: &base_facts,
+        };
+
+        // Under default limits (`max_result_rows: 1_000`), binary join blows past
+        // the intermediate binding limit on `edge(a, b) ⋈ edge(b, c)` (14,400 tuples).
+        let mut binary_default = make_evaluation(&fixture);
+        evaluate_rules_binary(&mut binary_default, &program.strata);
+        assert_eq!(
+            binary_default.budget.status,
+            crate::ExecutionStatus::Partial
+        );
+        assert!(binary_default.budget.limit_reached);
+
+        // Free Join completes exhaustively well within default limits.
+        let mut free_default = make_evaluation(&fixture);
+        evaluate_rules(&mut free_default, &program.strata);
+        assert_eq!(free_default.budget.status, crate::ExecutionStatus::Complete);
+        assert!(!free_default.budget.limit_reached);
+        assert!(!free_default.facts["triangle"].truncated);
+        assert_eq!(
+            free_default.coverage_status("triangle"),
+            crate::CoverageStatus::Complete
+        );
+        assert_eq!(free_default.facts["triangle"].rows.len(), 15);
+        assert!(
+            free_default.budget.work < 5_000,
+            "free join work {} should be well under 5,000",
+            free_default.budget.work
+        );
+
+        // Compare full exact work under raised row/work caps.
+        let generous_limits = crate::Limits {
+            max_work: 5_000_000,
+            max_time_ms: 60_000,
+            max_result_rows: 50_000,
+            ..default_limits
+        };
+        let (binary_work, free_work) =
+            assert_equivalent_to_binary(&bundle, &base_facts, &generous_limits);
+        eprintln!(
+            "cyclic-triangle-hub (375 edges, 15 triangles): binary={binary_work}, free_join={free_work}"
+        );
+        assert!(binary_work > 50_000);
+        assert!(free_work < 5_000);
+    }
+
+    #[test]
+    fn cyclic_four_clique_completes_under_default_limits_vs_binary_blowup() {
+        // Hub node 0 has 160 outgoing edges (0 -> 1..=160), plus two disjoint
+        // directed 4-cliques on 201..=204 and 205..=208 (24 edges) -> 184 edges total.
+        // Binary join `edge(a, b) ⋈ edge(a, c)` produces 160*160 = 25,600 intermediate
+        // bindings before checking `edge(b, c)`, failing default `max_result_rows` (1,000)
+        // and exceeding default `max_work` (100,000) even with raised row caps.
+        let mut base_facts = Vec::new();
+        let mut next_id = 1_u16;
+        let mut push_edge = |src: i64, dst: i64| {
+            let id = rid(next_id);
+            next_id = next_id.saturating_add(1);
+            base_facts.push((
+                "edge".to_owned(),
+                vec![
+                    mneme_core::Value::integer(src),
+                    mneme_core::Value::integer(dst),
+                ],
+                id,
+            ));
+        };
+        for idx in 1..=160_i64 {
+            push_edge(0, idx);
+        }
+        for base in [201_i64, 205_i64] {
+            for i in 0..4_i64 {
+                for j in 0..4_i64 {
+                    if i != j {
+                        push_edge(base + i, base + j);
+                    }
+                }
+            }
+        }
+
+        let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
+            id: "cyclic-k4-hub".to_owned(),
+            version: "1".to_owned(),
+            schema_version: 3,
+            base_predicates: std::collections::BTreeMap::from([("edge".to_owned(), 2)]),
+            complete_predicates: std::collections::BTreeSet::from(["edge".to_owned()]),
+            rules: vec![crate::Rule::new(
+                "k4",
+                atom("k4", vec![var("a"), var("b"), var("c"), var("d")]),
+                vec![
+                    crate::Literal::Positive(atom("edge", vec![var("a"), var("b")])),
+                    crate::Literal::Positive(atom("edge", vec![var("a"), var("c")])),
+                    crate::Literal::Positive(atom("edge", vec![var("a"), var("d")])),
+                    crate::Literal::Positive(atom("edge", vec![var("b"), var("c")])),
+                    crate::Literal::Positive(atom("edge", vec![var("b"), var("d")])),
+                    crate::Literal::Positive(atom("edge", vec![var("c"), var("d")])),
+                ],
+            )],
+        });
+
+        let default_limits = crate::Limits::default();
+        let program = bundle.validate().expect("valid");
+        let context = test_context(&bundle);
+        let sources = AvailabilityMap::new();
+        let fixture = EvaluationFixture {
+            bundle: &bundle,
+            context: &context,
+            limits: &default_limits,
+            current_sources: &sources,
+            base_facts: &base_facts,
+        };
+
+        // Binary join fails under default limits (`Partial` at 1,000 intermediate bindings).
+        let mut binary_default = make_evaluation(&fixture);
+        evaluate_rules_binary(&mut binary_default, &program.strata);
+        assert_eq!(
+            binary_default.budget.status,
+            crate::ExecutionStatus::Partial
+        );
+        assert!(binary_default.budget.limit_reached);
+
+        // Even with raised `max_result_rows`, binary join hits `Timeout` at 100k work.
+        let raised_rows = crate::Limits {
+            max_result_rows: 100_000,
+            ..default_limits
+        };
+        let raised_fixture = EvaluationFixture {
+            limits: &raised_rows,
+            ..fixture
+        };
+        let mut binary_raised = make_evaluation(&raised_fixture);
+        evaluate_rules_binary(&mut binary_raised, &program.strata);
+        assert_eq!(binary_raised.budget.status, crate::ExecutionStatus::Timeout);
+        assert!(binary_raised.budget.limit_reached);
+
+        // Free Join completes exhaustively under default limits in ~2k work.
+        let mut free_default = make_evaluation(&fixture);
+        evaluate_rules(&mut free_default, &program.strata);
+        assert_eq!(free_default.budget.status, crate::ExecutionStatus::Complete);
+        assert!(!free_default.budget.limit_reached);
+        assert_eq!(free_default.facts["k4"].rows.len(), 48);
+        assert!(
+            free_default.budget.work < 5_000,
+            "free join k4 work {} should be well under 5,000",
+            free_default.budget.work
+        );
+
+        let generous_limits = crate::Limits {
+            max_work: 5_000_000,
+            max_time_ms: 60_000,
+            max_result_rows: 100_000,
+            ..default_limits
+        };
+        let (binary_work, free_work) =
+            assert_equivalent_to_binary(&bundle, &base_facts, &generous_limits);
+        eprintln!(
+            "cyclic-4-clique-hub (184 edges, 48 k4 tuples): binary={binary_work}, free_join={free_work}"
+        );
+        assert!(binary_work > 100_000);
+        assert!(free_work < 5_000);
+    }
+
+    #[test]
+    fn property_equivalence_against_binary_and_naive_across_cyclic_seeded_programs() {
+        let mut seed = 0x517C_C1B7_2722_0A95_u64;
+        let mut next_u64 = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+
+        let preds = ["e0", "e1", "t0"];
+        let vars = ["a", "b", "c", "d"];
+
+        for case_idx in 0..40_usize {
+            let mut base_facts = Vec::with_capacity(60);
+            let mut next_rid = 1_u16;
+            for (pred_idx, pred) in preds.iter().enumerate() {
+                let row_count = 4 + usize::try_from(next_u64() % 14).expect("mod 14");
+                for _ in 0..row_count {
+                    let v0 = i64::try_from(next_u64() % 5).expect("mod 5");
+                    let v1 = i64::try_from(next_u64() % 5).expect("mod 5");
+                    let v2 = i64::try_from(next_u64() % 4).expect("mod 4");
+                    let id = rid(next_rid);
+                    next_rid = next_rid.saturating_add(1);
+                    let row = if pred_idx < 2 {
+                        vec![
+                            mneme_core::Value::integer(v0),
+                            mneme_core::Value::integer(v1),
+                        ]
+                    } else {
+                        vec![
+                            mneme_core::Value::integer(v0),
+                            mneme_core::Value::integer(v1),
+                            mneme_core::Value::integer(v2),
+                        ]
+                    };
+                    base_facts.push(((*pred).to_owned(), row, id));
+                }
+            }
+
+            // Build cyclic and self-join shapes with constants, negation, and compares.
+            let body = vec![
+                crate::Literal::Positive(atom("e0", vec![var("a"), var("b")])),
+                crate::Literal::Positive(atom("e1", vec![var("b"), var("c")])),
+                crate::Literal::Positive(atom(
+                    if case_idx % 2 == 0 { "e0" } else { "e1" },
+                    vec![var("c"), var("a")],
+                )),
+                crate::Literal::Positive(atom(
+                    "t0",
+                    vec![
+                        var(vars[case_idx % 3]),
+                        var(vars[(case_idx + 1) % 3]),
+                        if case_idx % 3 == 0 {
+                            int_const(i64::try_from(next_u64() % 4).expect("mod 4"))
+                        } else {
+                            var("d")
+                        },
+                    ],
+                )),
+                crate::Literal::Negative(atom("e1", vec![var("a"), var("c")])),
+                crate::Literal::Compare {
+                    op: crate::CompareOp::Ne,
+                    left: var("a"),
+                    right: var("b"),
+                },
+            ];
+            let head_terms = if case_idx % 4 == 0 {
+                vec![var("a"), var("c")]
+            } else {
+                vec![var("a"), var("b"), var("c")]
+            };
+            let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
+                id: format!("cyclic-prop-{case_idx}"),
+                version: "1".to_owned(),
+                schema_version: 3,
+                base_predicates: std::collections::BTreeMap::from([
+                    ("e0".to_owned(), 2),
+                    ("e1".to_owned(), 2),
+                    ("t0".to_owned(), 3),
+                ]),
+                complete_predicates: std::collections::BTreeSet::from([
+                    "e0".to_owned(),
+                    "e1".to_owned(),
+                    "t0".to_owned(),
+                ]),
+                rules: vec![crate::Rule::new("cyc", atom("cyc", head_terms), body)],
+            });
+
+            let limits = crate::Limits {
+                max_work: 5_000_000,
+                max_time_ms: 60_000,
+                max_result_rows: 1_000,
+                max_supports_per_fact: 2,
+                max_recursion_depth: 16,
+            };
+            assert_equivalent_to_binary_and_naive(&bundle, &base_facts, &limits);
+        }
     }
 }

@@ -3313,3 +3313,150 @@ fn cyclic_triangle_and_permuted_body_orders_complete_with_identical_results() {
         .collect::<Vec<_>>();
     assert_eq!(forward_values, reversed_values);
 }
+
+#[test]
+fn cyclic_triangle_and_four_clique_complete_under_default_limits_with_provenance() {
+    let mut harness = Harness::new();
+    let mut records = Vec::new();
+    let mut next_tag = 1_u16;
+
+    let mut push_entity = |label: &str| -> mneme_core::RecordId {
+        let id = indexed_rid(next_tag);
+        let rev_id = indexed_rev(next_tag);
+        next_tag = next_tag.saturating_add(1);
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: id,
+            revision_id: rev_id,
+            predecessor: None,
+            scope: scope(),
+            payload: typed_entity_payload("node", label),
+        });
+        id
+    };
+
+    let hub = push_entity("Hub");
+    let spokes_in = (0..60_usize)
+        .map(|idx| push_entity(&format!("In{idx}")))
+        .collect::<Vec<_>>();
+    let spokes_out = (0..60_usize)
+        .map(|idx| push_entity(&format!("Out{idx}")))
+        .collect::<Vec<_>>();
+    let clique = (0..4_usize)
+        .map(|idx| push_entity(&format!("Clique{idx}")))
+        .collect::<Vec<_>>();
+
+    let mut push_edge = |rel: &str, from: mneme_core::RecordId, to: mneme_core::RecordId| {
+        let id = indexed_rid(next_tag);
+        let rev_id = indexed_rev(next_tag);
+        next_tag = next_tag.saturating_add(1);
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: id,
+            revision_id: rev_id,
+            predecessor: None,
+            scope: scope(),
+            payload: typed_relation_payload(rel, from, to),
+        });
+    };
+
+    for idx in 0..60_usize {
+        push_edge("link", spokes_in[idx], hub);
+        push_edge("link", hub, spokes_out[idx]);
+    }
+    for i in 0..4_usize {
+        for j in 0..4_usize {
+            if i != j {
+                push_edge("link", clique[i], clique[j]);
+            }
+        }
+    }
+    push_edge("blocked", clique[0], clique[1]);
+    harness.commit("cyclic-hub-k4", records, Vec::new());
+
+    let sym = |name: &str| constant(mneme_core::Value::symbol(name));
+    let program = bundle(
+        vec![
+            mneme_datalog::Rule::new(
+                "tri",
+                atom("tri", vec![var("a"), var("b"), var("c")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("a"), var("b")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("b"), var("c")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("c"), var("a")],
+                    )),
+                    mneme_datalog::Literal::Negative(atom(
+                        "relation",
+                        vec![sym("blocked"), var("a"), var("b")],
+                    )),
+                ],
+            ),
+            mneme_datalog::Rule::new(
+                "k4",
+                atom("k4", vec![var("a"), var("b"), var("c"), var("d")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("a"), var("b")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("a"), var("c")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("a"), var("d")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("b"), var("c")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("b"), var("d")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("c"), var("d")],
+                    )),
+                ],
+            ),
+        ],
+        &["relation"],
+    );
+
+    let build = harness.build_with_limits(program, mneme_datalog::Limits::default());
+    assert_eq!(build.status(), mneme_datalog::ExecutionStatus::Complete);
+    assert!(!build.limit_reached());
+    assert!(
+        build.work() < 10_000,
+        "expected cyclic triangle + k4 build well under 100k default limit, got {}",
+        build.work()
+    );
+
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+    let tri_res = service
+        .query_build(&build, mneme_datalog::Query::all("tri", 200))
+        .expect("tri query");
+    let k4_res = service
+        .query_build(&build, mneme_datalog::Query::all("k4", 200))
+        .expect("k4 query");
+
+    assert!(tri_res.exhaustive);
+    assert!(k4_res.exhaustive);
+    // 4-clique has 4*3*2 = 24 directed triangles; blocking (clique[0], clique[1]) removes 2.
+    assert_eq!(tri_res.rows.len(), 22);
+    assert_eq!(k4_res.rows.len(), 24);
+    assert!(tri_res.rows.iter().all(|row| !row.supports.is_empty()));
+    assert!(k4_res.rows.iter().all(|row| !row.supports.is_empty()));
+}

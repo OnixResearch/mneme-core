@@ -675,6 +675,7 @@ struct QueryCacheKey {
 }
 
 mod engine;
+mod freejoin;
 mod rules;
 
 impl RuleBundle {
