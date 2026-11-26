@@ -10,7 +10,7 @@
     "profile_hash": "b3:336465a8c086b10254b383cba91b15f3a863ec4bff1fee49045c28e254482410",
     "config_hash": "b3:e22f3ff8bb637daedeb1884b27f7b67af214e3fe5259fd183df226db894a7233"
   },
-  "baseline_hash": "b3:ed858022b3e221bb05c0f1a01a7b307ff5efbfba9ecd75846ac2ac5fcd70c808",
+  "baseline_hash": "b3:4efc520e8f34c03501adab946bb19d99c982a7def54322e50f46b78f424f7f93",
   "findings": [
     {
       "stable_id": "b3:077f0999f0ef0992",
@@ -20,7 +20,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 1029,
+      "line": 1158,
       "column": 21,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_api"
@@ -52,6 +52,19 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:156892786d4caded",
+      "semantic_id": "b3:156892786d4caded",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/tests/federation.rs",
+      "line": 1959,
+      "column": 17,
+      "message": "boolean binding `saw_a1` should have a predicate prefix",
+      "crate_name": "federation"
+    },
+    {
       "stable_id": "b3:157844a4db3e2ab7",
       "semantic_id": "b3:157844a4db3e2ab7",
       "identity_status": "computed",
@@ -63,6 +76,58 @@
       "column": 9,
       "message": "same-crate enum `command::ApiCommand` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:16f3f2881a3281c7",
+      "semantic_id": "b3:16f3f2881a3281c7",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/server.rs",
+      "line": 1240,
+      "column": 78,
+      "message": "function `handle_evaluate_datalog` is 81 lines (limit: 70)",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:1bde6be8f6287691",
+      "semantic_id": "b3:1bde6be8f6287691",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/protocol.rs",
+      "line": 133,
+      "column": 13,
+      "message": "boolean binding `signers_authorized` should have a predicate prefix",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:1e4222666cc084e0",
+      "semantic_id": "b3:1e4222666cc084e0",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/server.rs",
+      "line": 458,
+      "column": 1,
+      "message": "item name `map_server_hlc_error` repeats `server` from ancestor path segment `server`",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:1f2f7c3f20151aa8",
+      "semantic_id": "b3:1f2f7c3f20151aa8",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/tests/federation.rs",
+      "line": 1867,
+      "column": 13,
+      "message": "boolean binding `use_disk_commit` should have a predicate prefix",
+      "crate_name": "federation"
     },
     {
       "stable_id": "b3:22d27a2f60a06966",
@@ -104,17 +169,17 @@
       "crate_name": "mneme_api"
     },
     {
-      "stable_id": "b3:3a957e12a28c179b",
-      "semantic_id": "b3:3a957e12a28c179b",
+      "stable_id": "b3:31d0827f7b40be2e",
+      "semantic_id": "b3:31d0827f7b40be2e",
       "identity_status": "computed",
-      "lint": "path_segment_repetition",
-      "group": "tigerstyle::naming",
+      "lint": "platform_dependent_cast",
+      "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 21,
-      "column": 1,
-      "message": "item name `ServerConfig` repeats `server` from ancestor path segment `server`",
-      "crate_name": "mneme_api"
+      "file": "crates/mneme-api/tests/federation.rs",
+      "line": 1849,
+      "column": 29,
+      "message": "`as usize` from `u32` is platform-dependent",
+      "crate_name": "federation"
     },
     {
       "stable_id": "b3:3dd51227aab7794f",
@@ -150,9 +215,35 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/protocol.rs",
-      "line": 25,
+      "line": 157,
       "column": 1,
       "message": "item name `FederationLimits` repeats `federation` from ancestor path segment `federation`",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:48a0b05eb31eb790",
+      "semantic_id": "b3:48a0b05eb31eb790",
+      "identity_status": "computed",
+      "lint": "unchecked_division",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-api/tests/federation.rs",
+      "line": 1729,
+      "column": 18,
+      "message": "division by `span` without zero check",
+      "crate_name": "federation"
+    },
+    {
+      "stable_id": "b3:4f314103ec6352be",
+      "semantic_id": "b3:4f314103ec6352be",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/protocol.rs",
+      "line": 140,
+      "column": 13,
+      "message": "boolean binding `quorum_satisfied` should have a predicate prefix",
       "crate_name": "mneme_api"
     },
     {
@@ -166,6 +257,19 @@
       "line": 915,
       "column": 31,
       "message": "String allocation constructor runs inside a loop",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:57009cfad0f0818b",
+      "semantic_id": "b3:57009cfad0f0818b",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/server.rs",
+      "line": 1289,
+      "column": 9,
+      "message": "boolean binding `absence_established` should have a predicate prefix",
       "crate_name": "mneme_api"
     },
     {
@@ -234,6 +338,19 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:71e1699ff8030e6d",
+      "semantic_id": "b3:71e1699ff8030e6d",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/server.rs",
+      "line": 1264,
+      "column": 9,
+      "message": "boolean binding `allow_hlc_cut` should have a predicate prefix",
+      "crate_name": "mneme_api"
+    },
+    {
       "stable_id": "b3:75c9be07938d4981",
       "semantic_id": "b3:75c9be07938d4981",
       "identity_status": "computed",
@@ -241,7 +358,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/client.rs",
-      "line": 710,
+      "line": 877,
       "column": 5,
       "message": "same-crate enum `federation::protocol::EncodedSourceAvailability` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_api"
@@ -273,6 +390,19 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:88df5697cf36b224",
+      "semantic_id": "b3:88df5697cf36b224",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/server.rs",
+      "line": 1347,
+      "column": 9,
+      "message": "boolean binding `allow_stale` should have a predicate prefix",
+      "crate_name": "mneme_api"
+    },
+    {
       "stable_id": "b3:8eb8b11f89868f27",
       "semantic_id": "b3:8eb8b11f89868f27",
       "identity_status": "computed",
@@ -280,9 +410,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/client.rs",
-      "line": 150,
+      "line": 155,
       "column": 9,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:9088ea90c0697391",
+      "semantic_id": "b3:9088ea90c0697391",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/protocol.rs",
+      "line": 127,
+      "column": 13,
+      "message": "boolean binding `sealed` should have a predicate prefix",
       "crate_name": "mneme_api"
     },
     {
@@ -299,6 +442,32 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:91ee2777b385f7a8",
+      "semantic_id": "b3:91ee2777b385f7a8",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/protocol.rs",
+      "line": 128,
+      "column": 13,
+      "message": "boolean binding `epoch_matches` should have a predicate prefix",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:9a406e6baad06693",
+      "semantic_id": "b3:9a406e6baad06693",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/tests/federation.rs",
+      "line": 1958,
+      "column": 17,
+      "message": "boolean binding `saw_s` should have a predicate prefix",
+      "crate_name": "federation"
+    },
+    {
       "stable_id": "b3:a0343954174c8c0f",
       "semantic_id": "b3:a0343954174c8c0f",
       "identity_status": "computed",
@@ -306,7 +475,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 1411,
+      "line": 1634,
       "column": 9,
       "message": "foreign enum `mneme_store::Failure` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_api"
@@ -319,9 +488,48 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/protocol.rs",
-      "line": 467,
+      "line": 615,
       "column": 1,
       "message": "item name `VaultFederationProtocol` repeats `federation` from ancestor path segment `federation`",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:ac9853f19e1ac469",
+      "semantic_id": "b3:ac9853f19e1ac469",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/protocol.rs",
+      "line": 129,
+      "column": 13,
+      "message": "boolean binding `head_covered` should have a predicate prefix",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:afd45322a4901d2c",
+      "semantic_id": "b3:afd45322a4901d2c",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/protocol.rs",
+      "line": 105,
+      "column": 17,
+      "message": "boolean binding `all_sigs_valid` should have a predicate prefix",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:b90f92fade301f6b",
+      "semantic_id": "b3:b90f92fade301f6b",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/client.rs",
+      "line": 32,
+      "column": 9,
+      "message": "same-crate enum `federation::protocol::RpcErrorCode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_api"
     },
     {
@@ -335,6 +543,19 @@
       "line": 264,
       "column": 9,
       "message": "same-crate enum `command::ApiCommand` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:bb38f116c81c4afb",
+      "semantic_id": "b3:bb38f116c81c4afb",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/server.rs",
+      "line": 441,
+      "column": 1,
+      "message": "item name `tick_server_hlc` repeats `server` from ancestor path segment `server`",
       "crate_name": "mneme_api"
     },
     {
@@ -371,9 +592,35 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/auth.rs",
-      "line": 887,
+      "line": 900,
       "column": 30,
       "message": "String allocation constructor runs inside a loop",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:c4935d45b7ce481a",
+      "semantic_id": "b3:c4935d45b7ce481a",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/client.rs",
+      "line": 7,
+      "column": 1,
+      "message": "item name `FederationError` repeats `federation` from ancestor path segment `federation`",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:c4b537ea32ffe907",
+      "semantic_id": "b3:c4b537ea32ffe907",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/server.rs",
+      "line": 21,
+      "column": 1,
+      "message": "item name `ServerConfig` repeats `server` from ancestor path segment `server`",
       "crate_name": "mneme_api"
     },
     {
@@ -403,6 +650,32 @@
       "crate_name": "api"
     },
     {
+      "stable_id": "b3:deae456adb3bddba",
+      "semantic_id": "b3:deae456adb3bddba",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/tests/federation.rs",
+      "line": 1939,
+      "column": 21,
+      "message": "boolean binding `saw_s` should have a predicate prefix",
+      "crate_name": "federation"
+    },
+    {
+      "stable_id": "b3:e156a2dc5d4240c7",
+      "semantic_id": "b3:e156a2dc5d4240c7",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/client.rs",
+      "line": 589,
+      "column": 1,
+      "message": "item name `map_client_hlc_error` repeats `client` from ancestor path segment `client`",
+      "crate_name": "mneme_api"
+    },
+    {
       "stable_id": "b3:e1a75f2eb413f127",
       "semantic_id": "b3:e1a75f2eb413f127",
       "identity_status": "computed",
@@ -416,30 +689,17 @@
       "crate_name": "api"
     },
     {
-      "stable_id": "b3:e4162fc8e0037ffc",
-      "semantic_id": "b3:e4162fc8e0037ffc",
+      "stable_id": "b3:e54743f008cd4aaf",
+      "semantic_id": "b3:e54743f008cd4aaf",
       "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-api/src/federation/client.rs",
-      "line": 30,
-      "column": 9,
-      "message": "same-crate enum `federation::protocol::RpcErrorCode` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_api"
-    },
-    {
-      "stable_id": "b3:f3ddb422ebaf875e",
-      "semantic_id": "b3:f3ddb422ebaf875e",
-      "identity_status": "computed",
-      "lint": "path_segment_repetition",
+      "lint": "bool_naming",
       "group": "tigerstyle::naming",
       "severity": "warning",
-      "file": "crates/mneme-api/src/federation/client.rs",
-      "line": 7,
-      "column": 1,
-      "message": "item name `FederationError` repeats `federation` from ancestor path segment `federation`",
-      "crate_name": "mneme_api"
+      "file": "crates/mneme-api/tests/federation.rs",
+      "line": 1940,
+      "column": 21,
+      "message": "boolean binding `saw_a1` should have a predicate prefix",
+      "crate_name": "federation"
     }
   ]
 }

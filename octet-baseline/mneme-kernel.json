@@ -10,8 +10,21 @@
     "profile_hash": "b3:a6bcf2f3a7565ef4016fdfeb8d758f5806d6678a3206b8357f46404eafe3df41",
     "config_hash": "b3:fb92952d4b5deb1436fb2332f5ffd83e1bc34aa0e1376dbe17a874fa755d9102"
   },
-  "baseline_hash": "b3:6c5c41c3e046fa4ba373cee3344952d39a388e9ac15671e4b14096a4486c1dd8",
+  "baseline_hash": "b3:1ef5d7fb88ab76e633364bba7b3c643be099eb51264ddaf3a800dd6fb2e864c8",
   "findings": [
+    {
+      "stable_id": "b3:013dc3534a235a51",
+      "semantic_id": "b3:013dc3534a235a51",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 895,
+      "column": 21,
+      "message": "non-trait import `DEFAULT_MAX_SKEW_NS` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
     {
       "stable_id": "b3:039e2a51f9321a27",
       "semantic_id": "b3:039e2a51f9321a27",
@@ -24,6 +37,19 @@
       "column": 40,
       "message": "non-trait import `is_revoked_in_merge` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:07612837196be35f",
+      "semantic_id": "b3:07612837196be35f",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/calm.rs",
+      "line": 20,
+      "column": 1,
+      "message": "item name `CalmStratum` repeats `calm` from ancestor path segment `calm`",
+      "crate_name": "mneme_kernel"
     },
     {
       "stable_id": "b3:0765544e1dddb862",
@@ -39,6 +65,32 @@
       "crate_name": "mneme_kernel"
     },
     {
+      "stable_id": "b3:0d5e91329b360753",
+      "semantic_id": "b3:0d5e91329b360753",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 895,
+      "column": 69,
+      "message": "non-trait import `compare` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:12764c2ff62cf879",
+      "semantic_id": "b3:12764c2ff62cf879",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 781,
+      "column": 37,
+      "message": "non-trait import `DistributedOp` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
       "stable_id": "b3:13a6802603d38372",
       "semantic_id": "b3:13a6802603d38372",
       "identity_status": "computed",
@@ -52,6 +104,19 @@
       "crate_name": "kernel"
     },
     {
+      "stable_id": "b3:193d6ee4954ff11d",
+      "semantic_id": "b3:193d6ee4954ff11d",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 783,
+      "column": 9,
+      "message": "non-trait import `join_suppression_level` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
       "stable_id": "b3:265e8e0b7ddacf1e",
       "semantic_id": "b3:265e8e0b7ddacf1e",
       "identity_status": "computed",
@@ -59,7 +124,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-kernel/src/lib.rs",
-      "line": 46,
+      "line": 48,
       "column": 1,
       "message": "module exposes 13 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_kernel"
@@ -78,6 +143,32 @@
       "crate_name": "kernel"
     },
     {
+      "stable_id": "b3:2b93af8c3d49b00e",
+      "semantic_id": "b3:2b93af8c3d49b00e",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 781,
+      "column": 52,
+      "message": "non-trait import `FederatedNegationFacts` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:2bfae8f67e16ff9c",
+      "semantic_id": "b3:2bfae8f67e16ff9c",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 895,
+      "column": 78,
+      "message": "non-trait import `is_before` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
       "stable_id": "b3:315c0408c1ab554f",
       "semantic_id": "b3:315c0408c1ab554f",
       "identity_status": "computed",
@@ -88,6 +179,45 @@
       "line": 46,
       "column": 5,
       "message": "same-crate enum `purge::EntryKind` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_kernel"
+    },
+    {
+      "stable_id": "b3:34ef0e89e58f9c54",
+      "semantic_id": "b3:34ef0e89e58f9c54",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 783,
+      "column": 33,
+      "message": "non-trait import `requires_barrier` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:388486f5c897bdfe",
+      "semantic_id": "b3:388486f5c897bdfe",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/hlc.rs",
+      "line": 184,
+      "column": 30,
+      "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_kernel"
+    },
+    {
+      "stable_id": "b3:39c90fce19eef288",
+      "semantic_id": "b3:39c90fce19eef288",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/hlc.rs",
+      "line": 166,
+      "column": 30,
+      "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_kernel"
     },
     {
@@ -117,6 +247,19 @@
       "crate_name": "mneme_kernel"
     },
     {
+      "stable_id": "b3:40fb1dc956a02122",
+      "semantic_id": "b3:40fb1dc956a02122",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/hlc.rs",
+      "line": 41,
+      "column": 1,
+      "message": "item name `HlcError` repeats `hlc` from ancestor path segment `hlc`",
+      "crate_name": "mneme_kernel"
+    },
+    {
       "stable_id": "b3:41ad56fa85107af1",
       "semantic_id": "b3:41ad56fa85107af1",
       "identity_status": "computed",
@@ -127,6 +270,19 @@
       "line": 651,
       "column": 32,
       "message": "non-trait import `RevocationState` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:4380b592b3a86d57",
+      "semantic_id": "b3:4380b592b3a86d57",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 895,
+      "column": 9,
+      "message": "non-trait import `ClockOrder` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
     },
     {
@@ -143,6 +299,19 @@
       "crate_name": "kernel"
     },
     {
+      "stable_id": "b3:483ff5dd51a6d668",
+      "semantic_id": "b3:483ff5dd51a6d668",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 782,
+      "column": 27,
+      "message": "non-trait import `classify_op` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
       "stable_id": "b3:4bc483dff6bf3d06",
       "semantic_id": "b3:4bc483dff6bf3d06",
       "identity_status": "computed",
@@ -154,6 +323,58 @@
       "column": 13,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_kernel"
+    },
+    {
+      "stable_id": "b3:4cd1b87b8d36ed7c",
+      "semantic_id": "b3:4cd1b87b8d36ed7c",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 896,
+      "column": 9,
+      "message": "non-trait import `tick_local` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:4e1ba0e673420257",
+      "semantic_id": "b3:4e1ba0e673420257",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 783,
+      "column": 51,
+      "message": "non-trait import `seal_valid` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:52c4eaa99cf28ecf",
+      "semantic_id": "b3:52c4eaa99cf28ecf",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 895,
+      "column": 42,
+      "message": "non-trait import `HlcError` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:59bc12de53b4134d",
+      "semantic_id": "b3:59bc12de53b4134d",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 895,
+      "column": 89,
+      "message": "non-trait import `receive` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
     },
     {
       "stable_id": "b3:59ed627bbc639b4e",
@@ -208,6 +429,32 @@
       "crate_name": "kernel"
     },
     {
+      "stable_id": "b3:6b9d57ebb9cedc82",
+      "semantic_id": "b3:6b9d57ebb9cedc82",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 896,
+      "column": 21,
+      "message": "non-trait import `within_skew` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:71ec1d2e21664c4a",
+      "semantic_id": "b3:71ec1d2e21664c4a",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/calm.rs",
+      "line": 49,
+      "column": 5,
+      "message": "same-crate enum `calm::DistributedOp` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_kernel"
+    },
+    {
       "stable_id": "b3:730e932bfd5e4780",
       "semantic_id": "b3:730e932bfd5e4780",
       "identity_status": "computed",
@@ -241,7 +488,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-kernel/src/lib.rs",
-      "line": 39,
+      "line": 40,
       "column": 1,
       "message": "module exposes 16 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_kernel"
@@ -286,6 +533,19 @@
       "crate_name": "mneme_kernel"
     },
     {
+      "stable_id": "b3:7efbb8f75c8a0240",
+      "semantic_id": "b3:7efbb8f75c8a0240",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 781,
+      "column": 24,
+      "message": "non-trait import `CalmStratum` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
       "stable_id": "b3:854823e0e383f293",
       "semantic_id": "b3:854823e0e383f293",
       "identity_status": "computed",
@@ -296,6 +556,19 @@
       "line": 568,
       "column": 52,
       "message": "non-trait import `is_active` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:8f2d96cc68b90a72",
+      "semantic_id": "b3:8f2d96cc68b90a72",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 895,
+      "column": 52,
+      "message": "non-trait import `HybridTimestamp` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
     },
     {
@@ -338,6 +611,19 @@
       "crate_name": "mneme_kernel"
     },
     {
+      "stable_id": "b3:a36bfa298c0fd0de",
+      "semantic_id": "b3:a36bfa298c0fd0de",
+      "identity_status": "computed",
+      "lint": "raw_arithmetic_overflow",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/hlc.rs",
+      "line": 122,
+      "column": 22,
+      "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_kernel"
+    },
+    {
       "stable_id": "b3:a4285a0187fcbd2d",
       "semantic_id": "b3:a4285a0187fcbd2d",
       "identity_status": "computed",
@@ -361,6 +647,19 @@
       "line": 23,
       "column": 5,
       "message": "same-crate enum `verdict::Status` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_kernel"
+    },
+    {
+      "stable_id": "b3:ab5975f44515cba1",
+      "semantic_id": "b3:ab5975f44515cba1",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/calm.rs",
+      "line": 79,
+      "column": 5,
+      "message": "same-crate enum `calm::SuppressionLevel` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_kernel"
     },
     {
@@ -416,8 +715,60 @@
       "crate_name": "mneme_kernel"
     },
     {
-      "stable_id": "b3:c5a10c7de5ce32e2",
-      "semantic_id": "b3:c5a10c7de5ce32e2",
+      "stable_id": "b3:c129027b38c1b4d1",
+      "semantic_id": "b3:c129027b38c1b4d1",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 782,
+      "column": 9,
+      "message": "non-trait import `SuppressionState` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:c4591fa3ce33569e",
+      "semantic_id": "b3:c4591fa3ce33569e",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 781,
+      "column": 76,
+      "message": "non-trait import `SuppressionLevel` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:c605d172aba66056",
+      "semantic_id": "b3:c605d172aba66056",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/lib.rs",
+      "line": 39,
+      "column": 1,
+      "message": "module exposes 13 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_kernel"
+    },
+    {
+      "stable_id": "b3:c8a8fa256167c0f3",
+      "semantic_id": "b3:c8a8fa256167c0f3",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/calm.rs",
+      "line": 120,
+      "column": 1,
+      "message": "item name `CalmSealFacts` repeats `calm` from ancestor path segment `calm`",
+      "crate_name": "mneme_kernel"
+    },
+    {
+      "stable_id": "b3:cb57c8d21c01d56f",
+      "semantic_id": "b3:cb57c8d21c01d56f",
       "identity_status": "computed",
       "lint": "type_accumulation",
       "group": "tigerstyle::structure",
@@ -425,7 +776,7 @@
       "file": "crates/mneme-kernel/src/lib.rs",
       "line": 1,
       "column": 1,
-      "message": "module exposes 15 public items (limit: 12) — split unrelated public surface into focused modules",
+      "message": "module exposes 17 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_kernel"
     },
     {
@@ -452,6 +803,32 @@
       "line": 651,
       "column": 20,
       "message": "non-trait import `LinkPolicy` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:dadc0242929f00fb",
+      "semantic_id": "b3:dadc0242929f00fb",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 781,
+      "column": 9,
+      "message": "non-trait import `CalmSealFacts` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:db892cb28d7aab4d",
+      "semantic_id": "b3:db892cb28d7aab4d",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 782,
+      "column": 71,
+      "message": "non-trait import `join_suppression` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
     },
     {
@@ -530,6 +907,19 @@
       "line": 651,
       "column": 60,
       "message": "non-trait import `attenuation_valid` hides the owner path; prefer the qualified path at the use site",
+      "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:fffefc34206e39b6",
+      "semantic_id": "b3:fffefc34206e39b6",
+      "identity_status": "computed",
+      "lint": "non_trait_imports",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/tests/kernel.rs",
+      "line": 782,
+      "column": 40,
+      "message": "non-trait import `federated_absence_established` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
     }
   ]

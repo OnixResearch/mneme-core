@@ -10,7 +10,7 @@
     "profile_hash": "b3:d6892204653c6bee4fb75d4ef72b10909294f65ee5030a4d053f12dbd7869631",
     "config_hash": "b3:c92c8bf080c84dc916d7f94150099c575058d2d74b7bf0fd2c4dd6acdf6c2abb"
   },
-  "baseline_hash": "b3:d03691290d98fe71c440a588b562b5268ea1eddf0542f5a324a52b78364a5b89",
+  "baseline_hash": "b3:d57fde4c3d0552d15b06032073bf1630f41e341de5dea6eeb843aba1cd3b9651",
   "findings": [
     {
       "stable_id": "b3:0270ef6893433e42",
@@ -20,10 +20,23 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-sync/tests/sync.rs",
-      "line": 2399,
+      "line": 2400,
       "column": 20,
       "message": "narrowing cast from `usize` to `u8` without bounds check",
       "crate_name": "sync"
+    },
+    {
+      "stable_id": "b3:034ff2e508546b75",
+      "semantic_id": "b3:034ff2e508546b75",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-sync/src/node.rs",
+      "line": 797,
+      "column": 44,
+      "message": "function `pull_delta_over_rbsr` is 96 lines (limit: 70)",
+      "crate_name": "mneme_sync"
     },
     {
       "stable_id": "b3:0f7d4226a3b7d883",
@@ -101,6 +114,19 @@
       "line": 786,
       "column": 19,
       "message": "function calls itself recursively",
+      "crate_name": "mneme_sync"
+    },
+    {
+      "stable_id": "b3:495d355f4a0d15fc",
+      "semantic_id": "b3:495d355f4a0d15fc",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-sync/src/node.rs",
+      "line": 852,
+      "column": 17,
+      "message": "boolean binding `retention_barrier_present` should have a predicate prefix",
       "crate_name": "mneme_sync"
     },
     {
@@ -205,6 +231,19 @@
       "line": 756,
       "column": 58,
       "message": "String allocation constructor runs inside a loop",
+      "crate_name": "mneme_sync"
+    },
+    {
+      "stable_id": "b3:7f3356706bcbd8a6",
+      "semantic_id": "b3:7f3356706bcbd8a6",
+      "identity_status": "computed",
+      "lint": "explicit_defaults",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-sync/src/protocol.rs",
+      "line": 221,
+      "column": 5,
+      "message": "implicit default on external type — construct with explicit values",
       "crate_name": "mneme_sync"
     },
     {
@@ -390,6 +429,19 @@
       "crate_name": "mneme_sync"
     },
     {
+      "stable_id": "b3:cdf605f07dbca828",
+      "semantic_id": "b3:cdf605f07dbca828",
+      "identity_status": "computed",
+      "lint": "explicit_defaults",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-sync/src/protocol.rs",
+      "line": 225,
+      "column": 5,
+      "message": "implicit default on external type — construct with explicit values",
+      "crate_name": "mneme_sync"
+    },
+    {
       "stable_id": "b3:d9f1fee898f1de86",
       "semantic_id": "b3:d9f1fee898f1de86",
       "identity_status": "computed",
@@ -397,7 +449,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-sync/src/node.rs",
-      "line": 1168,
+      "line": 1241,
       "column": 17,
       "message": "boolean binding `extra_matches` should have a predicate prefix",
       "crate_name": "mneme_sync"
