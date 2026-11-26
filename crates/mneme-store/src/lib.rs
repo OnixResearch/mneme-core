@@ -5,7 +5,7 @@
 //! idempotency, publication intents, and startup recovery. It consumes
 //! `mneme-core` records and never duplicates their schema or transport policy.
 
-#![allow(unknown_lints, module_file_count)] // intentional top-level store module layout
+#![allow(unknown_lints, module_file_count, type_accumulation)] // intentional top-level store module layout and public re-exports
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -20,6 +20,9 @@ pub mod requests;
 pub mod timekeeper;
 
 pub use catalog::{Manifest, ManifestRecord};
+pub use coordinator::verify::{
+    IssueKind, OrphanBlob, OrphanReason, VerifyIssue, VerifyMode, VerifyReport, verify_workspace,
+};
 pub use coordinator::{
     CommitOutcome, FOLDER_WORKSPACE_DIRECTORY, JobClaim, LAYOUT_VERSION, LEDGER_FILE,
     ProjectionRegistration, ProjectionResolution, ProjectionState, PublicationOutcome,

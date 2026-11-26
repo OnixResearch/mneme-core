@@ -57,6 +57,7 @@ mod recovery;
 mod sweep;
 #[cfg(test)]
 mod tests;
+pub mod verify;
 
 pub use jobs::JobClaim;
 mod validation;
