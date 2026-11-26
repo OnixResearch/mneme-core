@@ -2,6 +2,7 @@
 #![allow(unknown_lints, no_unwrap, assertion_density)] // test/fixture code fails by panic, not a production path
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test/fixture code fails by panic, not a production path
 
+#[allow(unknown_lints, ambient_env)] // reads opt-in CI fail-closed gate variable MNEME_REQUIRE_PATCHBAY
 fn is_patchbay_required() -> bool {
     matches!(
         std::env::var("MNEME_REQUIRE_PATCHBAY").as_deref(),

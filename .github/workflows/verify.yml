@@ -111,6 +111,17 @@ jobs:
           git config --global url."https://github.com/OnixResearch/bounded-exec.git".insteadOf \
             "ssh://git@github.com/OnixResearch/bounded-exec.git"
 
+      - name: Cache Cargo registry and git dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
       - name: Cache Lean Lake build directory
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -118,6 +129,9 @@ jobs:
           key: lake-${{ runner.os }}-${{ hashFiles('proofs/kernel/lakefile.toml', 'proofs/kernel/lake-manifest.json', 'proofs/kernel/lean-toolchain', 'flake.lock') }}
           restore-keys: |
             lake-${{ runner.os }}-
+
+      - name: Fetch locked Cargo sources for offline Charon extraction
+        run: nix develop --no-update-lock-file --command cargo fetch --locked
 
       - name: Run kernel proof gate
         run: nix develop --no-update-lock-file --command just proofs
