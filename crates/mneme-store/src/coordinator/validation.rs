@@ -221,14 +221,17 @@ pub(super) fn validate_sources(
     let mut supplied_digests = std::collections::BTreeMap::new();
     for source in supplied {
         let digest = source.digest();
-        if let Some(existing) = supplied_digests.insert(digest, source)
-            && existing.bytes != source.bytes
-        {
-            return Err(crate::error::Failure::InvalidCommand(
-                "source blobs with the same digest have different bytes".to_owned(),
-            ));
+        debug_assert_eq!(digest, source.digest());
+        if let Some(existing) = supplied_digests.insert(digest, source) {
+            let both_inline = existing.file.is_none() && source.file.is_none();
+            if both_inline && existing.bytes != source.bytes {
+                return Err(crate::error::Failure::InvalidCommand(
+                    "source blobs with the same digest have different bytes".to_owned(),
+                ));
+            }
         }
     }
+    debug_assert!(supplied_digests.len() <= supplied.len());
     let mut referenced = std::collections::BTreeSet::new();
     for record in proposed {
         let Some((digest, declared_length, media_type)) = retained_source(record)? else {
@@ -236,11 +239,11 @@ pub(super) fn validate_sources(
         };
         referenced.insert(digest);
         if let Some(source) = supplied_digests.get(&digest) {
-            if source.bytes.len() as u64 != declared_length {
+            if source.byte_length() != declared_length {
                 return Err(crate::error::Failure::SourceLengthMismatch {
                     digest: digest.to_hex(),
                     declared: declared_length,
-                    supplied: source.bytes.len() as u64,
+                    supplied: source.byte_length(),
                 });
             }
             if source.media_type != media_type {

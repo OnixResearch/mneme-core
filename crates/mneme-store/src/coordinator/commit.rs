@@ -396,13 +396,20 @@ impl super::Workspace {
         );
         for source in sources {
             let digest = source.digest();
-            let staged_blob = crate::payload::stage_with_policy(
-                &self.root,
-                digest,
-                &source.bytes,
-                policy,
-                source.media_type.as_str(),
-            )?;
+            let staged_blob = match &source.file {
+                Some(file) => {
+                    crate::payload::stage_file(&self.root, digest, &file.path, file.size_bytes)?
+                }
+                None => crate::payload::stage_with_policy(
+                    &self.root,
+                    digest,
+                    &source.bytes,
+                    policy,
+                    source.media_type.as_str(),
+                )?,
+            };
+            debug_assert_eq!(staged_blob.digest, digest);
+            debug_assert_eq!(staged_blob.byte_length, source.byte_length());
             staged.insert(
                 *digest.as_bytes(),
                 (

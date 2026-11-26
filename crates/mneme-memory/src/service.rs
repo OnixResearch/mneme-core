@@ -1779,6 +1779,8 @@ pub fn build_source(
         media_type,
     )
     .map_err(|message| crate::failure::EvidenceError::policy(message.to_owned()))?;
+    debug_assert_eq!(retained.byte_length(), bytes.len() as u64);
+    debug_assert_eq!(retained.media_type().as_str(), media_type);
     let mut entries = vec![
         (
             mneme_core::Symbol::from("content"),
@@ -1811,10 +1813,7 @@ pub fn build_source(
             scope: scope.clone(),
             payload: mneme_core::Payload::new(entries),
         },
-        mneme_store::SourceBlobDraft {
-            bytes: bytes.to_vec(),
-            media_type: mneme_core::Symbol::from(media_type),
-        },
+        mneme_store::SourceBlobDraft::inline(bytes.to_vec(), mneme_core::Symbol::from(media_type)),
     ))
 }
 
@@ -1856,10 +1855,10 @@ fn build_source_with_provenance_and_predecessor(
             scope: scope.clone(),
             payload,
         },
-        mneme_store::SourceBlobDraft {
-            bytes: options.bytes.to_vec(),
-            media_type: mneme_core::Symbol::from(options.media_type),
-        },
+        mneme_store::SourceBlobDraft::inline(
+            options.bytes.to_vec(),
+            mneme_core::Symbol::from(options.media_type),
+        ),
     ))
 }
 

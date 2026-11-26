@@ -1082,7 +1082,8 @@ fn parse_sources(
             "sources must be a sequence",
         )
     })?;
-    sequence
+    debug_assert!(value.as_sequence().is_some());
+    let parsed: Vec<_> = sequence
         .iter()
         .enumerate()
         .map(|(index, source)| {
@@ -1093,12 +1094,14 @@ fn parse_sources(
                 .ok_or_else(|| fields.refuse("bytes", "source bytes must be a byte string"))?
                 .to_vec();
             let media_type = fields.text("media-type")?.to_owned();
-            Ok(mneme_store::SourceBlobDraft {
+            Ok(mneme_store::SourceBlobDraft::inline(
                 bytes,
-                media_type: media_type.as_str().into(),
-            })
+                media_type.as_str().into(),
+            ))
         })
-        .collect()
+        .collect::<crate::error::CallResult<Vec<_>>>()?;
+    debug_assert_eq!(parsed.len(), sequence.len());
+    Ok(parsed)
 }
 
 fn parse_modes(

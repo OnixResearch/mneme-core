@@ -39,10 +39,10 @@ fn fixture_command(
             .iter()
             .map(draft)
             .collect(),
-        source_blobs: vec![crate::requests::SourceBlobDraft {
-            bytes: mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
-            media_type: mneme_core::Symbol::from("text/asciidoc"),
-        }],
+        source_blobs: vec![crate::requests::SourceBlobDraft::inline(
+            mneme_core::fixtures::SOURCE_TEXT.as_bytes().to_vec(),
+            mneme_core::Symbol::from("text/asciidoc"),
+        )],
         publications: Vec::new(),
         import_candidates: Vec::new(),
         retention: None,

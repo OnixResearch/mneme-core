@@ -2426,10 +2426,10 @@ fn invalid_utf8_document(input: InvalidUtf8DocumentInput<'_>) -> PreparedDocumen
             preview_html: String::new(),
         },
         records: Vec::new(),
-        source_blob: mneme_store::SourceBlobDraft {
-            bytes: input.bytes.to_vec(),
-            media_type: mneme_core::Symbol::from(source_media_type(&input.request.path)),
-        },
+        source_blob: mneme_store::SourceBlobDraft::inline(
+            input.bytes.to_vec(),
+            mneme_core::Symbol::from(source_media_type(&input.request.path)),
+        ),
         document_id: input.document_id,
         existing_source: input.existing_source,
         existing_digest: None,

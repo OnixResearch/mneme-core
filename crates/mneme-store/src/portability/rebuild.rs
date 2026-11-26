@@ -147,7 +147,9 @@ fn source_blobs(
                 .or_insert(retained);
         }
     }
-    sources
+    debug_assert!(sources.len() <= entries.len());
+    let expected_count = sources.len();
+    let built: Vec<_> = sources
         .into_values()
         .map(|retained| {
             let bytes = archive.blob(retained.digest())?;
@@ -157,12 +159,14 @@ fn source_blobs(
                     reason: "archive source length does not match its record".to_owned(),
                 });
             }
-            Ok(crate::SourceBlobDraft {
+            Ok(crate::SourceBlobDraft::inline(
                 bytes,
-                media_type: retained.media_type().clone(),
-            })
+                retained.media_type().clone(),
+            ))
         })
-        .collect()
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    debug_assert_eq!(built.len(), expected_count);
+    Ok(built)
 }
 
 fn publish_current(

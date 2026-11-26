@@ -1156,6 +1156,105 @@ fn verify_decompressed(
     Ok(())
 }
 
+/// Stream the file at `source` into the immutable blob store.
+///
+/// The digest is recomputed while copying and must equal `digest` and the
+/// declared length, so a file that changed after it was measured is refused and
+/// nothing is installed. Memory use is constant.
+pub(crate) fn stage_file(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    source: &std::path::Path,
+    expected_bytes: u64,
+) -> crate::error::Result<StagedBlob> {
+    let target = blob_path(root, digest);
+    if target.exists() {
+        verify(root, digest, expected_bytes)?;
+        let _ = crate::outboard::ensure(root, digest)?;
+        if let Some(parent) = target.parent() {
+            flush_directory(parent)?;
+        }
+        return Ok(StagedBlob {
+            digest,
+            byte_length: expected_bytes,
+        });
+    }
+    let parent = target.parent().ok_or_else(|| {
+        crate::error::Failure::InvalidCommand("blob path has no parent".to_owned())
+    })?;
+    create_directory_chain_flushed(parent)?;
+    let staging = root.join(STAGING_DIRECTORY);
+    create_directory_chain_flushed(&staging)?;
+    let temporary = staging.join(format!("{TEMP_PREFIX}{}", random_hex(8)?));
+    let copied = copy_hashed(digest.algorithm(), source, &temporary);
+    let (actual, actual_bytes) = match copied {
+        Ok(result) => result,
+        Err(error) => {
+            remove_temporary_best_effort(&temporary);
+            return Err(error);
+        }
+    };
+    if actual != *digest.as_bytes() || actual_bytes != expected_bytes {
+        remove_temporary_best_effort(&temporary);
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "streamed source file does not match its declared digest and length".to_owned(),
+        });
+    }
+    debug_assert_eq!(actual, *digest.as_bytes());
+    debug_assert_eq!(actual_bytes, expected_bytes);
+    std::fs::rename(&temporary, &target)
+        .map_err(|error| crate::error::Failure::io(&target, error))?;
+    flush_directory(parent)?;
+    let _ = crate::outboard::ensure(root, digest)?;
+    Ok(StagedBlob {
+        digest,
+        byte_length: expected_bytes,
+    })
+}
+
+fn remove_temporary_best_effort(path: &std::path::Path) {
+    if std::fs::remove_file(path).is_err() {}
+}
+
+/// Copy `source` to a new flushed file at `temporary`, hashing while copying.
+fn copy_hashed(
+    algorithm: mneme_core::HashAlgorithm,
+    source: &std::path::Path,
+    temporary: &std::path::Path,
+) -> crate::error::Result<([u8; 32], u64)> {
+    use std::io::Read;
+    let mut input =
+        std::fs::File::open(source).map_err(|error| crate::error::Failure::io(source, error))?;
+    let mut output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(temporary)
+        .map_err(|error| crate::error::Failure::io(temporary, error))?;
+    let mut hasher = mneme_core::hashing::StreamingHasher::new(algorithm);
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut copied_bytes = 0_u64;
+    loop {
+        let read = match input.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(crate::error::Failure::io(source, error)),
+        };
+        debug_assert!(read <= buffer.len());
+        hasher.update(&buffer[..read]);
+        output
+            .write_all(&buffer[..read])
+            .map_err(|error| crate::error::Failure::io(temporary, error))?;
+        copied_bytes = copied_bytes.saturating_add(read as u64);
+        debug_assert!(copied_bytes >= read as u64);
+    }
+    output
+        .sync_all()
+        .map_err(|error| crate::error::Failure::io(temporary, error))?;
+    Ok((hasher.finish(), copied_bytes))
+}
+
 /// Whether the blob file exists with the expected uncompressed byte length.
 ///
 /// Uncompressed blobs are checked from directory metadata alone. Compressed
@@ -2653,5 +2752,24 @@ mod tests {
             read(root.path(), digest),
             Err(crate::error::Failure::MissingBlob { .. })
         ));
+    }
+
+    #[test]
+    fn streamed_file_that_changes_after_measuring_is_refused() {
+        let temp = tempfile::tempdir().expect("temp");
+        let file = temp.path().join("source.bin");
+        std::fs::write(&file, b"= One\n").expect("write");
+        let draft =
+            crate::SourceBlobDraft::from_file(&file, mneme_core::Symbol::from("text/asciidoc"))
+                .expect("draft");
+        std::fs::write(&file, b"= Two\n").expect("rewrite");
+        let root = tempfile::tempdir().expect("root");
+        let error = stage_file(root.path(), draft.digest(), &file, draft.byte_length())
+            .expect_err("changed file");
+        assert!(
+            matches!(error, crate::error::Failure::CorruptBlob { .. }),
+            "{error:?}"
+        );
+        assert!(!blob_path(root.path(), draft.digest()).exists());
     }
 }
