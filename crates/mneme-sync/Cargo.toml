@@ -26,5 +26,14 @@ tracing = "0.1"
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+anyhow = "1"
+patchbay = "0.7"
+
+[[test]]
+name = "patchbay"
+path = "tests/patchbay.rs"
+harness = false
+
 [lints]
 workspace = true
