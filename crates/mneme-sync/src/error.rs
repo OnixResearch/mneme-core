@@ -1,0 +1,36 @@
+//! Error types for Mneme Iroh peer sync.
+
+/// Sync operation failures.
+#[derive(Debug, thiserror::Error)]
+pub enum Failure {
+    /// Peer is not present in the local Ed25519 allowlist.
+    #[error("peer {0} is not in the local allowlist")]
+    UnauthorizedPeer(String),
+    /// Peer is allowlisted, but not for the requested scope.
+    #[error("peer {peer} is not authorized for scope {scope}")]
+    ScopeDenied { peer: String, scope: String },
+    /// Transport or QUIC connection failure.
+    #[error("iroh transport error: {0}")]
+    Transport(String),
+    /// Sync control or gossip protocol failure.
+    #[error("sync protocol error: {0}")]
+    Protocol(String),
+    /// Underlying store validation, commit, or restore failure.
+    #[error(transparent)]
+    Store(#[from] mneme_store::Failure),
+    /// Post-pull workspace verification failed closed.
+    #[error("workspace verification failed after sync: {0}")]
+    VerificationFailed(String),
+    /// Payload or archive exceeds configured transfer bounds.
+    #[error("transfer size {actual_bytes} bytes exceeds bound {limit_bytes} bytes")]
+    SizeLimitExceeded { actual_bytes: u64, limit_bytes: u64 },
+    /// Invalid sync configuration or persisted state.
+    #[error("invalid sync configuration: {0}")]
+    InvalidConfig(String),
+    /// Local filesystem I/O failure.
+    #[error("sync I/O error: {0}")]
+    Io(String),
+}
+
+/// Convenience result alias for sync operations.
+pub type Result<T> = std::result::Result<T, Failure>;

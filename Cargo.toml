@@ -12,6 +12,7 @@ members = [
   "crates/mneme-datalog",
   "crates/mneme-recall",
   "crates/mneme-api",
+  "crates/mneme-sync",
 ]
 exclude = ["vendor"]
 
@@ -32,6 +33,7 @@ mneme-doc = { path = "crates/mneme-doc" }
 mneme-datalog = { path = "crates/mneme-datalog" }
 mneme-recall = { path = "crates/mneme-recall" }
 mneme-api = { path = "crates/mneme-api" }
+mneme-sync = { path = "crates/mneme-sync" }
 blake3 = "1.8"
 bao-tree = { version = "0.16.1", default-features = false, features = ["fs"] }
 getrandom = "0.4"

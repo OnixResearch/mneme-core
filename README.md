@@ -15,6 +15,7 @@ Mneme Core is the standalone Rust library workspace for Mneme's typed memory eng
 - **`mneme-consolidation`** — evidence-preserving proposal generation and resumable workspace jobs.
 - **`mneme-prolog`** — optional bounded Prolog capability contracts and isolated engine execution.
 - **`mneme-api`** — transport-neutral local memory commands and queries.
+- **`mneme-sync`** — Iroh peer-to-peer verified BLAKE3 blob/bundle replication, LAN/DHT address lookup, and head-revision gossip.
 
 The workspace keeps the original crate names, public Rust APIs, Rust 1.99.1 toolchain pin, lint policy, and release overflow checks. No schema or runtime behavior is changed by this extraction.
 

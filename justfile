@@ -2,7 +2,7 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 # The extracted workspace has no application binaries; keep formatting scoped to
 # the eleven published libraries.
-rust_packages := "-p mneme-kernel -p mneme-core -p mneme-store -p mneme-memory -p mneme-consolidation -p mneme-prolog -p mneme-retention -p mneme-doc -p mneme-datalog -p mneme-recall -p mneme-api"
+rust_packages := "-p mneme-kernel -p mneme-core -p mneme-store -p mneme-memory -p mneme-consolidation -p mneme-prolog -p mneme-retention -p mneme-doc -p mneme-datalog -p mneme-recall -p mneme-api -p mneme-sync"
 
 default:
     @just --list
