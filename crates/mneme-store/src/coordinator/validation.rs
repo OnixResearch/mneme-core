@@ -232,7 +232,7 @@ pub(super) fn validate_sources(
             register_supplied_digest(&mut supplied_by_digest, supplied, legacy_digest, index)?;
         }
     }
-    let mut referenced_indices = std::collections::BTreeSet::new();
+    let mut referenced_digests = std::collections::BTreeSet::new();
     for record in proposed {
         let Some((digest, declared_length, media_type)) = retained_source(record)? else {
             continue;
@@ -251,7 +251,7 @@ pub(super) fn validate_sources(
                     "source blob {digest} media type does not match its source revision"
                 )));
             }
-            referenced_indices.insert(index);
+            referenced_digests.insert(digest);
             continue;
         }
         let is_bytes_supplied = candidates.iter().any(|candidate| {
@@ -272,15 +272,21 @@ pub(super) fn validate_sources(
             ));
         }
     }
-    for (index, source) in supplied.iter().enumerate() {
-        if !referenced_indices.contains(&index) {
+    for source in supplied {
+        let is_referenced = referenced_digests.contains(&source.digest())
+            || (source.file.is_none()
+                && referenced_digests.contains(&mneme_core::ContentDigest::of_source_bytes_with(
+                    &source.bytes,
+                    mneme_core::HashAlgorithm::Sha256,
+                )));
+        if !is_referenced {
             return Err(crate::error::Failure::InvalidCommand(format!(
                 "source blob {} is not referenced by a new retained source revision",
                 source.digest()
             )));
         }
     }
-    debug_assert_eq!(referenced_indices.len(), supplied.len());
+    debug_assert!(referenced_digests.len() <= supplied_by_digest.len());
     Ok(())
 }
 
