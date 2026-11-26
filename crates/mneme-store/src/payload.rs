@@ -22,7 +22,7 @@ use sha2::Digest;
 const ZSTD_FRAME_MAGIC: &[u8; 8] = b"MNZSTD01";
 const ZSTD_HEADER_LEN: usize = 16;
 const ZSTD_DICT_FRAME_MAGIC: &[u8; 8] = b"MNZSTD02";
-const ZSTD_DICT_HEADER_LEN: usize = 48;
+const ZSTD_DICT_HEADER_LEN: usize = 49;
 const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 const MAX_DECOMPRESSED_BLOB_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -775,9 +775,10 @@ fn stage_one_chunk(
     debug_assert!(start.saturating_add(len) <= request.bytes.len());
     let chunk_slice = &request.bytes[start..start.saturating_add(len)];
     debug_assert_eq!(chunk_slice.len(), len);
-    let chunk_hash = hash_with_algorithm(mneme_core::HashAlgorithm::Sha256, chunk_slice);
+    let chunk_algo = request.digest.algorithm();
+    let chunk_hash = hash_bytes(chunk_algo, chunk_slice);
     let chunk_digest = mneme_core::ContentDigest::from_parts(
-        mneme_core::HashAlgorithm::Sha256,
+        chunk_algo,
         mneme_core::EncodingProfile::RawBytesV1,
         mneme_core::ValueBoundary::SourceBytes,
         chunk_hash,
@@ -786,7 +787,7 @@ fn stage_one_chunk(
         digest: request.digest.to_hex(),
         reason: reason.to_owned(),
     })?;
-    debug_assert_eq!(chunk_digest.algorithm(), mneme_core::HashAlgorithm::Sha256);
+    debug_assert_eq!(chunk_digest.algorithm(), chunk_algo);
     let chunk_target = crate::dedup::chunk_path(request.root, chunk_digest);
     if chunk_target.exists() {
         let existing = read_chunk(request.root, chunk_digest, span.length_bytes)?;
@@ -874,11 +875,6 @@ fn encode_zstd_dict_frame(
     uncompressed_len: u64,
     dict_digest: mneme_core::ContentDigest,
 ) -> crate::error::Result<Vec<u8>> {
-    if dict_digest.algorithm() != mneme_core::HashAlgorithm::Sha256 {
-        return Err(crate::error::Failure::InvalidCommand(
-            "MNZSTD02 dictionary frame requires a sha256 dictionary digest".to_owned(),
-        ));
-    }
     let dict_bytes = crate::dedup::read_dictionary(root, dict_digest)?;
     debug_assert!(!dict_bytes.is_empty());
     debug_assert_eq!(u64::try_from(bytes.len()).ok(), Some(uncompressed_len));
@@ -894,10 +890,15 @@ fn encode_zstd_dict_frame(
     let compressed = encoder
         .finish()
         .map_err(|error| zstd_dict_encode_error(digest, error))?;
+    let algo_tag = match dict_digest.algorithm() {
+        mneme_core::HashAlgorithm::Sha256 => 0_u8,
+        mneme_core::HashAlgorithm::Blake3 => 1_u8,
+    };
     let mut framed = Vec::with_capacity(ZSTD_DICT_HEADER_LEN.saturating_add(compressed.len()));
     framed.extend_from_slice(ZSTD_DICT_FRAME_MAGIC);
     framed.extend_from_slice(&uncompressed_len.to_le_bytes());
     framed.extend_from_slice(dict_digest.as_bytes());
+    framed.push(algo_tag);
     framed.extend_from_slice(&compressed);
     Ok(framed)
 }
@@ -974,14 +975,24 @@ fn parse_zstd_dict_header(
             "compressed blob header exceeds maximum supported size",
         ));
     }
-    let Ok(dict_hash) = <[u8; 32]>::try_from(&header[16..ZSTD_DICT_HEADER_LEN]) else {
+    let Ok(dict_hash) = <[u8; 32]>::try_from(&header[16..48]) else {
         return Err(corrupt_dict_header(
             digest,
             "compressed dictionary blob header is truncated",
         ));
     };
+    let dict_algorithm = match header[48] {
+        0 => mneme_core::HashAlgorithm::Sha256,
+        1 => mneme_core::HashAlgorithm::Blake3,
+        _ => {
+            return Err(corrupt_dict_header(
+                digest,
+                "compressed dictionary blob header names unsupported hash algorithm",
+            ));
+        }
+    };
     let dict_digest = mneme_core::ContentDigest::from_parts(
-        mneme_core::HashAlgorithm::Sha256,
+        dict_algorithm,
         mneme_core::EncodingProfile::RawBytesV1,
         mneme_core::ValueBoundary::SourceBytes,
         dict_hash,
@@ -1176,7 +1187,7 @@ pub fn blob_is_present(
     read_frame_header_length(&path, metadata.len()).map(|length| length == Some(expected_length))
 }
 
-fn read_frame_header_length(
+pub(crate) fn read_frame_header_length(
     path: &std::path::Path,
     file_len: u64,
 ) -> crate::error::Result<Option<u64>> {

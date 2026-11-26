@@ -390,7 +390,10 @@ impl Scrub<'_> {
             ));
             return;
         }
-        if metadata.len() != expected {
+        let is_framed =
+            crate::payload::read_frame_header_length(path, metadata.len()).ok().flatten()
+                == Some(expected);
+        if metadata.len() != expected && !is_framed {
             self.push(blob_issue(
                 IssueKind::SizeMismatch,
                 &digest.to_hex(),
@@ -400,6 +403,10 @@ impl Scrub<'_> {
                     metadata.len()
                 ),
             ));
+            return;
+        }
+        if is_framed {
+            self.verify_framed_blob(shown, digest, bytes, expected);
             return;
         }
         match self.mode {
@@ -437,6 +444,41 @@ impl Scrub<'_> {
                     Some(shown.to_owned()),
                     error.to_string(),
                 )),
+            },
+        }
+    }
+
+    fn verify_framed_blob(
+        &mut self,
+        shown: &str,
+        digest: mneme_core::ContentDigest,
+        bytes: [u8; 32],
+        expected: u64,
+    ) {
+        match self.mode {
+            VerifyMode::Quick => {
+                self.report.bytes_sized = self.report.bytes_sized.saturating_add(expected);
+                self.verified.insert(bytes);
+            }
+            VerifyMode::Full => match crate::payload::verify(self.root, digest, expected) {
+                Ok(()) => {
+                    self.report.bytes_verified = self.report.bytes_verified.saturating_add(expected);
+                    self.report.bytes_sized = self.report.bytes_sized.saturating_add(expected);
+                    self.verified.insert(bytes);
+                }
+                Err(error) => {
+                    let kind = match &error {
+                        crate::error::Failure::MissingBlob { .. } => IssueKind::MissingBlob,
+                        crate::error::Failure::CorruptBlob { .. } => IssueKind::DigestMismatch,
+                        _ => IssueKind::UnreadableBlob,
+                    };
+                    self.push(blob_issue(
+                        kind,
+                        &digest.to_hex(),
+                        Some(shown.to_owned()),
+                        error.to_string(),
+                    ));
+                }
             },
         }
     }
