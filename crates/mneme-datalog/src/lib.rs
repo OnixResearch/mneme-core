@@ -31,6 +31,43 @@ pub struct VaultRevision {
     pub served_revision: mneme_core::WorkspaceRevisionId,
 }
 
+impl VaultRevision {
+    /// Remote peer identifier when `root` uses the `iroh://<node-id>` scheme.
+    pub fn peer(&self) -> Option<&str> {
+        self.root
+            .to_str()
+            .and_then(|text| text.strip_prefix("iroh://"))
+    }
+}
+
+/// One pre-loaded read-only vault view supplied by an external transport
+/// (for example, a pinned snapshot fetched over `irpc`).
+#[derive(Clone, Debug)]
+pub struct ExternalVaultView {
+    pub metadata: VaultRevision,
+    pub eligibility_generation: u64,
+    pub view: mneme_memory::View,
+    pub current_sources:
+        std::collections::BTreeMap<mneme_core::RecordId, mneme_memory::SourceAvailability>,
+}
+
+/// One attached vault source in a federated build, either local or pre-loaded.
+#[derive(Clone, Debug)]
+pub enum FederatedVaultSource {
+    Local(VaultAttachment),
+    External(Box<ExternalVaultView>),
+}
+
+impl FederatedVaultSource {
+    /// Alias assigned to this attached vault.
+    pub fn alias(&self) -> &str {
+        match self {
+            FederatedVaultSource::Local(attachment) => &attachment.alias,
+            FederatedVaultSource::External(external) => &external.metadata.alias,
+        }
+    }
+}
+
 /// Validate an attached vault alias before opening its workspace.
 pub fn validate_vault_alias(alias: &str) -> Result<(), Error> {
     if alias.is_empty()
@@ -851,7 +888,21 @@ impl<'w> Service<'w> {
             request,
             attachments,
         } = federated;
-        if attachments.is_empty() {
+        let sources = attachments
+            .into_iter()
+            .map(FederatedVaultSource::Local)
+            .collect();
+        self.build_federated_sources(request, sources)
+    }
+
+    /// Build a non-published federated projection across the primary workspace
+    /// and an ordered mix of local and pre-loaded external attached vaults.
+    pub fn build_federated_sources(
+        &mut self,
+        request: BuildRequest,
+        sources: Vec<FederatedVaultSource>,
+    ) -> Result<Build, Error> {
+        if sources.is_empty() {
             return self.build(request);
         }
         if request.publish {
@@ -859,7 +910,7 @@ impl<'w> Service<'w> {
                 "cannot publish a federated multi-vault projection".to_owned(),
             ));
         }
-        validate_attachments(&attachments)?;
+        validate_federated_sources(&sources)?;
         let start = engine::evaluation_start();
         let program = request.bundle.validate().map_err(Error::InvalidBundle)?;
         let primary_generation = self.workspace.eligibility_generation()?;
@@ -873,8 +924,8 @@ impl<'w> Service<'w> {
             access: &request.access,
         })?;
         let attached_states =
-            open_attached_vault_contexts(&attachments, &request.scope, &request.access)?;
-        assert_eq!(attached_states.len(), attachments.len());
+            open_federated_vault_sources(&sources, &request.scope, &request.access)?;
+        assert_eq!(attached_states.len(), sources.len());
         let vault_build_ids = collect_vault_build_ids(
             self.workspace,
             primary_generation,
@@ -1188,6 +1239,16 @@ impl<'w> Service<'w> {
 /// Projections are operational, so a hypothesis scope never widens the view even
 /// when the caller is authorized for it: an excluded record must not ground an
 /// in-scope fact, change a count, or leak its identity into support.
+/// Filter a committed snapshot down to the records visible under the kernel's
+/// operational projection rule for `scope` and `access`.
+pub fn filter_visible_snapshot(
+    snapshot: mneme_store::Snapshot,
+    scope: &mneme_core::ScopeId,
+    access: &mneme_memory::Access,
+) -> mneme_store::Snapshot {
+    visible_snapshot(snapshot, scope, access)
+}
+
 fn visible_snapshot(
     mut snapshot: mneme_store::Snapshot,
     scope: &mneme_core::ScopeId,
@@ -1404,7 +1465,7 @@ fn vault_revision_sequence(vaults: &[VaultRevision]) -> mneme_core::Value {
         vaults
             .iter()
             .map(|vault| {
-                mneme_core::Value::symbol_dictionary([
+                let mut entries = vec![
                     (
                         mneme_core::Symbol::from("alias"),
                         mneme_core::Value::string(vault.alias.clone()),
@@ -1421,7 +1482,14 @@ fn vault_revision_sequence(vaults: &[VaultRevision]) -> mneme_core::Value {
                         mneme_core::Symbol::from("served-revision"),
                         vault.served_revision.to_value(),
                     ),
-                ])
+                ];
+                if let Some(peer) = vault.peer() {
+                    entries.push((
+                        mneme_core::Symbol::from("peer"),
+                        mneme_core::Value::string(peer.to_owned()),
+                    ));
+                }
+                mneme_core::Value::symbol_dictionary(entries)
             })
             .collect(),
     )
@@ -1436,17 +1504,50 @@ struct VaultLoadSpec<'a> {
     access: &'a mneme_memory::Access,
 }
 
-fn open_attached_vault_contexts(
-    attachments: &[VaultAttachment],
+struct AttachedVaultState {
+    workspace: Option<mneme_store::Workspace>,
+    generation: u64,
+    loaded: LoadedVaultView,
+}
+
+fn open_federated_vault_sources(
+    sources: &[FederatedVaultSource],
     scope: &mneme_core::ScopeId,
     access: &mneme_memory::Access,
-) -> Result<Vec<(mneme_store::Workspace, u64, LoadedVaultView)>, Error> {
-    assert!(!attachments.is_empty());
-    let attached_states = attachments
+) -> Result<Vec<AttachedVaultState>, Error> {
+    assert!(!sources.is_empty());
+    let attached_states = sources
         .iter()
-        .map(|attachment| open_single_attached_vault(attachment, scope, access))
-        .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(attached_states.len(), attachments.len());
+        .map(|source| match source {
+            FederatedVaultSource::Local(attachment) => {
+                let (workspace, generation, loaded) =
+                    open_single_attached_vault(attachment, scope, access)?;
+                Ok(AttachedVaultState {
+                    workspace: Some(workspace),
+                    generation,
+                    loaded,
+                })
+            }
+            FederatedVaultSource::External(external) => {
+                if external.view.revision() != external.metadata.served_revision {
+                    return Err(Error::Failed(format!(
+                        "external vault {:?} view revision does not match served revision",
+                        external.metadata.alias
+                    )));
+                }
+                Ok(AttachedVaultState {
+                    workspace: None,
+                    generation: external.eligibility_generation,
+                    loaded: LoadedVaultView {
+                        metadata: external.metadata.clone(),
+                        view: external.view.clone(),
+                        current_sources: external.current_sources.clone(),
+                    },
+                })
+            }
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    assert_eq!(attached_states.len(), sources.len());
     Ok(attached_states)
 }
 
@@ -1482,7 +1583,7 @@ fn collect_vault_build_ids<'a>(
     primary_workspace: &'a mneme_store::Workspace,
     primary_generation: u64,
     primary_loaded: &'a LoadedVaultView,
-    attached_states: &'a [(mneme_store::Workspace, u64, LoadedVaultView)],
+    attached_states: &'a [AttachedVaultState],
 ) -> Vec<rules::VaultBuildId<'a>> {
     std::iter::once(rules::VaultBuildId {
         alias: PRIMARY_VAULT_ALIAS,
@@ -1490,38 +1591,39 @@ fn collect_vault_build_ids<'a>(
         revision: primary_loaded.metadata.served_revision,
         generation: primary_generation,
     })
-    .chain(
-        attached_states
-            .iter()
-            .map(|(workspace, generation, loaded)| rules::VaultBuildId {
-                alias: &loaded.metadata.alias,
-                root: workspace.root(),
-                revision: loaded.metadata.served_revision,
-                generation: *generation,
-            }),
-    )
+    .chain(attached_states.iter().map(|state| {
+        rules::VaultBuildId {
+            alias: &state.loaded.metadata.alias,
+            root: state
+                .workspace
+                .as_ref()
+                .map_or(state.loaded.metadata.root.as_path(), |ws| ws.root()),
+            revision: state.loaded.metadata.served_revision,
+            generation: state.generation,
+        }
+    }))
     .collect()
 }
 
 fn collect_vault_revisions(
     primary_loaded: &LoadedVaultView,
-    attached_states: &[(mneme_store::Workspace, u64, LoadedVaultView)],
+    attached_states: &[AttachedVaultState],
 ) -> Vec<VaultRevision> {
     std::iter::once(primary_loaded.metadata.clone())
         .chain(
             attached_states
                 .iter()
-                .map(|(_, _, loaded)| loaded.metadata.clone()),
+                .map(|state| state.loaded.metadata.clone()),
         )
         .collect()
 }
 
 fn collect_vault_sources<'a>(
     primary_loaded: &'a LoadedVaultView,
-    attached_states: &'a [(mneme_store::Workspace, u64, LoadedVaultView)],
+    attached_states: &'a [AttachedVaultState],
 ) -> Vec<engine::VaultSource<'a>> {
     std::iter::once(primary_loaded)
-        .chain(attached_states.iter().map(|(_, _, loaded)| loaded))
+        .chain(attached_states.iter().map(|state| &state.loaded))
         .map(|loaded| engine::VaultSource {
             alias: &loaded.metadata.alias,
             served_revision: loaded.metadata.served_revision,
@@ -1534,15 +1636,17 @@ fn collect_vault_sources<'a>(
 fn verify_federated_barriers(
     primary_workspace: &mneme_store::Workspace,
     primary_generation: u64,
-    attached_states: &[(mneme_store::Workspace, u64, LoadedVaultView)],
+    attached_states: &[AttachedVaultState],
 ) -> Result<(), Error> {
     if primary_workspace.eligibility_generation()? != primary_generation {
         return Err(Error::Failed(
             "eligibility barrier advanced during projection build".to_owned(),
         ));
     }
-    for (workspace, generation, _) in attached_states {
-        if workspace.eligibility_generation()? != *generation {
+    for state in attached_states {
+        if let Some(workspace) = &state.workspace
+            && workspace.eligibility_generation()? != state.generation
+        {
             return Err(Error::Failed(
                 "attached vault eligibility barrier advanced during projection build".to_owned(),
             ));
@@ -1551,11 +1655,12 @@ fn verify_federated_barriers(
     Ok(())
 }
 
-fn validate_attachments(attachments: &[VaultAttachment]) -> Result<(), Error> {
+fn validate_federated_sources(sources: &[FederatedVaultSource]) -> Result<(), Error> {
     let mut aliases = std::collections::BTreeSet::new();
-    for attachment in attachments {
-        validate_vault_alias(&attachment.alias)?;
-        if !aliases.insert(attachment.alias.as_str()) {
+    for source in sources {
+        let alias = source.alias();
+        validate_vault_alias(alias)?;
+        if !aliases.insert(alias) {
             return Err(Error::InvalidQuery("duplicate attached vault alias"));
         }
     }

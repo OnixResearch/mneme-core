@@ -34,16 +34,25 @@ mneme-recall = { path = "crates/mneme-recall" }
 mneme-api = { path = "crates/mneme-api" }
 getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+iroh = "1.5"
+iroh-base = "1.5"
+irpc = { version = "0.17", features = ["derive", "rpc", "noq_endpoint_setup", "stream"] }
+irpc-iroh = "0.17"
+noq = "1"
 num-bigint = "0.4"
 num-traits = "0.2"
+postcard = { version = "1", features = ["alloc", "use-std"] }
+rcgen = "0.14"
 rusqlite = { version = "0.41", features = ["bundled"] }
 rust-stemmers = "1.2"
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
+tokio = { version = "1.44", features = ["rt", "rt-multi-thread", "sync", "macros", "time", "net"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
