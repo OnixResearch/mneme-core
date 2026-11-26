@@ -3508,24 +3508,23 @@ fn bm25f_ranks_title_above_heading_above_body_and_preserves_phrase_ceiling() {
             "# Laboratory Overview\n\nGeneral laboratory overview with photonic notes and calibration routing measurements for daily runs.",
         ),
     ];
-    let mut records = Vec::new();
-    let mut blobs = Vec::new();
-    for (id, rev_id, path, content) in docs {
-        let (record, blob) = mneme_memory::build_source(
-            id,
-            rev_id,
-            &scope(),
-            mneme_memory::SourceOptions {
-                bytes: content.as_bytes(),
-                media_type: "text/markdown",
-                entity: None,
-                path_hint: Some(path),
-            },
-        )
-        .expect("doc");
-        records.push(record);
-        blobs.push(blob);
-    }
+    let (records, blobs): (Vec<_>, Vec<_>) = docs
+        .into_iter()
+        .map(|(id, rev_id, path, content)| {
+            mneme_memory::build_source(
+                id,
+                rev_id,
+                &scope(),
+                mneme_memory::SourceOptions {
+                    bytes: content.as_bytes(),
+                    media_type: "text/markdown",
+                    entity: None,
+                    path_hint: Some(path),
+                },
+            )
+            .expect("doc")
+        })
+        .unzip();
     harness.commit(scope(), "bm25f-fields", records, blobs);
 
     // Query terms split across non-adjacent words so phrase boost does not apply
@@ -3581,24 +3580,23 @@ fn bm25f_camel_case_and_snake_case_code_symbols_rank_above_prose() {
             "Later we plan to parse an incoming http payload and forward the request downstream.\n",
         ),
     ];
-    let mut records = Vec::new();
-    let mut blobs = Vec::new();
-    for (id, rev_id, path, content) in sources {
-        let (record, blob) = mneme_memory::build_source(
-            id,
-            rev_id,
-            &scope(),
-            mneme_memory::SourceOptions {
-                bytes: content.as_bytes(),
-                media_type: "text/plain",
-                entity: None,
-                path_hint: Some(path),
-            },
-        )
-        .expect("source");
-        records.push(record);
-        blobs.push(blob);
-    }
+    let (records, blobs): (Vec<_>, Vec<_>) = sources
+        .into_iter()
+        .map(|(id, rev_id, path, content)| {
+            mneme_memory::build_source(
+                id,
+                rev_id,
+                &scope(),
+                mneme_memory::SourceOptions {
+                    bytes: content.as_bytes(),
+                    media_type: "text/plain",
+                    entity: None,
+                    path_hint: Some(path),
+                },
+            )
+            .expect("source")
+        })
+        .unzip();
     harness.commit(scope(), "bm25f-symbols", records, blobs);
 
     // Natural-language query finds camelCase and snake_case symbols via sub-tokenization

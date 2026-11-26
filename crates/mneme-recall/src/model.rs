@@ -586,6 +586,19 @@ const BODY_FIELD_B: f64 = 0.75;
 const METADATA_FIELD_WEIGHT: f64 = 0.4;
 const METADATA_FIELD_B: f64 = 0.25;
 
+const FIELD_WEIGHTS: [f64; LEXICAL_FIELD_COUNT] = [
+    TITLE_FIELD_WEIGHT,
+    HEADING_FIELD_WEIGHT,
+    BODY_FIELD_WEIGHT,
+    METADATA_FIELD_WEIGHT,
+];
+const FIELD_LENGTH_NORMS: [f64; LEXICAL_FIELD_COUNT] = [
+    TITLE_FIELD_B,
+    HEADING_FIELD_B,
+    BODY_FIELD_B,
+    METADATA_FIELD_B,
+];
+
 impl LexicalField {
     /// All fields in canonical index order.
     pub const ALL: [Self; LEXICAL_FIELD_COUNT] = [
@@ -601,22 +614,12 @@ impl LexicalField {
 
     /// Pre-saturation BM25F field boost `w_f`.
     pub const fn weight(self) -> f64 {
-        match self {
-            Self::TitleOrLabel => TITLE_FIELD_WEIGHT,
-            Self::HeadingOrSymbol => HEADING_FIELD_WEIGHT,
-            Self::BodyOrValue => BODY_FIELD_WEIGHT,
-            Self::Metadata => METADATA_FIELD_WEIGHT,
-        }
+        FIELD_WEIGHTS[self.index()]
     }
 
     /// Per-field BM25F length normalisation `b_f`.
     pub const fn length_norm(self) -> f64 {
-        match self {
-            Self::TitleOrLabel => TITLE_FIELD_B,
-            Self::HeadingOrSymbol => HEADING_FIELD_B,
-            Self::BodyOrValue => BODY_FIELD_B,
-            Self::Metadata => METADATA_FIELD_B,
-        }
+        FIELD_LENGTH_NORMS[self.index()]
     }
 }
 
@@ -649,11 +652,9 @@ impl LexicalStatistics {
     fn of(documents: &[IndexedDocument]) -> Self {
         // Count each stem at most once per document across all fields so
         // multi-field occurrences never inflate document frequency.
-        let mut stems: Vec<&str> = Vec::new();
         let mut field_totals = [0_usize; LEXICAL_FIELD_COUNT];
         let mut field_non_empty = [0_usize; LEXICAL_FIELD_COUNT];
         for document in documents {
-            let mut seen = std::collections::BTreeSet::new();
             for field in LexicalField::ALL {
                 let idx = field.index();
                 let terms = &document.fields[idx];
@@ -661,12 +662,20 @@ impl LexicalStatistics {
                     field_totals[idx] = field_totals[idx].saturating_add(terms.total);
                     field_non_empty[idx] = field_non_empty[idx].saturating_add(1);
                 }
-                for term in terms.counts.keys() {
-                    seen.insert(term.as_str());
-                }
             }
-            stems.extend(seen);
         }
+        let mut stems: Vec<&str> = documents
+            .iter()
+            .flat_map(|document| {
+                let mut seen = std::collections::BTreeSet::new();
+                for field in LexicalField::ALL {
+                    for term in document.fields[field.index()].counts.keys() {
+                        seen.insert(term.as_str());
+                    }
+                }
+                seen
+            })
+            .collect();
         stems.sort_unstable();
         let frequencies = stems
             .chunk_by(|left, right| left == right)

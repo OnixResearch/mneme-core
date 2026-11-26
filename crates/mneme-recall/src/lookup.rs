@@ -242,12 +242,12 @@ impl IndexBuild {
             .map(mneme_core::text::render)
             .unwrap_or_default();
         let body = format!("{label} {entity_type} {properties}");
-        let fields = DocumentFields {
-            title_or_label: vec![label],
-            heading_or_symbol: Vec::new(),
-            body_or_value: Vec::new(),
-            metadata: vec![entity_type, properties],
-        };
+        let fields = build_field_terms(
+            &[label.as_str()],
+            &[],
+            &[],
+            &[entity_type.as_str(), properties.as_str()],
+        );
         self.documents.push(document(IndexedDocumentInput {
             id: format!("entity:{}", record.record_id),
             kind: crate::model::ContentKind::TypedField,
@@ -298,12 +298,12 @@ impl IndexBuild {
         }
         let root = resolved.map_or((record.record_id, record.revision_id), |(_, root)| root);
         let source = resolved.map(|(key, _)| key);
-        let fields = DocumentFields {
-            title_or_label: Vec::new(),
-            heading_or_symbol: Vec::new(),
-            body_or_value: vec![episode.summary],
-            metadata: vec![episode.actor, episode_kind],
-        };
+        let fields = build_field_terms(
+            &[],
+            &[],
+            &[episode.summary.as_str()],
+            &[episode.actor.as_str(), episode_kind.as_str()],
+        );
         self.documents.push(document(IndexedDocumentInput {
             id: format!("episode:{}", record.record_id),
             kind: crate::model::ContentKind::EpisodeSummary,
@@ -353,67 +353,26 @@ impl IndexBuild {
             if is_retained && let Some(path) = &facts.view.path_hint {
                 self.push_source_path_document(record, path, facts.view.entity, &roots);
             }
-            self.skipped += 1;
+            self.skipped = self.skipped.saturating_add(1);
             self.skip_reasons.insert(reason.to_owned());
             return Ok(());
         }
         match facts.bytes {
             Some(bytes) => match String::from_utf8(bytes) {
                 Ok(body) => {
-                    if body.is_empty()
-                        && let Some(path) = &facts.view.path_hint
-                    {
-                        self.push_source_path_document(record, path, facts.view.entity, &roots);
-                        return Ok(());
-                    }
-                    let fields = extract_source_fields(
-                        facts.view.path_hint.as_deref(),
-                        facts
-                            .view
-                            .media_type
-                            .as_ref()
-                            .map(mneme_core::Symbol::as_str),
-                        &body,
-                    );
-                    let normalized =
-                        facts.view.path_hint.as_deref().map(|path| {
-                            format!("{}\n{}", path.to_lowercase(), body.to_lowercase())
-                        });
-                    let content = IndexedDocumentInput {
-                        id: format!("source:{}:{}", record.record_id, record.revision_id),
-                        kind: crate::model::ContentKind::SourceExcerpt,
-                        text: body,
-                        normalized,
-                        fields,
-                        field_path: "source.content".to_owned(),
-                        source: Some(record.record_id),
-                        source_revision: Some(record.revision_id),
-                        span: None,
-                        assertion: None,
-                        episode: None,
-                        entity: facts.view.entity,
-                        claim_status: None,
-                        evidence: Vec::new(),
-                        ancestry_roots: roots,
-                        media_locations: scope
-                            .media_locations
-                            .get(&mneme_core::SourcePin::new(key.0, key.1))
-                            .cloned()
-                            .unwrap_or_default(),
-                    };
-                    self.documents.push(document(content));
+                    self.push_utf8_source_document(scope, record, &facts.view, body, roots);
                 }
                 Err(_) => {
                     if is_retained && let Some(path) = &facts.view.path_hint {
                         self.push_source_path_document(record, path, facts.view.entity, &roots);
                     }
-                    self.skipped += 1;
+                    self.skipped = self.skipped.saturating_add(1);
                     self.skip_reasons
                         .insert("source bytes are not UTF-8 text".to_owned());
                 }
             },
             None => {
-                self.skipped += 1;
+                self.skipped = self.skipped.saturating_add(1);
                 self.skip_reasons.insert(format!(
                     "source is {} and has no searchable bytes",
                     facts.availability.name()
@@ -423,6 +382,54 @@ impl IndexBuild {
         Ok(())
     }
 
+    fn push_utf8_source_document(
+        &mut self,
+        scope: &BuildScope<'_>,
+        record: &mneme_core::RecordEnvelope,
+        source_view: &mneme_memory::SourceView,
+        body: String,
+        roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    ) {
+        if body.is_empty()
+            && let Some(path) = &source_view.path_hint
+        {
+            self.push_source_path_document(record, path, source_view.entity, &roots);
+            return;
+        }
+        let fields = extract_source_fields(
+            source_view.path_hint.as_deref(),
+            source_view
+                .media_type
+                .as_ref()
+                .map(mneme_core::Symbol::as_str),
+            &body,
+        );
+        let normalized = source_view
+            .path_hint
+            .as_deref()
+            .map(|path| format!("{}\n{}", path.to_lowercase(), body.to_lowercase()));
+        let pin = mneme_core::SourcePin::new(record.record_id, record.revision_id);
+        let content = IndexedDocumentInput {
+            id: format!("source:{}:{}", record.record_id, record.revision_id),
+            kind: crate::model::ContentKind::SourceExcerpt,
+            text: body,
+            normalized,
+            fields,
+            field_path: "source.content".to_owned(),
+            source: Some(record.record_id),
+            source_revision: Some(record.revision_id),
+            span: None,
+            assertion: None,
+            episode: None,
+            entity: source_view.entity,
+            claim_status: None,
+            evidence: Vec::new(),
+            ancestry_roots: roots,
+            media_locations: scope.media_locations.get(&pin).cloned().unwrap_or_default(),
+        };
+        self.documents.push(document(content));
+    }
+
     fn push_source_path_document(
         &mut self,
         record: &mneme_core::RecordEnvelope,
@@ -430,12 +437,7 @@ impl IndexBuild {
         entity: Option<mneme_core::RecordId>,
         roots: &std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
     ) {
-        let fields = DocumentFields {
-            title_or_label: vec![path.to_owned()],
-            heading_or_symbol: Vec::new(),
-            body_or_value: Vec::new(),
-            metadata: Vec::new(),
-        };
+        let fields = build_field_terms(&[path], &[], &[], &[]);
         self.documents.push(document(IndexedDocumentInput {
             id: format!("source-path:{}:{}", record.record_id, record.revision_id),
             kind: crate::model::ContentKind::TypedField,
@@ -477,12 +479,12 @@ impl IndexBuild {
             "{} {} {} {}",
             assertion.predicate, value_text, subject, assertion.asserted_by
         );
-        let fields = DocumentFields {
-            title_or_label: vec![subject],
-            heading_or_symbol: vec![assertion.predicate.clone()],
-            body_or_value: vec![value_text],
-            metadata: vec![assertion.asserted_by.clone()],
-        };
+        let fields = build_field_terms(
+            &[subject.as_str()],
+            &[assertion.predicate.as_str()],
+            &[value_text.as_str()],
+            &[assertion.asserted_by.as_str()],
+        );
         self.documents.push(document(IndexedDocumentInput {
             id: format!("assertion:{}", assertion.record.record_id),
             kind: crate::model::ContentKind::Claim,
@@ -797,6 +799,17 @@ const CODE_DECLARATION_KEYWORDS: [&str; 13] = [
 const HASH_COMMENT_EXTENSIONS: [&str; 10] = [
     ".py", ".sh", ".bash", ".zsh", ".rb", ".yml", ".yaml", ".toml", ".nix", ".r",
 ];
+/// Media-type substrings where `# ` starts a comment rather than a heading.
+const HASH_COMMENT_MEDIA: [&str; 5] = ["python", "shell", "yaml", "toml", "ruby"];
+/// Media-type substrings recognized as source code for `HeadingOrSymbol` extraction.
+const CODE_MEDIA_SUBSTRINGS: [&str; 6] = [
+    "text/x-",
+    "rust",
+    "python",
+    "javascript",
+    "typescript",
+    "shell",
+];
 /// File extensions recognized as source code for `HeadingOrSymbol` extraction.
 const CODE_SOURCE_EXTENSIONS: [&str; 22] = [
     ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".java", ".c", ".h", ".cpp", ".cc", ".hpp",
@@ -807,43 +820,46 @@ const CODE_SOURCE_EXTENSIONS: [&str; 22] = [
 /// `iOS` / `eBay` while matching `parseHttpRequest`, `getUserId`, etc.).
 const PROSE_LOWER_CAMEL_PREFIX: usize = 2;
 
-#[derive(Default)]
-struct DocumentFields {
-    title_or_label: Vec<String>,
-    heading_or_symbol: Vec<String>,
-    body_or_value: Vec<String>,
-    metadata: Vec<String>,
-}
-
-impl DocumentFields {
-    fn into_field_terms(self) -> [crate::model::FieldTerms; crate::model::LEXICAL_FIELD_COUNT] {
-        let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
-        [
-            field_terms_from_segments(&stemmer, &self.title_or_label),
-            field_terms_from_segments(&stemmer, &self.heading_or_symbol),
-            field_terms_from_segments(&stemmer, &self.body_or_value),
-            field_terms_from_segments(&stemmer, &self.metadata),
-        ]
-    }
+fn build_field_terms(
+    title_or_label: &[&str],
+    heading_or_symbol: &[&str],
+    body_or_value: &[&str],
+    metadata: &[&str],
+) -> [crate::model::FieldTerms; crate::model::LEXICAL_FIELD_COUNT] {
+    let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
+    [
+        field_terms_from_segments(&stemmer, title_or_label),
+        field_terms_from_segments(&stemmer, heading_or_symbol),
+        field_terms_from_segments(&stemmer, body_or_value),
+        field_terms_from_segments(&stemmer, metadata),
+    ]
 }
 
 fn field_terms_from_segments(
     stemmer: &rust_stemmers::Stemmer,
-    segments: &[String],
+    segments: &[&str],
 ) -> crate::model::FieldTerms {
-    let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
-    let mut total = 0_usize;
+    let mut field = crate::model::FieldTerms::default();
     let mut terms = Vec::new();
     for segment in segments {
-        terms.clear();
-        collect_terms_with(stemmer, segment, &mut terms);
-        for term in terms.drain(..) {
-            let entry = counts.entry(term).or_insert(0);
-            *entry = entry.saturating_add(1);
-            total = total.saturating_add(1);
-        }
+        add_segment_terms(stemmer, segment, &mut terms, &mut field);
     }
-    crate::model::FieldTerms { counts, total }
+    field
+}
+
+fn add_segment_terms(
+    stemmer: &rust_stemmers::Stemmer,
+    segment: &str,
+    buffer: &mut Vec<String>,
+    field: &mut crate::model::FieldTerms,
+) {
+    buffer.clear();
+    collect_terms_with(stemmer, segment, buffer);
+    for term in buffer.drain(..) {
+        let entry = field.counts.entry(term).or_insert(0);
+        *entry = entry.saturating_add(1);
+        field.total = field.total.saturating_add(1);
+    }
 }
 
 /// Extract typed BM25F fields from a retained UTF-8 source document.
@@ -855,12 +871,18 @@ fn extract_source_fields(
     path_hint: Option<&str>,
     media_type: Option<&str>,
     body: &str,
-) -> DocumentFields {
-    let mut fields = DocumentFields::default();
+) -> [crate::model::FieldTerms; crate::model::LEXICAL_FIELD_COUNT] {
+    let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
+    let mut fields: [crate::model::FieldTerms; crate::model::LEXICAL_FIELD_COUNT] =
+        std::array::from_fn(|_| crate::model::FieldTerms::default());
+    let mut term_buf = Vec::new();
+    let title_idx = crate::model::LexicalField::TitleOrLabel.index();
+    let heading_idx = crate::model::LexicalField::HeadingOrSymbol.index();
+    let body_idx = crate::model::LexicalField::BodyOrValue.index();
     if let Some(path) = path_hint {
-        fields.title_or_label.push(path.to_owned());
+        add_segment_terms(&stemmer, path, &mut term_buf, &mut fields[title_idx]);
     }
-    let allow_hash_headings = !is_hash_comment_source(media_type, path_hint);
+    let is_hash_heading_enabled = !is_hash_comment_source(media_type, path_hint);
     let is_code_file = is_code_source(media_type, path_hint);
     let mut fence = CodeBlockState::Outside;
     for line in body.lines() {
@@ -870,31 +892,32 @@ fn extract_source_fields(
             continue;
         }
         if fence == CodeBlockState::Outside {
-            if allow_hash_headings && let Some((level, heading)) = parse_heading_line(trimmed, '#')
+            if is_hash_heading_enabled
+                && let Some((level, heading)) = parse_heading_line(trimmed, '#')
             {
-                if level == 1 {
-                    fields.title_or_label.push(heading.to_owned());
-                } else {
-                    fields.heading_or_symbol.push(heading.to_owned());
-                }
+                let target = if level == 1 { title_idx } else { heading_idx };
+                add_segment_terms(&stemmer, heading, &mut term_buf, &mut fields[target]);
                 continue;
             }
             if let Some((level, heading)) = parse_heading_line(trimmed, '=') {
-                if level == 1 {
-                    fields.title_or_label.push(heading.to_owned());
-                } else {
-                    fields.heading_or_symbol.push(heading.to_owned());
-                }
+                let target = if level == 1 { title_idx } else { heading_idx };
+                add_segment_terms(&stemmer, heading, &mut term_buf, &mut fields[target]);
                 continue;
             }
         }
-        fields.body_or_value.push(line.to_owned());
+        add_segment_terms(&stemmer, line, &mut term_buf, &mut fields[body_idx]);
         let context = if is_code_file || fence != CodeBlockState::Outside {
             SymbolContext::Code
         } else {
             SymbolContext::Prose
         };
-        extract_code_symbols(line, context, &mut fields.heading_or_symbol);
+        extract_code_symbols(
+            line,
+            context,
+            &stemmer,
+            &mut term_buf,
+            &mut fields[heading_idx],
+        );
     }
     fields
 }
@@ -912,12 +935,9 @@ fn is_code_source(media_type: Option<&str>, path_hint: Option<&str>) -> bool {
             .map_or(media, |(prefix, _)| prefix)
             .trim()
             .to_ascii_lowercase();
-        if base.starts_with("text/x-")
-            || base.contains("rust")
-            || base.contains("python")
-            || base.contains("javascript")
-            || base.contains("typescript")
-            || base.contains("shell")
+        if CODE_MEDIA_SUBSTRINGS
+            .iter()
+            .any(|needle| base.contains(needle))
         {
             return true;
         }
@@ -942,28 +962,26 @@ enum CodeBlockState {
     AsciiDocListing,
 }
 
+fn toggle_code_block(current: CodeBlockState, target: CodeBlockState) -> Option<CodeBlockState> {
+    if current == CodeBlockState::Outside {
+        Some(target)
+    } else if current == target {
+        Some(CodeBlockState::Outside)
+    } else {
+        None
+    }
+}
+
 fn next_code_block_state(current: CodeBlockState, trimmed: &str) -> Option<CodeBlockState> {
     if trimmed.starts_with("```") {
-        return match current {
-            CodeBlockState::Outside => Some(CodeBlockState::BacktickFence),
-            CodeBlockState::BacktickFence => Some(CodeBlockState::Outside),
-            CodeBlockState::TildeFence | CodeBlockState::AsciiDocListing => None,
-        };
+        return toggle_code_block(current, CodeBlockState::BacktickFence);
     }
     if trimmed.starts_with("~~~") {
-        return match current {
-            CodeBlockState::Outside => Some(CodeBlockState::TildeFence),
-            CodeBlockState::TildeFence => Some(CodeBlockState::Outside),
-            CodeBlockState::BacktickFence | CodeBlockState::AsciiDocListing => None,
-        };
+        return toggle_code_block(current, CodeBlockState::TildeFence);
     }
     let clean = trimmed.trim_end();
     if clean.len() >= ASCIIDOC_LISTING_DASHES && clean.bytes().all(|byte| byte == b'-') {
-        return match current {
-            CodeBlockState::Outside => Some(CodeBlockState::AsciiDocListing),
-            CodeBlockState::AsciiDocListing => Some(CodeBlockState::Outside),
-            CodeBlockState::BacktickFence | CodeBlockState::TildeFence => None,
-        };
+        return toggle_code_block(current, CodeBlockState::AsciiDocListing);
     }
     None
 }
@@ -975,11 +993,9 @@ fn is_hash_comment_source(media_type: Option<&str>, path_hint: Option<&str>) -> 
             .map_or(media, |(prefix, _)| prefix)
             .trim()
             .to_ascii_lowercase();
-        if base.contains("python")
-            || base.contains("shell")
-            || base.contains("yaml")
-            || base.contains("toml")
-            || base.contains("ruby")
+        if HASH_COMMENT_MEDIA
+            .iter()
+            .any(|needle| base.contains(needle))
         {
             return true;
         }
@@ -1001,7 +1017,7 @@ fn parse_heading_line(trimmed: &str, marker: char) -> Option<(usize, &str)> {
     if level == 0 || level > MAX_HEADING_LEVEL {
         return None;
     }
-    let after = trimmed.get(level * marker.len_utf8()..)?;
+    let after = trimmed.get(level.saturating_mul(marker.len_utf8())..)?;
     if !after.starts_with(' ') && !after.starts_with('\t') {
         return None;
     }
@@ -1019,9 +1035,15 @@ fn parse_heading_line(trimmed: &str, marker: char) -> Option<(usize, &str)> {
 /// declaration keyword) is indexed as a symbol. In plain prose, `snake_case`,
 /// `lowerCamelCase`, and declared identifiers are indexed without inflating
 /// proper nouns such as `SQLite` or `GitHub`.
-fn extract_code_symbols(line: &str, context: SymbolContext, out: &mut Vec<String>) {
+fn extract_code_symbols(
+    line: &str,
+    context: SymbolContext,
+    stemmer: &rust_stemmers::Stemmer,
+    term_buf: &mut Vec<String>,
+    field: &mut crate::model::FieldTerms,
+) {
     if context == SymbolContext::Code {
-        extract_symbols_from_segment(line, SymbolContext::Code, out);
+        extract_symbols_from_segment(line, SymbolContext::Code, stemmer, term_buf, field);
         return;
     }
     // Split on inline backticks so `` `PascalCaseSymbol` `` in prose gets full
@@ -1033,37 +1055,36 @@ fn extract_code_symbols(line: &str, context: SymbolContext, out: &mut Vec<String
         } else {
             SymbolContext::Prose
         };
-        extract_symbols_from_segment(segment, seg_ctx, out);
+        extract_symbols_from_segment(segment, seg_ctx, stemmer, term_buf, field);
         is_inline_code = !is_inline_code;
     }
 }
 
-fn extract_symbols_from_segment(segment: &str, context: SymbolContext, out: &mut Vec<String>) {
-    let mut after_decl = false;
+fn extract_symbols_from_segment(
+    segment: &str,
+    context: SymbolContext,
+    stemmer: &rust_stemmers::Stemmer,
+    term_buf: &mut Vec<String>,
+    field: &mut crate::model::FieldTerms,
+) {
+    let mut is_after_decl = false;
     for raw in raw_identifier_tokens(segment) {
-        let starts_ident = raw
+        let is_ident_start = raw
             .chars()
             .next()
             .is_some_and(|ch| ch.is_alphabetic() || ch == '_');
         let has_alpha = raw.chars().any(char::is_alphabetic);
-        if starts_ident && has_alpha {
+        if is_ident_start && has_alpha {
             let subparts = split_identifier_subparts(raw);
-            let is_symbol = if after_decl {
-                true
-            } else if subparts.len() > 1 {
-                match context {
-                    SymbolContext::Code => true,
-                    SymbolContext::Prose => is_prose_code_symbol(raw, &subparts),
-                }
-            } else {
-                false
-            };
+            let is_symbol = is_after_decl
+                || (subparts.len() > 1
+                    && (context == SymbolContext::Code || is_prose_code_symbol(raw, &subparts)));
             if is_symbol {
-                out.push(raw.to_owned());
+                add_segment_terms(stemmer, raw, term_buf, field);
             }
-            after_decl = CODE_DECLARATION_KEYWORDS.contains(&raw);
+            is_after_decl = CODE_DECLARATION_KEYWORDS.contains(&raw);
         } else {
-            after_decl = false;
+            is_after_decl = false;
         }
     }
 }
@@ -1085,7 +1106,7 @@ struct IndexedDocumentInput {
     kind: crate::model::ContentKind,
     text: String,
     normalized: Option<String>,
-    fields: DocumentFields,
+    fields: [crate::model::FieldTerms; crate::model::LEXICAL_FIELD_COUNT],
     field_path: String,
     source: Option<mneme_core::RecordId>,
     source_revision: Option<mneme_core::RevisionId>,
@@ -1119,7 +1140,6 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
         media_locations,
     } = input;
     let normalized = normalized.unwrap_or_else(|| text.to_lowercase());
-    let fields = fields.into_field_terms();
     let trigrams = trigram_counts(&normalized);
     let trigram_norm = trigrams
         .values()
@@ -1207,9 +1227,9 @@ fn split_camel_case_into<'a>(segment: &'a str, out: &mut Vec<&'a str>) {
     }
     let mut start = 0_usize;
     for idx in 1..chars.len() {
-        let prev = chars[idx - 1].1;
+        let prev = chars[idx.saturating_sub(1)].1;
         let curr = chars[idx].1;
-        let next = chars.get(idx + 1).map(|(_, ch)| *ch);
+        let next = chars.get(idx.saturating_add(1)).map(|(_, ch)| *ch);
         let is_lower_or_digit_to_upper =
             (prev.is_lowercase() || prev.is_ascii_digit()) && curr.is_uppercase();
         let is_acronym_to_word =
@@ -1388,8 +1408,7 @@ mod lexical_term_tests {
             vec!["join", "the", "choir", "join", "again", "2023", "05"]
         );
         let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
-        let terms =
-            super::field_terms_from_segments(&stemmer, &["joined the choir joined".to_owned()]);
+        let terms = super::field_terms_from_segments(&stemmer, &["joined the choir joined"]);
         assert_eq!(terms.counts.get("join"), Some(&2));
         assert_eq!(terms.total, 4);
     }
@@ -1419,22 +1438,16 @@ mod lexical_term_tests {
         let doc = "# Sparse Routing\n\n## Kernel Notes\n\nfn parseHttpRequest(x: u32) {}\nPlain body text.\n";
         let fields =
             super::extract_source_fields(Some("docs/routing.md"), Some("text/markdown"), doc);
-        assert_eq!(
-            fields.title_or_label,
-            vec!["docs/routing.md".to_owned(), "Sparse Routing".to_owned()]
-        );
-        assert!(fields.heading_or_symbol.iter().any(|s| s == "Kernel Notes"));
-        assert!(
-            fields
-                .heading_or_symbol
-                .iter()
-                .any(|s| s == "parseHttpRequest")
-        );
-        assert!(
-            fields
-                .body_or_value
-                .iter()
-                .any(|line| line.contains("Plain body text."))
-        );
+        let title = &fields[crate::model::LexicalField::TitleOrLabel.index()].counts;
+        let heading = &fields[crate::model::LexicalField::HeadingOrSymbol.index()].counts;
+        let body = &fields[crate::model::LexicalField::BodyOrValue.index()].counts;
+        assert!(title.contains_key("spars"));
+        assert!(title.contains_key("rout"));
+        assert!(title.contains_key("md"));
+        assert!(heading.contains_key("kernel"));
+        assert!(heading.contains_key("parsehttprequest"));
+        assert!(heading.contains_key("http"));
+        assert!(body.contains_key("plain"));
+        assert!(body.contains_key("text"));
     }
 }
