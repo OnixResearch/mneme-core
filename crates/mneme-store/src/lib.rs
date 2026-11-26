@@ -11,6 +11,7 @@
 
 pub mod catalog;
 pub mod coordinator;
+pub mod dedup;
 pub mod error;
 pub mod injectors;
 pub mod lifecycle;
@@ -30,6 +31,7 @@ pub use coordinator::{
     PublicationState, RecordRevisionCommit, RecordRevisionCommitPage, RecoveryReport,
     RevisionCommit, SharedRecordCache, Snapshot, Workspace, WorkspaceConfig, WorkspaceStatus,
 };
+pub use dedup::{BlobChunking, FastCdcConfig};
 pub use error::{Failure, Result};
 pub use injectors::{FaultAt, FaultInjector, FaultPoint, NoFaults};
 pub use lifecycle::{

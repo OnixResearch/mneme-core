@@ -384,13 +384,23 @@ impl super::Workspace {
         sources: &[crate::requests::SourceBlobDraft],
         staged: &mut super::BlobIndex,
     ) -> crate::error::Result<()> {
+        let policy = crate::payload::StoragePolicy {
+            compression: self.blob_compression,
+            chunking: self.blob_chunking,
+        };
+        debug_assert!(self.root.is_absolute());
+        debug_assert!(
+            sources
+                .iter()
+                .all(|source| !source.media_type.as_str().is_empty())
+        );
         for source in sources {
             let digest = source.digest();
-            let staged_blob = crate::payload::stage_with_compression(
+            let staged_blob = crate::payload::stage_with_policy(
                 &self.root,
                 digest,
                 &source.bytes,
-                self.blob_compression,
+                policy,
                 source.media_type.as_str(),
             )?;
             staged.insert(

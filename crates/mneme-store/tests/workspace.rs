@@ -4221,3 +4221,330 @@ fn workspace_zstd_compression_preserves_digests_and_reads_legacy_blobs() {
         ))
         .expect("commit referencing existing compressed blob");
 }
+
+fn count_files_under(dir: &std::path::Path) -> usize {
+    if !dir.is_dir() {
+        return 0;
+    }
+    let mut count = 0_usize;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in std::fs::read_dir(&current).expect("read dir") {
+            let entry = entry.expect("dir entry");
+            let file_type = entry.file_type().expect("file type");
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                count = count.saturating_add(1);
+            }
+        }
+    }
+    count
+}
+
+fn synthetic_large_asciidoc(lines: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(lines.saturating_mul(72));
+    for index in 0..lines {
+        let mixed = (index as u64)
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        out.extend_from_slice(
+            format!(
+                "== Chapter {index:05} ({mixed:016x})\n\
+                 Paragraph text for section {index} with hash {:08x}.\n",
+                (mixed >> 32) & 0xffff_ffff
+            )
+            .as_bytes(),
+        );
+    }
+    out
+}
+
+#[test]
+fn workspace_zstd_dictionary_and_fastcdc_deduplication() {
+    let scope_id = scope();
+    let mut entity_envelope = mneme_core::fixtures::entity();
+    entity_envelope.record_id = mneme_core::RecordId::from_bytes([0x51; 16]);
+    entity_envelope.revision_id = mneme_core::RevisionId::from_bytes([0x52; 16]);
+    entity_envelope.scope = scope_id.clone();
+    let entity = entity_envelope.record_id;
+    let entity_record = mneme_store::RecordDraft {
+        schema_version: entity_envelope.schema_version,
+        kind: entity_envelope.kind,
+        record_id: entity_envelope.record_id,
+        revision_id: entity_envelope.revision_id,
+        predecessor: entity_envelope.predecessor,
+        scope: entity_envelope.scope,
+        payload: entity_envelope.payload,
+    };
+
+    // 1. Dictionary compression reduces small Preserves/note payloads while preserving digests.
+    let samples: Vec<Vec<u8>> = (0..48_usize)
+        .map(|index| {
+            format!(
+                "<record \"kind\": 'note \"scope\": \"vault/notes\" \"id\": \"note-{index:04}\" \
+                 \"title\": \"Field Observation {index:04}\" \
+                 \"body\": \"Deterministic dictionary training sample {index:04} for Preserves payloads.\">"
+            )
+            .into_bytes()
+        })
+        .collect();
+    let sample_refs: Vec<&[u8]> = samples.iter().map(Vec::as_slice).collect();
+    let dict_bytes =
+        mneme_store::dedup::train_zstd_dictionary(&sample_refs, 8192).expect("train dict");
+
+    let small_payload =
+        b"<record \"kind\": 'note \"scope\": \"vault/notes\" \"id\": \"note-9999\" \
+         \"title\": \"Field Observation 9999\" \
+         \"body\": \"Deterministic dictionary training sample 9999 for Preserves payloads.\">"
+            .to_vec();
+    let small_digest = mneme_core::ContentDigest::of_source_bytes(&small_payload);
+    let mut small_record = source_draft(SourceDraftInput {
+        bytes: &small_payload,
+        record_id: mneme_core::RecordId::from_bytes([0x61; 16]),
+        revision_id: mneme_core::RevisionId::from_bytes([0x71; 16]),
+        predecessor: None,
+        entity,
+        path: "small.preserves",
+    });
+    small_record.payload.insert(
+        mneme_core::Symbol::from("content"),
+        mneme_core::SourceContent::Retained(
+            mneme_core::RetainedSource::new(
+                small_digest,
+                small_payload.len() as u64,
+                "application/preserves",
+            )
+            .expect("retained"),
+        )
+        .to_value(),
+    );
+
+    // 2. Multi-MiB AsciiDoc document + 1-line edit for FastCDC deduplication.
+    let doc_v1 = synthetic_large_asciidoc(30_000); // ~2.6 MiB
+    assert!(doc_v1.len() > 2 * 1024 * 1024);
+    let doc_v1_digest = mneme_core::ContentDigest::of_source_bytes(&doc_v1);
+    let needle = b"== Chapter 15000";
+    let edit_pos = doc_v1
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("needle");
+    let line_end = doc_v1[edit_pos..]
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .expect("newline");
+    let mut doc_v2 = Vec::with_capacity(doc_v1.len() + 32);
+    doc_v2.extend_from_slice(&doc_v1[..edit_pos]);
+    doc_v2.extend_from_slice(b"== Chapter 15000 [ONE LINE EDIT]\n");
+    doc_v2.extend_from_slice(&doc_v1[edit_pos + line_end + 1..]);
+    let doc_v2_digest = mneme_core::ContentDigest::of_source_bytes(&doc_v2);
+    assert_ne!(doc_v1_digest, doc_v2_digest);
+
+    let doc_record_id = mneme_core::RecordId::from_bytes([0x62; 16]);
+    let doc_v1_rev = mneme_core::RevisionId::from_bytes([0x72; 16]);
+    let doc_v2_rev = mneme_core::RevisionId::from_bytes([0x73; 16]);
+    let doc_v1_record = source_draft(SourceDraftInput {
+        bytes: &doc_v1,
+        record_id: doc_record_id,
+        revision_id: doc_v1_rev,
+        predecessor: None,
+        entity,
+        path: "large.adoc",
+    });
+    let doc_v2_record = source_draft(SourceDraftInput {
+        bytes: &doc_v2,
+        record_id: doc_record_id,
+        revision_id: doc_v2_rev,
+        predecessor: Some(doc_v1_rev),
+        entity,
+        path: "large.adoc",
+    });
+
+    // Baseline unchunked/uncompressed workspace to verify identical ContentDigest and RecordDigest.
+    let base_dir = tempfile::tempdir().expect("base temp");
+    let mut baseline =
+        mneme_store::Workspace::create(base_dir.path(), config(1_000)).expect("create baseline");
+    baseline
+        .commit(common::record_command(
+            baseline.status().expect("status").revision,
+            &scope_id,
+            "base-1",
+            vec![
+                entity_record.clone(),
+                small_record.clone(),
+                doc_v1_record.clone(),
+            ],
+            vec![
+                mneme_store::SourceBlobDraft {
+                    bytes: small_payload.clone(),
+                    media_type: mneme_core::Symbol::from("application/preserves"),
+                },
+                mneme_store::SourceBlobDraft {
+                    bytes: doc_v1.clone(),
+                    media_type: mneme_core::Symbol::from("text/asciidoc"),
+                },
+            ],
+            Vec::new(),
+        ))
+        .expect("baseline commit");
+
+    // Plain zstd workspace to verify dict compression improves over standalone zstd.
+    let plain_zstd_dir = tempfile::tempdir().expect("plain zstd temp");
+    let mut plain_zstd = mneme_store::Workspace::create(plain_zstd_dir.path(), config(1_000))
+        .expect("create plain zstd")
+        .with_blob_compression(mneme_store::BlobCompression::Zstd);
+    plain_zstd
+        .commit(common::record_command(
+            plain_zstd.status().expect("status").revision,
+            &scope_id,
+            "plain-1",
+            vec![entity_record.clone(), small_record.clone()],
+            vec![mneme_store::SourceBlobDraft {
+                bytes: small_payload.clone(),
+                media_type: mneme_core::Symbol::from("application/preserves"),
+            }],
+            Vec::new(),
+        ))
+        .expect("plain zstd commit");
+
+    // FastCDC + ZstdDictionary workspace.
+    let cdc_dir = tempfile::tempdir().expect("cdc temp");
+    let mut cdc_ws =
+        mneme_store::Workspace::create(cdc_dir.path(), config(1_000)).expect("create cdc");
+    let dict_digest = cdc_ws
+        .stage_zstd_dictionary(&dict_bytes)
+        .expect("stage dict");
+    cdc_ws.set_blob_compression(mneme_store::BlobCompression::ZstdDictionary {
+        dictionary: dict_digest,
+    });
+    cdc_ws.set_blob_chunking(mneme_store::BlobChunking::FastCdc(
+        mneme_store::FastCdcConfig::default(),
+    ));
+
+    cdc_ws
+        .commit(common::record_command(
+            cdc_ws.status().expect("status").revision,
+            &scope_id,
+            "cdc-1",
+            vec![entity_record, small_record, doc_v1_record],
+            vec![
+                mneme_store::SourceBlobDraft {
+                    bytes: small_payload.clone(),
+                    media_type: mneme_core::Symbol::from("application/preserves"),
+                },
+                mneme_store::SourceBlobDraft {
+                    bytes: doc_v1.clone(),
+                    media_type: mneme_core::Symbol::from("text/asciidoc"),
+                },
+            ],
+            Vec::new(),
+        ))
+        .expect("cdc v1 commit");
+
+    // Verify dictionary compression reduced small Preserves payload below raw & standalone zstd.
+    let small_dict_disk = std::fs::read(mneme_store::payload::blob_path(
+        cdc_dir.path(),
+        small_digest,
+    ))
+    .expect("small dict disk");
+    let small_plain_disk = std::fs::read(mneme_store::payload::blob_path(
+        plain_zstd_dir.path(),
+        small_digest,
+    ))
+    .expect("small plain disk");
+    assert!(small_dict_disk.len() < small_payload.len());
+    assert!(small_dict_disk.len() < small_plain_disk.len());
+
+    // Record digests match baseline identically.
+    let base_digests: Vec<_> = baseline
+        .snapshot()
+        .expect("base snap")
+        .records
+        .iter()
+        .map(|record| record.full_digest())
+        .collect();
+    let cdc_digests: Vec<_> = cdc_ws
+        .snapshot()
+        .expect("cdc snap")
+        .records
+        .iter()
+        .map(|record| record.full_digest())
+        .collect();
+    assert_eq!(base_digests, cdc_digests);
+
+    let chunks_dir = cdc_dir
+        .path()
+        .join(mneme_store::payload::BLOB_DIRECTORY)
+        .join(mneme_store::dedup::CHUNK_DIRECTORY);
+    let chunks_after_v1 = count_files_under(&chunks_dir);
+    assert!(
+        chunks_after_v1 >= 32,
+        "expected >= 32 chunks for >2MiB doc, got {chunks_after_v1}"
+    );
+
+    // Commit 1-line edit of the multi-MiB document.
+    cdc_ws
+        .commit(common::record_command(
+            cdc_ws.status().expect("status").revision,
+            &scope_id,
+            "cdc-2",
+            vec![doc_v2_record],
+            vec![mneme_store::SourceBlobDraft {
+                bytes: doc_v2.clone(),
+                media_type: mneme_core::Symbol::from("text/asciidoc"),
+            }],
+            Vec::new(),
+        ))
+        .expect("cdc v2 commit");
+
+    let chunks_after_v2 = count_files_under(&chunks_dir);
+    let added_chunks = chunks_after_v2.saturating_sub(chunks_after_v1);
+    assert!(
+        added_chunks >= 1,
+        "expected 1-line edit to add >=1 new chunk, added {added_chunks}"
+    );
+    assert!(
+        added_chunks <= 4,
+        "expected 1-line edit to add <=4 new chunks via FastCDC dedup, added {added_chunks} (v1={chunks_after_v1}, v2={chunks_after_v2})"
+    );
+
+    // Verify both versions + recovery pass cleanly and round-trip byte-identically.
+    mneme_store::payload::verify(cdc_dir.path(), small_digest, small_payload.len() as u64)
+        .expect("verify small");
+    mneme_store::payload::verify(cdc_dir.path(), doc_v1_digest, doc_v1.len() as u64)
+        .expect("verify v1");
+    mneme_store::payload::verify(cdc_dir.path(), doc_v2_digest, doc_v2.len() as u64)
+        .expect("verify v2");
+    assert_eq!(
+        mneme_store::payload::read(cdc_dir.path(), doc_v1_digest).expect("read v1"),
+        doc_v1
+    );
+    assert_eq!(
+        mneme_store::payload::read(cdc_dir.path(), doc_v2_digest).expect("read v2"),
+        doc_v2
+    );
+    cdc_ws
+        .recover()
+        .expect("recover must keep chunks and dicts intact");
+    mneme_store::payload::verify(cdc_dir.path(), doc_v2_digest, doc_v2.len() as u64)
+        .expect("verify v2 after recover");
+
+    // Deleting a chunk fails closed in payload::verify and recover().
+    let one_chunk = std::fs::read_dir(&chunks_dir)
+        .expect("chunks dir")
+        .filter_map(Result::ok)
+        .flat_map(|shard| std::fs::read_dir(shard.path()).expect("shard"))
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .expect("one chunk file");
+    std::fs::remove_file(one_chunk.path()).expect("remove chunk");
+    let has_v1_err =
+        mneme_store::payload::verify(cdc_dir.path(), doc_v1_digest, doc_v1.len() as u64).is_err();
+    let has_v2_err =
+        mneme_store::payload::verify(cdc_dir.path(), doc_v2_digest, doc_v2.len() as u64).is_err();
+    let has_any_err = has_v1_err || has_v2_err;
+    assert!(has_any_err);
+    if has_v2_err {
+        assert!(cdc_ws.recover().is_err());
+    }
+}
