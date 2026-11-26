@@ -712,28 +712,39 @@ fn read_side_conflicts_honour_the_view_instant() {
 }
 
 #[test]
-fn read_side_conflict_windows_include_both_bounds() {
+fn read_side_conflict_windows_are_half_open() {
     let (_temp, mut workspace) = common::setup();
     let claims = read_instant_claims(&mut workspace);
     let memory = common::engine(&mut workspace);
 
-    // `early` and `overlap` both start at 2020-01-01, so a start bound that is
-    // inclusive still reports the pair as a conflict at the exact start.
+    // `early` and `overlap` both start at 2020-01-01, so an inclusive start
+    // bound reports the pair as a conflict at the exact start.
     let at_start = read_instant_view("2020-01-01T00:00:00Z");
     let conflicts = memory.conflicts(&at_start).expect("window start");
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].assertions.len(), 2);
     assert_eq!(memory.beliefs(&at_start).expect("start beliefs").len(), 2);
 
-    // `early` ends at 2021-01-01 and `overlap` ended in 2020, so an inclusive
-    // end still applies `early` there and leaves it without a partner.
-    let at_end = read_instant_view("2021-01-01T00:00:00Z");
-    assert!(memory.conflicts(&at_end).expect("window end").is_empty());
-    let beliefs = memory.beliefs(&at_end).expect("end beliefs");
+    // 1ns before `early`'s exclusive end bound (2021-01-01), `early` still applies
+    // and `overlap` has already ended, leaving `early` without a partner.
+    let before_end = read_instant_view("2020-12-31T23:59:59.999999999Z");
+    assert!(
+        memory
+            .conflicts(&before_end)
+            .expect("before window end")
+            .is_empty()
+    );
+    let beliefs = memory.beliefs(&before_end).expect("before end beliefs");
     assert_eq!(beliefs.len(), 1);
     assert_eq!(beliefs[0].record.record_id, claims.early);
 
-    // One second past its end, `early` answers nothing at all.
+    // At its exclusive end bound (2021-01-01), half-open `[start, end)` excludes
+    // `early` cleanly so a replacement starting at 2021-01-01 has zero conflict.
+    let at_end = read_instant_view("2021-01-01T00:00:00Z");
+    assert!(memory.conflicts(&at_end).expect("window end").is_empty());
+    assert!(memory.beliefs(&at_end).expect("end beliefs").is_empty());
+
+    // One second past its end, `early` still answers nothing.
     let after_end = read_instant_view("2021-01-01T00:00:01Z");
     assert!(
         memory

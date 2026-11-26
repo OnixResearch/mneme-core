@@ -999,6 +999,56 @@ fn literal_to_value(literal: &mneme_datalog::Literal) -> mneme_core::Value {
             input,
             output,
         } => aggregate_literal_value(*function, input, output),
+        mneme_datalog::Literal::DiamondMinus {
+            atom,
+            lower_ns,
+            upper_ns,
+        } => metric_atom_literal_value("diamond-minus", atom, *lower_ns, *upper_ns),
+        mneme_datalog::Literal::BoxMinus {
+            atom,
+            lower_ns,
+            upper_ns,
+        } => metric_atom_literal_value("box-minus", atom, *lower_ns, *upper_ns),
+        mneme_datalog::Literal::Since {
+            maintained,
+            trigger,
+            lower_ns,
+            upper_ns,
+        } => mneme_core::Value::symbol_dictionary([
+            (
+                mneme_core::Symbol::from("kind"),
+                mneme_core::Value::symbol("since"),
+            ),
+            (
+                mneme_core::Symbol::from("maintained"),
+                atom_to_value(maintained),
+            ),
+            (mneme_core::Symbol::from("trigger"), atom_to_value(trigger)),
+            (
+                mneme_core::Symbol::from("lower-ns"),
+                mneme_core::Value::string(lower_ns.to_string()),
+            ),
+            (
+                mneme_core::Symbol::from("upper-ns"),
+                mneme_core::Value::string(upper_ns.to_string()),
+            ),
+        ]),
+        mneme_datalog::Literal::Allen {
+            relation,
+            left,
+            right,
+        } => mneme_core::Value::symbol_dictionary([
+            (
+                mneme_core::Symbol::from("kind"),
+                mneme_core::Value::symbol("allen"),
+            ),
+            (
+                mneme_core::Symbol::from("relation"),
+                mneme_core::Value::symbol(format!("{relation:?}").to_lowercase()),
+            ),
+            (mneme_core::Symbol::from("left"), atom_to_value(left)),
+            (mneme_core::Symbol::from("right"), atom_to_value(right)),
+        ]),
         mneme_datalog::Literal::Forbidden(name) => mneme_core::Value::symbol_dictionary([
             (
                 mneme_core::Symbol::from("kind"),
@@ -1019,6 +1069,29 @@ fn tagged_atom_literal(kind: &str, atom: &mneme_datalog::Atom) -> mneme_core::Va
             mneme_core::Value::symbol(kind),
         ),
         (mneme_core::Symbol::from("atom"), atom_to_value(atom)),
+    ])
+}
+
+fn metric_atom_literal_value(
+    kind: &str,
+    atom: &mneme_datalog::Atom,
+    lower_ns: i128,
+    upper_ns: i128,
+) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("kind"),
+            mneme_core::Value::symbol(kind),
+        ),
+        (mneme_core::Symbol::from("atom"), atom_to_value(atom)),
+        (
+            mneme_core::Symbol::from("lower-ns"),
+            mneme_core::Value::string(lower_ns.to_string()),
+        ),
+        (
+            mneme_core::Symbol::from("upper-ns"),
+            mneme_core::Value::string(upper_ns.to_string()),
+        ),
     ])
 }
 

@@ -55,6 +55,76 @@ pub struct ConflictGroup {
     pub assertions: Vec<crate::model::AssertionView>,
 }
 
+/// Classification of an assertion change between two workspace revisions within
+/// a valid-time window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitemporalChangeKind {
+    /// New fact at a later valid time, or clean closing of an open-ended fact.
+    WorldEvolution,
+    /// Retroactive modification, retraction, backdated insertion, or overlapping
+    /// revision affecting previously recorded valid time.
+    RetroactiveCorrection,
+}
+
+/// One assertion-level difference between two revisions within a valid-time window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BitemporalChange {
+    pub assertion_id: mneme_core::RecordId,
+    pub subject: mneme_core::RecordId,
+    pub predicate: String,
+    pub kind: BitemporalChangeKind,
+    pub before: Option<crate::model::AssertionView>,
+    pub after: Option<crate::model::AssertionView>,
+    /// Half-open valid-time period affected inside the requested window.
+    pub affected_period: mneme_kernel::temporal::Period,
+}
+
+/// Bitemporal diff between two committed snapshots over a half-open valid-time window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BitemporalDiff {
+    pub rev_a: mneme_core::WorkspaceRevisionId,
+    pub rev_b: mneme_core::WorkspaceRevisionId,
+    pub valid_window: mneme_kernel::temporal::Period,
+    pub changes: Vec<BitemporalChange>,
+}
+
+impl BitemporalDiff {
+    /// Changes classified as [`BitemporalChangeKind::WorldEvolution`].
+    pub fn world_evolutions(&self) -> impl Iterator<Item = &BitemporalChange> {
+        self.changes
+            .iter()
+            .filter(|change| change.kind == BitemporalChangeKind::WorldEvolution)
+    }
+
+    /// Changes classified as [`BitemporalChangeKind::RetroactiveCorrection`].
+    pub fn retroactive_corrections(&self) -> impl Iterator<Item = &BitemporalChange> {
+        self.changes
+            .iter()
+            .filter(|change| change.kind == BitemporalChangeKind::RetroactiveCorrection)
+    }
+}
+
+/// Convert a canonical [`mneme_core::ValidTime`] into the verified half-open
+/// [`mneme_kernel::temporal::Validity`] representation.
+///
+/// Legacy point-instant valid times (`start == Some(t) && end == Some(t)`)
+/// decode to `[t, t + 1ns)`; all other bounded intervals use half-open
+/// `[start, end)` semantics. `ValidTime::Unknown` maps to fail-closed `Unknown`.
+pub fn valid_time_to_kernel(valid_time: mneme_core::ValidTime) -> mneme_kernel::temporal::Validity {
+    match valid_time {
+        mneme_core::ValidTime::Unknown => mneme_kernel::temporal::Validity::Unknown,
+        mneme_core::ValidTime::Bounded { start, end } => {
+            match mneme_kernel::temporal::from_legacy_bounds(
+                start.map(mneme_core::Timestamp::nanos),
+                end.map(mneme_core::Timestamp::nanos),
+            ) {
+                Some(period) => mneme_kernel::temporal::Validity::Known(period),
+                None => mneme_kernel::temporal::Validity::Unknown,
+            }
+        }
+    }
+}
+
 /// Whether newly cited evidence must still have retained source bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RetainedRequirement {
@@ -886,19 +956,18 @@ impl View {
         }
     }
 
-    /// Whether a claim's valid time covers `at`.
+    /// Whether a claim's valid time covers `at` under half-open `[start, end)`
+    /// semantics (with legacy point-instant compatibility `[t, t + 1ns)`).
     ///
     /// This is the one temporal rule of a belief view: an unknown valid time
     /// never answers a requested instant, and an open bound is unbounded on
     /// that side. Belief and conflict selection both use it, so the two views
     /// can never disagree about which claims apply at an instant.
     fn valid_time_applies(valid_time: mneme_core::ValidTime, at: mneme_core::Timestamp) -> bool {
-        match valid_time {
-            mneme_core::ValidTime::Unknown => false,
-            mneme_core::ValidTime::Bounded { start, end } => {
-                start.is_none_or(|start| start <= at) && end.is_none_or(|at_bound| at <= at_bound)
-            }
-        }
+        mneme_kernel::temporal::validity_contains(
+            valid_time_to_kernel(valid_time),
+            i128::from(at.nanos()),
+        )
     }
 
     fn in_scope(&self, assertion: &crate::model::AssertionView, view: &BeliefView) -> bool {
@@ -1025,6 +1094,82 @@ impl View {
                 assertions,
             })
             .collect())
+    }
+
+    /// Compare two committed snapshots over a half-open `valid_window`,
+    /// classifying each assertion change as [`BitemporalChangeKind::WorldEvolution`]
+    /// or [`BitemporalChangeKind::RetroactiveCorrection`].
+    pub fn bitemporal_diff(
+        rev_a: &View,
+        rev_b: &View,
+        valid_window: mneme_kernel::temporal::Period,
+    ) -> crate::failure::Result<BitemporalDiff> {
+        if !mneme_kernel::temporal::is_valid(valid_window) {
+            return Ok(BitemporalDiff {
+                rev_a: rev_a.revision(),
+                rev_b: rev_b.revision(),
+                valid_window,
+                changes: Vec::new(),
+            });
+        }
+        let before_map = active_window_assertions(rev_a, valid_window)?;
+        let after_map = active_window_assertions(rev_b, valid_window)?;
+        let baseline_periods = build_prior_subject_periods(&before_map, &after_map, valid_window);
+        let mut changes = Vec::new();
+        for (id, (before_assertion, before_period)) in &before_map {
+            match after_map.get(id) {
+                Some((after_assertion, after_period)) => {
+                    if let Some(change) = diff_existing_assertion(
+                        *id,
+                        before_assertion,
+                        *before_period,
+                        after_assertion,
+                        *after_period,
+                    ) {
+                        changes.push(change);
+                    }
+                }
+                None => {
+                    changes.push(BitemporalChange {
+                        assertion_id: *id,
+                        subject: before_assertion.subject,
+                        predicate: before_assertion.predicate.clone(),
+                        kind: BitemporalChangeKind::RetroactiveCorrection,
+                        before: Some(before_assertion.clone()),
+                        after: None,
+                        affected_period: *before_period,
+                    });
+                }
+            }
+        }
+        for (id, (after_assertion, after_period)) in &after_map {
+            if before_map.contains_key(id) {
+                continue;
+            }
+            let kind = classify_added_assertion(after_assertion, *after_period, &baseline_periods);
+            changes.push(BitemporalChange {
+                assertion_id: *id,
+                subject: after_assertion.subject,
+                predicate: after_assertion.predicate.clone(),
+                kind,
+                before: None,
+                after: Some(after_assertion.clone()),
+                affected_period: *after_period,
+            });
+        }
+        changes.sort_by_key(|change| {
+            (
+                change.affected_period.start,
+                change.affected_period.stop,
+                change.assertion_id,
+            )
+        });
+        Ok(BitemporalDiff {
+            rev_a: rev_a.revision(),
+            rev_b: rev_b.revision(),
+            valid_window,
+            changes,
+        })
     }
 
     /// Whether an assertion has a valid acceptance decision.
@@ -2283,3 +2428,146 @@ fn root_source_pin(
 
 /// Explicit authored-premise predicate convention for derivations.
 pub const EXPLICIT_AUTHORED_PREDICATE: &str = "explicit-authored-premise";
+
+type WindowAssertions = std::collections::BTreeMap<
+    mneme_core::RecordId,
+    (crate::model::AssertionView, mneme_kernel::temporal::Period),
+>;
+
+type PriorSubjectPeriods =
+    std::collections::BTreeMap<(mneme_core::RecordId, String), Vec<mneme_kernel::temporal::Period>>;
+
+fn is_suppressed_record(view: &View, record: &mneme_core::RecordEnvelope) -> bool {
+    view.suppression_for(record).is_some_and(|suppression| {
+        matches!(
+            suppression.mode,
+            mneme_store::SuppressionMode::Withdrawn | mneme_store::SuppressionMode::Forgotten
+        )
+    })
+}
+
+fn active_window_assertions(
+    view: &View,
+    valid_window: mneme_kernel::temporal::Period,
+) -> crate::failure::Result<WindowAssertions> {
+    let mut map = std::collections::BTreeMap::new();
+    for assertion in view.assertions()? {
+        if !view.access.allows(&assertion.record.scope)
+            || is_suppressed_record(view, &assertion.record)
+        {
+            continue;
+        }
+        let mneme_kernel::temporal::Validity::Known(period) =
+            valid_time_to_kernel(assertion.valid_time)
+        else {
+            continue;
+        };
+        if let Some(clipped) = mneme_kernel::temporal::intersect(period, valid_window) {
+            map.insert(assertion.record.record_id, (assertion, clipped));
+        }
+    }
+    Ok(map)
+}
+
+fn is_clean_open_ended_expiry(
+    before: &crate::model::AssertionView,
+    after: &crate::model::AssertionView,
+) -> bool {
+    before.subject == after.subject
+        && before.predicate == after.predicate
+        && before.value == after.value
+        && before.stance == after.stance
+        && before.lifecycle == after.lifecycle
+        && matches!(
+            (before.valid_time, after.valid_time),
+            (
+                mneme_core::ValidTime::Bounded {
+                    start: start_a,
+                    end: None,
+                },
+                mneme_core::ValidTime::Bounded {
+                    start: start_b,
+                    end: Some(_),
+                },
+            ) if start_a == start_b
+        )
+}
+
+fn build_prior_subject_periods(
+    before_map: &WindowAssertions,
+    after_map: &WindowAssertions,
+    valid_window: mneme_kernel::temporal::Period,
+) -> PriorSubjectPeriods {
+    let mut prior: PriorSubjectPeriods = std::collections::BTreeMap::new();
+    for (id, (before_assertion, before_period)) in before_map {
+        let effective_period = match after_map.get(id) {
+            Some((after_assertion, after_period))
+                if is_clean_open_ended_expiry(before_assertion, after_assertion) =>
+            {
+                *after_period
+            }
+            _ => *before_period,
+        };
+        if let Some(clipped) = mneme_kernel::temporal::intersect(effective_period, valid_window) {
+            prior
+                .entry((before_assertion.subject, before_assertion.predicate.clone()))
+                .or_default()
+                .push(clipped);
+        }
+    }
+    prior
+}
+
+fn diff_existing_assertion(
+    assertion_id: mneme_core::RecordId,
+    before: &crate::model::AssertionView,
+    before_period: mneme_kernel::temporal::Period,
+    after: &crate::model::AssertionView,
+    after_period: mneme_kernel::temporal::Period,
+) -> Option<BitemporalChange> {
+    if before.subject == after.subject
+        && before.predicate == after.predicate
+        && before.value == after.value
+        && before.stance == after.stance
+        && before.lifecycle == after.lifecycle
+        && before.valid_time == after.valid_time
+    {
+        return None;
+    }
+    let kind = if is_clean_open_ended_expiry(before, after) {
+        BitemporalChangeKind::WorldEvolution
+    } else {
+        BitemporalChangeKind::RetroactiveCorrection
+    };
+    let affected_period =
+        mneme_kernel::temporal::coalesce_pair(before_period, after_period).unwrap_or(after_period);
+    Some(BitemporalChange {
+        assertion_id,
+        subject: after.subject,
+        predicate: after.predicate.clone(),
+        kind,
+        before: Some(before.clone()),
+        after: Some(after.clone()),
+        affected_period,
+    })
+}
+
+fn classify_added_assertion(
+    after: &crate::model::AssertionView,
+    after_period: mneme_kernel::temporal::Period,
+    baseline_periods: &PriorSubjectPeriods,
+) -> BitemporalChangeKind {
+    let Some(prior_periods) = baseline_periods.get(&(after.subject, after.predicate.clone()))
+    else {
+        return BitemporalChangeKind::WorldEvolution;
+    };
+    let is_retroactive = prior_periods.iter().any(|prior| {
+        mneme_kernel::temporal::intersect(after_period, *prior).is_some()
+            || after_period.stop <= prior.start
+    });
+    if is_retroactive {
+        BitemporalChangeKind::RetroactiveCorrection
+    } else {
+        BitemporalChangeKind::WorldEvolution
+    }
+}

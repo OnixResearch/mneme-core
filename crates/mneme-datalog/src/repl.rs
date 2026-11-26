@@ -869,8 +869,20 @@ fn affected_predicates(
                 continue;
             }
             let depends = rule.body.iter().any(|literal| match literal {
-                crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
-                    affected.contains(&atom.predicate)
+                crate::Literal::Positive(atom)
+                | crate::Literal::Negative(atom)
+                | crate::Literal::DiamondMinus { atom, .. }
+                | crate::Literal::BoxMinus { atom, .. } => affected.contains(&atom.predicate),
+                crate::Literal::Since {
+                    maintained,
+                    trigger,
+                    ..
+                } => {
+                    affected.contains(&maintained.predicate)
+                        || affected.contains(&trigger.predicate)
+                }
+                crate::Literal::Allen { left, right, .. } => {
+                    affected.contains(&left.predicate) || affected.contains(&right.predicate)
                 }
                 crate::Literal::Compare { .. }
                 | crate::Literal::Aggregate { .. }

@@ -557,6 +557,7 @@ impl ViewState {
             status: crate::ExecutionStatus::Complete,
             limit_reached: false,
             support_truncated: false,
+            max_intervals_per_fact: crate::DEFAULT_MAX_INTERVALS_PER_FACT,
         };
         let rebuild_result = rebuild_components(
             &request,
@@ -718,6 +719,7 @@ pub(crate) fn advance_view(
         status: crate::ExecutionStatus::Complete,
         limit_reached: false,
         support_truncated: request.next_base.support_truncated,
+        max_intervals_per_fact: crate::DEFAULT_MAX_INTERVALS_PER_FACT,
     };
     let mut coverage_reasons = request.next_base.coverage_reasons.clone();
     let mut coverage_map = crate::engine::compute_derived_coverage(
@@ -1618,10 +1620,37 @@ fn is_rule_body_complete(
     let mut combined = mneme_kernel::completeness::Coverage::Complete;
     for literal in &rule.body {
         match literal {
-            crate::Literal::Positive(atom) | crate::Literal::Negative(atom) => {
+            crate::Literal::Positive(atom)
+            | crate::Literal::Negative(atom)
+            | crate::Literal::DiamondMinus { atom, .. }
+            | crate::Literal::BoxMinus { atom, .. } => {
                 combined = mneme_kernel::completeness::combine_coverage(
                     combined,
                     kernel_coverage(coverage_status_of(coverage, &atom.predicate)),
+                );
+            }
+            crate::Literal::Since {
+                maintained,
+                trigger,
+                ..
+            } => {
+                combined = mneme_kernel::completeness::combine_coverage(
+                    combined,
+                    kernel_coverage(coverage_status_of(coverage, &maintained.predicate)),
+                );
+                combined = mneme_kernel::completeness::combine_coverage(
+                    combined,
+                    kernel_coverage(coverage_status_of(coverage, &trigger.predicate)),
+                );
+            }
+            crate::Literal::Allen { left, right, .. } => {
+                combined = mneme_kernel::completeness::combine_coverage(
+                    combined,
+                    kernel_coverage(coverage_status_of(coverage, &left.predicate)),
+                );
+                combined = mneme_kernel::completeness::combine_coverage(
+                    combined,
+                    kernel_coverage(coverage_status_of(coverage, &right.predicate)),
                 );
             }
             crate::Literal::Forbidden(_) => return false,

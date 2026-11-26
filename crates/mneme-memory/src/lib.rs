@@ -22,8 +22,10 @@ pub mod service;
 
 pub use authorization::Access;
 pub use beliefs::{
-    BeliefView, ConflictGroup, Corroboration, DerivationAlternative, EXPLICIT_AUTHORED_PREDICATE,
-    EvidenceExplanation, Explanation, Policy, SourceExcerpt, SourceStatus, ValidatedEvidence, View,
+    BeliefView, BitemporalChange, BitemporalChangeKind, BitemporalDiff, ConflictGroup,
+    Corroboration, DerivationAlternative, EXPLICIT_AUTHORED_PREDICATE, EvidenceExplanation,
+    Explanation, Policy, SourceExcerpt, SourceStatus, ValidatedEvidence, View,
+    valid_time_to_kernel,
 };
 pub use failure::{EvidenceError, Result};
 pub use inbound::{

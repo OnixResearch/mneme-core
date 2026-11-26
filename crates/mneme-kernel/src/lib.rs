@@ -49,5 +49,6 @@ pub mod isolation;
 pub mod publish;
 pub mod purge;
 pub mod restore;
+pub mod temporal;
 pub mod text;
 pub mod verdict;
