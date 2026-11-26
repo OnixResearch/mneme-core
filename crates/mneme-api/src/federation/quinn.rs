@@ -14,12 +14,26 @@ const MAX_DER_LEN_BYTES: usize = 4;
 pub fn make_authenticated_server_endpoint(
     bind_addr: std::net::SocketAddr,
     secret_key: &iroh::SecretKey,
-    allowlist: super::server::PeerAllowlist,
+    allowlist: super::auth::PeerAllowlist,
+) -> Result<noq::Endpoint, super::client::FederationError> {
+    make_authenticated_server_endpoint_with_authorizer(
+        bind_addr,
+        secret_key,
+        super::auth::SharedFederationAuthorizer::from_allowlist(allowlist),
+    )
+}
+
+/// Build an authenticated `noq::Endpoint` server bound to `bind_addr` whose
+/// TLS 1.3 client verifier checks the live-reloadable [`super::auth::SharedFederationAuthorizer`].
+pub fn make_authenticated_server_endpoint_with_authorizer(
+    bind_addr: std::net::SocketAddr,
+    secret_key: &iroh::SecretKey,
+    authorizer: super::auth::SharedFederationAuthorizer,
 ) -> Result<noq::Endpoint, super::client::FederationError> {
     let (cert_der, key_der) = ed25519_cert_pair(secret_key)?;
     let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
-    let verifier = std::sync::Arc::new(AllowlistClientVerifier {
-        allowlist,
+    let verifier = std::sync::Arc::new(AuthorizerClientVerifier {
+        authorizer,
         supported: provider.signature_verification_algorithms,
     });
     let mut crypto = rustls::ServerConfig::builder_with_provider(provider)
@@ -129,12 +143,12 @@ fn ed25519_cert_pair(
 }
 
 #[derive(Debug)]
-struct AllowlistClientVerifier {
-    allowlist: super::server::PeerAllowlist,
+struct AuthorizerClientVerifier {
+    authorizer: super::auth::SharedFederationAuthorizer,
     supported: rustls::crypto::WebPkiSupportedAlgorithms,
 }
 
-impl rustls::server::danger::ClientCertVerifier for AllowlistClientVerifier {
+impl rustls::server::danger::ClientCertVerifier for AuthorizerClientVerifier {
     fn offer_client_auth(&self) -> bool {
         true
     }
@@ -156,7 +170,7 @@ impl rustls::server::danger::ClientCertVerifier for AllowlistClientVerifier {
         let peer_id = extract_ed25519_peer_id(end_entity.as_ref()).map_err(|_| {
             rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
         })?;
-        if !self.allowlist.allows(&peer_id) {
+        if !self.authorizer.can_connect(&peer_id) {
             return Err(rustls::Error::InvalidCertificate(
                 rustls::CertificateError::ApplicationVerificationFailure,
             ));

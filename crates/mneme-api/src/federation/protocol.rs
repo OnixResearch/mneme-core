@@ -168,6 +168,7 @@ impl std::error::Error for RpcError {}
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryHeadRequest {
     pub scope: String,
+    pub capability_document: Option<String>,
 }
 
 /// Head revision state returned by [`QueryHeadRequest`].
@@ -184,6 +185,7 @@ pub struct HeadState {
 pub struct QueryMetadataRequest {
     pub scope: String,
     pub revision: Option<[u8; 16]>,
+    pub capability_document: Option<String>,
 }
 
 /// Scoped read-only vault metadata returned by [`QueryMetadataRequest`].
@@ -204,6 +206,7 @@ pub struct FetchPinnedSnapshotRequest {
     pub scope: String,
     pub revision: Option<[u8; 16]>,
     pub limits: FederationLimits,
+    pub capability_document: Option<String>,
 }
 
 /// Wire representation of one retention suppression entry.
@@ -254,9 +257,10 @@ pub struct EvaluateDatalogRequest {
     pub bundle_document: String,
     pub predicate: String,
     pub constant_documents: Vec<Option<String>>,
-    pub limit: u64,
+    pub max_rows: u64,
     pub stale_policy: StalePolicy,
     pub limits: FederationLimits,
+    pub capability_document: Option<String>,
 }
 
 /// Remote predicate coverage status.
@@ -327,4 +331,62 @@ pub enum VaultFederationProtocol {
     FetchPinnedSnapshot(FetchPinnedSnapshotRequest),
     #[rpc(tx = irpc::channel::oneshot::Sender<Result<RemoteDatalogResult, RpcError>>)]
     EvaluateDatalog(EvaluateDatalogRequest),
+}
+
+/// Compute the deterministic scoped manifest digest binding `revision`, `parent`,
+/// every returned current record (including its full canonical payload), and every
+/// returned history record. Both server and client compute this exact digest to
+/// detect tampering, drops, or injection of remote snapshot records.
+pub fn scoped_manifest_digest<'a>(
+    revision: mneme_core::WorkspaceRevisionId,
+    parent: Option<mneme_core::WorkspaceRevisionId>,
+    records: impl IntoIterator<Item = &'a mneme_core::RecordEnvelope>,
+    history: impl IntoIterator<Item = &'a mneme_core::RecordEnvelope>,
+    algorithm: mneme_core::HashAlgorithm,
+) -> mneme_core::ContentDigest {
+    let parent_value = match parent {
+        Some(rev) => rev.to_value(),
+        None => mneme_core::Value::symbol("none"),
+    };
+    let record_entries = mneme_core::Value::set(
+        records
+            .into_iter()
+            .map(|envelope| scoped_manifest_record_value(envelope, algorithm)),
+    );
+    let history_entries = mneme_core::Value::set(
+        history
+            .into_iter()
+            .map(|envelope| scoped_manifest_record_value(envelope, algorithm)),
+    );
+    let manifest_value = mneme_core::Value::record_named(
+        "scoped-federation-manifest",
+        vec![
+            revision.to_value(),
+            parent_value,
+            record_entries,
+            history_entries,
+        ],
+    );
+    debug_assert!(manifest_value.as_record().is_some());
+    let digest = mneme_core::ContentDigest::of_payload_with(&manifest_value, algorithm);
+    debug_assert_eq!(digest.algorithm(), algorithm);
+    digest
+}
+
+fn scoped_manifest_record_value(
+    envelope: &mneme_core::RecordEnvelope,
+    algorithm: mneme_core::HashAlgorithm,
+) -> mneme_core::Value {
+    let payload_digest =
+        mneme_core::ContentDigest::of_payload_with(&envelope.to_value(), algorithm);
+    mneme_core::Value::record_named(
+        "scoped-manifest-record",
+        vec![
+            envelope.record_id.to_value(),
+            envelope.revision_id.to_value(),
+            envelope.kind.to_value(),
+            envelope.scope.to_value(),
+            payload_digest.to_value(),
+        ],
+    )
 }

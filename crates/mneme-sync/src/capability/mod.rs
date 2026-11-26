@@ -29,6 +29,18 @@ pub const MAX_CAPABILITY_BYTES: u64 = 64 * 1024;
 pub const MAX_REVOCATION_SET_BYTES: u64 = 2 * 1024 * 1024;
 /// Maximum UTF-8 byte length of an optional revocation reason string.
 pub const MAX_REVOCATION_REASON_BYTES: u32 = 256;
+/// Maximum forward clock skew tolerated on capability `issued_at_secs` (5 minutes).
+pub const MAX_CLOCK_SKEW_SECS: u64 = 300;
+/// Hard cap on total tombstones held in a [`RevocationSet`] (guarantees persistence under 2 MiB).
+pub const MAX_REVOCATION_TOMBSTONES: u64 = 4096;
+/// Maximum tombstones returned or pushed in one paginated `SyncRevocations` frame.
+pub const MAX_REVOCATIONS_PER_PAGE: u64 = 256;
+/// Maximum active capability leases cached per remote peer.
+pub const MAX_LEASES_PER_PEER: u64 = 64;
+/// Maximum distinct peers tracked simultaneously in [`SharedCapabilityLeases`].
+pub const MAX_LEASED_PEERS: u64 = 4096;
+/// Maximum verified delegation issuers remembered for causal revocation checks.
+pub const MAX_AUTHORIZED_ISSUERS: u64 = 4096;
 
 const LINK_SIGNING_DOMAIN: &[u8] = b"mneme.sync.cap.link.v1\0";
 const TOMBSTONE_SIGNING_DOMAIN: &[u8] = b"mneme.sync.cap.revocation.v1\0";
@@ -674,7 +686,7 @@ impl RevocationSet {
         }
     }
 
-    /// Verify and insert one tombstone into the CRDT set.
+    /// Verify and insert one tombstone into the CRDT set, enforcing [`MAX_REVOCATION_TOMBSTONES`].
     pub fn insert(
         &mut self,
         tombstone: RevocationTombstone,
@@ -689,8 +701,28 @@ impl RevocationSet {
                 tombstone.tombstone_id
             )));
         }
+        if self.len_u64() >= MAX_REVOCATION_TOMBSTONES {
+            return Err(crate::error::Failure::CapabilityDenied(format!(
+                "revocation set reached maximum capacity ({MAX_REVOCATION_TOMBSTONES})"
+            )));
+        }
         self.tombstones.insert(tombstone.tombstone_id, tombstone);
         Ok(RevocationInsertOutcome::Inserted)
+    }
+
+    /// Verify revoker authorization, signature, and capacity before inserting one tombstone.
+    pub fn insert_authorized(
+        &mut self,
+        tombstone: RevocationTombstone,
+        authorized_revokers: &std::collections::BTreeSet<iroh::EndpointId>,
+    ) -> crate::error::Result<RevocationInsertOutcome> {
+        if !authorized_revokers.contains(&tombstone.revoker) {
+            return Err(crate::error::Failure::CapabilityDenied(format!(
+                "untrusted revocation issuer {}",
+                tombstone.revoker
+            )));
+        }
+        self.insert(tombstone)
     }
 
     /// Atomically verify and merge all tombstones from `other` (commutative, associative, idempotent).
@@ -699,13 +731,47 @@ impl RevocationSet {
         self.merge_tombstones(&incoming)
     }
 
-    /// Atomically verify and merge a slice of tombstones into `self`.
+    /// Atomically verify and merge a slice of tombstones into `self`, enforcing [`MAX_REVOCATION_TOMBSTONES`].
     pub fn merge_tombstones(
         &mut self,
         incoming: &[RevocationTombstone],
     ) -> crate::error::Result<u64> {
-        let mut to_insert = Vec::with_capacity(incoming.len());
+        self.merge_tombstones_filtered(incoming, None)
+    }
+
+    /// Atomically verify revoker authorization, signatures, and capacity before merging tombstones.
+    pub fn merge_tombstones_authorized(
+        &mut self,
+        incoming: &[RevocationTombstone],
+        authorized_revokers: &std::collections::BTreeSet<iroh::EndpointId>,
+    ) -> crate::error::Result<u64> {
+        self.merge_tombstones_filtered(incoming, Some(authorized_revokers))
+    }
+
+    fn merge_tombstones_filtered(
+        &mut self,
+        incoming: &[RevocationTombstone],
+        authorized_revokers: Option<&std::collections::BTreeSet<iroh::EndpointId>>,
+    ) -> crate::error::Result<u64> {
+        if incoming.len() as u64 > MAX_REVOCATION_TOMBSTONES {
+            return Err(crate::error::Failure::CapabilityDenied(format!(
+                "incoming revocation batch ({}) exceeds maximum capacity ({MAX_REVOCATION_TOMBSTONES})",
+                incoming.len()
+            )));
+        }
+        let max_new_entries = usize::try_from(MAX_REVOCATION_TOMBSTONES).map_err(|_| {
+            crate::error::Failure::InvalidConfig("revocation capacity overflow".to_owned())
+        })?;
+        let mut to_insert = std::collections::BTreeMap::new();
         for tombstone in incoming {
+            if let Some(allowed) = authorized_revokers
+                && !allowed.contains(&tombstone.revoker)
+            {
+                return Err(crate::error::Failure::CapabilityDenied(format!(
+                    "untrusted revocation issuer {}",
+                    tombstone.revoker
+                )));
+            }
             tombstone.verify_signature()?;
             if let Some(existing) = self.tombstones.get(&tombstone.tombstone_id) {
                 if existing != tombstone {
@@ -716,19 +782,71 @@ impl RevocationSet {
                 }
                 continue;
             }
-            to_insert.push(tombstone.clone());
+            if let Some(pending) = to_insert.get(&tombstone.tombstone_id) {
+                if pending != tombstone {
+                    return Err(crate::error::Failure::CapabilityDenied(format!(
+                        "conflicting revocation tombstone for id {}",
+                        tombstone.tombstone_id
+                    )));
+                }
+                continue;
+            }
+            if to_insert.len() >= max_new_entries {
+                return Err(crate::error::Failure::CapabilityDenied(format!(
+                    "revocation set would exceed maximum capacity ({MAX_REVOCATION_TOMBSTONES})"
+                )));
+            }
+            to_insert.insert(tombstone.tombstone_id, tombstone.clone());
+        }
+        let projected = self.len_u64().saturating_add(to_insert.len() as u64);
+        if projected > MAX_REVOCATION_TOMBSTONES {
+            return Err(crate::error::Failure::CapabilityDenied(format!(
+                "revocation set would exceed maximum capacity ({MAX_REVOCATION_TOMBSTONES})"
+            )));
         }
         let mut inserted: u64 = 0;
-        for tombstone in to_insert {
-            if self
-                .tombstones
-                .insert(tombstone.tombstone_id, tombstone)
-                .is_none()
-            {
+        for (id, tombstone) in to_insert {
+            if self.tombstones.insert(id, tombstone).is_none() {
                 inserted = inserted.saturating_add(1);
             }
         }
         Ok(inserted)
+    }
+
+    /// Return a deterministic bounded page of tombstones strictly after `after_id`.
+    ///
+    /// Returns `(page, has_more)` where `page.len() <= max_items.min(MAX_REVOCATIONS_PER_PAGE)`.
+    pub fn tombstones_after(
+        &self,
+        after_id: Option<TombstoneId>,
+        max_items: u64,
+    ) -> (Vec<RevocationTombstone>, bool) {
+        let clamped_items = max_items.clamp(1, MAX_REVOCATIONS_PER_PAGE);
+        let page_cap = match usize::try_from(clamped_items) {
+            Ok(cap) => cap,
+            Err(_) => return (Vec::new(), !self.tombstones.is_empty()),
+        };
+        let iter: Box<dyn Iterator<Item = &RevocationTombstone> + '_> = match after_id {
+            Some(cursor) => Box::new(
+                self.tombstones
+                    .range((
+                        std::ops::Bound::Excluded(cursor),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .map(|(_, value)| value),
+            ),
+            None => Box::new(self.tombstones.values()),
+        };
+        let mut page = Vec::with_capacity(page_cap.min(self.tombstones.len()));
+        let mut has_more = false;
+        for tombstone in iter {
+            if page.len() >= page_cap {
+                has_more = true;
+                break;
+            }
+            page.push(tombstone.clone());
+        }
+        (page, has_more)
     }
 
     /// Return all tombstones in deterministic [`TombstoneId`] order.
@@ -831,12 +949,48 @@ impl SharedRevocationSet {
         guard.insert(tombstone)
     }
 
+    /// Verify revoker authorization, signature, and capacity before inserting one tombstone.
+    pub fn insert_authorized(
+        &self,
+        tombstone: RevocationTombstone,
+        authorized_revokers: &std::collections::BTreeSet<iroh::EndpointId>,
+    ) -> crate::error::Result<RevocationInsertOutcome> {
+        let mut guard = self.inner.write().map_err(|_| {
+            crate::error::Failure::InvalidConfig("revocation set lock poisoned".to_owned())
+        })?;
+        guard.insert_authorized(tombstone, authorized_revokers)
+    }
+
     /// Atomically verify and merge tombstones into the shared set.
     pub fn merge_tombstones(&self, incoming: &[RevocationTombstone]) -> crate::error::Result<u64> {
         let mut guard = self.inner.write().map_err(|_| {
             crate::error::Failure::InvalidConfig("revocation set lock poisoned".to_owned())
         })?;
         guard.merge_tombstones(incoming)
+    }
+
+    /// Atomically verify revoker authorization, signatures, and capacity before merging tombstones.
+    pub fn merge_tombstones_authorized(
+        &self,
+        incoming: &[RevocationTombstone],
+        authorized_revokers: &std::collections::BTreeSet<iroh::EndpointId>,
+    ) -> crate::error::Result<u64> {
+        let mut guard = self.inner.write().map_err(|_| {
+            crate::error::Failure::InvalidConfig("revocation set lock poisoned".to_owned())
+        })?;
+        guard.merge_tombstones_authorized(incoming, authorized_revokers)
+    }
+
+    /// Return a deterministic bounded page of tombstones strictly after `after_id`.
+    pub fn page_after(
+        &self,
+        after_id: Option<TombstoneId>,
+        max_items: u64,
+    ) -> crate::error::Result<(Vec<RevocationTombstone>, bool)> {
+        let guard = self.inner.read().map_err(|_| {
+            crate::error::Failure::InvalidConfig("revocation set lock poisoned".to_owned())
+        })?;
+        Ok(guard.tombstones_after(after_id, max_items))
     }
 
     /// Snapshot the current revocation set.
@@ -1117,6 +1271,24 @@ pub struct LeaseScopeQuery<'a> {
     pub revocations: &'a SharedRevocationSet,
 }
 
+/// Query inputs for checking a peer's `(vault_id, scope, authority)` capability lease.
+pub struct LeaseVaultScopeQuery<'a> {
+    pub peer: iroh::EndpointId,
+    pub vault_id: &'a str,
+    pub scope: &'a mneme_core::ScopeId,
+    pub required: CapabilityAuthority,
+    pub now_secs: u64,
+    pub trusted_roots: &'a std::collections::BTreeSet<iroh::EndpointId>,
+    pub revocations: &'a SharedRevocationSet,
+}
+
+/// Eviction context used when recording or sweeping capability leases.
+pub struct LeaseEvictionContext<'a> {
+    pub now_secs: u64,
+    pub trusted_roots: &'a std::collections::BTreeSet<iroh::EndpointId>,
+    pub revocations: &'a SharedRevocationSet,
+}
+
 impl SharedCapabilityLeases {
     /// Construct an empty lease table.
     pub fn new() -> Self {
@@ -1125,7 +1297,7 @@ impl SharedCapabilityLeases {
         }
     }
 
-    /// Record a verified capability lease for `peer`.
+    /// Record a verified capability lease for `peer`, enforcing per-peer and global caps.
     pub fn record_lease(
         &self,
         peer: iroh::EndpointId,
@@ -1135,18 +1307,75 @@ impl SharedCapabilityLeases {
         let mut guard = self.inner.write().map_err(|_| {
             crate::error::Failure::InvalidConfig("capability lease lock poisoned".to_owned())
         })?;
+        if !guard.contains_key(&peer) && (guard.len() as u64) >= MAX_LEASED_PEERS {
+            return Err(crate::error::Failure::CapabilityDenied(format!(
+                "capability lease peer capacity ({MAX_LEASED_PEERS}) exceeded"
+            )));
+        }
         let leases = guard.entry(peer).or_default();
-        leases.retain(|lease| lease.leaf_id_matches(verified.leaf_id));
-        leases.push(VerifiedLease {
-            peer,
-            vault_id: vault_id.to_owned(),
-            scope: verified.scope.clone(),
-            authority: verified.authority,
-            expires_at_secs: verified.expires_at_secs,
-            link_ids: verified.link_ids.clone(),
-            issuer_chain: verified.issuer_chain.clone(),
-        });
+        insert_bounded_lease(leases, peer, vault_id, verified);
         Ok(())
+    }
+
+    /// Evict expired/revoked leases and record a verified capability lease for `peer`.
+    pub fn record_lease_with_eviction(
+        &self,
+        peer: iroh::EndpointId,
+        vault_id: &str,
+        verified: &VerifiedCapability,
+        eviction: &LeaseEvictionContext<'_>,
+    ) -> crate::error::Result<()> {
+        let rev_snapshot = eviction.revocations.snapshot()?;
+        let mut guard = self.inner.write().map_err(|_| {
+            crate::error::Failure::InvalidConfig("capability lease lock poisoned".to_owned())
+        })?;
+        if let Some(existing) = guard.get_mut(&peer) {
+            existing.retain(|lease| {
+                lease.is_active(eviction.now_secs, eviction.trusted_roots, &rev_snapshot)
+            });
+            if existing.is_empty() {
+                guard.remove(&peer);
+            }
+        }
+        if !guard.contains_key(&peer) && (guard.len() as u64) >= MAX_LEASED_PEERS {
+            sweep_inactive_leases(
+                &mut guard,
+                eviction.now_secs,
+                eviction.trusted_roots,
+                &rev_snapshot,
+            );
+        }
+        if !guard.contains_key(&peer) && (guard.len() as u64) >= MAX_LEASED_PEERS {
+            return Err(crate::error::Failure::CapabilityDenied(format!(
+                "capability lease peer capacity ({MAX_LEASED_PEERS}) exceeded"
+            )));
+        }
+        let leases = guard.entry(peer).or_default();
+        insert_bounded_lease(leases, peer, vault_id, verified);
+        Ok(())
+    }
+
+    /// Purge all expired or revoked leases across all peers.
+    pub fn evict_inactive(&self, eviction: &LeaseEvictionContext<'_>) -> crate::error::Result<u64> {
+        let rev_snapshot = eviction.revocations.snapshot()?;
+        let mut guard = self.inner.write().map_err(|_| {
+            crate::error::Failure::InvalidConfig("capability lease lock poisoned".to_owned())
+        })?;
+        Ok(sweep_inactive_leases(
+            &mut guard,
+            eviction.now_secs,
+            eviction.trusted_roots,
+            &rev_snapshot,
+        ))
+    }
+
+    /// Number of currently cached leases for `peer`.
+    pub fn lease_count_for_peer(&self, peer: iroh::EndpointId) -> u64 {
+        self.inner
+            .read()
+            .ok()
+            .and_then(|guard| guard.get(&peer).map(|leases| leases.len() as u64))
+            .unwrap_or(0)
     }
 
     /// Check whether `peer` currently holds a non-expired, non-revoked lease with `required`.
@@ -1173,6 +1402,57 @@ impl SharedCapabilityLeases {
         })
     }
 
+    /// Check whether `peer` holds an active lease bound to `vault_id` with `required` authority.
+    pub fn permits_vault_authority(
+        &self,
+        peer: iroh::EndpointId,
+        vault_id: &str,
+        required: CapabilityAuthority,
+        eviction: &LeaseEvictionContext<'_>,
+    ) -> bool {
+        let Ok(rev_snapshot) = eviction.revocations.snapshot() else {
+            return false;
+        };
+        let Ok(guard) = self.inner.read() else {
+            return false;
+        };
+        let Some(leases) = guard.get(&peer) else {
+            return false;
+        };
+        leases.iter().any(|lease| {
+            lease.vault_id == vault_id
+                && lease.authority.permits(required)
+                && lease.is_active(eviction.now_secs, eviction.trusted_roots, &rev_snapshot)
+        })
+    }
+
+    /// Check whether `peer` holds an active lease bound to any vault in `configured_vaults`.
+    pub fn permits_any_vault_authority(
+        &self,
+        peer: iroh::EndpointId,
+        configured_vaults: &std::collections::BTreeSet<String>,
+        required: CapabilityAuthority,
+        eviction: &LeaseEvictionContext<'_>,
+    ) -> bool {
+        if configured_vaults.is_empty() {
+            return false;
+        }
+        let Ok(rev_snapshot) = eviction.revocations.snapshot() else {
+            return false;
+        };
+        let Ok(guard) = self.inner.read() else {
+            return false;
+        };
+        let Some(leases) = guard.get(&peer) else {
+            return false;
+        };
+        leases.iter().any(|lease| {
+            configured_vaults.contains(&lease.vault_id)
+                && lease.authority.permits(required)
+                && lease.is_active(eviction.now_secs, eviction.trusted_roots, &rev_snapshot)
+        })
+    }
+
     /// Check whether `query.peer` currently holds a non-expired, non-revoked lease for `query.scope`.
     pub fn permits_scope(&self, query: &LeaseScopeQuery<'_>) -> bool {
         let Ok(rev_snapshot) = query.revocations.snapshot() else {
@@ -1190,11 +1470,126 @@ impl SharedCapabilityLeases {
                 && lease.is_active(query.now_secs, query.trusted_roots, &rev_snapshot)
         })
     }
+
+    /// Check whether `query.peer` holds an active lease matching `(vault_id, scope, required)`.
+    pub fn permits_vault_scope(&self, query: &LeaseVaultScopeQuery<'_>) -> bool {
+        let Ok(rev_snapshot) = query.revocations.snapshot() else {
+            return false;
+        };
+        let Ok(guard) = self.inner.read() else {
+            return false;
+        };
+        let Some(leases) = guard.get(&query.peer) else {
+            return false;
+        };
+        leases.iter().any(|lease| {
+            lease.vault_id == query.vault_id
+                && lease.authority.permits(query.required)
+                && lease.scope.permits(query.scope)
+                && lease.is_active(query.now_secs, query.trusted_roots, &rev_snapshot)
+        })
+    }
+}
+
+fn insert_bounded_lease(
+    leases: &mut Vec<VerifiedLease>,
+    peer: iroh::EndpointId,
+    vault_id: &str,
+    verified: &VerifiedCapability,
+) {
+    leases.retain(|lease| !lease.matches_vault_and_leaf(vault_id, verified.leaf_id));
+    while (leases.len() as u64) >= MAX_LEASES_PER_PEER {
+        if let Some((evict_index, _)) = leases
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, lease)| lease.expires_at_secs)
+        {
+            leases.swap_remove(evict_index);
+        } else {
+            break;
+        }
+    }
+    leases.push(VerifiedLease {
+        peer,
+        vault_id: vault_id.to_owned(),
+        scope: verified.scope.clone(),
+        authority: verified.authority,
+        expires_at_secs: verified.expires_at_secs,
+        link_ids: verified.link_ids.clone(),
+        issuer_chain: verified.issuer_chain.clone(),
+    });
+}
+
+fn sweep_inactive_leases(
+    table: &mut std::collections::BTreeMap<iroh::EndpointId, Vec<VerifiedLease>>,
+    now_secs: u64,
+    trusted_roots: &std::collections::BTreeSet<iroh::EndpointId>,
+    revocations: &RevocationSet,
+) -> u64 {
+    let mut removed: u64 = 0;
+    table.retain(|_, leases| {
+        let before = leases.len();
+        leases.retain(|lease| lease.is_active(now_secs, trusted_roots, revocations));
+        removed = removed.saturating_add(before.saturating_sub(leases.len()) as u64);
+        !leases.is_empty()
+    });
+    removed
 }
 
 impl VerifiedLease {
-    fn leaf_id_matches(&self, leaf_id: TokenId) -> bool {
-        self.link_ids.last().copied() != Some(leaf_id)
+    fn matches_vault_and_leaf(&self, vault_id: &str, leaf_id: TokenId) -> bool {
+        self.vault_id == vault_id && self.link_ids.last().copied() == Some(leaf_id)
+    }
+}
+
+/// Bounded thread-safe registry of verified capability delegation issuers permitted to revoke.
+#[derive(Clone, Debug, Default)]
+pub struct SharedAuthorizedIssuers {
+    inner: std::sync::Arc<std::sync::RwLock<std::collections::BTreeSet<iroh::EndpointId>>>,
+}
+
+impl SharedAuthorizedIssuers {
+    /// Construct an empty verified-issuer registry.
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::Arc::new(std::sync::RwLock::new(std::collections::BTreeSet::new())),
+        }
+    }
+
+    /// Record issuers and subject from a verified capability chain, bounded by [`MAX_AUTHORIZED_ISSUERS`].
+    pub fn record_verified(&self, verified: &VerifiedCapability) {
+        let Ok(mut guard) = self.inner.write() else {
+            return;
+        };
+        for issuer in &verified.issuer_chain {
+            if (guard.len() as u64) >= MAX_AUTHORIZED_ISSUERS {
+                break;
+            }
+            guard.insert(*issuer);
+        }
+        if (guard.len() as u64) < MAX_AUTHORIZED_ISSUERS {
+            guard.insert(verified.subject);
+        }
+    }
+
+    /// Compute the effective set of authorized revocation issuers (`trusted_roots` ∪ `allowlist` ∪ verified issuers).
+    pub fn effective_revokers(
+        &self,
+        trusted_roots: &std::collections::BTreeSet<iroh::EndpointId>,
+        allowlist: &crate::trust::SharedAllowlist,
+    ) -> std::collections::BTreeSet<iroh::EndpointId> {
+        let mut allowed = trusted_roots.clone();
+        if let Ok(snapshot) = allowlist.snapshot() {
+            for peer in snapshot.peers() {
+                allowed.insert(peer.node_id);
+            }
+        }
+        if let Ok(guard) = self.inner.read() {
+            for issuer in guard.iter() {
+                allowed.insert(*issuer);
+            }
+        }
+        allowed
     }
 }
 
@@ -1428,6 +1823,12 @@ fn verify_single_link(
         issued_at_secs: link.issued_at_secs,
         expires_at_secs: link.expires_at_secs,
     })?;
+    if link.issued_at_secs > now_secs.saturating_add(MAX_CLOCK_SKEW_SECS) {
+        return Err(crate::error::Failure::CapabilityDenied(format!(
+            "capability link {} issued_at_secs {} exceeds clock skew bound (now {})",
+            link.token_id, link.issued_at_secs, now_secs
+        )));
+    }
     if now_secs >= link.expires_at_secs {
         return Err(crate::error::Failure::CapabilityDenied(format!(
             "capability link {} expired at {} (now {})",

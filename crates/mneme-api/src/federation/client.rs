@@ -187,20 +187,26 @@ pub struct RemoteViewFetchOptions<'a> {
 
 /// Transport-uniform client for [`super::protocol::VaultFederationProtocol`].
 #[derive(Clone, Debug)]
+#[allow(unknown_lints, path_segment_repetition)] // public API compatibility type name
 pub struct VaultFederationClient {
     inner: irpc::Client<super::protocol::VaultFederationProtocol>,
+    capability_document: Option<String>,
 }
 
 impl VaultFederationClient {
     /// Wrap an existing `irpc::Client` (for in-memory or custom transports).
     pub fn from_irpc(client: irpc::Client<super::protocol::VaultFederationProtocol>) -> Self {
-        Self { inner: client }
+        Self {
+            inner: client,
+            capability_document: None,
+        }
     }
 
     /// Connect over Quinn (`noq`) to `addr`.
     pub fn connect_noq(endpoint: noq::Endpoint, addr: std::net::SocketAddr) -> Self {
         Self {
             inner: irpc::Client::noq(endpoint, addr),
+            capability_document: None,
         }
     }
 
@@ -208,7 +214,14 @@ impl VaultFederationClient {
     pub fn connect_iroh(endpoint: iroh::Endpoint, addr: impl Into<iroh::EndpointAddr>) -> Self {
         Self {
             inner: irpc_iroh::client(endpoint, addr, super::protocol::FEDERATION_ALPN),
+            capability_document: None,
         }
+    }
+
+    /// Attach a serialized `concap` capability token JSON document to subsequent RPCs.
+    pub fn with_capability(mut self, capability_document: impl Into<String>) -> Self {
+        self.capability_document = Some(capability_document.into());
+        self
     }
 
     /// Query the remote vault's current head revision and eligibility generation.
@@ -220,6 +233,7 @@ impl VaultFederationClient {
             .inner
             .rpc(super::protocol::QueryHeadRequest {
                 scope: scope.to_string(),
+                capability_document: self.capability_document.clone(),
             })
             .await
             .map_err(transport_error)?
@@ -239,6 +253,7 @@ impl VaultFederationClient {
             .rpc(super::protocol::QueryMetadataRequest {
                 scope: scope.to_string(),
                 revision: revision.map(|rev| *rev.as_bytes()),
+                capability_document: self.capability_document.clone(),
             })
             .await
             .map_err(transport_error)?
@@ -252,6 +267,7 @@ impl VaultFederationClient {
             ));
         }
         assert_eq!(reply.protocol_version, super::protocol::PROTOCOL_VERSION);
+        assert!(revision.is_none_or(|rev| reply.served_revision == *rev.as_bytes()));
         Ok(reply)
     }
 
@@ -269,6 +285,7 @@ impl VaultFederationClient {
                 scope: scope.to_string(),
                 revision: revision.map(|rev| *rev.as_bytes()),
                 limits,
+                capability_document: self.capability_document.clone(),
             })
             .await
             .map_err(transport_error)?
@@ -282,6 +299,7 @@ impl VaultFederationClient {
             ));
         }
         assert_eq!(reply.protocol_version, super::protocol::PROTOCOL_VERSION);
+        assert!(revision.is_none_or(|rev| reply.served_revision == *rev.as_bytes()));
         Ok(reply)
     }
 
@@ -305,9 +323,10 @@ impl VaultFederationClient {
                 bundle_document: mneme_core::encode_document_string(&bundle_value),
                 predicate: request.predicate,
                 constant_documents,
-                limit: request.limit,
+                max_rows: request.limit,
                 stale_policy: request.stale_policy,
                 limits: request.limits,
+                capability_document: self.capability_document.clone(),
             })
             .await
             .map_err(transport_error)?
@@ -321,6 +340,11 @@ impl VaultFederationClient {
             ));
         }
         assert_eq!(reply.protocol_version, super::protocol::PROTOCOL_VERSION);
+        assert!(
+            request
+                .revision
+                .is_none_or(|rev| reply.served_revision == *rev.as_bytes())
+        );
         Ok(reply)
     }
 
@@ -335,13 +359,7 @@ impl VaultFederationClient {
         let payload = self
             .fetch_pinned_snapshot(options.scope, options.revision, options.limits)
             .await?;
-        decode_external_vault_view(
-            options.alias,
-            options.locator,
-            options.scope,
-            options.access,
-            payload,
-        )
+        decode_external_vault_view(&options, payload)
     }
 }
 
@@ -360,10 +378,7 @@ fn transport_error(error: irpc::Error) -> FederationError {
 }
 
 fn decode_external_vault_view(
-    alias: &str,
-    locator: &str,
-    scope: &mneme_core::ScopeId,
-    access: &mneme_memory::Access,
+    options: &RemoteViewFetchOptions<'_>,
     payload: super::protocol::PinnedSnapshotPayload,
 ) -> Result<mneme_datalog::ExternalVaultView, FederationError> {
     let requested_revision =
@@ -373,26 +388,81 @@ fn decode_external_vault_view(
     let registry = mneme_core::SchemaRegistry::production();
     let record_context = mneme_core::RecordContext::isolated(&registry);
     let mut index = mneme_core::SnapshotIndex::new();
+    let parent = payload
+        .parent
+        .map(mneme_core::WorkspaceRevisionId::from_bytes);
     let records = decode_scoped_records(
         &payload.record_documents,
-        scope,
-        access,
+        options.scope,
+        options.access,
         &record_context,
         &mut index,
     )?;
-    let history = decode_history_records(&payload.history_documents, &record_context, &mut index)?;
-    let revision_sequences = payload
-        .revision_sequences
+    let history = decode_history_records(
+        &payload.history_documents,
+        options.scope,
+        &record_context,
+        &mut index,
+    )?;
+    verify_scoped_manifest(served_revision, parent, &records, &history, manifest_digest)?;
+    let (revision_sequences, suppressions, current_sources) = decode_snapshot_overlays(
+        payload.revision_sequences,
+        payload.suppressions,
+        payload.current_sources,
+    )?;
+    let snapshot = mneme_store::Snapshot {
+        revision: served_revision,
+        sequence: payload.sequence,
+        parent,
+        manifest_digest,
+        eligibility_generation: payload.eligibility_generation,
+        records,
+        index,
+    };
+    let view = mneme_memory::View::with_retention(
+        snapshot,
+        options.locator,
+        history,
+        revision_sequences,
+        suppressions,
+    )
+    .with_access(options.access.clone());
+    assert_eq!(view.revision(), served_revision);
+    assert!(!options.alias.is_empty());
+    Ok(mneme_datalog::ExternalVaultView {
+        metadata: mneme_datalog::VaultRevision {
+            alias: options.alias.to_owned(),
+            root: std::path::PathBuf::from(options.locator),
+            requested_revision,
+            served_revision,
+        },
+        eligibility_generation: payload.eligibility_generation,
+        view,
+        current_sources,
+    })
+}
+
+type DecodedSnapshotOverlays = (
+    std::collections::BTreeMap<mneme_core::WorkspaceRevisionId, u64>,
+    Vec<mneme_store::RetentionSuppression>,
+    std::collections::BTreeMap<mneme_core::RecordId, mneme_memory::SourceAvailability>,
+);
+
+fn decode_snapshot_overlays(
+    raw_sequences: Vec<([u8; 16], u64)>,
+    raw_suppressions: Vec<super::protocol::EncodedSuppression>,
+    raw_sources: Vec<([u8; 16], super::protocol::EncodedSourceAvailability)>,
+) -> Result<DecodedSnapshotOverlays, FederationError> {
+    let expected_suppressions = raw_suppressions.len();
+    let revision_sequences = raw_sequences
         .into_iter()
         .map(|(bytes, seq)| (mneme_core::WorkspaceRevisionId::from_bytes(bytes), seq))
         .collect();
-    let suppressions = payload
-        .suppressions
+    let suppressions = raw_suppressions
         .into_iter()
         .map(decode_suppression)
         .collect::<Result<Vec<_>, _>>()?;
-    let current_sources = payload
-        .current_sources
+    let current_sources = raw_sources
         .into_iter()
         .map(|(bytes, avail)| {
             (
@@ -401,38 +471,34 @@ fn decode_external_vault_view(
             )
         })
         .collect();
-    let snapshot = mneme_store::Snapshot {
-        revision: served_revision,
-        sequence: payload.sequence,
-        parent: payload
-            .parent
-            .map(mneme_core::WorkspaceRevisionId::from_bytes),
-        manifest_digest,
-        eligibility_generation: payload.eligibility_generation,
-        records,
-        index,
-    };
-    let view = mneme_memory::View::with_retention(
-        snapshot,
-        locator,
-        history,
-        revision_sequences,
-        suppressions,
-    )
-    .with_access(access.clone());
-    assert_eq!(view.revision(), served_revision);
-    assert!(!alias.is_empty());
-    Ok(mneme_datalog::ExternalVaultView {
-        metadata: mneme_datalog::VaultRevision {
-            alias: alias.to_owned(),
-            root: std::path::PathBuf::from(locator),
-            requested_revision,
-            served_revision,
-        },
-        eligibility_generation: payload.eligibility_generation,
-        view,
-        current_sources,
-    })
+    debug_assert_eq!(suppressions.len(), expected_suppressions);
+    debug_assert!(suppressions.capacity() >= expected_suppressions);
+    Ok((revision_sequences, suppressions, current_sources))
+}
+
+fn verify_scoped_manifest(
+    served_revision: mneme_core::WorkspaceRevisionId,
+    parent: Option<mneme_core::WorkspaceRevisionId>,
+    records: &[mneme_core::RecordEnvelope],
+    history: &std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
+    manifest_digest: mneme_core::ContentDigest,
+) -> Result<(), FederationError> {
+    let expected = super::protocol::scoped_manifest_digest(
+        served_revision,
+        parent,
+        records.iter(),
+        history.values(),
+        manifest_digest.algorithm(),
+    );
+    if manifest_digest != expected {
+        return Err(FederationError::ProtocolError(
+            "remote snapshot manifest_digest does not match returned scoped records".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn decode_scoped_records(
@@ -446,9 +512,15 @@ fn decode_scoped_records(
     let mut records = Vec::with_capacity(max_records);
     for doc in record_documents {
         let envelope = decode_validated_record(doc, record_context)?;
+        if envelope.scope != *scope {
+            return Err(FederationError::ProtocolError(format!(
+                "remote peer returned record in scope {} outside requested scope {scope}",
+                envelope.scope
+            )));
+        }
         let is_visible =
             mneme_kernel::isolation::record_visible(&mneme_kernel::isolation::VisibilityFacts {
-                same_scope: envelope.scope == *scope,
+                same_scope: true,
                 record_class: envelope.scope.class().to_kernel(),
                 include_hypothetical: false,
                 record_scope_authorized: access.allows(&envelope.scope),
@@ -466,11 +538,13 @@ fn decode_scoped_records(
         records.push(envelope);
     }
     assert_eq!(records.len(), max_records);
+    debug_assert!(records.iter().all(|r| r.scope == *scope));
     Ok(records)
 }
 
 fn decode_history_records(
     history_documents: &[String],
+    scope: &mneme_core::ScopeId,
     record_context: &mneme_core::RecordContext<'_>,
     index: &mut mneme_core::SnapshotIndex,
 ) -> Result<
@@ -480,12 +554,24 @@ fn decode_history_records(
     >,
     FederationError,
 > {
+    let max_history_entries = history_documents.len();
     let mut history = std::collections::BTreeMap::new();
     for doc in history_documents {
         let envelope = decode_validated_record(doc, record_context)?;
+        if envelope.scope != *scope {
+            return Err(FederationError::ProtocolError(format!(
+                "remote peer returned history record in scope {} outside requested scope {scope}",
+                envelope.scope
+            )));
+        }
+        if history.len() >= max_history_entries {
+            break;
+        }
         index.record_revision(envelope.record_id, envelope.revision_id);
         history.insert((envelope.record_id, envelope.revision_id), envelope);
     }
+    debug_assert!(history.len() <= max_history_entries);
+    debug_assert!(history.values().all(|r| r.scope == *scope));
     Ok(history)
 }
 

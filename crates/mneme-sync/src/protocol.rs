@@ -20,8 +20,19 @@ pub const MAX_DELTA_ITEMS_PER_REQUEST: u64 = 128;
 pub const MAX_GOSSIP_MESSAGE_BYTES: usize = 4096;
 /// Maximum portable revision bundle accepted over Iroh sync.
 pub const MAX_SYNC_BUNDLE_BYTES: u64 = mneme_store::portability::MAX_PORTABLE_ARCHIVE_BYTES;
+/// Maximum wall-clock timeout for one sync control stream read/write (seconds).
+pub const CONTROL_STREAM_TIMEOUT_SECS: u64 = 15;
+/// Maximum control request frame size accepted from a not-yet-authenticated peer (128 KiB).
+pub const MAX_UNAUTHENTICATED_CONTROL_BYTES: u64 = 128 * 1024;
+/// Maximum concurrent sync control connections accepted by one node.
+pub const MAX_CONCURRENT_CONTROL_CONNECTIONS: u64 = 64;
+/// Maximum concurrent blob/gossip connections accepted by one node.
+pub const MAX_CONCURRENT_TRANSPORT_CONNECTIONS: u64 = 64;
 
 const UNAUTHORIZED_CLOSE_CODE: u32 = 403;
+const RATE_LIMITED_CLOSE_CODE: u32 = 429;
+const HEAD_ANNOUNCEMENT_SIGNING_DOMAIN: &[u8] = b"mneme.sync.head.announcement.v1\0";
+const MAX_CONTROL_STREAMS_PER_CONN: u64 = 1024;
 
 /// Relay policy for an Iroh sync endpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,14 +150,33 @@ impl VaultSnapshotInfo {
             seq: self.sequence,
             bundle_hash: self.bundle_hash.clone(),
             bundle_bytes: self.bundle_bytes,
+            origin: None,
+            signature: None,
         }
+    }
+
+    /// Build and Ed25519-sign a [`HeadAnnouncement`] from this snapshot.
+    pub fn to_signed_announcement(
+        &self,
+        signing_key: &iroh::SecretKey,
+    ) -> crate::error::Result<HeadAnnouncement> {
+        self.to_announcement().signed(signing_key)
     }
 }
 
-/// Lightweight private-topic head announcement carried over `iroh-gossip`.
+const fn no_origin() -> Option<iroh::EndpointId> {
+    None
+}
+
+const fn no_signature() -> Option<crate::capability::CapabilitySignature> {
+    None
+}
+
+/// Lightweight private-topic head announcement carried over `iroh-gossip` and `PushHead`.
 ///
-/// Announcements never mutate ledger state directly; receivers verify peer
-/// authorization and pull the referenced bundle over `iroh-blobs`.
+/// Announcements never mutate ledger state directly; receivers verify the
+/// originating node's Ed25519 signature, peer authorization, and monotonic `seq`
+/// before pulling the referenced bundle over `iroh-blobs`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HeadAnnouncement {
@@ -157,9 +187,47 @@ pub struct HeadAnnouncement {
     pub seq: u64,
     pub bundle_hash: String,
     pub bundle_bytes: u64,
+    #[serde(default = "no_origin", skip_serializing_if = "Option::is_none")]
+    pub origin: Option<iroh::EndpointId>,
+    #[serde(default = "no_signature", skip_serializing_if = "Option::is_none")]
+    pub signature: Option<crate::capability::CapabilitySignature>,
 }
 
 impl HeadAnnouncement {
+    /// Sign this announcement in-place with `signing_key`.
+    pub fn sign(&mut self, signing_key: &iroh::SecretKey) -> crate::error::Result<()> {
+        let origin = signing_key.public();
+        self.origin = Some(origin);
+        let message = canonical_announcement_bytes(self, origin)?;
+        self.signature = Some(crate::capability::CapabilitySignature::from_iroh(
+            signing_key.sign(&message),
+        ));
+        Ok(())
+    }
+
+    /// Return a copy of this announcement signed by `signing_key`.
+    pub fn signed(mut self, signing_key: &iroh::SecretKey) -> crate::error::Result<Self> {
+        self.sign(signing_key)?;
+        Ok(self)
+    }
+
+    /// Verify the Ed25519 signature and return the authenticated originating [`iroh::EndpointId`].
+    pub fn verify_signature(&self) -> crate::error::Result<iroh::EndpointId> {
+        let origin = self.origin.ok_or_else(|| {
+            crate::error::Failure::Protocol("head announcement missing origin".to_owned())
+        })?;
+        let signature = self.signature.ok_or_else(|| {
+            crate::error::Failure::Protocol("head announcement missing signature".to_owned())
+        })?;
+        let message = canonical_announcement_bytes(self, origin)?;
+        origin.verify(&message, signature.as_iroh()).map_err(|_| {
+            crate::error::Failure::CapabilityDenied(format!(
+                "invalid Ed25519 signature on head announcement from {origin}"
+            ))
+        })?;
+        Ok(origin)
+    }
+
     /// Encode as bounded JSON bytes for gossip broadcast.
     pub fn encode(&self) -> crate::error::Result<bytes::Bytes> {
         let encoded = serde_json::to_vec(self).map_err(|error| {
@@ -185,16 +253,50 @@ impl HeadAnnouncement {
         let announcement: Self = serde_json::from_slice(bytes).map_err(|error| {
             crate::error::Failure::Protocol(format!("decode head announcement: {error}"))
         })?;
-        let _ = parse_scope_id(&announcement.scope)?;
-        let _ = mneme_core::WorkspaceRevisionId::from_hex(&announcement.head_revision).map_err(
-            |reason| crate::error::Failure::Protocol(format!("invalid head revision: {reason}")),
-        )?;
-        let _ = announcement.head_revision_digest.to_digest()?;
-        let _ = iroh_blobs::Hash::from_str(&announcement.bundle_hash).map_err(|error| {
-            crate::error::Failure::Protocol(format!("invalid announcement bundle hash: {error}"))
-        })?;
+        validate_head_fields(&announcement)?;
+        if announcement.origin.is_some() || announcement.signature.is_some() {
+            let _ = announcement.verify_signature()?;
+        }
         Ok(announcement)
     }
+}
+
+fn canonical_announcement_bytes(
+    announcement: &HeadAnnouncement,
+    origin: iroh::EndpointId,
+) -> crate::error::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    out.extend_from_slice(HEAD_ANNOUNCEMENT_SIGNING_DOMAIN);
+    push_len_prefixed(&mut out, announcement.vault_id.as_bytes())?;
+    push_len_prefixed(&mut out, announcement.scope.as_bytes())?;
+    push_len_prefixed(&mut out, announcement.head_revision.as_bytes())?;
+    push_len_prefixed(
+        &mut out,
+        announcement.head_revision_digest.algorithm.as_bytes(),
+    )?;
+    push_len_prefixed(
+        &mut out,
+        announcement.head_revision_digest.profile.as_bytes(),
+    )?;
+    push_len_prefixed(
+        &mut out,
+        announcement.head_revision_digest.boundary.as_bytes(),
+    )?;
+    push_len_prefixed(&mut out, announcement.head_revision_digest.hex.as_bytes())?;
+    out.extend_from_slice(&announcement.seq.to_le_bytes());
+    push_len_prefixed(&mut out, announcement.bundle_hash.as_bytes())?;
+    out.extend_from_slice(&announcement.bundle_bytes.to_le_bytes());
+    out.extend_from_slice(origin.as_bytes());
+    Ok(out)
+}
+
+fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> crate::error::Result<()> {
+    let len = u32::try_from(bytes.len()).map_err(|_| {
+        crate::error::Failure::Protocol("announcement field exceeds u32 length".to_owned())
+    })?;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(bytes);
+    Ok(())
 }
 
 /// Wire key identifying one `(record_id, revision_id)` in a delta metadata fetch.
@@ -307,6 +409,18 @@ const fn no_capability() -> Option<crate::capability::CapabilityToken> {
     None
 }
 
+const fn default_false() -> bool {
+    false
+}
+
+const fn no_tombstone_cursor() -> Option<crate::capability::TombstoneId> {
+    None
+}
+
+const fn no_limit() -> Option<u64> {
+    None
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub(crate) enum SyncControlRequest {
@@ -331,12 +445,19 @@ pub(crate) enum SyncControlRequest {
         capability: Option<crate::capability::CapabilityToken>,
     },
     PushHead {
-        announcement: HeadAnnouncement,
+        announcement: Box<HeadAnnouncement>,
         #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
         capability: Option<crate::capability::CapabilityToken>,
     },
     SyncRevocations {
         revocations: Vec<crate::capability::RevocationTombstone>,
+        #[serde(
+            default = "no_tombstone_cursor",
+            skip_serializing_if = "Option::is_none"
+        )]
+        after_id: Option<crate::capability::TombstoneId>,
+        #[serde(default = "no_limit", skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
         #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
         capability: Option<crate::capability::CapabilityToken>,
     },
@@ -370,6 +491,13 @@ pub(crate) enum SyncControlResponse {
     },
     Revocations {
         revocations: Vec<crate::capability::RevocationTombstone>,
+        #[serde(default = "default_false")]
+        has_more: bool,
+        #[serde(
+            default = "no_tombstone_cursor",
+            skip_serializing_if = "Option::is_none"
+        )]
+        next_cursor: Option<crate::capability::TombstoneId>,
     },
     Refused {
         reason: String,
@@ -432,6 +560,7 @@ pub(crate) struct PublishedScopeEntry {
         mneme_store::portability::PortableRevision,
     >,
     pub blobs_by_digest: std::collections::BTreeMap<[u8; 32], BlobDigestRef>,
+    pub authorized_hashes: std::collections::BTreeSet<iroh_blobs::Hash>,
 }
 
 /// Shared authorization bundle for capability-enforced ALPN handlers.
@@ -441,14 +570,220 @@ pub(crate) struct CapabilityAuthorizer {
     pub(crate) leases: crate::capability::SharedCapabilityLeases,
     pub(crate) trusted_roots: std::collections::BTreeSet<iroh::EndpointId>,
     pub(crate) revocations: crate::capability::SharedRevocationSet,
+    pub(crate) authorized_issuers: crate::capability::SharedAuthorizedIssuers,
+    pub(crate) scopes: SharedScopeTable,
     pub(crate) clock: std::sync::Arc<dyn mneme_store::Clock>,
 }
 
-/// Protocol handler wrapper enforcing allowlist OR active verified capability lease.
+impl CapabilityAuthorizer {
+    pub(crate) fn configured_vaults(&self) -> std::collections::BTreeSet<String> {
+        let Ok(guard) = self.scopes.read() else {
+            return std::collections::BTreeSet::new();
+        };
+        guard.configured_vaults.clone()
+    }
+
+    pub(crate) fn is_configured_vault(&self, vault_id: &str) -> bool {
+        self.scopes
+            .read()
+            .map(|guard| guard.configured_vaults.contains(vault_id))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn effective_revokers(&self) -> std::collections::BTreeSet<iroh::EndpointId> {
+        self.authorized_issuers
+            .effective_revokers(&self.trusted_roots, &self.allowlist)
+    }
+
+    pub(crate) fn evict_inactive_leases(&self) {
+        if let Ok(now_secs) = crate::capability::timestamp_to_epoch_secs(self.clock.now()) {
+            let _evicted = self
+                .leases
+                .evict_inactive(&crate::capability::LeaseEvictionContext {
+                    now_secs,
+                    trusted_roots: &self.trusted_roots,
+                    revocations: &self.revocations,
+                })
+                .is_ok();
+        }
+    }
+
+    pub(crate) fn permits_connection(
+        &self,
+        remote: iroh::EndpointId,
+        required: crate::capability::CapabilityAuthority,
+    ) -> bool {
+        if self.allowlist.is_allowed(remote) {
+            return true;
+        }
+        let Ok(now_secs) = crate::capability::timestamp_to_epoch_secs(self.clock.now()) else {
+            return false;
+        };
+        let configured = self.configured_vaults();
+        self.leases.permits_any_vault_authority(
+            remote,
+            &configured,
+            required,
+            &crate::capability::LeaseEvictionContext {
+                now_secs,
+                trusted_roots: &self.trusted_roots,
+                revocations: &self.revocations,
+            },
+        )
+    }
+
+    pub(crate) fn has_any_active_lease(&self, remote: iroh::EndpointId) -> bool {
+        self.permits_connection(remote, crate::capability::CapabilityAuthority::ReadOnly)
+    }
+
+    pub(crate) fn permits_vault_scope(
+        &self,
+        remote: iroh::EndpointId,
+        vault_id: &str,
+        scope: &mneme_core::ScopeId,
+        required: crate::capability::CapabilityAuthority,
+    ) -> bool {
+        if self.allowlist.is_allowed(remote) {
+            return self.allowlist.allows_scope(remote, scope);
+        }
+        let Ok(now_secs) = crate::capability::timestamp_to_epoch_secs(self.clock.now()) else {
+            return false;
+        };
+        self.leases
+            .permits_vault_scope(&crate::capability::LeaseVaultScopeQuery {
+                peer: remote,
+                vault_id,
+                scope,
+                required,
+                now_secs,
+                trusted_roots: &self.trusted_roots,
+                revocations: &self.revocations,
+            })
+    }
+
+    pub(crate) fn permits_blob_hash(
+        &self,
+        remote: iroh::EndpointId,
+        hash: iroh_blobs::Hash,
+    ) -> bool {
+        let Ok(guard) = self.scopes.read() else {
+            return false;
+        };
+        for (scope, entry) in &guard.published {
+            if entry.authorized_hashes.contains(&hash)
+                && self.permits_vault_scope(
+                    remote,
+                    &entry.info.vault_id,
+                    scope,
+                    crate::capability::CapabilityAuthority::SyncPull,
+                )
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Spawn a scope-isolating `iroh-blobs` event interceptor that enforces
+/// `(peer, vault_id, scope, SyncPull)` per requested hash and refuses `HashSeq`/push/observe.
+pub(crate) fn spawn_scoped_blobs_events(
+    auth: CapabilityAuthorizer,
+) -> iroh_blobs::provider::events::EventSender {
+    let mask = iroh_blobs::provider::events::EventMask {
+        connected: iroh_blobs::provider::events::ConnectMode::Intercept,
+        get: iroh_blobs::provider::events::RequestMode::Intercept,
+        get_many: iroh_blobs::provider::events::RequestMode::Disabled,
+        push: iroh_blobs::provider::events::RequestMode::Disabled,
+        observe: iroh_blobs::provider::events::ObserveMode::Disabled,
+        throttle: iroh_blobs::provider::events::ThrottleMode::None,
+    };
+    let (sender, mut receiver) = iroh_blobs::provider::events::EventSender::channel(128, mask);
+    let task = tokio::task::spawn(async move {
+        let mut connections: std::collections::BTreeMap<u64, iroh::EndpointId> =
+            std::collections::BTreeMap::new();
+        while let Some(message) = receiver.recv().await {
+            handle_blob_provider_event(&auth, &mut connections, message).await;
+        }
+    });
+    drop(task);
+    sender
+}
+
+async fn handle_blob_provider_event(
+    auth: &CapabilityAuthorizer,
+    connections: &mut std::collections::BTreeMap<u64, iroh::EndpointId>,
+    message: iroh_blobs::provider::events::ProviderMessage,
+) {
+    match message {
+        iroh_blobs::provider::events::ProviderMessage::ClientConnected(msg) => {
+            let decision = match msg.inner.endpoint_id {
+                Some(remote)
+                    if auth.permits_connection(
+                        remote,
+                        crate::capability::CapabilityAuthority::SyncPull,
+                    ) =>
+                {
+                    connections.insert(msg.inner.connection_id, remote);
+                    Ok(())
+                }
+                Some(_) | None => Err(iroh_blobs::provider::events::AbortReason::Permission),
+            };
+            let _sent = msg.tx.send(decision).await.is_ok();
+        }
+        iroh_blobs::provider::events::ProviderMessage::ConnectionClosed(msg) => {
+            connections.remove(&msg.inner.connection_id);
+        }
+        iroh_blobs::provider::events::ProviderMessage::GetRequestReceived(msg) => {
+            let decision = if !msg.inner.request.ranges.is_blob() {
+                Err(iroh_blobs::provider::events::AbortReason::Permission)
+            } else if let Some(&remote) = connections.get(&msg.inner.connection_id)
+                && auth.permits_blob_hash(remote, msg.inner.request.hash)
+            {
+                Ok(())
+            } else {
+                Err(iroh_blobs::provider::events::AbortReason::Permission)
+            };
+            let _sent = msg.tx.send(decision).await.is_ok();
+        }
+        iroh_blobs::provider::events::ProviderMessage::GetManyRequestReceived(msg) => {
+            let _sent = msg
+                .tx
+                .send(Err(iroh_blobs::provider::events::AbortReason::Permission))
+                .await
+                .is_ok();
+        }
+        iroh_blobs::provider::events::ProviderMessage::PushRequestReceived(msg) => {
+            let _sent = msg
+                .tx
+                .send(Err(iroh_blobs::provider::events::AbortReason::Permission))
+                .await
+                .is_ok();
+        }
+        iroh_blobs::provider::events::ProviderMessage::ObserveRequestReceived(msg) => {
+            let _sent = msg
+                .tx
+                .send(Err(iroh_blobs::provider::events::AbortReason::Permission))
+                .await
+                .is_ok();
+        }
+        iroh_blobs::provider::events::ProviderMessage::Throttle(msg) => {
+            let _sent = msg.tx.send(Ok(())).await.is_ok();
+        }
+        iroh_blobs::provider::events::ProviderMessage::ClientConnectedNotify(_)
+        | iroh_blobs::provider::events::ProviderMessage::GetRequestReceivedNotify(_)
+        | iroh_blobs::provider::events::ProviderMessage::GetManyRequestReceivedNotify(_)
+        | iroh_blobs::provider::events::ProviderMessage::PushRequestReceivedNotify(_)
+        | iroh_blobs::provider::events::ProviderMessage::ObserveRequestReceivedNotify(_) => {}
+    }
+}
+
+/// Protocol handler wrapper enforcing allowlist OR active vault-bound capability lease + concurrency bound.
 #[derive(Clone)]
 pub(crate) struct CapabilityProtocol<P> {
     auth: CapabilityAuthorizer,
     required_authority: crate::capability::CapabilityAuthority,
+    connection_limit: std::sync::Arc<tokio::sync::Semaphore>,
     inner: P,
 }
 
@@ -460,8 +795,12 @@ impl<P> std::fmt::Debug for CapabilityProtocol<P> {
     }
 }
 
+const MAX_CONCURRENT_TRANSPORT_SEMAPHORE: usize = 64;
+const MAX_CONCURRENT_CONTROL_SEMAPHORE: usize = 64;
+const MAX_UNAUTH_CONTROL_FRAME_BYTES: usize = 128 * 1024;
+
 impl<P> CapabilityProtocol<P> {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         auth: CapabilityAuthorizer,
         required_authority: crate::capability::CapabilityAuthority,
         inner: P,
@@ -469,6 +808,9 @@ impl<P> CapabilityProtocol<P> {
         Self {
             auth,
             required_authority,
+            connection_limit: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_TRANSPORT_SEMAPHORE,
+            )),
             inner,
         }
     }
@@ -480,22 +822,10 @@ impl<P: iroh::protocol::ProtocolHandler> iroh::protocol::ProtocolHandler for Cap
         connection: iroh::endpoint::Connection,
     ) -> std::result::Result<(), iroh::protocol::AcceptError> {
         let remote = connection.remote_id();
-        let is_authorized = if self.auth.allowlist.is_allowed(remote) {
-            true
-        } else if let Ok(now_secs) =
-            crate::capability::timestamp_to_epoch_secs(self.auth.clock.now())
+        if !self
+            .auth
+            .permits_connection(remote, self.required_authority)
         {
-            self.auth.leases.permits_authority(
-                remote,
-                self.required_authority,
-                now_secs,
-                &self.auth.trusted_roots,
-                &self.auth.revocations,
-            )
-        } else {
-            false
-        };
-        if !is_authorized {
             connection.close(
                 iroh::endpoint::VarInt::from_u32(UNAUTHORIZED_CLOSE_CODE),
                 b"peer not authorized",
@@ -504,6 +834,15 @@ impl<P: iroh::protocol::ProtocolHandler> iroh::protocol::ProtocolHandler for Cap
                 crate::error::Failure::UnauthorizedPeer(remote.to_string()),
             ));
         }
+        let Ok(_permit) = std::sync::Arc::clone(&self.connection_limit).try_acquire_owned() else {
+            connection.close(
+                iroh::endpoint::VarInt::from_u32(RATE_LIMITED_CLOSE_CODE),
+                b"connection capacity exceeded",
+            );
+            return Err(iroh::protocol::AcceptError::from_err(
+                crate::error::Failure::Transport("connection capacity exceeded".to_owned()),
+            ));
+        };
         self.inner.accept(connection).await
     }
 
@@ -512,19 +851,24 @@ impl<P: iroh::protocol::ProtocolHandler> iroh::protocol::ProtocolHandler for Cap
     }
 }
 
-/// Served scopes and received push notices shared between `SyncNode` and `SyncControlHandler`.
+/// Served scopes, configured vaults, and monotonic push watermarks shared between `SyncNode` and `SyncControlHandler`.
 #[derive(Debug)]
 pub(crate) struct SyncScopeTable {
+    pub(crate) configured_vaults: std::collections::BTreeSet<String>,
     pub(crate) published:
         std::collections::BTreeMap<mneme_core::ScopeId, std::sync::Arc<PublishedScopeEntry>>,
     pub(crate) received_pushes: std::collections::BTreeMap<mneme_core::ScopeId, HeadAnnouncement>,
+    pub(crate) push_high_water:
+        std::collections::BTreeMap<(String, mneme_core::ScopeId, iroh::EndpointId), u64>,
 }
 
 impl SyncScopeTable {
     pub(crate) const fn new() -> Self {
         Self {
+            configured_vaults: std::collections::BTreeSet::new(),
             published: std::collections::BTreeMap::new(),
             received_pushes: std::collections::BTreeMap::new(),
+            push_high_water: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -536,6 +880,7 @@ pub(crate) type SharedScopeTable = std::sync::Arc<std::sync::RwLock<SyncScopeTab
 pub(crate) struct SyncControlHandler {
     auth: CapabilityAuthorizer,
     scopes: SharedScopeTable,
+    connection_limit: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl std::fmt::Debug for SyncControlHandler {
@@ -545,8 +890,14 @@ impl std::fmt::Debug for SyncControlHandler {
 }
 
 impl SyncControlHandler {
-    pub(crate) const fn new(auth: CapabilityAuthorizer, scopes: SharedScopeTable) -> Self {
-        Self { auth, scopes }
+    pub(crate) fn new(auth: CapabilityAuthorizer, scopes: SharedScopeTable) -> Self {
+        Self {
+            auth,
+            scopes,
+            connection_limit: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_CONTROL_SEMAPHORE,
+            )),
+        }
     }
 
     fn lookup_authorized_scope(
@@ -613,35 +964,43 @@ impl SyncControlHandler {
                 snapshot_revision,
                 request,
                 capability,
-            } => self.handle_rbsr_reconcile(
+            } => self.handle_rbsr_reconcile(RbsrReconcileInput {
                 remote,
                 scope,
                 snapshot_revision,
                 request,
-                capability.as_ref(),
-            ),
+                capability: capability.as_ref(),
+            }),
             SyncControlRequest::FetchDeltaMetadata {
                 scope,
                 snapshot_revision,
                 revisions,
                 blobs,
                 capability,
-            } => self.handle_fetch_delta_metadata(
+            } => self.handle_fetch_delta_metadata(FetchDeltaMetadataInput {
                 remote,
                 scope,
                 snapshot_revision,
                 revisions,
                 blobs,
-                capability.as_ref(),
-            ),
+                capability: capability.as_ref(),
+            }),
             SyncControlRequest::PushHead {
                 announcement,
                 capability,
             } => self.handle_push_head(remote, announcement, capability.as_ref()),
             SyncControlRequest::SyncRevocations {
                 revocations,
+                after_id,
+                limit,
                 capability,
-            } => self.handle_sync_revocations(remote, revocations, capability.as_ref()),
+            } => self.handle_sync_revocations(
+                remote,
+                revocations,
+                *after_id,
+                *limit,
+                capability.as_ref(),
+            ),
         }
     }
 
@@ -667,32 +1026,25 @@ impl SyncControlHandler {
         SyncControlResponse::VaultHead(Box::new(summary))
     }
 
-    fn handle_rbsr_reconcile(
-        &self,
-        remote: iroh::EndpointId,
-        scope: &str,
-        snapshot_revision: &str,
-        request: &crate::rbsr::RbsrRequest,
-        capability: Option<&crate::capability::CapabilityToken>,
-    ) -> SyncControlResponse {
+    fn handle_rbsr_reconcile(&self, input: RbsrReconcileInput<'_>) -> SyncControlResponse {
         let entry = match self.lookup_authorized_scope(
-            remote,
-            scope,
-            capability,
+            input.remote,
+            input.scope,
+            input.capability,
             crate::capability::CapabilityAuthority::SyncPull,
         ) {
             Ok(entry) => entry,
             Err(refused) => return refused,
         };
-        if entry.info.head_revision != snapshot_revision {
+        if entry.info.head_revision != input.snapshot_revision {
             return SyncControlResponse::Refused {
                 reason: format!(
-                    "snapshot revision {snapshot_revision} is stale (current {})",
-                    entry.info.head_revision
+                    "snapshot revision {} is stale (current {})",
+                    input.snapshot_revision, entry.info.head_revision
                 ),
             };
         }
-        match entry.rbsr_set.evaluate_request(request) {
+        match entry.rbsr_set.evaluate_request(input.request) {
             Ok(reply) => SyncControlResponse::RbsrReply(reply),
             Err(error) => SyncControlResponse::Refused {
                 reason: format!("RBSR request refused: {error}"),
@@ -702,31 +1054,76 @@ impl SyncControlHandler {
 
     fn handle_fetch_delta_metadata(
         &self,
-        remote: iroh::EndpointId,
-        scope: &str,
-        snapshot_revision: &str,
-        revisions: &[WireRevisionKey],
-        blobs: &[String],
-        capability: Option<&crate::capability::CapabilityToken>,
+        input: FetchDeltaMetadataInput<'_>,
     ) -> SyncControlResponse {
         let entry = match self.lookup_authorized_scope(
-            remote,
-            scope,
-            capability,
+            input.remote,
+            input.scope,
+            input.capability,
             crate::capability::CapabilityAuthority::SyncPull,
         ) {
             Ok(entry) => entry,
             Err(refused) => return refused,
         };
-        if entry.info.head_revision != snapshot_revision {
+        if entry.info.head_revision != input.snapshot_revision {
             return SyncControlResponse::Refused {
                 reason: format!(
-                    "snapshot revision {snapshot_revision} is stale (current {})",
-                    entry.info.head_revision
+                    "snapshot revision {} is stale (current {})",
+                    input.snapshot_revision, entry.info.head_revision
                 ),
             };
         }
-        resolve_delta_metadata(&entry, revisions, blobs)
+        resolve_delta_metadata(&entry, input.revisions, input.blobs)
+    }
+
+    fn authorize_push_head(
+        &self,
+        remote: iroh::EndpointId,
+        announcement: &HeadAnnouncement,
+        parsed_scope: &mneme_core::ScopeId,
+        capability: Option<&crate::capability::CapabilityToken>,
+    ) -> std::result::Result<iroh::EndpointId, SyncControlResponse> {
+        let origin = announcement.verify_signature().map_err(|error| {
+            SyncControlResponse::CapabilityDenied {
+                reason: error.to_string(),
+            }
+        })?;
+        if origin != remote {
+            return Err(SyncControlResponse::CapabilityDenied {
+                reason: format!(
+                    "head announcement origin {origin} does not match remote peer {remote}"
+                ),
+            });
+        }
+        if !self.auth.is_configured_vault(&announcement.vault_id) {
+            return Err(SyncControlResponse::CapabilityDenied {
+                reason: format!(
+                    "vault '{}' is not configured on this sync node",
+                    announcement.vault_id
+                ),
+            });
+        }
+        if self.auth.allowlist.is_allowed(remote) {
+            if !self.auth.allowlist.allows_scope(remote, parsed_scope) {
+                return Err(SyncControlResponse::Refused {
+                    reason: format!("peer is not authorized for scope {}", announcement.scope),
+                });
+            }
+            return Ok(origin);
+        }
+        let Some(token) = capability else {
+            return Err(SyncControlResponse::Refused {
+                reason: "peer not allowlisted and no capability provided".to_owned(),
+            });
+        };
+        self.verify_and_record(
+            token,
+            remote,
+            &announcement.vault_id,
+            parsed_scope,
+            crate::capability::CapabilityAuthority::SyncPush,
+        )?;
+        Ok(origin)
     }
 
     fn handle_push_head(
@@ -745,32 +1142,31 @@ impl SyncControlHandler {
                 reason: "invalid head announcement payload".to_owned(),
             };
         }
-        if self.auth.allowlist.is_allowed(remote) {
-            if !self.auth.allowlist.allows_scope(remote, &parsed_scope) {
-                return SyncControlResponse::Refused {
-                    reason: format!("peer is not authorized for scope {}", announcement.scope),
-                };
-            }
-        } else if let Some(token) = capability {
-            if let Err(response) = self.verify_and_record(
-                token,
-                remote,
-                &announcement.vault_id,
-                &parsed_scope,
-                crate::capability::CapabilityAuthority::SyncPush,
-            ) {
-                return response;
-            }
-        } else {
+        let origin = match self.authorize_push_head(remote, announcement, &parsed_scope, capability)
+        {
+            Ok(origin) => origin,
+            Err(response) => return response,
+        };
+        let Ok(mut guard) = self.scopes.write() else {
             return SyncControlResponse::Refused {
-                reason: "peer not allowlisted and no capability provided".to_owned(),
+                reason: "published scope table unavailable".to_owned(),
+            };
+        };
+        let key = (announcement.vault_id.clone(), parsed_scope.clone(), origin);
+        if let Some(&high_water) = guard.push_high_water.get(&key)
+            && announcement.seq <= high_water
+        {
+            return SyncControlResponse::Refused {
+                reason: format!(
+                    "stale or rollback head push seq {} (high-water {})",
+                    announcement.seq, high_water
+                ),
             };
         }
-        if let Ok(mut guard) = self.scopes.write() {
-            guard
-                .received_pushes
-                .insert(parsed_scope, announcement.clone());
-        }
+        guard.push_high_water.insert(key, announcement.seq);
+        guard
+            .received_pushes
+            .insert(parsed_scope, announcement.clone());
         SyncControlResponse::HeadAccepted {
             vault_id: announcement.vault_id.clone(),
             scope: announcement.scope.clone(),
@@ -782,8 +1178,19 @@ impl SyncControlHandler {
         &self,
         remote: iroh::EndpointId,
         incoming: &[crate::capability::RevocationTombstone],
+        after_id: Option<crate::capability::TombstoneId>,
+        limit: Option<u64>,
         capability: Option<&crate::capability::CapabilityToken>,
     ) -> SyncControlResponse {
+        if incoming.len() as u64 > crate::capability::MAX_REVOCATIONS_PER_PAGE {
+            return SyncControlResponse::Refused {
+                reason: format!(
+                    "revocation push batch {} exceeds page bound {}",
+                    incoming.len(),
+                    crate::capability::MAX_REVOCATIONS_PER_PAGE
+                ),
+            };
+        }
         if !self.auth.allowlist.is_allowed(remote) {
             let Some(token) = capability else {
                 return SyncControlResponse::Refused {
@@ -794,18 +1201,34 @@ impl SyncControlHandler {
                 return response;
             }
         }
-        if let Err(error) = self.auth.revocations.merge_tombstones(incoming) {
+        let authorized_revokers = self.auth.effective_revokers();
+        if let Err(error) = self
+            .auth
+            .revocations
+            .merge_tombstones_authorized(incoming, &authorized_revokers)
+        {
             return SyncControlResponse::CapabilityDenied {
                 reason: error.to_string(),
             };
         }
-        let Ok(snapshot) = self.auth.revocations.snapshot() else {
+        self.auth.evict_inactive_leases();
+        let page_limit = limit
+            .unwrap_or(crate::capability::MAX_REVOCATIONS_PER_PAGE)
+            .clamp(1, crate::capability::MAX_REVOCATIONS_PER_PAGE);
+        let Ok((page, has_more)) = self.auth.revocations.page_after(after_id, page_limit) else {
             return SyncControlResponse::Refused {
                 reason: "revocation set unavailable".to_owned(),
             };
         };
+        let next_cursor = if has_more {
+            page.last().map(|tombstone| tombstone.tombstone_id)
+        } else {
+            None
+        };
         SyncControlResponse::Revocations {
-            revocations: snapshot.tombstones().cloned().collect(),
+            revocations: page,
+            has_more,
+            next_cursor,
         }
     }
 
@@ -842,9 +1265,19 @@ impl SyncControlHandler {
                 revocations: &rev_snapshot,
             })
             .map_err(map_capability_failure)?;
+        self.auth.authorized_issuers.record_verified(&verified);
         self.auth
             .leases
-            .record_lease(remote, vault_id, &verified)
+            .record_lease_with_eviction(
+                remote,
+                vault_id,
+                &verified,
+                &crate::capability::LeaseEvictionContext {
+                    now_secs,
+                    trusted_roots: &self.auth.trusted_roots,
+                    revocations: &self.auth.revocations,
+                },
+            )
             .map_err(|error| SyncControlResponse::Refused {
                 reason: error.to_string(),
             })?;
@@ -861,6 +1294,14 @@ impl SyncControlHandler {
                 reason: "capability token has no leaf link".to_owned(),
             });
         };
+        if !self.auth.is_configured_vault(&leaf.vault_id) {
+            return Err(SyncControlResponse::CapabilityDenied {
+                reason: format!(
+                    "capability vault '{}' is not configured on this sync node",
+                    leaf.vault_id
+                ),
+            });
+        }
         let scope = match &leaf.scope {
             crate::capability::CapabilityScope::Wildcard => {
                 mneme_core::ScopeId::new(mneme_core::ScopeClass::Workspace, "default").map_err(
@@ -913,6 +1354,23 @@ fn map_capability_failure(error: crate::error::Failure) -> SyncControlResponse {
     }
 }
 
+struct RbsrReconcileInput<'a> {
+    remote: iroh::EndpointId,
+    scope: &'a str,
+    snapshot_revision: &'a str,
+    request: &'a crate::rbsr::RbsrRequest,
+    capability: Option<&'a crate::capability::CapabilityToken>,
+}
+
+struct FetchDeltaMetadataInput<'a> {
+    remote: iroh::EndpointId,
+    scope: &'a str,
+    snapshot_revision: &'a str,
+    revisions: &'a [WireRevisionKey],
+    blobs: &'a [String],
+    capability: Option<&'a crate::capability::CapabilityToken>,
+}
+
 fn resolve_delta_metadata(
     entry: &PublishedScopeEntry,
     revision_keys: &[WireRevisionKey],
@@ -962,62 +1420,160 @@ fn resolve_delta_metadata(
     }
 }
 
+impl SyncControlHandler {
+    async fn read_control_frame(
+        &self,
+        connection: &iroh::endpoint::Connection,
+        remote: iroh::EndpointId,
+        recv: &mut iroh::endpoint::RecvStream,
+        stream_timeout: std::time::Duration,
+    ) -> std::result::Result<Vec<u8>, iroh::protocol::AcceptError> {
+        let is_pre_authenticated =
+            self.auth.allowlist.is_allowed(remote) || self.auth.has_any_active_lease(remote);
+        let read_limit = if is_pre_authenticated {
+            MAX_CONTROL_MESSAGE_BYTES
+        } else {
+            MAX_UNAUTH_CONTROL_FRAME_BYTES
+        };
+        match tokio::time::timeout(stream_timeout, recv.read_to_end(read_limit)).await {
+            Ok(Ok(bytes)) => Ok(bytes),
+            Ok(Err(error)) => {
+                if !is_pre_authenticated {
+                    connection.close(
+                        iroh::endpoint::VarInt::from_u32(UNAUTHORIZED_CLOSE_CODE),
+                        b"unauthenticated control frame rejected",
+                    );
+                }
+                Err(iroh::protocol::AcceptError::from_err(error))
+            }
+            Err(_) => {
+                connection.close(
+                    iroh::endpoint::VarInt::from_u32(RATE_LIMITED_CLOSE_CODE),
+                    b"control stream read timeout",
+                );
+                Err(iroh::protocol::AcceptError::from_err(
+                    crate::error::Failure::Transport("control stream read timeout".to_owned()),
+                ))
+            }
+        }
+    }
+
+    async fn handle_control_stream(
+        &self,
+        connection: &iroh::endpoint::Connection,
+        remote: iroh::EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> std::result::Result<bool, iroh::protocol::AcceptError> {
+        let stream_timeout = std::time::Duration::from_secs(CONTROL_STREAM_TIMEOUT_SECS);
+        let request_bytes = self
+            .read_control_frame(connection, remote, &mut recv, stream_timeout)
+            .await?;
+        let request: SyncControlRequest = match serde_json::from_slice(&request_bytes) {
+            Ok(req) => req,
+            Err(error) => {
+                if !self.auth.allowlist.is_allowed(remote) {
+                    connection.close(
+                        iroh::endpoint::VarInt::from_u32(UNAUTHORIZED_CLOSE_CODE),
+                        b"peer not allowlisted",
+                    );
+                    return Err(iroh::protocol::AcceptError::from_err(
+                        crate::error::Failure::UnauthorizedPeer(remote.to_string()),
+                    ));
+                }
+                let response = SyncControlResponse::Refused {
+                    reason: format!("invalid control request: {error}"),
+                };
+                write_control_response(&mut send, &response, stream_timeout).await?;
+                return Ok(false);
+            }
+        };
+        if !self.auth.allowlist.is_allowed(remote) && request.capability().is_none() {
+            connection.close(
+                iroh::endpoint::VarInt::from_u32(UNAUTHORIZED_CLOSE_CODE),
+                b"peer not allowlisted",
+            );
+            return Err(iroh::protocol::AcceptError::from_err(
+                crate::error::Failure::UnauthorizedPeer(remote.to_string()),
+            ));
+        }
+        let response = self.resolve_request(remote, &request);
+        let should_close_after = !self.auth.allowlist.is_allowed(remote)
+            && matches!(
+                response,
+                SyncControlResponse::CapabilityDenied { .. }
+                    | SyncControlResponse::CapabilityRevoked { .. }
+            );
+        write_control_response(&mut send, &response, stream_timeout).await?;
+        if should_close_after {
+            let _stopped =
+                tokio::time::timeout(std::time::Duration::from_millis(500), send.stopped())
+                    .await
+                    .is_ok();
+        }
+        Ok(should_close_after)
+    }
+}
+
 impl iroh::protocol::ProtocolHandler for SyncControlHandler {
     async fn accept(
         &self,
         connection: iroh::endpoint::Connection,
     ) -> std::result::Result<(), iroh::protocol::AcceptError> {
         let remote = connection.remote_id();
-        while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-            let request_bytes = recv
-                .read_to_end(MAX_CONTROL_MESSAGE_BYTES)
-                .await
-                .map_err(iroh::protocol::AcceptError::from_err)?;
-            let request: SyncControlRequest = match serde_json::from_slice(&request_bytes) {
-                Ok(req) => req,
-                Err(error) => {
-                    if !self.auth.allowlist.is_allowed(remote) {
-                        connection.close(
-                            iroh::endpoint::VarInt::from_u32(UNAUTHORIZED_CLOSE_CODE),
-                            b"peer not allowlisted",
-                        );
-                        return Err(iroh::protocol::AcceptError::from_err(
-                            crate::error::Failure::UnauthorizedPeer(remote.to_string()),
-                        ));
-                    }
-                    let response = SyncControlResponse::Refused {
-                        reason: format!("invalid control request: {error}"),
-                    };
-                    let encoded = serde_json::to_vec(&response)
-                        .map_err(iroh::protocol::AcceptError::from_err)?;
-                    send.write_all(&encoded)
-                        .await
-                        .map_err(iroh::protocol::AcceptError::from_err)?;
-                    send.finish()
-                        .map_err(iroh::protocol::AcceptError::from_err)?;
-                    continue;
-                }
+        let is_allowlisted = self.auth.allowlist.is_allowed(remote);
+        if !is_allowlisted && self.auth.trusted_roots.is_empty() {
+            connection.close(
+                iroh::endpoint::VarInt::from_u32(UNAUTHORIZED_CLOSE_CODE),
+                b"peer not allowlisted",
+            );
+            return Err(iroh::protocol::AcceptError::from_err(
+                crate::error::Failure::UnauthorizedPeer(remote.to_string()),
+            ));
+        }
+        let Ok(_permit) = std::sync::Arc::clone(&self.connection_limit).try_acquire_owned() else {
+            connection.close(
+                iroh::endpoint::VarInt::from_u32(RATE_LIMITED_CLOSE_CODE),
+                b"control connection capacity exceeded",
+            );
+            return Err(iroh::protocol::AcceptError::from_err(
+                crate::error::Failure::Transport("control connection capacity exceeded".to_owned()),
+            ));
+        };
+        let stream_timeout = std::time::Duration::from_secs(CONTROL_STREAM_TIMEOUT_SECS);
+        let mut streams_handled: u64 = 0;
+        while streams_handled < MAX_CONTROL_STREAMS_PER_CONN {
+            let accepted = tokio::time::timeout(stream_timeout, connection.accept_bi()).await;
+            let Ok(Ok((send, recv))) = accepted else {
+                break;
             };
-            if !self.auth.allowlist.is_allowed(remote) && request.capability().is_none() {
-                connection.close(
-                    iroh::endpoint::VarInt::from_u32(UNAUTHORIZED_CLOSE_CODE),
-                    b"peer not allowlisted",
-                );
-                return Err(iroh::protocol::AcceptError::from_err(
-                    crate::error::Failure::UnauthorizedPeer(remote.to_string()),
-                ));
+            streams_handled = streams_handled.saturating_add(1);
+            let should_close_after = self
+                .handle_control_stream(&connection, remote, send, recv)
+                .await?;
+            if should_close_after {
+                break;
             }
-            let response = self.resolve_request(remote, &request);
-            let encoded =
-                serde_json::to_vec(&response).map_err(iroh::protocol::AcceptError::from_err)?;
-            send.write_all(&encoded)
-                .await
-                .map_err(iroh::protocol::AcceptError::from_err)?;
-            send.finish()
-                .map_err(iroh::protocol::AcceptError::from_err)?;
         }
         Ok(())
     }
+}
+
+async fn write_control_response(
+    send: &mut iroh::endpoint::SendStream,
+    response: &SyncControlResponse,
+    timeout: std::time::Duration,
+) -> std::result::Result<(), iroh::protocol::AcceptError> {
+    let encoded = serde_json::to_vec(response).map_err(iroh::protocol::AcceptError::from_err)?;
+    tokio::time::timeout(timeout, send.write_all(&encoded))
+        .await
+        .map_err(|_| {
+            iroh::protocol::AcceptError::from_err(crate::error::Failure::Transport(
+                "control stream write timeout".to_owned(),
+            ))
+        })?
+        .map_err(iroh::protocol::AcceptError::from_err)?;
+    send.finish().map_err(iroh::protocol::AcceptError::from_err)
 }
 
 /// Parse a `class:local` scope identifier string.

@@ -85,12 +85,27 @@ impl SourceBlobDraft {
         }
     }
     /// A draft that streams the regular file at `path`, never loading it whole.
+    ///
+    /// Opens with `O_NOFOLLOW | O_NONBLOCK` on Unix, refuses non-regular files
+    /// (symlinks, FIFOs, devices, sockets), and fails closed if the file size
+    /// changes concurrently while hashing.
     pub fn from_file(
         path: &std::path::Path,
         media_type: mneme_core::Symbol,
     ) -> crate::error::Result<Self> {
-        let metadata =
-            std::fs::metadata(path).map_err(|error| crate::error::Failure::io(path, error))?;
+        Self::from_file_bounded(path, media_type, u64::MAX)
+    }
+
+    /// A draft that streams the regular file at `path` enforcing an upper bound of `max_bytes`.
+    pub fn from_file_bounded(
+        path: &std::path::Path,
+        media_type: mneme_core::Symbol,
+        max_bytes: u64,
+    ) -> crate::error::Result<Self> {
+        let mut reader = open_regular_file_no_follow(path)?;
+        let metadata = reader
+            .metadata()
+            .map_err(|error| crate::error::Failure::io(path, error))?;
         if !metadata.is_file() {
             return Err(crate::error::Failure::InvalidCommand(format!(
                 "source file {} is not a regular file",
@@ -98,11 +113,29 @@ impl SourceBlobDraft {
             )));
         }
         debug_assert!(metadata.is_file());
-        let mut reader =
-            std::fs::File::open(path).map_err(|error| crate::error::Failure::io(path, error))?;
-        let (digest, size_bytes) = mneme_core::ContentDigest::of_source_reader(&mut reader)
+        let expected_len = metadata.len();
+        if expected_len > max_bytes {
+            return Err(crate::error::Failure::InvalidCommand(format!(
+                "source file {} size ({expected_len} bytes) exceeds limit ({max_bytes} bytes)",
+                path.display()
+            )));
+        }
+        let mut bounded = std::io::Read::take(&mut reader, max_bytes.saturating_add(1));
+        let (digest, size_bytes) = mneme_core::ContentDigest::of_source_reader(&mut bounded)
             .map_err(|error| crate::error::Failure::io(path, error))?;
-        debug_assert_eq!(size_bytes, metadata.len());
+        if size_bytes > max_bytes {
+            return Err(crate::error::Failure::InvalidCommand(format!(
+                "source file {} grew past limit ({max_bytes} bytes) while reading",
+                path.display()
+            )));
+        }
+        if size_bytes != expected_len {
+            return Err(crate::error::Failure::InvalidCommand(format!(
+                "source file {} changed concurrently while reading ({size_bytes} != {expected_len} bytes)",
+                path.display()
+            )));
+        }
+        debug_assert!(size_bytes <= max_bytes);
         Ok(Self {
             bytes: Vec::new(),
             media_type,
@@ -129,6 +162,38 @@ impl SourceBlobDraft {
             None => self.bytes.len() as u64,
         }
     }
+}
+
+#[cfg(unix)]
+fn open_regular_file_no_follow(path: &std::path::Path) -> crate::error::Result<std::fs::File> {
+    let flags = rustix::fs::OFlags::RDONLY
+        | rustix::fs::OFlags::NOFOLLOW
+        | rustix::fs::OFlags::NONBLOCK
+        | rustix::fs::OFlags::CLOEXEC;
+    let fd = rustix::fs::open(path, flags, rustix::fs::Mode::empty()).map_err(|error| {
+        if error == rustix::io::Errno::LOOP {
+            crate::error::Failure::InvalidCommand(format!(
+                "source file {} must not be a symbolic link",
+                path.display()
+            ))
+        } else {
+            crate::error::Failure::io(path, std::io::Error::from(error))
+        }
+    })?;
+    Ok(std::fs::File::from(fd))
+}
+
+#[cfg(not(unix))]
+fn open_regular_file_no_follow(path: &std::path::Path) -> crate::error::Result<std::fs::File> {
+    let link_meta =
+        std::fs::symlink_metadata(path).map_err(|error| crate::error::Failure::io(path, error))?;
+    if link_meta.file_type().is_symlink() {
+        return Err(crate::error::Failure::InvalidCommand(format!(
+            "source file {} must not be a symbolic link",
+            path.display()
+        )));
+    }
+    std::fs::File::open(path).map_err(|error| crate::error::Failure::io(path, error))
 }
 
 /// A working-file publication intent.
@@ -239,5 +304,55 @@ impl CommitCommand {
                 },
             ],
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_file_bounded_refuses_oversized_and_accepts_regular() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let regular = temp.path().join("sample.txt");
+        std::fs::write(&regular, b"hello world").expect("write regular");
+
+        let ok = SourceBlobDraft::from_file_bounded(
+            &regular,
+            mneme_core::Symbol::from("text/plain"),
+            11,
+        )
+        .expect("within limit");
+        assert_eq!(ok.byte_length(), 11);
+
+        let too_big = SourceBlobDraft::from_file_bounded(
+            &regular,
+            mneme_core::Symbol::from("text/plain"),
+            10,
+        );
+        assert!(too_big.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn from_file_refuses_symlinks_and_fifos_without_blocking() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("secret.txt");
+        std::fs::write(&target, b"secret-key").expect("write target");
+        let link = temp.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        let symlink_err = SourceBlobDraft::from_file(&link, mneme_core::Symbol::from("text/plain"));
+        assert!(symlink_err.is_err());
+
+        let fifo = temp.path().join("pipe.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success());
+
+        let fifo_err = SourceBlobDraft::from_file(&fifo, mneme_core::Symbol::from("text/plain"));
+        assert!(fifo_err.is_err());
     }
 }

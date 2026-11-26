@@ -10,6 +10,7 @@
 //!   `decision` records, or non-`proposed` proposals are refused) or delete data
 //!   (`retention-directive` records are refused).
 //! - Record counts, blob counts, and byte sizes must stay within [`Limits`].
+#![allow(unknown_lints, type_accumulation)] // miner protocol contract and containment helpers live in one cohesive module
 
 use serde::{Deserialize, Serialize};
 
@@ -580,17 +581,95 @@ fn validate_file_blob(
     media_type: crate::typed::Symbol,
     path: &crate::problem::Path,
 ) -> Result<ValidatedBlob, crate::problem::Diagnostic> {
-    if file_path.trim().is_empty() || file_path.contains('\0') {
+    debug_assert!(!media_type.as_str().is_empty());
+    if file_path.trim().is_empty()
+        || file_path.contains('\0')
+        || file_path.chars().any(char::is_control)
+    {
         return Err(domain_diag(
             crate::problem::ErrorCode::UnexpectedFieldKind,
             path.field("filePath"),
-            "filePath must be non-empty and contain no NUL bytes",
+            "filePath must be non-empty and contain no NUL or control characters",
         ));
     }
+    let has_parent_dir = std::path::Path::new(file_path)
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir));
+    if has_parent_dir {
+        return Err(domain_diag(
+            crate::problem::ErrorCode::UnexpectedFieldKind,
+            path.field("filePath"),
+            "filePath must not contain parent-directory (`..`) traversal components",
+        ));
+    }
+    debug_assert!(!file_path.contains('\0'));
     Ok(ValidatedBlob::FilePath {
         path: file_path.to_owned(),
         media_type,
     })
+}
+
+/// Verify that a canonicalized candidate file path stays strictly within at least
+/// one canonicalized allowed root directory.
+pub fn check_canonical_path_in_roots(
+    canonical_candidate: &std::path::Path,
+    canonical_roots: &[std::path::PathBuf],
+    path: &crate::problem::Path,
+) -> Result<(), crate::problem::Diagnostic> {
+    debug_assert!(!canonical_candidate.as_os_str().is_empty());
+    if canonical_roots.is_empty() {
+        return Err(domain_diag(
+            crate::problem::ErrorCode::UnexpectedFieldKind,
+            path.field("filePath"),
+            "filePath blob refused because no allowed file roots are configured",
+        ));
+    }
+    let is_contained = canonical_roots
+        .iter()
+        .any(|root| canonical_candidate.starts_with(root));
+    if is_contained {
+        debug_assert!(!canonical_roots.is_empty());
+        Ok(())
+    } else {
+        Err(domain_diag(
+            crate::problem::ErrorCode::UnexpectedFieldKind,
+            path.field("filePath"),
+            format!(
+                "filePath {} escapes allowed file roots",
+                canonical_candidate.display()
+            ),
+        ))
+    }
+}
+
+/// Byte charge applied against a miner proposal's total `max_bytes` budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlobByteCharge {
+    pub added_bytes: u64,
+    pub max_bytes: u64,
+}
+
+/// Charge `charge.added_bytes` (inline or streamed file) against `charge.max_bytes`, failing closed on overflow.
+pub fn check_total_blob_bytes(
+    accumulated_bytes: &mut u64,
+    charge: BlobByteCharge,
+    path: &crate::problem::Path,
+) -> Result<(), crate::problem::Diagnostic> {
+    debug_assert!(charge.max_bytes > 0);
+    let next = accumulated_bytes.saturating_add(charge.added_bytes);
+    if next > charge.max_bytes {
+        return Err(domain_diag(
+            crate::problem::ErrorCode::LimitExceeded,
+            path.clone(),
+            format!(
+                "total sourceBlobs ({next} bytes) exceed maxBytes ({})",
+                charge.max_bytes
+            ),
+        ));
+    }
+    *accumulated_bytes = next;
+    debug_assert!(*accumulated_bytes <= charge.max_bytes);
+    Ok(())
 }
 
 struct EnvelopeSpec {
@@ -922,5 +1001,64 @@ mod tests {
         assert!(
             validate_proposal(&ambiguous_doc, &scope, base_revision(), &Limits::default()).is_err()
         );
+    }
+
+    #[test]
+    fn file_path_traversal_and_containment_helpers_fail_closed() {
+        let scope = fixture_scope();
+        let traversal_doc = ProposalDocument {
+            format: PROPOSAL_FORMAT.to_owned(),
+            version: PROPOSAL_VERSION,
+            miner_id: "pdf-miner".to_owned(),
+            miner_version: "0.1.0".to_owned(),
+            base_revision: base_revision().to_hex(),
+            new_cursor: None,
+            records: vec![],
+            source_blobs: vec![SourceBlob {
+                bytes: None,
+                file_path: Some("/workspace/working/../../etc/passwd".to_owned()),
+                media_type: "text/plain".to_owned(),
+            }],
+            diagnostics: vec![],
+        };
+        assert!(
+            validate_proposal(&traversal_doc, &scope, base_revision(), &Limits::default()).is_err()
+        );
+
+        let root = std::path::PathBuf::from("/workspace/working");
+        let inside = std::path::PathBuf::from("/workspace/working/note.adoc");
+        let outside = std::path::PathBuf::from("/workspace/sync/identity.key");
+        let path = crate::problem::Path::root();
+        assert!(check_canonical_path_in_roots(&inside, std::slice::from_ref(&root), &path).is_ok());
+        assert!(
+            check_canonical_path_in_roots(&outside, std::slice::from_ref(&root), &path).is_err()
+        );
+        assert!(check_canonical_path_in_roots(&inside, &[], &path).is_err());
+
+        let mut acc: u64 = 0;
+        assert!(
+            check_total_blob_bytes(
+                &mut acc,
+                BlobByteCharge {
+                    added_bytes: 60,
+                    max_bytes: 100,
+                },
+                &path,
+            )
+            .is_ok()
+        );
+        assert_eq!(acc, 60);
+        assert!(
+            check_total_blob_bytes(
+                &mut acc,
+                BlobByteCharge {
+                    added_bytes: 41,
+                    max_bytes: 100,
+                },
+                &path,
+            )
+            .is_err()
+        );
+        assert_eq!(acc, 60);
     }
 }

@@ -4,50 +4,17 @@
 use irpc::rpc::RemoteService;
 
 const PERMISSION_DENIED_CODE: u32 = 1;
+const RATE_LIMITED_CODE: u32 = 2;
 const DEFAULT_CHANNEL_CAPACITY: u32 = 64;
 const FALLBACK_CHANNEL_CAPACITY_SLOTS: usize = 64;
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+const MAX_CONCURRENT_RPCS: usize = 64;
+const MAX_CONCURRENT_BLOCKING_TASKS: usize = 16;
+const MAX_HEAD_READ_RETRIES: u32 = 4;
+const POSTCARD_LEN_OVERHEAD_BYTES: u64 = 10;
 
-/// Explicit Ed25519 peer allowlist. Empty by default (deny-all).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PeerAllowlist {
-    peers: std::collections::BTreeSet<iroh::EndpointId>,
-}
-
-impl PeerAllowlist {
-    /// An empty allowlist that refuses every remote peer.
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Construct an allowlist from explicit Ed25519 peer identities.
-    pub fn from_peers(peers: impl IntoIterator<Item = iroh::EndpointId>) -> Self {
-        Self {
-            peers: peers.into_iter().collect(),
-        }
-    }
-
-    /// Add one authorized Ed25519 peer identity.
-    pub fn allow(&mut self, peer: iroh::EndpointId) {
-        self.peers.insert(peer);
-    }
-
-    /// Whether `peer` is explicitly authorized.
-    pub fn allows(&self, peer: &iroh::EndpointId) -> bool {
-        self.peers.contains(peer)
-    }
-
-    /// Number of allowlisted peers.
-    #[must_use]
-    #[allow(unknown_lints, usize_in_public_api)] // std-shaped collection length
-    pub fn len(&self) -> usize {
-        self.peers.len()
-    }
-
-    /// Whether no peers are allowlisted.
-    pub fn is_empty(&self) -> bool {
-        self.peers.is_empty()
-    }
-}
+/// Re-export of [`super::auth::PeerAllowlist`] for backward compatibility.
+pub use super::auth::PeerAllowlist;
 
 /// Configuration for a read-only [`VaultFederationServer`].
 #[derive(Clone, Debug)]
@@ -70,71 +37,129 @@ impl ServerConfig {
     }
 }
 
+struct AuthenticatedMessage {
+    caller: iroh::EndpointId,
+    message: super::protocol::VaultFederationMessage,
+}
+
+#[derive(Clone)]
+struct ActorContext {
+    config: ServerConfig,
+    authorizer: super::auth::SharedFederationAuthorizer,
+    clock: std::sync::Arc<dyn mneme_store::Clock>,
+    blocking_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
 /// Read-only `irpc` federation server serving one vault over memory, Quinn, and Iroh.
 #[derive(Clone)]
+#[allow(unknown_lints, path_segment_repetition)] // public API compatibility type name
 pub struct VaultFederationServer {
     config: ServerConfig,
-    sender: tokio::sync::mpsc::Sender<super::protocol::VaultFederationMessage>,
+    authorizer: super::auth::SharedFederationAuthorizer,
+    connection_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    sender: tokio::sync::mpsc::Sender<AuthenticatedMessage>,
 }
 
 impl VaultFederationServer {
     /// Spawn the bounded read-only RPC actor for `config`.
     pub fn spawn(config: ServerConfig) -> Result<Self, super::client::FederationError> {
+        let authorizer =
+            super::auth::SharedFederationAuthorizer::from_allowlist(config.allowlist.clone());
+        Self::spawn_with_authorizer_and_clock(
+            config,
+            authorizer,
+            std::sync::Arc::new(mneme_store::SystemClock),
+        )
+    }
+
+    /// Spawn the bounded read-only RPC actor with an explicit live-reloadable authorizer and clock.
+    pub fn spawn_with_authorizer_and_clock(
+        config: ServerConfig,
+        authorizer: super::auth::SharedFederationAuthorizer,
+        clock: std::sync::Arc<dyn mneme_store::Clock>,
+    ) -> Result<Self, super::client::FederationError> {
         config
             .max_limits
             .validate()
             .map_err(|error| super::client::FederationError::InvalidInput(error.message))?;
-        let capacity = usize::try_from(config.channel_capacity.max(1)).map_err(|_| {
+        let channel_depth = usize::try_from(config.channel_capacity.max(1)).map_err(|_| {
             super::client::FederationError::InvalidInput("invalid channel capacity".to_owned())
         })?;
-        let (sender, receiver) = tokio::sync::mpsc::channel(capacity);
-        let actor_config = config.clone();
+        debug_assert!(channel_depth >= 1);
+        let (sender, receiver) = tokio::sync::mpsc::channel(channel_depth);
+        let context = ActorContext {
+            config: config.clone(),
+            authorizer: authorizer.clone(),
+            clock,
+            blocking_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_BLOCKING_TASKS,
+            )),
+        };
         let actor_handle = tokio::task::spawn(async move {
-            run_actor(actor_config, receiver).await;
+            run_actor(context, receiver).await;
         });
         drop(actor_handle);
-        Ok(Self { config, sender })
+        let connection_semaphore =
+            std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+        debug_assert_eq!(
+            connection_semaphore.available_permits(),
+            MAX_CONCURRENT_CONNECTIONS
+        );
+        Ok(Self {
+            config,
+            authorizer,
+            connection_semaphore,
+            sender,
+        })
     }
 
-    /// The configured Ed25519 peer allowlist.
+    /// The initial configured Ed25519 peer allowlist.
     pub fn allowlist(&self) -> &PeerAllowlist {
         &self.config.allowlist
     }
 
-    /// Create an in-memory client bound to `caller`, enforcing the server's
-    /// explicit [`PeerAllowlist`] before dispatching any RPC.
+    /// Live-reloadable (`RwLock`) per-scope allowlist and `concap` authorizer.
+    pub fn authorizer(&self) -> &super::auth::SharedFederationAuthorizer {
+        &self.authorizer
+    }
+
+    /// Create an in-memory client bound to `caller`, enforcing the server's live
+    /// per-scope allowlist and `concap` authorizer on every RPC.
     pub fn local_client_for(
         &self,
         caller: iroh::EndpointId,
     ) -> super::client::VaultFederationClient {
-        let capacity = usize::try_from(self.config.channel_capacity.max(1))
-            .unwrap_or(FALLBACK_CHANNEL_CAPACITY_SLOTS);
-        let (gate_tx, mut gate_rx) = tokio::sync::mpsc::channel(capacity);
-        let allowlist = self.config.allowlist.clone();
+        let channel_depth = match usize::try_from(self.config.channel_capacity.max(1)) {
+            Ok(depth) => depth,
+            Err(_) => FALLBACK_CHANNEL_CAPACITY_SLOTS,
+        };
+        debug_assert!(channel_depth >= 1);
+        let (gate_tx, mut gate_rx) = tokio::sync::mpsc::channel(channel_depth);
         let backend = self.sender.clone();
         let gate_handle = tokio::task::spawn(async move {
             while let Some(message) = gate_rx.recv().await {
-                if !allowlist.allows(&caller) {
-                    reject_unauthorized(message).await;
-                    continue;
-                }
-                if backend.send(message).await.is_err() {
+                if backend
+                    .send(AuthenticatedMessage { caller, message })
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
         });
         drop(gate_handle);
+        debug_assert!(!caller.as_bytes().is_empty());
         super::client::VaultFederationClient::from_irpc(irpc::Client::local(gate_tx))
     }
 
-    /// Create an `iroh::protocol::ProtocolHandler` enforcing the server's
-    /// explicit [`PeerAllowlist`] on every incoming Iroh connection.
+    /// Create an `iroh::protocol::ProtocolHandler` enforcing the live authorizer
+    /// and connection concurrency bounds on every incoming Iroh connection.
     pub fn iroh_protocol_handler(&self) -> IrohFederationHandler {
         IrohFederationHandler {
-            allowlist: self.config.allowlist.clone(),
-            handler: super::protocol::VaultFederationProtocol::remote_handler(
-                self.sender.clone().into(),
-            ),
+            authorizer: self.authorizer.clone(),
+            connection_semaphore: std::sync::Arc::clone(&self.connection_semaphore),
+            channel_depth: self.config.channel_capacity,
+            backend: self.sender.clone(),
         }
     }
 
@@ -149,11 +174,12 @@ impl VaultFederationServer {
     }
 
     /// Accept authenticated `noq` (Quinn) connections on `endpoint`, enforcing
-    /// the server's explicit [`PeerAllowlist`] before handling RPC streams.
+    /// the live authorizer and connection concurrency semaphore before handling RPC streams.
     pub fn serve_noq(&self, endpoint: noq::Endpoint) -> tokio::task::JoinHandle<()> {
-        let allowlist = self.config.allowlist.clone();
-        let handler =
-            super::protocol::VaultFederationProtocol::remote_handler(self.sender.clone().into());
+        let authorizer = self.authorizer.clone();
+        let connection_semaphore = std::sync::Arc::clone(&self.connection_semaphore);
+        let channel_depth = self.config.channel_capacity;
+        let backend = self.sender.clone();
         assert!(endpoint.local_addr().is_ok());
         let handle = tokio::task::spawn(async move {
             let mut tasks = tokio::task::JoinSet::new();
@@ -164,10 +190,15 @@ impl VaultFederationServer {
                         let Some(incoming) = incoming else {
                             break;
                         };
-                        let allowlist = allowlist.clone();
-                        let handler = handler.clone();
+                        let Ok(permit) = std::sync::Arc::clone(&connection_semaphore).try_acquire_owned() else {
+                            incoming.refuse();
+                            continue;
+                        };
+                        let authorizer = authorizer.clone();
+                        let backend = backend.clone();
                         let task = tasks.spawn(async move {
-                            accept_noq_connection(incoming, allowlist, handler).await;
+                            let _permit = permit;
+                            accept_noq_connection(incoming, authorizer, channel_depth, backend).await;
                         });
                         drop(task);
                     }
@@ -179,40 +210,78 @@ impl VaultFederationServer {
     }
 }
 
+fn per_connection_handler(
+    caller: iroh::EndpointId,
+    channel_depth: u32,
+    backend: tokio::sync::mpsc::Sender<AuthenticatedMessage>,
+) -> (
+    irpc::rpc::Handler<super::protocol::VaultFederationProtocol>,
+    tokio::task::JoinHandle<()>,
+) {
+    let depth = match usize::try_from(channel_depth.max(1)) {
+        Ok(value) => value,
+        Err(_) => FALLBACK_CHANNEL_CAPACITY_SLOTS,
+    };
+    debug_assert!(depth >= 1);
+    let (conn_tx, mut conn_rx) = tokio::sync::mpsc::channel(depth);
+    let forwarder = tokio::task::spawn(async move {
+        while let Some(message) = conn_rx.recv().await {
+            if backend
+                .send(AuthenticatedMessage { caller, message })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    debug_assert!(!caller.as_bytes().is_empty());
+    let handler = super::protocol::VaultFederationProtocol::remote_handler(conn_tx.into());
+    (handler, forwarder)
+}
+
 async fn accept_noq_connection(
     incoming: noq::Incoming,
-    allowlist: PeerAllowlist,
-    handler: irpc::rpc::Handler<super::protocol::VaultFederationProtocol>,
+    authorizer: super::auth::SharedFederationAuthorizer,
+    channel_depth: u32,
+    backend: tokio::sync::mpsc::Sender<AuthenticatedMessage>,
 ) {
     let Ok(connection) = incoming.await else {
         return;
     };
     match super::quinn::authenticated_peer_id(&connection) {
-        Ok(peer_id) if allowlist.allows(&peer_id) => {
-            if irpc::rpc::handle_connection(connection, handler)
+        Ok(peer_id) if authorizer.can_connect(&peer_id) => {
+            let (handler, forwarder) = per_connection_handler(peer_id, channel_depth, backend);
+            let _closed = irpc::rpc::handle_connection(connection, handler)
                 .await
-                .is_err()
-            {}
+                .is_err();
+            forwarder.abort();
         }
-        _ => {
-            connection.close(PERMISSION_DENIED_CODE.into(), b"peer not allowlisted");
+        Ok(_) | Err(_) => {
+            connection.close(PERMISSION_DENIED_CODE.into(), b"peer not authorized");
         }
     }
 }
 
-/// `iroh::protocol::ProtocolHandler` that rejects unallowlisted `EndpointId`s
-/// before reading any RPC message.
+/// `iroh::protocol::ProtocolHandler` that rejects unauthorized `EndpointId`s
+/// and enforces connection concurrency limits before reading any RPC message.
 #[derive(Clone)]
+#[allow(unknown_lints, path_segment_repetition)] // public API compatibility type name
 pub struct IrohFederationHandler {
-    allowlist: PeerAllowlist,
-    handler: irpc::rpc::Handler<super::protocol::VaultFederationProtocol>,
+    authorizer: super::auth::SharedFederationAuthorizer,
+    connection_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    channel_depth: u32,
+    backend: tokio::sync::mpsc::Sender<AuthenticatedMessage>,
 }
 
 impl std::fmt::Debug for IrohFederationHandler {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("IrohFederationHandler")
-            .field("allowlisted_peers", &self.allowlist.len())
+            .field(
+                "allowlisted_peers",
+                &self.authorizer.allowlist_snapshot().len(),
+            )
             .finish()
     }
 }
@@ -223,60 +292,65 @@ impl iroh::protocol::ProtocolHandler for IrohFederationHandler {
         connection: iroh::endpoint::Connection,
     ) -> Result<(), iroh::protocol::AcceptError> {
         let remote_id = connection.remote_id();
-        if !self.allowlist.allows(&remote_id) {
-            connection.close(PERMISSION_DENIED_CODE.into(), b"peer not allowlisted");
+        debug_assert!(!remote_id.as_bytes().is_empty());
+        if !self.authorizer.can_connect(&remote_id) {
+            connection.close(PERMISSION_DENIED_CODE.into(), b"peer not authorized");
             return Err(iroh::protocol::AcceptError::from_err(
                 super::protocol::RpcError::new(
                     super::protocol::RpcErrorCode::Unauthorized,
-                    "peer is not in federation allowlist",
+                    "peer is not authorized for federation",
                 ),
             ));
         }
-        irpc_iroh::handle_connection::<super::protocol::VaultFederationProtocol>(
+        let Ok(_permit) = std::sync::Arc::clone(&self.connection_semaphore).try_acquire_owned()
+        else {
+            connection.close(
+                RATE_LIMITED_CODE.into(),
+                b"federation connection limit exceeded",
+            );
+            return Err(iroh::protocol::AcceptError::from_err(
+                super::protocol::RpcError::new(
+                    super::protocol::RpcErrorCode::BudgetExceeded,
+                    "federation connection concurrency limit exceeded",
+                ),
+            ));
+        };
+        debug_assert!(self.channel_depth > 0);
+        let (handler, forwarder) =
+            per_connection_handler(remote_id, self.channel_depth, self.backend.clone());
+        let result = irpc_iroh::handle_connection::<super::protocol::VaultFederationProtocol>(
             &connection,
-            self.handler.clone(),
+            handler,
         )
         .await
-        .map_err(iroh::protocol::AcceptError::from_err)
-    }
-}
-
-async fn reject_unauthorized(message: super::protocol::VaultFederationMessage) {
-    let error = super::protocol::RpcError::new(
-        super::protocol::RpcErrorCode::Unauthorized,
-        "peer is not in federation allowlist",
-    );
-    match message {
-        super::protocol::VaultFederationMessage::QueryHead(msg) => {
-            if msg.tx.send(Err(error)).await.is_err() {}
-        }
-        super::protocol::VaultFederationMessage::QueryMetadata(msg) => {
-            if msg.tx.send(Err(error)).await.is_err() {}
-        }
-        super::protocol::VaultFederationMessage::FetchPinnedSnapshot(msg) => {
-            if msg.tx.send(Err(error)).await.is_err() {}
-        }
-        super::protocol::VaultFederationMessage::EvaluateDatalog(msg) => {
-            if msg.tx.send(Err(error)).await.is_err() {}
-        }
+        .map_err(iroh::protocol::AcceptError::from_err);
+        forwarder.abort();
+        result
     }
 }
 
 async fn run_actor(
-    config: ServerConfig,
-    mut receiver: tokio::sync::mpsc::Receiver<super::protocol::VaultFederationMessage>,
+    context: ActorContext,
+    mut receiver: tokio::sync::mpsc::Receiver<AuthenticatedMessage>,
 ) {
+    let rpc_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_RPCS));
+    debug_assert_eq!(rpc_semaphore.available_permits(), MAX_CONCURRENT_RPCS);
     let mut tasks = tokio::task::JoinSet::new();
+    debug_assert!(tasks.is_empty());
     loop {
         tokio::select! {
             Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
-            message = receiver.recv() => {
-                let Some(message) = message else {
+            envelope = receiver.recv() => {
+                let Some(envelope) = envelope else {
                     break;
                 };
-                let cfg = config.clone();
+                let Ok(permit) = std::sync::Arc::clone(&rpc_semaphore).acquire_owned().await else {
+                    break;
+                };
+                let ctx = context.clone();
                 let task = tasks.spawn(async move {
-                    dispatch_message(cfg, message).await;
+                    let _permit = permit;
+                    dispatch_message(ctx, envelope.caller, envelope.message).await;
                 });
                 drop(task);
             }
@@ -284,53 +358,163 @@ async fn run_actor(
     }
 }
 
-async fn dispatch_message(config: ServerConfig, message: super::protocol::VaultFederationMessage) {
+fn authorize_request(
+    ctx: &ActorContext,
+    caller: iroh::EndpointId,
+    scope_text: &str,
+    capability_document: Option<&str>,
+) -> Result<mneme_core::ScopeId, super::protocol::RpcError> {
+    let scope = parse_scope(scope_text)?;
+    let now_secs = super::auth::timestamp_to_epoch_secs(ctx.clock.now()).map_err(|reason| {
+        super::protocol::RpcError::new(super::protocol::RpcErrorCode::Unauthorized, reason)
+    })?;
+    ctx.authorizer
+        .authorize_scope(caller, &scope, capability_document, now_secs)?;
+    Ok(scope)
+}
+
+#[allow(unknown_lints, fragile_exhaustive_enum_match)] // irpc protocol dispatch must handle every VaultFederationMessage variant
+async fn dispatch_message(
+    ctx: ActorContext,
+    caller: iroh::EndpointId,
+    message: super::protocol::VaultFederationMessage,
+) {
     match message {
         super::protocol::VaultFederationMessage::QueryHead(msg) => {
-            let timeout_ms = config.max_limits.max_time_ms;
-            let result =
-                run_bounded_blocking(timeout_ms, move || handle_query_head(&config, &msg.inner))
-                    .await;
-            if msg.tx.send(result).await.is_err() {}
+            dispatch_query_head(ctx, caller, msg).await;
         }
         super::protocol::VaultFederationMessage::QueryMetadata(msg) => {
-            let timeout_ms = config.max_limits.max_time_ms;
-            let result = run_bounded_blocking(timeout_ms, move || {
-                handle_query_metadata(&config, &msg.inner)
-            })
-            .await;
-            if msg.tx.send(result).await.is_err() {}
+            dispatch_query_metadata(ctx, caller, msg).await;
         }
         super::protocol::VaultFederationMessage::FetchPinnedSnapshot(msg) => {
-            let timeout_ms = msg
-                .inner
-                .limits
-                .max_time_ms
-                .min(config.max_limits.max_time_ms)
-                .max(1);
-            let result = run_bounded_blocking(timeout_ms, move || {
-                handle_fetch_pinned_snapshot(&config, &msg.inner)
-            })
-            .await;
-            if msg.tx.send(result).await.is_err() {}
+            dispatch_fetch_pinned_snapshot(ctx, caller, msg).await;
         }
         super::protocol::VaultFederationMessage::EvaluateDatalog(msg) => {
-            let timeout_ms = msg
-                .inner
-                .limits
-                .max_time_ms
-                .min(config.max_limits.max_time_ms)
-                .max(1);
-            let result = run_bounded_blocking(timeout_ms, move || {
-                handle_evaluate_datalog(&config, &msg.inner)
-            })
-            .await;
-            if msg.tx.send(result).await.is_err() {}
+            dispatch_evaluate_datalog(ctx, caller, msg).await;
         }
     }
 }
 
+async fn run_authorized_blocking<T, F>(
+    ctx: &ActorContext,
+    auth: Result<mneme_core::ScopeId, super::protocol::RpcError>,
+    timeout_ms: u64,
+    task: F,
+) -> Result<T, super::protocol::RpcError>
+where
+    T: Send + 'static,
+    F: FnOnce(ServerConfig) -> Result<T, super::protocol::RpcError> + Send + 'static,
+{
+    let _scope = auth?;
+    let cfg = ctx.config.clone();
+    run_bounded_blocking(
+        std::sync::Arc::clone(&ctx.blocking_semaphore),
+        timeout_ms,
+        move || task(cfg),
+    )
+    .await
+}
+
+async fn dispatch_query_head(
+    ctx: ActorContext,
+    caller: iroh::EndpointId,
+    msg: irpc::WithChannels<
+        super::protocol::QueryHeadRequest,
+        super::protocol::VaultFederationProtocol,
+    >,
+) {
+    let auth = authorize_request(
+        &ctx,
+        caller,
+        &msg.inner.scope,
+        msg.inner.capability_document.as_deref(),
+    );
+    let timeout_ms = ctx.config.max_limits.max_time_ms;
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
+        handle_query_head(&cfg, &msg.inner)
+    })
+    .await;
+    let _sent = msg.tx.send(result).await.is_ok();
+}
+
+async fn dispatch_query_metadata(
+    ctx: ActorContext,
+    caller: iroh::EndpointId,
+    msg: irpc::WithChannels<
+        super::protocol::QueryMetadataRequest,
+        super::protocol::VaultFederationProtocol,
+    >,
+) {
+    let auth = authorize_request(
+        &ctx,
+        caller,
+        &msg.inner.scope,
+        msg.inner.capability_document.as_deref(),
+    );
+    let timeout_ms = ctx.config.max_limits.max_time_ms;
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
+        handle_query_metadata(&cfg, &msg.inner)
+    })
+    .await;
+    let _sent = msg.tx.send(result).await.is_ok();
+}
+
+async fn dispatch_fetch_pinned_snapshot(
+    ctx: ActorContext,
+    caller: iroh::EndpointId,
+    msg: irpc::WithChannels<
+        super::protocol::FetchPinnedSnapshotRequest,
+        super::protocol::VaultFederationProtocol,
+    >,
+) {
+    let auth = authorize_request(
+        &ctx,
+        caller,
+        &msg.inner.scope,
+        msg.inner.capability_document.as_deref(),
+    );
+    let timeout_ms = msg
+        .inner
+        .limits
+        .max_time_ms
+        .min(ctx.config.max_limits.max_time_ms)
+        .max(1);
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
+        handle_fetch_pinned_snapshot(&cfg, &msg.inner)
+    })
+    .await;
+    let _sent = msg.tx.send(result).await.is_ok();
+}
+
+async fn dispatch_evaluate_datalog(
+    ctx: ActorContext,
+    caller: iroh::EndpointId,
+    msg: irpc::WithChannels<
+        super::protocol::EvaluateDatalogRequest,
+        super::protocol::VaultFederationProtocol,
+    >,
+) {
+    let auth = authorize_request(
+        &ctx,
+        caller,
+        &msg.inner.scope,
+        msg.inner.capability_document.as_deref(),
+    );
+    let timeout_ms = msg
+        .inner
+        .limits
+        .max_time_ms
+        .min(ctx.config.max_limits.max_time_ms)
+        .max(1);
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
+        handle_evaluate_datalog(&cfg, &msg.inner)
+    })
+    .await;
+    let _sent = msg.tx.send(result).await.is_ok();
+}
+
 async fn run_bounded_blocking<T, F>(
+    blocking_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
     timeout_ms: u64,
     task: F,
 ) -> Result<T, super::protocol::RpcError>
@@ -338,8 +522,29 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, super::protocol::RpcError> + Send + 'static,
 {
-    let handle = tokio::task::spawn_blocking(task);
-    match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), handle).await {
+    debug_assert!(timeout_ms > 0);
+    let budget = std::time::Duration::from_millis(timeout_ms);
+    let permit = match tokio::time::timeout(budget, blocking_semaphore.acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            return Err(super::protocol::RpcError::new(
+                super::protocol::RpcErrorCode::Unavailable,
+                "federation worker pool closed",
+            ));
+        }
+        Err(_) => {
+            return Err(super::protocol::RpcError::new(
+                super::protocol::RpcErrorCode::BudgetExceeded,
+                "federation blocking pool saturated within wall-clock limit",
+            ));
+        }
+    };
+    debug_assert!(!budget.is_zero());
+    let handle = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        task()
+    });
+    match tokio::time::timeout(budget, handle).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err(super::protocol::RpcError::new(
             super::protocol::RpcErrorCode::Unavailable,
@@ -389,19 +594,31 @@ fn handle_query_head(
 ) -> Result<super::protocol::HeadState, super::protocol::RpcError> {
     let _scope = parse_scope(&request.scope)?;
     let workspace = open_read_only_vault(&config.vault_root)?;
-    let generation = workspace
-        .eligibility_generation()
-        .map_err(store_rpc_error)?;
-    let head = workspace.current_revision().map_err(store_rpc_error)?;
-    let snapshot = workspace
-        .snapshot_at(head, Some(generation))
-        .map_err(store_rpc_error)?;
-    Ok(super::protocol::HeadState {
-        protocol_version: super::protocol::PROTOCOL_VERSION,
-        head_revision: *head.as_bytes(),
-        head_sequence: snapshot.sequence,
-        eligibility_generation: generation,
-    })
+    for _ in 0..MAX_HEAD_READ_RETRIES {
+        let generation_before = workspace
+            .eligibility_generation()
+            .map_err(store_rpc_error)?;
+        let head_before = workspace.current_revision().map_err(store_rpc_error)?;
+        let sequence = workspace.current_sequence().map_err(store_rpc_error)?;
+        let head_after = workspace.current_revision().map_err(store_rpc_error)?;
+        let generation_after = workspace
+            .eligibility_generation()
+            .map_err(store_rpc_error)?;
+        if head_before == head_after && generation_before == generation_after {
+            debug_assert_eq!(head_before, head_after);
+            debug_assert_eq!(generation_before, generation_after);
+            return Ok(super::protocol::HeadState {
+                protocol_version: super::protocol::PROTOCOL_VERSION,
+                head_revision: *head_before.as_bytes(),
+                head_sequence: sequence,
+                eligibility_generation: generation_before,
+            });
+        }
+    }
+    Err(super::protocol::RpcError::new(
+        super::protocol::RpcErrorCode::Conflict,
+        "workspace head advanced concurrently during O(1) QueryHead",
+    ))
 }
 
 fn handle_query_metadata(
@@ -488,15 +705,21 @@ fn handle_fetch_pinned_snapshot(
     let suppressions = encode_suppressions(&workspace)?;
     let current_sources = scoped_source_overlay(&workspace, filtered.revision, &scope, &access)?;
     verify_generation_unchanged(&workspace, generation, "pinned snapshot fetch")?;
-    let payload = build_snapshot_payload(SnapshotPayloadInput {
-        requested,
-        generation,
-        filtered,
-        view_context,
-        suppressions,
-        current_sources,
-    });
+    let served = filtered.revision;
+    let payload = build_snapshot_payload_bounded(
+        SnapshotPayloadInput {
+            requested,
+            generation,
+            filtered,
+            view_context,
+            suppressions,
+            current_sources,
+        },
+        request.limits.max_bytes,
+    )?;
     check_payload_byte_budget(&payload, request.limits.max_bytes, "pinned snapshot")?;
+    assert_eq!(payload.served_revision, *served.as_bytes());
+    assert_eq!(payload.eligibility_generation, generation);
     Ok(payload)
 }
 
@@ -554,7 +777,29 @@ struct SnapshotPayloadInput {
     current_sources: Vec<([u8; 16], super::protocol::EncodedSourceAvailability)>,
 }
 
-fn build_snapshot_payload(input: SnapshotPayloadInput) -> super::protocol::PinnedSnapshotPayload {
+fn encode_bounded_record_docs<'a>(
+    records: impl ExactSizeIterator<Item = &'a mneme_core::RecordEnvelope>,
+    running_bytes: &mut u64,
+    max_bytes: u64,
+) -> Result<Vec<String>, super::protocol::RpcError> {
+    let mut docs = Vec::with_capacity(records.len());
+    for record in records {
+        let doc = mneme_core::encode_document_string(&record.to_value());
+        *running_bytes = running_bytes.saturating_add(doc.len() as u64);
+        ensure_running_budget(RunningByteBudget {
+            running_bytes: *running_bytes,
+            max_bytes,
+            label: "pinned snapshot",
+        })?;
+        docs.push(doc);
+    }
+    Ok(docs)
+}
+
+fn build_snapshot_payload_bounded(
+    input: SnapshotPayloadInput,
+    max_bytes: u64,
+) -> Result<super::protocol::PinnedSnapshotPayload, super::protocol::RpcError> {
     let SnapshotPayloadInput {
         requested,
         generation,
@@ -565,33 +810,103 @@ fn build_snapshot_payload(input: SnapshotPayloadInput) -> super::protocol::Pinne
     } = input;
     assert_eq!(filtered.revision, requested);
     assert_eq!(filtered.eligibility_generation, generation);
-    super::protocol::PinnedSnapshotPayload {
+
+    let scoped_digest = super::protocol::scoped_manifest_digest(
+        filtered.revision,
+        filtered.parent,
+        filtered.records.iter(),
+        view_context.history.values(),
+        filtered.manifest_digest.algorithm(),
+    );
+    let manifest_digest_document = mneme_core::encode_document_string(&scoped_digest.to_value());
+    let mut running_bytes: u64 = manifest_digest_document.len() as u64;
+    ensure_running_budget(RunningByteBudget {
+        running_bytes,
+        max_bytes,
+        label: "pinned snapshot",
+    })?;
+
+    let record_documents =
+        encode_bounded_record_docs(filtered.records.iter(), &mut running_bytes, max_bytes)?;
+    let history_documents =
+        encode_bounded_record_docs(view_context.history.values(), &mut running_bytes, max_bytes)?;
+
+    let revision_sequences: Vec<([u8; 16], u64)> = view_context
+        .revision_sequences
+        .into_iter()
+        .map(|(rev, seq)| (*rev.as_bytes(), seq))
+        .collect();
+    running_bytes = running_bytes
+        .saturating_add((revision_sequences.len() as u64).saturating_mul(17))
+        .saturating_add(POSTCARD_LEN_OVERHEAD_BYTES);
+    ensure_running_budget(RunningByteBudget {
+        running_bytes,
+        max_bytes,
+        label: "pinned snapshot",
+    })?;
+
+    Ok(super::protocol::PinnedSnapshotPayload {
         protocol_version: super::protocol::PROTOCOL_VERSION,
         requested_revision: *requested.as_bytes(),
         served_revision: *filtered.revision.as_bytes(),
         sequence: filtered.sequence,
         parent: filtered.parent.map(|rev| *rev.as_bytes()),
-        manifest_digest_document: mneme_core::encode_document_string(
-            &filtered.manifest_digest.to_value(),
-        ),
+        manifest_digest_document,
         eligibility_generation: generation,
-        record_documents: filtered
-            .records
-            .iter()
-            .map(|record| mneme_core::encode_document_string(&record.to_value()))
-            .collect(),
-        history_documents: view_context
-            .history
-            .values()
-            .map(|record| mneme_core::encode_document_string(&record.to_value()))
-            .collect(),
-        revision_sequences: view_context
-            .revision_sequences
-            .into_iter()
-            .map(|(rev, seq)| (*rev.as_bytes(), seq))
-            .collect(),
+        record_documents,
+        history_documents,
+        revision_sequences,
         suppressions,
         current_sources,
+    })
+}
+
+struct RunningByteBudget<'a> {
+    running_bytes: u64,
+    max_bytes: u64,
+    label: &'a str,
+}
+
+fn ensure_running_budget(budget: RunningByteBudget<'_>) -> Result<(), super::protocol::RpcError> {
+    if budget.running_bytes > budget.max_bytes {
+        return Err(super::protocol::RpcError::new(
+            super::protocol::RpcErrorCode::BudgetExceeded,
+            format!(
+                "{} ({} bytes) exceeds max_bytes ({})",
+                budget.label, budget.running_bytes, budget.max_bytes
+            ),
+        ));
+    }
+    Ok(())
+}
+
+struct BoundedByteCounter {
+    count: u64,
+    max_bytes: u64,
+}
+
+impl postcard::ser_flavors::Flavor for BoundedByteCounter {
+    type Output = u64;
+
+    fn try_push(&mut self, _data: u8) -> postcard::Result<()> {
+        self.count = self.count.saturating_add(1);
+        if self.count > self.max_bytes {
+            return Err(postcard::Error::SerializeBufferFull);
+        }
+        Ok(())
+    }
+
+    fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+        let len = u64::try_from(data.len()).map_err(|_| postcard::Error::SerializeBufferFull)?;
+        self.count = self.count.saturating_add(len);
+        if self.count > self.max_bytes {
+            return Err(postcard::Error::SerializeBufferFull);
+        }
+        Ok(())
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(self.count)
     }
 }
 
@@ -600,26 +915,24 @@ fn check_payload_byte_budget<T: serde::Serialize>(
     max_bytes: u64,
     label: &str,
 ) -> Result<(), super::protocol::RpcError> {
-    let encoded_size = postcard::to_allocvec(payload)
-        .map_err(|error| {
+    debug_assert!(max_bytes > 0);
+    let counter = BoundedByteCounter {
+        count: 0,
+        max_bytes,
+    };
+    let encoded_bytes = postcard::serialize_with_flavor(payload, counter).map_err(|error| {
+        if error == postcard::Error::SerializeBufferFull {
+            super::protocol::RpcError::new(
+                super::protocol::RpcErrorCode::BudgetExceeded,
+                format!("{label} exceeds max_bytes ({max_bytes})"),
+            )
+        } else {
             super::protocol::RpcError::new(
                 super::protocol::RpcErrorCode::ProtocolError,
                 error.to_string(),
             )
-        })?
-        .len();
-    let encoded_bytes = u64::try_from(encoded_size).map_err(|_| {
-        super::protocol::RpcError::new(
-            super::protocol::RpcErrorCode::BudgetExceeded,
-            format!("{label} byte length exceeds u64 range"),
-        )
+        }
     })?;
-    if encoded_bytes > max_bytes {
-        return Err(super::protocol::RpcError::new(
-            super::protocol::RpcErrorCode::BudgetExceeded,
-            format!("{label} ({encoded_bytes} bytes) exceeds max_bytes ({max_bytes})"),
-        ));
-    }
     assert!(encoded_bytes <= max_bytes);
     Ok(())
 }
@@ -715,7 +1028,7 @@ fn handle_evaluate_datalog(
         })?;
     let constants = decode_datalog_constants(&request.constant_documents)?;
     let datalog_limits = request.limits.to_datalog_limits()?;
-    let query_limit = usize::try_from(request.limit).map_err(|_| {
+    let max_result_rows = usize::try_from(request.max_rows).map_err(|_| {
         super::protocol::RpcError::new(
             super::protocol::RpcErrorCode::BudgetExceeded,
             "query row limit exceeds platform capacity",
@@ -738,7 +1051,7 @@ fn handle_evaluate_datalog(
             datalog_limits,
             predicate: &request.predicate,
             constants,
-            query_limit,
+            query_limit: max_result_rows,
             stale_policy: request.stale_policy,
         },
     )?;
@@ -746,6 +1059,7 @@ fn handle_evaluate_datalog(
     let encoded = encode_datalog_result(&result);
     check_payload_byte_budget(&encoded, request.limits.max_bytes, "Datalog result")?;
     assert_eq!(encoded.served_revision, *result.served_revision.as_bytes());
+    assert_eq!(encoded.protocol_version, super::protocol::PROTOCOL_VERSION);
     Ok(encoded)
 }
 
