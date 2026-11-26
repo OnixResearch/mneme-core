@@ -1477,6 +1477,22 @@
         "epistemic::negation_blocks"
       ],
       "statement": "(status : EpistemicStatus) : negation_blocks status = ok true ↔ status ≠ EpistemicStatus.Rejected"
+    },
+    {
+      "name": "mneme_kernel.claim.proposed_allows_any_transition",
+      "file": "MnemeKernelProofs/Claim.lean",
+      "subjects": [
+        "claim::transition_allowed"
+      ],
+      "statement": "(next : Lifecycle) : transition_allowed (some Lifecycle.Proposed) next = ok true"
+    },
+    {
+      "name": "mneme_kernel.verdict.case_status_declared_non_failed",
+      "file": "MnemeKernelProofs/Verdict.lean",
+      "subjects": [
+        "verdict::case_status"
+      ],
+      "statement": "(observed : Status) (h : observed ≠ Status.Failed) : case_status SkipDeclaration.Declared observed = ok Status.Skipped"
     }
   ]
 }
