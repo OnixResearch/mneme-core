@@ -67,6 +67,7 @@ pub struct ReplStepSummary {
 /// A bounded, read-only, revision-pinned Dynamic Datalog REPL session.
 pub struct ReplSession {
     base: crate::engine::BaseSnapshot,
+    ivm: crate::ivm::IvmState,
     build: crate::Build,
     program: crate::RuleProgram,
     repl_limits: ReplLimits,
@@ -102,6 +103,7 @@ impl ReplSession {
                 "session row limit exceeded while loading base extents".to_owned(),
             ));
         }
+        let ivm = crate::ivm::IvmState::from_base_facts(&base.facts)?;
         let build = crate::Build {
             context,
             status: base.status,
@@ -120,6 +122,7 @@ impl ReplSession {
         debug_assert!(initial_rows <= request.limits.max_total_rows);
         Ok(ReplSession {
             base,
+            ivm,
             build,
             program,
             repl_limits: request.limits,
@@ -439,6 +442,14 @@ impl ReplSession {
         let mut next_context = self.build.context.clone();
         next_context.projection_build_id = next_build_id;
 
+        let next_facts = unwrap_fact_stores(&evaluated.facts);
+        self.ivm.sync_after_rule_change(
+            &candidate_program,
+            &self.base.facts,
+            &next_facts,
+            &affected,
+        )?;
+
         self.build = crate::Build {
             context: next_context.clone(),
             status: evaluated.status,
@@ -448,7 +459,7 @@ impl ReplSession {
             support_truncated: evaluated.support_truncated,
             limit_reached: evaluated.limit_reached,
             declaration_valid: evaluated.declaration_valid,
-            facts: unwrap_fact_stores(&evaluated.facts),
+            facts: next_facts,
             arities: candidate_program.arities.clone(),
             bundle: candidate_program.bundle.clone(),
         };
@@ -473,6 +484,154 @@ impl ReplSession {
             support_truncated: self.build.support_truncated,
             affected_predicates: affected.into_iter().collect(),
             reused_predicates,
+        })
+    }
+
+    /// Step this session to `revision` (or current workspace head when `None`)
+    /// using DBSP Z-set delta maintenance without reloading unchanged base facts.
+    pub fn advance_to_revision(
+        &mut self,
+        workspace: &mut mneme_store::Workspace,
+        revision: Option<mneme_core::WorkspaceRevisionId>,
+    ) -> Result<ReplStepSummary, crate::Error> {
+        let remaining_work = self
+            .repl_limits
+            .max_total_work
+            .saturating_sub(self.total_work);
+        if remaining_work == 0 {
+            return Err(crate::Error::LimitExceeded(
+                "session total work budget exhausted".to_owned(),
+            ));
+        }
+
+        let start = crate::engine::evaluation_start();
+        let target_revision = match revision {
+            Some(rev) => rev,
+            None => workspace.current_revision()?,
+        };
+        let requested_was_head = revision.is_none();
+        let generation = workspace.eligibility_generation()?;
+        let mut step_limits = self.repl_limits.per_step.clone();
+        step_limits.max_work = step_limits.max_work.min(remaining_work);
+        let max_total_rows = usize::try_from(self.repl_limits.max_total_rows).map_err(|_| {
+            crate::Error::LimitExceeded("max_total_rows exceeds platform range".to_owned())
+        })?;
+        step_limits.max_result_rows = max_total_rows.max(step_limits.max_result_rows);
+
+        let mut next_context = self.build.context.clone();
+        next_context.requested_revision = target_revision;
+        next_context.served_revision = target_revision;
+        next_context.eligibility_generation = generation;
+        next_context.requested_was_head = requested_was_head;
+        next_context.projection_build_id = crate::rules::build_id(crate::rules::BuildIdContext {
+            revision: target_revision,
+            scope: &self.build.context.scope,
+            generation,
+            bundle: &self.program.bundle,
+            limits: &self.repl_limits.per_step,
+            incomplete_extents: &self.incomplete_extents,
+            at: self.at,
+        });
+
+        let base_advance = crate::engine::advance_base_snapshot(
+            &self.base,
+            crate::engine::BaseAdvanceRequest {
+                workspace,
+                target_revision,
+                next_context: &next_context,
+                bundle: &self.program.bundle,
+                limits: &step_limits,
+                incomplete_extents: &self.incomplete_extents,
+                at: self.at,
+                start,
+            },
+        )?;
+        if base_advance.eligibility_generation != generation {
+            next_context.eligibility_generation = base_advance.eligibility_generation;
+            next_context.projection_build_id =
+                crate::rules::build_id(crate::rules::BuildIdContext {
+                    revision: target_revision,
+                    scope: &self.build.context.scope,
+                    generation: base_advance.eligibility_generation,
+                    bundle: &self.program.bundle,
+                    limits: &self.repl_limits.per_step,
+                    incomplete_extents: &self.incomplete_extents,
+                    at: self.at,
+                });
+        }
+        if base_advance.limit_reached {
+            self.total_work = self.total_work.saturating_add(base_advance.work);
+            return Err(crate::Error::LimitExceeded(format!(
+                "advance base delta limit reached ({})",
+                base_advance.status.name()
+            )));
+        }
+
+        let ivm_result = crate::ivm::advance_ivm(
+            &self.ivm,
+            crate::ivm::AdvanceIvmRequest {
+                program: &self.program,
+                base_deltas: base_advance.base_deltas,
+                dirty_provenance: base_advance.dirty_provenance,
+                next_base: &base_advance.next_base,
+                next_context: &next_context,
+                limits: &step_limits,
+                initial_work: base_advance.work,
+                current_facts: &self.build.facts,
+                at: self.at,
+                start,
+            },
+        )?;
+        self.total_work = self.total_work.saturating_add(ivm_result.work);
+        if ivm_result.limit_reached {
+            return Err(crate::Error::LimitExceeded(format!(
+                "advance incremental limit reached ({})",
+                ivm_result.status.name()
+            )));
+        }
+        let next_total_rows = count_fact_rows(&ivm_result.next_facts)?;
+        if next_total_rows > self.repl_limits.max_total_rows {
+            return Err(crate::Error::LimitExceeded(format!(
+                "session total row limit ({}) exceeded",
+                self.repl_limits.max_total_rows
+            )));
+        }
+
+        self.base = base_advance.next_base;
+        self.ivm = ivm_result.next_ivm;
+        self.build = crate::Build {
+            context: next_context.clone(),
+            status: ivm_result.status,
+            coverage: ivm_result.coverage,
+            limits: self.repl_limits.per_step.clone(),
+            work: ivm_result.work,
+            support_truncated: ivm_result.support_truncated,
+            limit_reached: false,
+            declaration_valid: true,
+            facts: ivm_result.next_facts,
+            arities: self.program.arities.clone(),
+            bundle: self.program.bundle.clone(),
+        };
+
+        let rule_count = u32::try_from(self.build.bundle.rules.len())
+            .map_err(|_| crate::Error::LimitExceeded("session rule count overflow".to_owned()))?;
+        debug_assert!(self.total_work <= self.repl_limits.max_total_work);
+        debug_assert!(next_total_rows <= self.repl_limits.max_total_rows);
+        Ok(ReplStepSummary {
+            context: next_context,
+            status: self.build.status,
+            step_work: ivm_result.work,
+            total_work: self.total_work,
+            remaining_work: self
+                .repl_limits
+                .max_total_work
+                .saturating_sub(self.total_work),
+            total_rows: next_total_rows,
+            rule_count,
+            limit_reached: false,
+            support_truncated: self.build.support_truncated,
+            affected_predicates: ivm_result.affected_predicates,
+            reused_predicates: ivm_result.reused_predicates,
         })
     }
 }
@@ -528,9 +687,9 @@ fn load_session_base(
     let view = mneme_memory::View::with_retention(
         snapshot,
         workspace.root(),
-        loaded.history,
-        loaded.revision_sequences,
-        suppressions,
+        loaded.history.clone(),
+        loaded.revision_sequences.clone(),
+        suppressions.clone(),
     )
     .with_access(request.access.clone());
 
@@ -549,6 +708,9 @@ fn load_session_base(
             limits: &load_limits,
             incomplete_extents: &request.incomplete_extents,
             current_sources,
+            history: loaded.history,
+            revision_sequences: loaded.revision_sequences,
+            suppressions,
             at: request.at,
             start,
         },

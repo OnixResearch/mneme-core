@@ -12,7 +12,9 @@ pub const PROFILE_VERSION: &str = "mneme-datalog-profile/v1";
 pub const INDEX_VERSION: &str = "full-rebuild-v1";
 
 pub mod repl;
+pub mod zset;
 pub use repl::{ReplLimits, ReplSession, ReplSessionRequest, ReplStepSummary};
+pub use zset::{BilinearJoin, IndexedZSet, ZSet, delta_join};
 
 /// A Datalog term.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -680,6 +682,7 @@ struct QueryCacheKey {
 }
 
 mod engine;
+mod ivm;
 mod rules;
 
 impl RuleBundle {

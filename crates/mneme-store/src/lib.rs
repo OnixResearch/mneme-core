@@ -24,7 +24,8 @@ pub use coordinator::{
     CommitOutcome, FOLDER_WORKSPACE_DIRECTORY, JobClaim, LAYOUT_VERSION, LEDGER_FILE,
     ProjectionRegistration, ProjectionResolution, ProjectionState, PublicationOutcome,
     PublicationState, RecordRevisionCommit, RecordRevisionCommitPage, RecoveryReport,
-    RevisionCommit, SharedRecordCache, Snapshot, Workspace, WorkspaceConfig, WorkspaceStatus,
+    RevisionCommit, RevisionDelta, SharedRecordCache, Snapshot, Workspace, WorkspaceConfig,
+    WorkspaceStatus,
 };
 pub use error::{Failure, Result};
 pub use injectors::{FaultAt, FaultInjector, FaultPoint, NoFaults};
