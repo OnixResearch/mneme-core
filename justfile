@@ -1,7 +1,7 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 # The extracted workspace has no application binaries; keep formatting scoped to
-# the eleven published libraries.
+# the twelve published libraries.
 rust_packages := "-p mneme-kernel -p mneme-core -p mneme-store -p mneme-memory -p mneme-consolidation -p mneme-prolog -p mneme-retention -p mneme-doc -p mneme-datalog -p mneme-recall -p mneme-api -p mneme-sync"
 
 default:
@@ -25,13 +25,27 @@ rust-doctest:
 # Rust formatting, Clippy, every target's unit/integration tests, and doctests.
 rust-check: rust-format-check rust-lint rust-test rust-doctest
 
+# Tier 1 strict required profile (zero baseline, deny safety lints).
 octet:
     cargo-octet check --workspace -- --all-targets --all-features --ignore-rust-version
 
-# The all-lint check uses an isolated Nix source copy to select dylint-all.toml
-# without replacing the developer's strict dylint.toml.
+# Tier 2 per-crate sharded ratchet (uses an isolated Nix source copy with
+# dylint-all.toml and octet-baseline/<crate>.json without replacing dylint.toml).
 octet-all:
     nix build ".#checks.$(nix eval --raw --impure --expr builtins.currentSystem).octet-all"
+
+# Tier 2 local per-crate baseline regeneration (must still pass monotonic CI check).
+octet-write-baselines:
+    node scripts/octet-sharded.mjs write-baselines
+
+# Tier 3 opt-in advisory report for noisy heuristic lints
+# (assertion_density, ambiguous_params, numeric_units).
+octet-advisory:
+    node scripts/octet-sharded.mjs advisory
+
+# Verify every per-crate Tier 2 baseline shard exists and never expands vs a base ref.
+octet-monotonic *args:
+    node scripts/octet-sharded.mjs check-monotonic {{args}}
 
 # The pinned development shell supplies Charon, Aeneas, Lean, Lake and the
 # matching Charon extraction toolchain. Lake may fetch its proof dependencies,

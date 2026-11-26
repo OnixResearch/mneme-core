@@ -1,18 +1,33 @@
-# Full-catalog Octet profile used by the baseline ratchet check (`octet-all`).
-# The strict required check keeps its consumer profile in dylint.toml. The pinned
-# runner registers 77 lints; this profile must not disable any of them.
+# Tier 2 per-crate Octet ratchet profile used by `octet-all`.
+#
+# Tier 1 (`dylint.toml`, `just octet`) enforces zero-baseline deny safety lints.
+# Tier 2 (`dylint-all.toml`, `just octet-all`) covers the remaining non-advisory
+# catalog against per-crate monotonic baselines in `octet-baseline/<crate>.json`.
+# Tier 3 (`dylint-advisory.toml`, `just octet-advisory`) holds noisy heuristic
+# lints (`assertion_density`, `ambiguous_params`, `numeric_units`) as an opt-in
+# advisory report rather than blocking the ratchet.
 [octet]
+core_source_scopes = [
+  "crates/mneme-kernel/src/",
+  "crates/mneme-core/src/",
+  "crates/mneme-datalog/src/",
+  "crates/mneme-memory/src/",
+]
 # Cohesive modules exceed the 300-line default; splitting remains a structural backlog.
 excessive_file_length_max = 5000
+# Tier 3 noisy heuristic lints live in dylint-advisory.toml (`just octet-advisory`).
+disabled_lints = [
+  "assertion_density",
+  "ambiguous_params",
+  "numeric_units",
+]
 
-# Octet declares these lints Allow by default, so an all-lint profile that does
-# not raise them never registers them and cannot report on the full catalog.
-# They stay at warn (not deny) so the ratchet reports them as findings through
-# octet-baseline.json instead of failing on debt this profile has not burned down.
+# Octet declares these lints Allow by default, so a Tier 2 profile that does
+# not raise them never registers them. They stay at warn (not deny) so the
+# per-crate ratchet tracks them through `octet-baseline/<crate>.json` without
+# failing on accepted debt, while CI enforces `new_count <= base_count`.
 [octet.lint_levels]
 allocation_in_loop = "warn"
-ambiguous_params = "warn"
-assertion_density = "warn"
 compound_condition = "warn"
 defaulting_trait_method = "warn"
 float_for_currency = "warn"
@@ -22,7 +37,6 @@ missing_const_fn = "warn"
 multi_lock_ordering = "warn"
 newtype_invariant_bypass = "warn"
 nondeterministic_output = "warn"
-numeric_units = "warn"
 primitive_domain_alias = "warn"
 raw_arithmetic_overflow = "warn"
 raw_domain_value = "warn"

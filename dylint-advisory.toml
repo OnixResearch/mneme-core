@@ -1,0 +1,93 @@
+# Tier 3 opt-in advisory Octet profile (`just octet-advisory`).
+#
+# Extends the Tier 1 required profile (`dylint.toml`, 0 findings) by enabling
+# high-noise heuristic lints (`assertion_density`, `ambiguous_params`,
+# `numeric_units`) as warn-only advisory diagnostics so they stay visible on
+# demand without bloating or conflicting in the Tier 2 per-crate baselines.
+[octet]
+core_source_scopes = [
+  "crates/mneme-kernel/src/",
+  "crates/mneme-core/src/",
+  "crates/mneme-datalog/src/",
+  "crates/mneme-memory/src/",
+]
+disabled_lints = [
+  "function_length",
+  "acronym_style",
+  "unbounded_loop",
+  "compound_condition",
+  "verified_purity",
+  "ambient_env",
+  "ambient_random",
+  "global_state_in_core",
+  "impure_call_in_core",
+  "interior_mutability_in_core",
+  "logging_in_core",
+  "missing_const_fn",
+  "mutating_input_in_pure",
+  "nondeterministic_output",
+  "pure_attr_contract",
+  "resource_return_from_core",
+  "spawn_in_core",
+  "zero_alloc_attr_contract",
+  "unjustified_allow",
+  "nested_conditionals",
+  "multi_lock_ordering",
+  "ignored_join_handle",
+  "unbounded_collection_growth",
+  "sentinel_fallback",
+  "too_many_parameters",
+  "fat_trait",
+  "concrete_construction_in_core",
+  "type_accumulation",
+  "bool_naming",
+  "ignored_result",
+  "unchecked_narrowing",
+  "unchecked_division",
+  "catch_all_on_enum",
+  "foreign_enum_catch_all",
+  "fragile_exhaustive_enum_match",
+  "platform_dependent_cast",
+  "borrowed_argument_types",
+  "deref_polymorphism",
+  "clone_then_borrow",
+  "allocation_in_loop",
+  "float_for_currency",
+  "primitive_domain_alias",
+  "raw_domain_value",
+  "newtype_invariant_bypass",
+  "raw_arithmetic_overflow",
+  "no_unwrap",
+  "no_panic",
+  "public_unsafe_api",
+  "defaulting_trait_method",
+  "no_todo",
+  "unjustified_no_todo_allow",
+  "no_recursion",
+  "explicit_defaults",
+  "non_trait_imports",
+  "path_segment_repetition",
+  "excessive_file_length",
+  "module_file_count",
+]
+
+[octet.lint_levels]
+ambient_clock = "deny"
+compound_assertion = "deny"
+contradictory_time = "deny"
+unbounded_channel = "deny"
+negated_predicate = "deny"
+raw_bool_parameter = "deny"
+usize_in_public_api = "deny"
+fallible_int_fallback = "deny"
+discarded_sync_result = "warn"
+drop_must_use = "warn"
+flush_only_durability = "warn"
+magic_number = "warn"
+raw_bool_parameter_suppression = "warn"
+retry_sync_after_error = "warn"
+state_machine_exhaustiveness = "warn"
+# Tier 3 advisory heuristic lints (warn-only):
+assertion_density = "warn"
+ambiguous_params = "warn"
+numeric_units = "warn"

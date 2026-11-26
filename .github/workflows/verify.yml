@@ -36,12 +36,21 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Refuse credential-bearing flake inputs
         run: |
           if grep -n 'ssh://' flake.lock; then
             echo "::error::flake.lock pins an SSH input and this job has no credentials"
             exit 1
+          fi
+
+      - name: Enforce monotonic per-crate Octet baselines
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            node scripts/octet-sharded.mjs check-monotonic --base "origin/${{ github.base_ref }}"
+          else
+            node scripts/octet-sharded.mjs check-monotonic
           fi
 
       - name: Reclaim runner disk

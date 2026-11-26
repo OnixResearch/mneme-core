@@ -1,6 +1,6 @@
 # Mneme Core
 
-Mneme Core is the standalone Rust library workspace for Mneme's typed memory engine and its independently checked decision kernel. This public repository contains eleven libraries and the kernel's preserved Lean proof sources; it does not contain an application binary.
+Mneme Core is the standalone Rust library workspace for Mneme's typed memory engine and its independently checked decision kernel. This public repository contains twelve libraries and the kernel's preserved Lean proof sources; it does not contain an application binary.
 
 ## Crate roles
 
@@ -240,6 +240,7 @@ just rust-doctest
 just rust-check
 just octet
 just octet-all
+just octet-advisory
 just proofs
 ```
 
@@ -252,15 +253,13 @@ cargo test --locked --workspace --all-targets --all-features
 cargo test --locked --workspace --doc --all-features
 ```
 
-`just octet` runs the strict required profile in `dylint.toml`, without a baseline. `just octet-all` runs the full-catalog profile from `dylint-all.toml` in an isolated Nix source copy and compares findings with `octet-baseline.json`, keeping the strict profile untouched. Baseline debt does not suppress strict findings.
+Octet runs in three tiers:
 
-The all-lint baseline contains 1,951 accepted finding identities in the same
-ten lint families as the extracted engine-owned baseline (1,228 identities):
-issue-driven additions were refactored until no finding outside those families
-remained, and the rest were reviewed before regeneration with the pinned
-runner. New or stale identities require that same review; an accepted
-baseline is recorded debt, not an all-lint-clean claim. The strict
-profile must remain clean without a baseline.
+- **Tier 1 (`just octet`, `dylint.toml`):** strict required deny profile with zero baseline and `core_source_scopes` covering `mneme-kernel`, `mneme-core`, `mneme-datalog`, and `mneme-memory`.
+- **Tier 2 (`just octet-all`, `dylint-all.toml` + `octet-baseline/<crate>.json`):** per-crate sharded ratchet run in an isolated Nix source copy across all 12 workspace crates. CI enforces a monotonic per-crate check (`new_count <= base_count`) via `just octet-monotonic` so accepted debt can only shrink.
+- **Tier 3 (`just octet-advisory`, `dylint-advisory.toml`):** opt-in advisory report for high-noise heuristic lints (`assertion_density`, `ambiguous_params`, `numeric_units`) kept out of the Tier 2 baselines.
+
+Baseline debt does not suppress Tier 1 strict findings, and an accepted Tier 2 baseline shard is recorded debt rather than an all-lint-clean claim.
 
 `just proofs` runs the preserved source-to-Lean translation and audits all 128 inventoried kernel theorems against the Rust kernel, checked-in translation, and allowed Lean axioms. It is intentionally a developer/consumer workflow, not a sandboxed Nix check: Lake may fetch proof dependencies. Run it from the pinned development shell on `x86_64-linux`; the shell selects the Charon-matched extraction toolchain. The consumer-side completion gate should execute the verifier from the exact Git revision it compiles.
 
