@@ -777,188 +777,231 @@ fn capability_attenuation_and_gset_revocation_dominance() {
 
 #[test]
 fn calm_stratification_suppression_join_and_sealed_absence_gate() {
-    use mneme_kernel::calm::{
-        CalmSealFacts, CalmStratum, DistributedOp, FederatedNegationFacts, SuppressionLevel,
-        SuppressionState, classify_op, federated_absence_established, join_suppression,
-        join_suppression_level, requires_barrier, seal_valid,
-    };
+    assert_eq!(
+        mneme_kernel::calm::classify_op(mneme_kernel::calm::DistributedOp::AppendImmutableRecord),
+        mneme_kernel::calm::CalmStratum::Monotonic
+    );
+    assert_eq!(
+        mneme_kernel::calm::classify_op(
+            mneme_kernel::calm::DistributedOp::MergeRevocationTombstone
+        ),
+        mneme_kernel::calm::CalmStratum::Monotonic
+    );
+    assert_eq!(
+        mneme_kernel::calm::classify_op(mneme_kernel::calm::DistributedOp::MergeSuppression),
+        mneme_kernel::calm::CalmStratum::Monotonic
+    );
+    assert_eq!(
+        mneme_kernel::calm::classify_op(
+            mneme_kernel::calm::DistributedOp::PositiveFederatedDatalog
+        ),
+        mneme_kernel::calm::CalmStratum::Monotonic
+    );
+    assert!(!mneme_kernel::calm::requires_barrier(
+        mneme_kernel::calm::DistributedOp::AppendImmutableRecord
+    ));
+    assert!(!mneme_kernel::calm::requires_barrier(
+        mneme_kernel::calm::DistributedOp::PositiveFederatedDatalog
+    ));
 
     assert_eq!(
-        classify_op(DistributedOp::AppendImmutableRecord),
-        CalmStratum::Monotonic
+        mneme_kernel::calm::classify_op(mneme_kernel::calm::DistributedOp::PromoteDecision),
+        mneme_kernel::calm::CalmStratum::Barrier
     );
     assert_eq!(
-        classify_op(DistributedOp::MergeRevocationTombstone),
-        CalmStratum::Monotonic
+        mneme_kernel::calm::classify_op(mneme_kernel::calm::DistributedOp::NegatedFederatedDatalog),
+        mneme_kernel::calm::CalmStratum::Barrier
     );
     assert_eq!(
-        classify_op(DistributedOp::MergeSuppression),
-        CalmStratum::Monotonic
+        mneme_kernel::calm::classify_op(mneme_kernel::calm::DistributedOp::SharedBlobPhysicalGc),
+        mneme_kernel::calm::CalmStratum::Barrier
     );
-    assert_eq!(
-        classify_op(DistributedOp::PositiveFederatedDatalog),
-        CalmStratum::Monotonic
-    );
-    assert!(!requires_barrier(DistributedOp::AppendImmutableRecord));
-    assert!(!requires_barrier(DistributedOp::PositiveFederatedDatalog));
-
-    assert_eq!(
-        classify_op(DistributedOp::PromoteDecision),
-        CalmStratum::Barrier
-    );
-    assert_eq!(
-        classify_op(DistributedOp::NegatedFederatedDatalog),
-        CalmStratum::Barrier
-    );
-    assert_eq!(
-        classify_op(DistributedOp::SharedBlobPhysicalGc),
-        CalmStratum::Barrier
-    );
-    assert!(requires_barrier(DistributedOp::PromoteDecision));
-    assert!(requires_barrier(DistributedOp::NegatedFederatedDatalog));
-    assert!(requires_barrier(DistributedOp::SharedBlobPhysicalGc));
+    assert!(mneme_kernel::calm::requires_barrier(
+        mneme_kernel::calm::DistributedOp::PromoteDecision
+    ));
+    assert!(mneme_kernel::calm::requires_barrier(
+        mneme_kernel::calm::DistributedOp::NegatedFederatedDatalog
+    ));
+    assert!(mneme_kernel::calm::requires_barrier(
+        mneme_kernel::calm::DistributedOp::SharedBlobPhysicalGc
+    ));
 
     let levels = [
-        SuppressionLevel::None,
-        SuppressionLevel::Withdrawn,
-        SuppressionLevel::Forgotten,
+        mneme_kernel::calm::SuppressionLevel::None,
+        mneme_kernel::calm::SuppressionLevel::Withdrawn,
+        mneme_kernel::calm::SuppressionLevel::Forgotten,
     ];
     for &a in &levels {
-        assert_eq!(join_suppression_level(a, a), a);
+        assert_eq!(mneme_kernel::calm::join_suppression_level(a, a), a);
         assert_eq!(
-            join_suppression_level(a, SuppressionLevel::Forgotten),
-            SuppressionLevel::Forgotten
+            mneme_kernel::calm::join_suppression_level(
+                a,
+                mneme_kernel::calm::SuppressionLevel::Forgotten
+            ),
+            mneme_kernel::calm::SuppressionLevel::Forgotten
         );
         for &b in &levels {
-            assert_eq!(join_suppression_level(a, b), join_suppression_level(b, a));
+            assert_eq!(
+                mneme_kernel::calm::join_suppression_level(a, b),
+                mneme_kernel::calm::join_suppression_level(b, a)
+            );
             for &c in &levels {
                 assert_eq!(
-                    join_suppression_level(join_suppression_level(a, b), c),
-                    join_suppression_level(a, join_suppression_level(b, c))
+                    mneme_kernel::calm::join_suppression_level(
+                        mneme_kernel::calm::join_suppression_level(a, b),
+                        c
+                    ),
+                    mneme_kernel::calm::join_suppression_level(
+                        a,
+                        mneme_kernel::calm::join_suppression_level(b, c)
+                    )
                 );
             }
         }
     }
 
-    let s1 = SuppressionState {
-        level: SuppressionLevel::Withdrawn,
+    let s1 = mneme_kernel::calm::SuppressionState {
+        level: mneme_kernel::calm::SuppressionLevel::Withdrawn,
         generation: 4,
     };
-    let s2 = SuppressionState {
-        level: SuppressionLevel::Forgotten,
+    let s2 = mneme_kernel::calm::SuppressionState {
+        level: mneme_kernel::calm::SuppressionLevel::Forgotten,
         generation: 2,
     };
     assert_eq!(
-        join_suppression(s1, s2),
-        SuppressionState {
-            level: SuppressionLevel::Forgotten,
+        mneme_kernel::calm::join_suppression(s1, s2),
+        mneme_kernel::calm::SuppressionState {
+            level: mneme_kernel::calm::SuppressionLevel::Forgotten,
             generation: 4,
         }
     );
-    assert_eq!(join_suppression(s1, s2), join_suppression(s2, s1));
+    assert_eq!(
+        mneme_kernel::calm::join_suppression(s1, s2),
+        mneme_kernel::calm::join_suppression(s2, s1)
+    );
 
-    let unsealed = CalmSealFacts {
+    let unsealed = mneme_kernel::calm::CalmSealFacts {
         sealed: false,
         quorum_satisfied: true,
         epoch_matches: true,
     };
-    let valid_seal = CalmSealFacts {
+    let valid_seal = mneme_kernel::calm::CalmSealFacts {
         sealed: true,
         quorum_satisfied: true,
         epoch_matches: true,
     };
-    assert!(!seal_valid(&unsealed));
-    assert!(seal_valid(&valid_seal));
-    assert!(!federated_absence_established(&FederatedNegationFacts {
-        local_absence_established: true,
-        stratum: CalmStratum::Barrier,
-        is_federated: true,
-        barrier_seal: unsealed,
-    }));
-    assert!(federated_absence_established(&FederatedNegationFacts {
-        local_absence_established: true,
-        stratum: CalmStratum::Barrier,
-        is_federated: true,
-        barrier_seal: valid_seal,
-    }));
-    assert!(federated_absence_established(&FederatedNegationFacts {
-        local_absence_established: true,
-        stratum: CalmStratum::Monotonic,
-        is_federated: true,
-        barrier_seal: unsealed,
-    }));
+    assert!(!mneme_kernel::calm::seal_valid(&unsealed));
+    assert!(mneme_kernel::calm::seal_valid(&valid_seal));
+    assert!(!mneme_kernel::calm::federated_absence_established(
+        &mneme_kernel::calm::FederatedNegationFacts {
+            local_absence_established: true,
+            stratum: mneme_kernel::calm::CalmStratum::Barrier,
+            is_federated: true,
+            barrier_seal: unsealed,
+        }
+    ));
+    assert!(mneme_kernel::calm::federated_absence_established(
+        &mneme_kernel::calm::FederatedNegationFacts {
+            local_absence_established: true,
+            stratum: mneme_kernel::calm::CalmStratum::Barrier,
+            is_federated: true,
+            barrier_seal: valid_seal,
+        }
+    ));
+    assert!(mneme_kernel::calm::federated_absence_established(
+        &mneme_kernel::calm::FederatedNegationFacts {
+            local_absence_established: true,
+            stratum: mneme_kernel::calm::CalmStratum::Monotonic,
+            is_federated: true,
+            barrier_seal: unsealed,
+        }
+    ));
 }
 
 #[test]
 fn hlc_tick_receive_causal_monotonicity_and_skew_guard() {
-    use mneme_kernel::hlc::{
-        ClockOrder, DEFAULT_MAX_SKEW_NS, HlcError, HybridTimestamp, compare, is_before, receive,
-        tick_local, within_skew,
-    };
-
     let base_ns: i64 = 1_700_000_000_000_000_000;
-    let t0 = HybridTimestamp {
+    let t0 = mneme_kernel::hlc::HybridTimestamp {
         physical_ns: base_ns,
         logical: 0,
     };
 
-    let t1 = HybridTimestamp {
+    let t1 = mneme_kernel::hlc::HybridTimestamp {
         physical_ns: base_ns + 500,
         logical: 0,
     };
-    assert_eq!(tick_local(t0, base_ns + 500, DEFAULT_MAX_SKEW_NS), Ok(t1));
-    assert!(is_before(t0, t1));
+    assert_eq!(
+        mneme_kernel::hlc::tick_local(t0, base_ns + 500, mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS),
+        Ok(t1)
+    );
+    assert!(mneme_kernel::hlc::is_before(t0, t1));
 
     // Regressing physical clock bumps logical counter monotonically.
-    let t2 = HybridTimestamp {
+    let t2 = mneme_kernel::hlc::HybridTimestamp {
         physical_ns: base_ns + 500,
         logical: 1,
     };
-    assert_eq!(tick_local(t1, base_ns + 100, DEFAULT_MAX_SKEW_NS), Ok(t2));
-    assert_eq!(compare(t1, t2), ClockOrder::Less);
+    assert_eq!(
+        mneme_kernel::hlc::tick_local(t1, base_ns + 100, mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS),
+        Ok(t2)
+    );
+    assert_eq!(
+        mneme_kernel::hlc::compare(t1, t2),
+        mneme_kernel::hlc::ClockOrder::Less
+    );
 
     // Receiving a remote event within skew advances strictly past both local and remote.
-    let remote = HybridTimestamp {
+    let remote = mneme_kernel::hlc::HybridTimestamp {
         physical_ns: base_ns + 1_000_000_000,
         logical: 7,
     };
-    let t3 = HybridTimestamp {
+    let t3 = mneme_kernel::hlc::HybridTimestamp {
         physical_ns: base_ns + 1_000_000_000,
         logical: 8,
     };
     assert_eq!(
-        receive(t2, base_ns + 600, remote, DEFAULT_MAX_SKEW_NS),
+        mneme_kernel::hlc::receive(
+            t2,
+            base_ns + 600,
+            remote,
+            mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS
+        ),
         Ok(t3)
     );
-    assert!(is_before(t2, t3));
-    assert!(is_before(remote, t3));
-    assert!(within_skew(
+    assert!(mneme_kernel::hlc::is_before(t2, t3));
+    assert!(mneme_kernel::hlc::is_before(remote, t3));
+    assert!(mneme_kernel::hlc::within_skew(
         t3.physical_ns,
         base_ns + 600,
-        DEFAULT_MAX_SKEW_NS
+        mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS
     ));
 
     // Byzantine future remote timestamp fails closed with ClockSkewExceeded.
-    let byzantine = HybridTimestamp {
+    let byzantine = mneme_kernel::hlc::HybridTimestamp {
         physical_ns: base_ns + 60_000_000_000,
         logical: 0,
     };
     assert_eq!(
-        receive(t3, base_ns + 600, byzantine, DEFAULT_MAX_SKEW_NS),
-        Err(HlcError::ClockSkewExceeded)
+        mneme_kernel::hlc::receive(
+            t3,
+            base_ns + 600,
+            byzantine,
+            mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS
+        ),
+        Err(mneme_kernel::hlc::HlcError::ClockSkewExceeded)
     );
     assert_eq!(
-        receive(t3, base_ns + 600, remote, -1),
-        Err(HlcError::InvalidMaxSkew)
+        mneme_kernel::hlc::receive(t3, base_ns + 600, remote, -1),
+        Err(mneme_kernel::hlc::HlcError::InvalidMaxSkew)
     );
 
     // Logical overflow fails closed.
-    let maxed = HybridTimestamp {
+    let maxed = mneme_kernel::hlc::HybridTimestamp {
         physical_ns: base_ns + 1_000,
         logical: u32::MAX,
     };
     assert_eq!(
-        tick_local(maxed, base_ns + 500, DEFAULT_MAX_SKEW_NS),
-        Err(HlcError::LogicalOverflow)
+        mneme_kernel::hlc::tick_local(maxed, base_ns + 500, mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS),
+        Err(mneme_kernel::hlc::HlcError::LogicalOverflow)
     );
 }

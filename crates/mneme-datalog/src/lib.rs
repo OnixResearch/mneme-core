@@ -87,8 +87,23 @@ pub mod repl;
 pub mod temporal;
 pub mod zset;
 pub use repl::{ReplLimits, ReplSession, ReplSessionRequest, ReplStepSummary};
-pub use temporal::{DEFAULT_MAX_INTERVALS_PER_FACT, FactValidity, IntervalSet, TemporalConfig};
+pub use temporal::{DEFAULT_MAX_INTERVALS_PER_FACT, FactValidity, IntervalSet};
 pub use zset::{BilinearJoin, IndexedZSet, ZSet, delta_join};
+
+/// Configuration for temporal interval bounds during Datalog evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TemporalConfig {
+    /// Maximum number of disjoint coalesced periods retained per fact.
+    pub max_intervals_per_fact: u64,
+}
+
+impl Default for TemporalConfig {
+    fn default() -> Self {
+        Self {
+            max_intervals_per_fact: DEFAULT_MAX_INTERVALS_PER_FACT,
+        }
+    }
+}
 
 /// A Datalog term.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

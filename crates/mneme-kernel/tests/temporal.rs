@@ -1,6 +1,6 @@
 //! Unit/property tests for `mneme_kernel::temporal`.
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/fixture code fails by panic, not a production path
 
 #[test]
 fn half_open_period_membership_and_legacy_instant_decoding() {

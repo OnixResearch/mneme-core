@@ -1053,7 +1053,7 @@ impl View {
             Vec<crate::model::AssertionView>,
         > = std::collections::BTreeMap::new();
         for (index, left) in candidates.iter().enumerate() {
-            for right in candidates.iter().skip(index + 1) {
+            for right in candidates.iter().skip(index.saturating_add(1)) {
                 if left.subject != right.subject || left.predicate != right.predicate {
                     continue;
                 }
@@ -1115,48 +1115,46 @@ impl View {
         let before_map = active_window_assertions(rev_a, valid_window)?;
         let after_map = active_window_assertions(rev_b, valid_window)?;
         let baseline_periods = build_prior_subject_periods(&before_map, &after_map, valid_window);
-        let mut changes = Vec::new();
-        for (id, (before_assertion, before_period)) in &before_map {
-            match after_map.get(id) {
-                Some((after_assertion, after_period)) => {
-                    if let Some(change) = diff_existing_assertion(
-                        *id,
-                        before_assertion,
-                        *before_period,
-                        after_assertion,
-                        *after_period,
-                    ) {
-                        changes.push(change);
-                    }
+        let before_changes =
+            before_map
+                .iter()
+                .filter_map(
+                    |(id, (before_assertion, before_period))| match after_map.get(id) {
+                        Some((after_assertion, after_period)) => diff_existing_assertion(
+                            *id,
+                            before_assertion,
+                            *before_period,
+                            after_assertion,
+                            *after_period,
+                        ),
+                        None => Some(BitemporalChange {
+                            assertion_id: *id,
+                            subject: before_assertion.subject,
+                            predicate: before_assertion.predicate.clone(),
+                            kind: BitemporalChangeKind::RetroactiveCorrection,
+                            before: Some(before_assertion.clone()),
+                            after: None,
+                            affected_period: *before_period,
+                        }),
+                    },
+                );
+        let added_changes = after_map
+            .iter()
+            .filter(|(id, _)| !before_map.contains_key(*id))
+            .map(|(id, (after_assertion, after_period))| {
+                let kind =
+                    classify_added_assertion(after_assertion, *after_period, &baseline_periods);
+                BitemporalChange {
+                    assertion_id: *id,
+                    subject: after_assertion.subject,
+                    predicate: after_assertion.predicate.clone(),
+                    kind,
+                    before: None,
+                    after: Some(after_assertion.clone()),
+                    affected_period: *after_period,
                 }
-                None => {
-                    changes.push(BitemporalChange {
-                        assertion_id: *id,
-                        subject: before_assertion.subject,
-                        predicate: before_assertion.predicate.clone(),
-                        kind: BitemporalChangeKind::RetroactiveCorrection,
-                        before: Some(before_assertion.clone()),
-                        after: None,
-                        affected_period: *before_period,
-                    });
-                }
-            }
-        }
-        for (id, (after_assertion, after_period)) in &after_map {
-            if before_map.contains_key(id) {
-                continue;
-            }
-            let kind = classify_added_assertion(after_assertion, *after_period, &baseline_periods);
-            changes.push(BitemporalChange {
-                assertion_id: *id,
-                subject: after_assertion.subject,
-                predicate: after_assertion.predicate.clone(),
-                kind,
-                before: None,
-                after: Some(after_assertion.clone()),
-                affected_period: *after_period,
             });
-        }
+        let mut changes: Vec<BitemporalChange> = before_changes.chain(added_changes).collect();
         changes.sort_by_key(|change| {
             (
                 change.affected_period.start,
@@ -2329,14 +2327,12 @@ impl<'v> Ancestry<'v> {
             eligible: true,
             roots: std::collections::BTreeMap::new(),
         };
-        if self
+        let is_withdrawn = self
             .view
             .suppression_for(&view.record)
-            .is_some_and(|suppression| suppression.mode == mneme_store::SuppressionMode::Withdrawn)
-            || view.completeness != "complete"
-            || !self.view.derivation_revision_matches(view)
-            || view.premises.is_empty()
-        {
+            .is_some_and(|suppression| suppression.mode == mneme_store::SuppressionMode::Withdrawn);
+        let is_incomplete = view.completeness != "complete" || view.premises.is_empty();
+        if is_withdrawn || is_incomplete || !self.view.derivation_revision_matches(view) {
             facts.eligible = false;
         }
         for premise in &view.premises {
@@ -2450,47 +2446,55 @@ fn active_window_assertions(
     view: &View,
     valid_window: mneme_kernel::temporal::Period,
 ) -> crate::failure::Result<WindowAssertions> {
-    let mut map = std::collections::BTreeMap::new();
-    for assertion in view.assertions()? {
-        if !view.access.allows(&assertion.record.scope)
-            || is_suppressed_record(view, &assertion.record)
-        {
-            continue;
-        }
-        let mneme_kernel::temporal::Validity::Known(period) =
-            valid_time_to_kernel(assertion.valid_time)
-        else {
-            continue;
-        };
-        if let Some(clipped) = mneme_kernel::temporal::intersect(period, valid_window) {
-            map.insert(assertion.record.record_id, (assertion, clipped));
-        }
-    }
+    let map = view
+        .assertions()?
+        .into_iter()
+        .filter(|assertion| {
+            view.access.allows(&assertion.record.scope)
+                && !is_suppressed_record(view, &assertion.record)
+        })
+        .filter_map(|assertion| {
+            let mneme_kernel::temporal::Validity::Known(period) =
+                valid_time_to_kernel(assertion.valid_time)
+            else {
+                return None;
+            };
+            let clipped = mneme_kernel::temporal::intersect(period, valid_window)?;
+            Some((assertion.record.record_id, (assertion, clipped)))
+        })
+        .collect();
     Ok(map)
+}
+
+fn is_same_assertion_core(
+    before: &crate::model::AssertionView,
+    after: &crate::model::AssertionView,
+) -> bool {
+    let is_same_key = before.subject == after.subject && before.predicate == after.predicate;
+    let is_same_claim = before.value == after.value && before.stance == after.stance;
+    is_same_key && is_same_claim && before.lifecycle == after.lifecycle
 }
 
 fn is_clean_open_ended_expiry(
     before: &crate::model::AssertionView,
     after: &crate::model::AssertionView,
 ) -> bool {
-    before.subject == after.subject
-        && before.predicate == after.predicate
-        && before.value == after.value
-        && before.stance == after.stance
-        && before.lifecycle == after.lifecycle
-        && matches!(
-            (before.valid_time, after.valid_time),
-            (
-                mneme_core::ValidTime::Bounded {
-                    start: start_a,
-                    end: None,
-                },
-                mneme_core::ValidTime::Bounded {
-                    start: start_b,
-                    end: Some(_),
-                },
-            ) if start_a == start_b
-        )
+    if !is_same_assertion_core(before, after) {
+        return false;
+    }
+    matches!(
+        (before.valid_time, after.valid_time),
+        (
+            mneme_core::ValidTime::Bounded {
+                start: start_a,
+                end: None,
+            },
+            mneme_core::ValidTime::Bounded {
+                start: start_b,
+                end: Some(_),
+            },
+        ) if start_a == start_b
+    )
 }
 
 fn build_prior_subject_periods(
@@ -2500,14 +2504,12 @@ fn build_prior_subject_periods(
 ) -> PriorSubjectPeriods {
     let mut prior: PriorSubjectPeriods = std::collections::BTreeMap::new();
     for (id, (before_assertion, before_period)) in before_map {
-        let effective_period = match after_map.get(id) {
-            Some((after_assertion, after_period))
-                if is_clean_open_ended_expiry(before_assertion, after_assertion) =>
-            {
-                *after_period
-            }
-            _ => *before_period,
-        };
+        let effective_period = after_map
+            .get(id)
+            .filter(|(after_assertion, _)| {
+                is_clean_open_ended_expiry(before_assertion, after_assertion)
+            })
+            .map_or(*before_period, |(_, after_period)| *after_period);
         if let Some(clipped) = mneme_kernel::temporal::intersect(effective_period, valid_window) {
             prior
                 .entry((before_assertion.subject, before_assertion.predicate.clone()))
@@ -2525,13 +2527,7 @@ fn diff_existing_assertion(
     after: &crate::model::AssertionView,
     after_period: mneme_kernel::temporal::Period,
 ) -> Option<BitemporalChange> {
-    if before.subject == after.subject
-        && before.predicate == after.predicate
-        && before.value == after.value
-        && before.stance == after.stance
-        && before.lifecycle == after.lifecycle
-        && before.valid_time == after.valid_time
-    {
+    if is_same_assertion_core(before, after) && before.valid_time == after.valid_time {
         return None;
     }
     let kind = if is_clean_open_ended_expiry(before, after) {

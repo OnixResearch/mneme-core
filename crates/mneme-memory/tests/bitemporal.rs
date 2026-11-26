@@ -1,7 +1,7 @@
 //! Half-open valid-time handoff, legacy `Instant` compatibility, and
 //! `View::bitemporal_diff` tests over durable workspaces.
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/fixture code fails by panic, not a production path
 
 #[allow(dead_code)]
 mod common;

@@ -1,6 +1,6 @@
 //! Half-open valid-time expiry handoff tests for `mneme-retention`.
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/fixture code fails by panic, not a production path
 
 fn scope() -> mneme_core::ScopeId {
     mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "bitemporal-ret").expect("scope")
@@ -95,7 +95,7 @@ struct ClaimSpec<'a> {
     valid_time: mneme_core::ValidTime,
 }
 
-fn add_accepted_claim(workspace: &mut mneme_store::Workspace, spec: ClaimSpec<'_>) {
+fn propose_claim(workspace: &mut mneme_store::Workspace, spec: &ClaimSpec<'_>) {
     let evidence = mneme_memory::build_evidence(
         spec.evidence_id,
         spec.evidence_rev,
@@ -131,19 +131,21 @@ fn add_accepted_claim(workspace: &mut mneme_store::Workspace, spec: ClaimSpec<'_
             superseded_by: None,
         },
     );
-    {
-        let mut memory = mneme_memory::Engine::new(workspace, mneme_memory::Access::Operator);
-        memory
-            .commit(mneme_memory::Batch {
-                actor: "test".to_owned(),
-                scope: scope(),
-                idempotency_key: format!("{}-prop", spec.key),
-                records: vec![evidence, proposed],
-                source_blobs: Vec::new(),
-                publications: Vec::new(),
-            })
-            .expect("propose");
-    }
+    let mut memory = mneme_memory::Engine::new(workspace, mneme_memory::Access::Operator);
+    memory
+        .commit(mneme_memory::Batch {
+            actor: "test".to_owned(),
+            scope: scope(),
+            idempotency_key: format!("{}-prop", spec.key),
+            records: vec![evidence, proposed],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+        })
+        .expect("propose");
+}
+
+fn add_accepted_claim(workspace: &mut mneme_store::Workspace, spec: ClaimSpec<'_>) {
+    propose_claim(workspace, &spec);
     let current = workspace
         .snapshot()
         .expect("snap")

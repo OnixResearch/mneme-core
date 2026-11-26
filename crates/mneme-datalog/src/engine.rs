@@ -1,6 +1,8 @@
 //! Snapshot fact loading, bounded fixpoint evaluation, and coverage.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
+mod derivation;
+
 pub(crate) type FactKey = Vec<mneme_core::Value>;
 pub(crate) type Binding = std::collections::BTreeMap<String, mneme_core::Value>;
 pub(crate) type AvailabilityMap =
@@ -67,14 +69,6 @@ struct PremiseSet {
 }
 
 /// Support accumulated over one instantiated rule body.
-struct PremiseSupport {
-    sources: std::collections::BTreeSet<crate::SourceKey>,
-    roots: std::collections::BTreeSet<mneme_core::RecordId>,
-    vaults: std::collections::BTreeSet<String>,
-    validity: crate::FactValidity,
-    is_interval_truncated: bool,
-}
-
 /// Work, row, time, and cancellation accounting for one evaluation.
 ///
 /// Kept apart from the fact store so a join can charge while it holds a shared
@@ -94,6 +88,10 @@ pub(crate) struct Budget<'a> {
 impl<'a> Budget<'a> {
     pub(crate) fn is_active(&self) -> bool {
         self.status == crate::ExecutionStatus::Complete
+    }
+
+    pub(crate) fn remaining_steps(&self) -> u64 {
+        self.limits.max_work.saturating_sub(self.work)
     }
 
     fn cancelled(&self) -> bool {
@@ -220,6 +218,14 @@ pub(crate) struct VaultSource<'a> {
     pub current_sources: &'a AvailabilityMap,
 }
 
+struct FederatedBuildParams<'a> {
+    request: &'a crate::BuildRequest,
+    context: &'a crate::BuildContext,
+    program: &'a crate::RuleProgram,
+    start: std::time::Instant,
+    temporal_config: crate::TemporalConfig,
+}
+
 pub(crate) fn build(
     view: &mneme_memory::View,
     request: &crate::BuildRequest,
@@ -235,11 +241,13 @@ pub(crate) fn build(
     }];
     build_federated_with_config(
         &sources,
-        request,
-        context,
-        program,
-        environment.start,
-        environment.temporal_config,
+        FederatedBuildParams {
+            request,
+            context,
+            program,
+            start: environment.start,
+            temporal_config: environment.temporal_config,
+        },
     )
 }
 
@@ -252,22 +260,27 @@ pub(crate) fn build_federated(
 ) -> BuildFacts {
     build_federated_with_config(
         sources,
-        request,
-        context,
-        program,
-        start,
-        crate::TemporalConfig::default(),
+        FederatedBuildParams {
+            request,
+            context,
+            program,
+            start,
+            temporal_config: crate::TemporalConfig::default(),
+        },
     )
 }
 
 fn build_federated_with_config(
     sources: &[VaultSource<'_>],
-    request: &crate::BuildRequest,
-    context: &crate::BuildContext,
-    program: &crate::RuleProgram,
-    start: std::time::Instant,
-    temporal_config: crate::TemporalConfig,
+    params: FederatedBuildParams<'_>,
 ) -> BuildFacts {
+    let FederatedBuildParams {
+        request,
+        context,
+        program,
+        start,
+        temporal_config,
+    } = params;
     assert!(!sources.is_empty());
     let participating_vaults = sources
         .iter()
@@ -1365,15 +1378,19 @@ fn merge_existing_fact(
     let is_now_active = data.is_active();
     let is_upgraded = data.epistemic > prev_epistemic;
     let max_intervals = budget.max_intervals_per_fact;
-    let Some((merged_validity, is_interval_truncated)) =
+    let Some(bounded) =
         data.validity
-            .union_bounded(&validity, max_intervals, budget)
+            .union_bounded(&validity, max_intervals, budget.remaining_steps())
     else {
+        budget.stop(crate::ExecutionStatus::Timeout);
         return false;
     };
-    let is_validity_changed = merged_validity != data.validity;
-    data.validity = merged_validity;
-    if is_interval_truncated {
+    if bounded.steps > 0 && !budget.charge(bounded.steps) {
+        return false;
+    }
+    let is_validity_changed = bounded.validity != data.validity;
+    data.validity = bounded.validity;
+    if bounded.is_truncated {
         data.truncated = true;
         store.truncated = true;
         budget.support_truncated = true;
@@ -1823,25 +1840,7 @@ fn plan_rule_body(
             .position(|&idx| is_temporal_literal(&rule.body[idx]))
         {
             let body_index = remaining.remove(pos);
-            match &rule.body[body_index] {
-                crate::Literal::DiamondMinus { atom, .. }
-                | crate::Literal::BoxMinus { atom, .. } => {
-                    extend_atom_vars(atom, &mut bound_vars);
-                }
-                crate::Literal::Since {
-                    maintained,
-                    trigger,
-                    ..
-                } => {
-                    extend_atom_vars(trigger, &mut bound_vars);
-                    extend_atom_vars(maintained, &mut bound_vars);
-                }
-                crate::Literal::Allen { left, right, .. } => {
-                    extend_atom_vars(left, &mut bound_vars);
-                    extend_atom_vars(right, &mut bound_vars);
-                }
-                _ => {}
-            }
+            extend_temporal_literal_vars(&rule.body[body_index], &mut bound_vars);
             steps.push(PlanStep::Temporal { body_index });
             continue;
         }
@@ -1932,6 +1931,30 @@ fn select_next_positive(
     best.map(|candidate| (candidate.pos, candidate.body_index, candidate.bound_cols))
 }
 
+fn extend_temporal_literal_vars(
+    literal: &crate::Literal,
+    bound_vars: &mut std::collections::BTreeSet<String>,
+) {
+    match literal {
+        crate::Literal::DiamondMinus { atom, .. } | crate::Literal::BoxMinus { atom, .. } => {
+            extend_atom_vars(atom, bound_vars);
+        }
+        crate::Literal::Since {
+            maintained,
+            trigger,
+            ..
+        } => {
+            extend_atom_vars(trigger, bound_vars);
+            extend_atom_vars(maintained, bound_vars);
+        }
+        crate::Literal::Allen { left, right, .. } => {
+            extend_atom_vars(left, bound_vars);
+            extend_atom_vars(right, bound_vars);
+        }
+        _ => {}
+    }
+}
+
 fn bound_columns(
     atom: &crate::Atom,
     bound_vars: &std::collections::BTreeSet<String>,
@@ -1939,11 +1962,7 @@ fn bound_columns(
     atom.terms
         .iter()
         .enumerate()
-        .filter_map(|(index, term)| match term {
-            crate::Term::Constant(_) => Some(index),
-            crate::Term::Variable(name) if bound_vars.contains(name) => Some(index),
-            crate::Term::Variable(_) => None,
-        })
+        .filter_map(|(index, term)| term_is_bound(term, bound_vars).then_some(index))
         .collect()
 }
 
@@ -1990,10 +2009,56 @@ fn literal_all_vars_bound(
 }
 
 fn term_is_bound(term: &crate::Term, bound_vars: &std::collections::BTreeSet<String>) -> bool {
-    match term {
-        crate::Term::Constant(_) => true,
-        crate::Term::Variable(name) => bound_vars.contains(name),
+    if let crate::Term::Variable(name) = term {
+        bound_vars.contains(name)
+    } else {
+        true
     }
+}
+
+fn filter_negative_bindings(
+    evaluation: &mut Evaluation<'_>,
+    bindings: RuleBindings,
+    atom: &crate::Atom,
+) -> Result<RuleBindings, RuleOutcome> {
+    if !mneme_kernel::admission::non_monotonic_rule_admissible(kernel_coverage(
+        evaluation.coverage_status(&atom.predicate),
+    )) {
+        return Err(RuleOutcome::Skipped);
+    }
+    let mut kept = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        if !evaluation.budget.charge(1) {
+            return Err(RuleOutcome::Skipped);
+        }
+        if !matches_atom(evaluation, atom, &binding)? {
+            kept.push(binding);
+        }
+    }
+    Ok(kept)
+}
+
+fn filter_compare_bindings(
+    evaluation: &mut Evaluation<'_>,
+    bindings: RuleBindings,
+    op: crate::CompareOp,
+    left: &crate::Term,
+    right: &crate::Term,
+) -> Result<RuleBindings, RuleOutcome> {
+    let mut kept = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        if !evaluation.budget.charge(1) {
+            return Err(RuleOutcome::Skipped);
+        }
+        let is_kept = match (term_value(left, &binding), term_value(right, &binding)) {
+            (Some(lhs), Some(rhs)) => compare_values(op, &lhs, &rhs),
+            _ => false,
+        };
+        if is_kept {
+            kept.push(binding);
+        }
+    }
+    Ok(kept)
 }
 
 fn execute_plan(
@@ -2011,8 +2076,6 @@ fn execute_plan(
                 let crate::Literal::Positive(atom) = &rule.body[*body_index] else {
                     continue;
                 };
-                // A binding count past the budget's counter cannot be charged at
-                // all, so the rule is skipped exactly as an exhausted budget is.
                 let Ok(cost) = u64::try_from(bindings.len()) else {
                     return Err(RuleOutcome::Skipped);
                 };
@@ -2034,40 +2097,13 @@ fn execute_plan(
                 let crate::Literal::Negative(atom) = &rule.body[*body_index] else {
                     continue;
                 };
-                if !mneme_kernel::admission::non_monotonic_rule_admissible(kernel_coverage(
-                    evaluation.coverage_status(&atom.predicate),
-                )) {
-                    return Err(RuleOutcome::Skipped);
-                }
-                let mut kept = Vec::with_capacity(bindings.len());
-                for binding in bindings.drain(..) {
-                    if !evaluation.budget.charge(1) {
-                        return Err(RuleOutcome::Skipped);
-                    }
-                    if !matches_atom(evaluation, atom, &binding)? {
-                        kept.push(binding);
-                    }
-                }
-                bindings = kept;
+                bindings = filter_negative_bindings(evaluation, bindings, atom)?;
             }
             PlanStep::Compare { body_index } => {
                 let crate::Literal::Compare { op, left, right } = &rule.body[*body_index] else {
                     continue;
                 };
-                let mut kept = Vec::with_capacity(bindings.len());
-                for binding in bindings.drain(..) {
-                    if !evaluation.budget.charge(1) {
-                        return Err(RuleOutcome::Skipped);
-                    }
-                    let is_kept = match (term_value(left, &binding), term_value(right, &binding)) {
-                        (Some(left), Some(right)) => compare_values(*op, &left, &right),
-                        _ => false,
-                    };
-                    if is_kept {
-                        kept.push(binding);
-                    }
-                }
-                bindings = kept;
+                bindings = filter_compare_bindings(evaluation, bindings, *op, left, right)?;
             }
         }
         if bindings.is_empty() {
@@ -2084,10 +2120,13 @@ fn bound_columns_from_bindings(atom: &crate::Atom, bindings: &[Binding]) -> Vec<
     atom.terms
         .iter()
         .enumerate()
-        .filter_map(|(index, term)| match term {
-            crate::Term::Constant(_) => Some(index),
-            crate::Term::Variable(name) if sample.contains_key(name) => Some(index),
-            crate::Term::Variable(_) => None,
+        .filter_map(|(index, term)| {
+            let is_bound = if let crate::Term::Variable(name) = term {
+                sample.contains_key(name)
+            } else {
+                true
+            };
+            is_bound.then_some(index)
         })
         .collect()
 }
@@ -2113,13 +2152,16 @@ fn execute_temporal_step(
             if after_trigger.is_empty() {
                 return Ok(Vec::new());
             }
-            let maintained_all_bound = after_trigger.first().is_some_and(|sample| {
-                maintained.terms.iter().all(|term| match term {
-                    crate::Term::Constant(_) => true,
-                    crate::Term::Variable(name) => sample.contains_key(name),
+            let is_maintained_all_bound = after_trigger.first().is_some_and(|sample| {
+                maintained.terms.iter().all(|term| {
+                    if let crate::Term::Variable(name) = term {
+                        sample.contains_key(name)
+                    } else {
+                        true
+                    }
                 })
             });
-            if *lower_ns == 0 && maintained_all_bound {
+            if *lower_ns == 0 && is_maintained_all_bound {
                 // When lower_ns == 0 and all variables of `maintained` are already
                 // bound by `trigger`, `Empty S_[0, u] trigger = trigger` still holds.
                 Ok(after_trigger)
@@ -2186,13 +2228,15 @@ fn evaluate_aggregate_rule(
         if !evaluation.budget.is_active() {
             return RuleOutcome::Skipped;
         }
-        let support_ctx = SupportContext {
+        let support_ctx = derivation::SupportContext {
             context: evaluation.context,
             facts: &evaluation.facts,
             coverage: &evaluation.coverage,
             participating_vaults: &evaluation.participating_vaults,
         };
-        if premises_for_binding(rule, &support_ctx, &mut evaluation.budget, binding).is_some() {
+        if derivation::premises_for_binding(rule, &support_ctx, &mut evaluation.budget, binding)
+            .is_some()
+        {
             valid_bindings.push(binding.clone());
         }
     }
@@ -2208,13 +2252,13 @@ fn evaluate_aggregate_rule(
         if !evaluation.budget.is_active() {
             break;
         }
-        let support_ctx = SupportContext {
+        let support_ctx = derivation::SupportContext {
             context: evaluation.context,
             facts: &evaluation.facts,
             coverage: &evaluation.coverage,
             participating_vaults: &evaluation.participating_vaults,
         };
-        let Some(contents) = aggregate_support(
+        let Some(contents) = derivation::aggregate_support(
             rule,
             &support_ctx,
             &mut evaluation.budget,
@@ -2261,15 +2305,19 @@ fn evaluate_ordinary_rule(
                 "rule head has an unbound variable",
             );
         };
-        let support_ctx = SupportContext {
+        let support_ctx = derivation::SupportContext {
             context: evaluation.context,
             facts: &evaluation.facts,
             coverage: &evaluation.coverage,
             participating_vaults: &evaluation.participating_vaults,
         };
-        let Some(contents) =
-            instantiated_support(rule, &support_ctx, &mut evaluation.budget, binding, terms)
-        else {
+        let Some(contents) = derivation::instantiated_support(
+            rule,
+            &support_ctx,
+            &mut evaluation.budget,
+            binding,
+            terms,
+        ) else {
             if !evaluation.budget.is_active() {
                 break;
             }
@@ -2995,583 +3043,6 @@ fn aggregate_head_row(
     })
 }
 
-/// Read-only evaluation context needed to instantiate premises and derivations.
-struct SupportContext<'a> {
-    context: &'a crate::BuildContext,
-    facts: &'a std::collections::BTreeMap<String, FactStore>,
-    coverage: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
-    participating_vaults: &'a std::collections::BTreeSet<String>,
-}
-
-impl SupportContext<'_> {
-    fn coverage_status(&self, predicate: &str) -> crate::CoverageStatus {
-        self.coverage
-            .get(predicate)
-            .copied()
-            .unwrap_or(crate::CoverageStatus::Unknown)
-    }
-}
-
-fn instantiated_support(
-    rule: &crate::Rule,
-    support_ctx: &SupportContext<'_>,
-    budget: &mut Budget<'_>,
-    binding: &Binding,
-    terms: FactKey,
-) -> Option<FactContents> {
-    assert!(!rule.id.is_empty());
-    debug_assert_eq!(terms.len(), rule.head.terms.len());
-    if !budget.is_active() {
-        return None;
-    }
-    let PremiseSet {
-        premises,
-        sources,
-        roots,
-        vaults,
-        validity,
-        is_interval_truncated,
-    } = premises_for_binding(rule, support_ctx, budget, binding)?;
-    if !budget.is_active() {
-        return None;
-    }
-    if is_interval_truncated {
-        budget.support_truncated = true;
-    }
-    let epistemic = premises
-        .iter()
-        .fold(crate::EpistemicStatus::ONE, |acc, premise| {
-            acc.join(premise.epistemic)
-        });
-    let temporal_parameters = validity.to_temporal_parameters();
-    let support = crate::Derivation {
-        rule_id: rule.id.clone(),
-        rule_version: support_ctx.context.rule_bundle_version.clone(),
-        premises,
-        sources: sources.clone(),
-        vaults: vaults.clone(),
-        temporal_parameters,
-        revision: support_ctx.context.served_revision,
-        scope: support_ctx.context.scope.clone(),
-        truncated: is_interval_truncated,
-        epistemic,
-    };
-    Some(FactContents {
-        terms,
-        support,
-        sources,
-        canonical: None,
-        canonical_roots: roots,
-        vaults,
-        validity,
-        epistemic,
-    })
-}
-
-type PremiseIdentity = (
-    String,
-    Vec<mneme_core::Value>,
-    Option<String>,
-    std::collections::BTreeSet<String>,
-    bool,
-);
-
-fn extend_unique_premises(
-    incoming: Vec<crate::Premise>,
-    seen: &mut std::collections::BTreeSet<PremiseIdentity>,
-    premises: &mut Vec<crate::Premise>,
-) {
-    for premise in incoming {
-        let key = (
-            premise.predicate.clone(),
-            premise.terms.clone(),
-            premise.vault.clone(),
-            premise.vaults.clone(),
-            premise.absent,
-        );
-        if seen.insert(key) {
-            premises.push(premise);
-        }
-    }
-}
-
-fn aggregate_support(
-    rule: &crate::Rule,
-    support_ctx: &SupportContext<'_>,
-    budget: &mut Budget<'_>,
-    bindings: &[Binding],
-    row: &AggregateRow,
-) -> Option<FactContents> {
-    assert!(!rule.id.is_empty());
-    debug_assert_eq!(row.head_terms.len(), rule.head.terms.len());
-    if !budget.is_active() {
-        return None;
-    }
-    let mut premises = Vec::with_capacity(row.binding_indices.len());
-    let mut seen = std::collections::BTreeSet::new();
-    let mut sources = std::collections::BTreeSet::new();
-    let mut roots = std::collections::BTreeSet::new();
-    let mut vaults = std::collections::BTreeSet::new();
-    let mut validity: Option<crate::FactValidity> = None;
-    let mut is_interval_truncated = false;
-    let mut epistemic = crate::EpistemicStatus::ONE;
-    for index in &row.binding_indices {
-        if !budget.is_active() {
-            return None;
-        }
-        let Some(binding) = bindings.get(*index) else {
-            continue;
-        };
-        let premise_set = premises_for_binding(rule, support_ctx, budget, binding)?;
-        sources.extend(premise_set.sources);
-        roots.extend(premise_set.roots);
-        vaults.extend(premise_set.vaults);
-        is_interval_truncated = is_interval_truncated || premise_set.is_interval_truncated;
-        validity = match validity {
-            None => Some(premise_set.validity),
-            Some(current) => {
-                let max_intervals = budget.max_intervals_per_fact;
-                let (merged, truncated) =
-                    current.union_bounded(&premise_set.validity, max_intervals, budget)?;
-                is_interval_truncated = is_interval_truncated || truncated;
-                Some(merged)
-            }
-        };
-        let binding_epistemic = premise_set
-            .premises
-            .iter()
-            .fold(crate::EpistemicStatus::ONE, |acc, premise| {
-                acc.join(premise.epistemic)
-            });
-        epistemic = epistemic.join(binding_epistemic);
-        extend_unique_premises(premise_set.premises, &mut seen, &mut premises);
-    }
-    if !budget.is_active() {
-        return None;
-    }
-    let validity = validity.unwrap_or_else(crate::FactValidity::always);
-    let is_truncated = premises.len() > 64 || is_interval_truncated;
-    if is_interval_truncated {
-        budget.support_truncated = true;
-    }
-    premises.truncate(64);
-    let temporal_parameters = validity.to_temporal_parameters();
-    let support = crate::Derivation {
-        rule_id: rule.id.clone(),
-        rule_version: support_ctx.context.rule_bundle_version.clone(),
-        premises,
-        sources: sources.clone(),
-        vaults: vaults.clone(),
-        temporal_parameters,
-        revision: support_ctx.context.served_revision,
-        scope: support_ctx.context.scope.clone(),
-        truncated: is_truncated,
-        epistemic,
-    };
-    Some(FactContents {
-        terms: row.head_terms.clone(),
-        support,
-        sources,
-        canonical: None,
-        canonical_roots: roots,
-        vaults,
-        validity,
-        epistemic,
-    })
-}
-
-/// Instantiate every premise a binding relies on.
-///
-/// A negated literal never has a matching row, so it is recorded as an explicit
-/// absence premise together with the relation coverage the rule required;
-/// otherwise a derivation that rests on negation would look like it rested on
-/// the positive body alone. Returns `None` if budget expires or any required
-/// positive premise cannot be resolved to an active row, preventing silent
-/// promotion of a truncated premise set to `EpistemicStatus::Accepted`.
-fn premises_for_binding(
-    rule: &crate::Rule,
-    support_ctx: &SupportContext<'_>,
-    budget: &mut Budget<'_>,
-    binding: &Binding,
-) -> Option<PremiseSet> {
-    assert!(!rule.id.is_empty());
-    let mut premises = Vec::with_capacity(rule.body.len());
-    let mut support = PremiseSupport {
-        sources: std::collections::BTreeSet::new(),
-        roots: std::collections::BTreeSet::new(),
-        vaults: std::collections::BTreeSet::new(),
-        validity: crate::FactValidity::always(),
-        is_interval_truncated: false,
-    };
-    for literal in &rule.body {
-        match literal {
-            crate::Literal::Positive(atom) => {
-                let premise = positive_premise(support_ctx, budget, atom, binding, &mut support)?;
-                premises.push(premise);
-            }
-            crate::Literal::Negative(atom) => {
-                let premise = negative_premise(support_ctx, budget, atom, binding, &mut support)?;
-                premises.push(premise);
-            }
-            crate::Literal::DiamondMinus {
-                atom,
-                lower_ns,
-                upper_ns,
-            } => {
-                let window = mneme_kernel::temporal::MetricWindow {
-                    lower: *lower_ns,
-                    upper: *upper_ns,
-                };
-                let premise = unary_metric_premise(
-                    support_ctx,
-                    budget,
-                    atom,
-                    binding,
-                    &mut support,
-                    UnaryMetricOp::DiamondMinus(window),
-                )?;
-                premises.push(premise);
-            }
-            crate::Literal::BoxMinus {
-                atom,
-                lower_ns,
-                upper_ns,
-            } => {
-                let window = mneme_kernel::temporal::MetricWindow {
-                    lower: *lower_ns,
-                    upper: *upper_ns,
-                };
-                let premise = unary_metric_premise(
-                    support_ctx,
-                    budget,
-                    atom,
-                    binding,
-                    &mut support,
-                    UnaryMetricOp::BoxMinus(window),
-                )?;
-                premises.push(premise);
-            }
-            crate::Literal::Since {
-                maintained,
-                trigger,
-                lower_ns,
-                upper_ns,
-            } => {
-                let window = mneme_kernel::temporal::MetricWindow {
-                    lower: *lower_ns,
-                    upper: *upper_ns,
-                };
-                since_premises(
-                    support_ctx,
-                    budget,
-                    maintained,
-                    trigger,
-                    window,
-                    binding,
-                    &mut support,
-                    &mut premises,
-                )?;
-            }
-            crate::Literal::Allen {
-                relation,
-                left,
-                right,
-            } => {
-                allen_premises(
-                    support_ctx,
-                    budget,
-                    *relation,
-                    left,
-                    right,
-                    binding,
-                    &mut support,
-                    &mut premises,
-                )?;
-            }
-            _ => {}
-        }
-    }
-    if !budget.is_active() {
-        return None;
-    }
-    debug_assert!(premises.len() <= rule.body.len().saturating_mul(2));
-    Some(PremiseSet {
-        premises,
-        sources: support.sources,
-        roots: support.roots,
-        vaults: support.vaults,
-        validity: support.validity,
-        is_interval_truncated: support.is_interval_truncated,
-    })
-}
-
-enum UnaryMetricOp {
-    DiamondMinus(mneme_kernel::temporal::MetricWindow),
-    BoxMinus(mneme_kernel::temporal::MetricWindow),
-}
-
-fn apply_sequenced_validity(
-    support: &mut PremiseSupport,
-    incoming: &crate::FactValidity,
-    budget: &mut Budget<'_>,
-) -> bool {
-    let max_intervals = budget.max_intervals_per_fact;
-    let Some(bounded) = support
-        .validity
-        .intersect_bounded(incoming, max_intervals, budget)
-    else {
-        return false;
-    };
-    if bounded.set.is_empty() {
-        return false;
-    }
-    support.is_interval_truncated = support.is_interval_truncated || bounded.is_truncated;
-    support.validity = crate::FactValidity::Known(bounded.set);
-    true
-}
-
-fn resolve_active_fact<'a>(
-    support_ctx: &'a SupportContext<'a>,
-    budget: &mut Budget<'_>,
-    atom: &crate::Atom,
-    binding: &Binding,
-) -> Option<(FactKey, &'a crate::FactData)> {
-    assert!(!atom.predicate.is_empty());
-    if !budget.charge(1) {
-        return None;
-    }
-    let terms = atom
-        .terms
-        .iter()
-        .filter_map(|term| term_value(term, binding))
-        .collect::<Vec<_>>();
-    let data = support_ctx
-        .facts
-        .get(&atom.predicate)
-        .and_then(|store| store.rows.get(&terms))
-        .filter(|data| data.is_active())?;
-    debug_assert!(data.epistemic != crate::EpistemicStatus::Rejected);
-    Some((terms, data))
-}
-
-fn record_fact_premise(
-    predicate: &str,
-    terms: FactKey,
-    data: &crate::FactData,
-    support: &mut PremiseSupport,
-) -> crate::Premise {
-    support.sources.extend(data.sources.iter().copied());
-    support.roots.extend(data.canonical_roots.iter().copied());
-    support.vaults.extend(data.vaults.iter().cloned());
-    let vault = if data.vaults.len() == 1 {
-        data.vaults.iter().next().cloned()
-    } else {
-        None
-    };
-    crate::Premise {
-        predicate: predicate.to_owned(),
-        terms,
-        canonical: data.canonical,
-        canonical_roots: data.canonical_roots.clone(),
-        sources: data.sources.clone(),
-        source_availability: data.supports.first().and_then(|proof| {
-            proof
-                .premises
-                .iter()
-                .find_map(|premise| premise.source_availability.clone())
-        }),
-        vault,
-        vaults: data.vaults.clone(),
-        absent: false,
-        coverage: None,
-        epistemic: data.epistemic,
-    }
-}
-
-/// Instantiate one positive literal against the active fact it matches.
-///
-/// Charges the budget first; `None` means the charge failed, no active row matched,
-/// or sequenced valid-time intersection with prior premises is empty.
-fn positive_premise(
-    support_ctx: &SupportContext<'_>,
-    budget: &mut Budget<'_>,
-    atom: &crate::Atom,
-    binding: &Binding,
-    support: &mut PremiseSupport,
-) -> Option<crate::Premise> {
-    let (terms, data) = resolve_active_fact(support_ctx, budget, atom, binding)?;
-    if !apply_sequenced_validity(support, &data.validity, budget) {
-        return None;
-    }
-    Some(record_fact_premise(&atom.predicate, terms, data, support))
-}
-
-fn unary_metric_premise(
-    support_ctx: &SupportContext<'_>,
-    budget: &mut Budget<'_>,
-    atom: &crate::Atom,
-    binding: &Binding,
-    support: &mut PremiseSupport,
-    op: UnaryMetricOp,
-) -> Option<crate::Premise> {
-    let (terms, data) = resolve_active_fact(support_ctx, budget, atom, binding)?;
-    let set = data.validity.as_interval_set()?;
-    let max_intervals = budget.max_intervals_per_fact;
-    let bounded = match op {
-        UnaryMetricOp::DiamondMinus(window) => {
-            set.diamond_minus_bounded(window, max_intervals, budget)?
-        }
-        UnaryMetricOp::BoxMinus(window) => set.box_minus_bounded(window, max_intervals, budget)?,
-    };
-    if bounded.set.is_empty() {
-        return None;
-    }
-    support.is_interval_truncated = support.is_interval_truncated || bounded.is_truncated;
-    if !apply_sequenced_validity(support, &crate::FactValidity::Known(bounded.set), budget) {
-        return None;
-    }
-    Some(record_fact_premise(&atom.predicate, terms, data, support))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn since_premises(
-    support_ctx: &SupportContext<'_>,
-    budget: &mut Budget<'_>,
-    maintained: &crate::Atom,
-    trigger: &crate::Atom,
-    window: mneme_kernel::temporal::MetricWindow,
-    binding: &Binding,
-    support: &mut PremiseSupport,
-    premises: &mut Vec<crate::Premise>,
-) -> Option<()> {
-    let (t_terms, t_data) = resolve_active_fact(support_ctx, budget, trigger, binding)?;
-    let t_set = t_data.validity.as_interval_set()?;
-    let empty_maintained = crate::IntervalSet::empty();
-    let maintained_match = resolve_active_fact(support_ctx, budget, maintained, binding);
-    let m_set = match &maintained_match {
-        Some((_, m_data)) => m_data.validity.as_interval_set()?,
-        None if window.lower == 0 => &empty_maintained,
-        None => return None,
-    };
-    let max_intervals = budget.max_intervals_per_fact;
-    let bounded = m_set.since_bounded(t_set, window, max_intervals, budget)?;
-    if bounded.set.is_empty() {
-        return None;
-    }
-    support.is_interval_truncated = support.is_interval_truncated || bounded.is_truncated;
-    if !apply_sequenced_validity(support, &crate::FactValidity::Known(bounded.set), budget) {
-        return None;
-    }
-    if let Some((m_terms, m_data)) = maintained_match {
-        premises.push(record_fact_premise(
-            &maintained.predicate,
-            m_terms,
-            m_data,
-            support,
-        ));
-    }
-    premises.push(record_fact_premise(
-        &trigger.predicate,
-        t_terms,
-        t_data,
-        support,
-    ));
-    Some(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn allen_premises(
-    support_ctx: &SupportContext<'_>,
-    budget: &mut Budget<'_>,
-    relation: mneme_kernel::temporal::AllenRelation,
-    left: &crate::Atom,
-    right: &crate::Atom,
-    binding: &Binding,
-    support: &mut PremiseSupport,
-    premises: &mut Vec<crate::Premise>,
-) -> Option<()> {
-    let (l_terms, l_data) = resolve_active_fact(support_ctx, budget, left, binding)?;
-    let (r_terms, r_data) = resolve_active_fact(support_ctx, budget, right, binding)?;
-    let l_set = l_data.validity.as_interval_set()?;
-    let r_set = r_data.validity.as_interval_set()?;
-    let max_intervals = budget.max_intervals_per_fact;
-    let bounded = l_set.allen_bounded(r_set, relation, max_intervals, budget)?;
-    if bounded.set.is_empty() {
-        return None;
-    }
-    support.is_interval_truncated = support.is_interval_truncated || bounded.is_truncated;
-    if !apply_sequenced_validity(support, &crate::FactValidity::Known(bounded.set), budget) {
-        return None;
-    }
-    premises.push(record_fact_premise(
-        &left.predicate,
-        l_terms,
-        l_data,
-        support,
-    ));
-    premises.push(record_fact_premise(
-        &right.predicate,
-        r_terms,
-        r_data,
-        support,
-    ));
-    Some(())
-}
-
-/// Record one negated literal as an explicit absence premise.
-fn negative_premise(
-    support_ctx: &SupportContext<'_>,
-    budget: &mut Budget<'_>,
-    atom: &crate::Atom,
-    binding: &Binding,
-    support: &mut PremiseSupport,
-) -> Option<crate::Premise> {
-    if !budget.charge(1) {
-        return None;
-    }
-    let terms = atom
-        .terms
-        .iter()
-        .filter_map(|term| term_value(term, binding))
-        .collect::<Vec<_>>();
-    let (vault, vaults) = if atom.predicate.starts_with("vault_")
-        && let Some(alias) = terms.first().and_then(mneme_core::Value::as_string)
-    {
-        (
-            Some(alias.to_owned()),
-            std::collections::BTreeSet::from([alias.to_owned()]),
-        )
-    } else {
-        let single = if support_ctx.participating_vaults.len() == 1 {
-            support_ctx.participating_vaults.iter().next().cloned()
-        } else {
-            None
-        };
-        (single, support_ctx.participating_vaults.clone())
-    };
-    assert!(!atom.predicate.is_empty());
-    support.vaults.extend(vaults.iter().cloned());
-    assert!(!support.vaults.is_empty());
-    Some(crate::Premise {
-        predicate: atom.predicate.clone(),
-        terms,
-        canonical: None,
-        canonical_roots: std::collections::BTreeSet::new(),
-        sources: std::collections::BTreeSet::new(),
-        source_availability: None,
-        vault,
-        vaults,
-        absent: true,
-        coverage: Some(
-            support_ctx
-                .coverage_status(&atom.predicate)
-                .name()
-                .to_owned(),
-        ),
-        epistemic: crate::EpistemicStatus::Accepted,
-    })
-}
-
 fn reference_target(
     record: &mneme_core::RecordEnvelope,
     name: &str,
@@ -3628,6 +3099,46 @@ fn update_derived_coverage(evaluation: &mut Evaluation<'_>) {
     );
 }
 
+fn is_predicate_complete(
+    coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
+    predicate: &str,
+) -> bool {
+    coverage
+        .get(predicate)
+        .copied()
+        .unwrap_or(crate::CoverageStatus::Unknown)
+        == crate::CoverageStatus::Complete
+}
+
+fn is_literal_coverage_complete(
+    literal: &crate::Literal,
+    coverage: &std::collections::BTreeMap<String, crate::CoverageStatus>,
+    head: &str,
+) -> bool {
+    match literal {
+        crate::Literal::Positive(atom) => {
+            atom.predicate == head || is_predicate_complete(coverage, &atom.predicate)
+        }
+        crate::Literal::Negative(atom)
+        | crate::Literal::DiamondMinus { atom, .. }
+        | crate::Literal::BoxMinus { atom, .. } => is_predicate_complete(coverage, &atom.predicate),
+        crate::Literal::Since {
+            maintained,
+            trigger,
+            ..
+        } => {
+            is_predicate_complete(coverage, &maintained.predicate)
+                && is_predicate_complete(coverage, &trigger.predicate)
+        }
+        crate::Literal::Allen { left, right, .. } => {
+            is_predicate_complete(coverage, &left.predicate)
+                && is_predicate_complete(coverage, &right.predicate)
+        }
+        crate::Literal::Compare { .. } | crate::Literal::Aggregate { .. } => true,
+        crate::Literal::Forbidden(_) => false,
+    }
+}
+
 /// The coverage a derived head may claim from its rules and their inputs.
 fn head_coverage_from(
     bundle: &crate::RuleBundle,
@@ -3649,55 +3160,10 @@ fn head_coverage_from(
         );
         has_seed = has_seed || !has_self;
         let is_body_complete = budget_status == crate::ExecutionStatus::Complete
-            && rule.body.iter().all(|literal| match literal {
-                crate::Literal::Positive(atom) => {
-                    atom.predicate == head
-                        || coverage
-                            .get(&atom.predicate)
-                            .copied()
-                            .unwrap_or(crate::CoverageStatus::Unknown)
-                            == crate::CoverageStatus::Complete
-                }
-                crate::Literal::Negative(atom)
-                | crate::Literal::DiamondMinus { atom, .. }
-                | crate::Literal::BoxMinus { atom, .. } => {
-                    coverage
-                        .get(&atom.predicate)
-                        .copied()
-                        .unwrap_or(crate::CoverageStatus::Unknown)
-                        == crate::CoverageStatus::Complete
-                }
-                crate::Literal::Since {
-                    maintained,
-                    trigger,
-                    ..
-                } => {
-                    coverage
-                        .get(&maintained.predicate)
-                        .copied()
-                        .unwrap_or(crate::CoverageStatus::Unknown)
-                        == crate::CoverageStatus::Complete
-                        && coverage
-                            .get(&trigger.predicate)
-                            .copied()
-                            .unwrap_or(crate::CoverageStatus::Unknown)
-                            == crate::CoverageStatus::Complete
-                }
-                crate::Literal::Allen { left, right, .. } => {
-                    coverage
-                        .get(&left.predicate)
-                        .copied()
-                        .unwrap_or(crate::CoverageStatus::Unknown)
-                        == crate::CoverageStatus::Complete
-                        && coverage
-                            .get(&right.predicate)
-                            .copied()
-                            .unwrap_or(crate::CoverageStatus::Unknown)
-                            == crate::CoverageStatus::Complete
-                }
-                crate::Literal::Compare { .. } | crate::Literal::Aggregate { .. } => true,
-                crate::Literal::Forbidden(_) => false,
-            });
+            && rule
+                .body
+                .iter()
+                .all(|literal| is_literal_coverage_complete(literal, coverage, head));
         if is_body_complete {
             continue;
         }
@@ -4762,9 +4228,13 @@ pub(crate) fn build_ordinary_fact_data_from_bindings(
                 if !budget.is_active() {
                     return;
                 }
-                let Some(contents) =
-                    instantiated_support(rule, support_ctx, budget, binding, target_terms.clone())
-                else {
+                let Some(contents) = derivation::instantiated_support(
+                    rule,
+                    support_ctx,
+                    budget,
+                    binding,
+                    target_terms.clone(),
+                ) else {
                     return;
                 };
                 merge_fact_contents(temp, &rule.head.predicate, contents, budget);
@@ -4792,7 +4262,7 @@ pub(crate) fn build_aggregate_fact_data_from_bindings(
                 binding_indices,
             };
             let Some(contents) =
-                aggregate_support(rule, support_ctx, budget, request.bindings, &row)
+                derivation::aggregate_support(rule, support_ctx, budget, request.bindings, &row)
             else {
                 return;
             };
@@ -4810,7 +4280,7 @@ fn build_fact_data_with<F>(
 where
     F: FnOnce(
         &crate::Rule,
-        &SupportContext<'_>,
+        &derivation::SupportContext<'_>,
         &mut Budget<'_>,
         &FactKey,
         &mut std::collections::BTreeMap<String, FactStore>,
@@ -4830,7 +4300,7 @@ where
             .map(|vault| vault.alias.clone())
             .collect()
     };
-    let support_ctx = SupportContext {
+    let support_ctx = derivation::SupportContext {
         context: request.context,
         facts: request.facts,
         coverage: request.coverage_map,
@@ -4880,10 +4350,12 @@ fn merge_fact_contents(
     assert!(!predicate.is_empty());
     let max_supports = budget.limits.max_supports_per_fact;
     assert!(max_supports > 0);
-    if !budget.is_active() || !contents.epistemic.is_active() {
+    if !budget.is_active() || !contents.epistemic.is_active() || !budget.charge(1) {
         return;
     }
-    if !budget.charge(1) {
+    let store = temp_facts.entry(predicate.to_owned()).or_default();
+    if store.rows.contains_key(&contents.terms) {
+        let _ = merge_existing_fact(store, contents, max_supports, budget);
         return;
     }
     let FactContents {
@@ -4896,45 +4368,6 @@ fn merge_fact_contents(
         validity,
         epistemic,
     } = contents;
-    let store = temp_facts.entry(predicate.to_owned()).or_default();
-    if let Some(data) = store.rows.get_mut(&terms) {
-        data.epistemic = data.epistemic.union(epistemic);
-        let max_intervals = budget.max_intervals_per_fact;
-        let Some((merged_validity, is_interval_truncated)) =
-            data.validity
-                .union_bounded(&validity, max_intervals, budget)
-        else {
-            return;
-        };
-        data.validity = merged_validity;
-        if is_interval_truncated {
-            data.truncated = true;
-            store.truncated = true;
-            budget.support_truncated = true;
-        }
-        if let Some(existing) = data
-            .supports
-            .iter_mut()
-            .find(|existing| same_proof(existing, &support))
-        {
-            merge_premises(existing, &support);
-            data.sources.extend(sources);
-            data.canonical_roots.extend(canonical_roots);
-            data.vaults.extend(vaults);
-            return;
-        }
-        if data.supports.len() >= max_supports {
-            data.truncated = true;
-            store.truncated = true;
-            budget.support_truncated = true;
-            return;
-        }
-        data.supports.push(support);
-        data.sources.extend(sources);
-        data.canonical_roots.extend(canonical_roots);
-        data.vaults.extend(vaults);
-        return;
-    }
     store.rows.insert(
         terms,
         crate::FactData {

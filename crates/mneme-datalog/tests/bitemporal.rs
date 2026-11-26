@@ -2,7 +2,7 @@
 //! predicates, bounded DatalogMTL (`diamond_minus`, `box_minus`, `since`),
 //! interval caps, and 100-trace discrete-timestamp oracle parity tests.
 #![allow(unknown_lints, no_unwrap)] // test/fixture code fails by panic, not a production path
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/fixture code fails by panic, not a production path
 
 const HOUR_NS: i64 = 3_600_000_000_000;
 const DAY_NS: i64 = 24 * HOUR_NS;
@@ -105,15 +105,16 @@ impl TestWorkspace {
 
     fn alloc_tag(&mut self) -> u32 {
         let tag = self.next_tag;
-        self.next_tag += 1;
+        self.next_tag = self.next_tag.saturating_add(1);
         tag
     }
 
-    fn add_accepted_assertions(&mut self, specs: &[(&str, &str, mneme_core::ValidTime)]) {
-        if specs.is_empty() {
-            return;
-        }
-        let mut propose_records = Vec::with_capacity(specs.len() * 2);
+    fn propose_assertions(
+        &mut self,
+        specs: &[(&str, &str, mneme_core::ValidTime)],
+        batch_tag: u32,
+    ) -> Vec<mneme_core::RecordId> {
+        let mut propose_records = Vec::with_capacity(specs.len().saturating_mul(2));
         let mut ids = Vec::with_capacity(specs.len());
         for (predicate, value, valid_time) in specs {
             let ev_tag = self.alloc_tag();
@@ -142,7 +143,7 @@ impl TestWorkspace {
                 mneme_memory::ProposedAssertionOptions {
                     subject: rid(2),
                     predicate,
-                    value: mneme_core::Value::string((*value).to_owned()),
+                    value: mneme_core::Value::string(*value),
                     stance: mneme_memory::Stance::Affirm,
                     origin: mneme_core::Origin::AuthoredStatement,
                     asserted_by: "test",
@@ -159,21 +160,27 @@ impl TestWorkspace {
             propose_records.push(assertion);
             ids.push(assertion_id);
         }
-        let batch_tag = self.alloc_tag();
-        {
-            let mut memory =
-                mneme_memory::Engine::new(&mut self.workspace, mneme_memory::Access::Operator);
-            memory
-                .commit(mneme_memory::Batch {
-                    actor: "test".to_owned(),
-                    scope: scope(),
-                    idempotency_key: format!("prop-{batch_tag}"),
-                    records: propose_records,
-                    source_blobs: Vec::new(),
-                    publications: Vec::new(),
-                })
-                .expect("propose batch");
+        let mut memory =
+            mneme_memory::Engine::new(&mut self.workspace, mneme_memory::Access::Operator);
+        memory
+            .commit(mneme_memory::Batch {
+                actor: "test".to_owned(),
+                scope: scope(),
+                idempotency_key: format!("prop-{batch_tag}"),
+                records: propose_records,
+                source_blobs: Vec::new(),
+                publications: Vec::new(),
+            })
+            .expect("propose batch");
+        ids
+    }
+
+    fn add_accepted_assertions(&mut self, specs: &[(&str, &str, mneme_core::ValidTime)]) {
+        if specs.is_empty() {
+            return;
         }
+        let batch_tag = self.alloc_tag();
+        let ids = self.propose_assertions(specs, batch_tag);
         let base = self.workspace.current_revision().expect("base");
         let snapshot = self.workspace.snapshot().expect("snapshot");
         let by_id: std::collections::BTreeMap<_, _> = snapshot
@@ -181,7 +188,7 @@ impl TestWorkspace {
             .into_iter()
             .map(|r| (r.record_id, r))
             .collect();
-        let mut accept_records = Vec::with_capacity(ids.len() * 2);
+        let mut accept_records = Vec::with_capacity(ids.len().saturating_mul(2));
         for assertion_id in ids {
             let dec_tag = self.alloc_tag();
             let rev_tag = self.alloc_tag();
@@ -610,7 +617,9 @@ impl XorShift64 {
     }
 
     fn next_range(&mut self, bound: usize) -> usize {
-        usize::try_from(self.next_u64() % u64::try_from(bound).expect("bound")).expect("usize")
+        let bound_u64 = u64::try_from(bound).expect("bound");
+        let remainder = self.next_u64().checked_rem(bound_u64).expect("non-zero");
+        usize::try_from(remainder).expect("usize")
     }
 }
 
@@ -713,9 +722,14 @@ fn metric_temporal_100_trace_discrete_oracle_parity() {
         let mut tested_oracle = [false; HORIZON];
         let mut verified_oracle = [false; HORIZON];
         let mut refactored_oracle = [false; HORIZON];
-        let mut specs: Vec<(&str, String, mneme_core::ValidTime)> = Vec::new();
-
         let n_tested = 1 + rng.next_range(5);
+        let n_verified = 2 + rng.next_range(6);
+        let n_refactored = 1 + rng.next_range(4);
+        let total_specs = n_tested
+            .saturating_add(n_verified)
+            .saturating_add(n_refactored);
+        let mut specs: Vec<(&str, String, mneme_core::ValidTime)> = Vec::with_capacity(total_specs);
+
         for i in 0..n_tested {
             let s = rng.next_range(HORIZON - 1);
             let len = 1 + rng.next_range(6);
@@ -737,7 +751,6 @@ fn metric_temporal_100_trace_discrete_oracle_parity() {
             specs.push(("tested", format!("t-{trace}-{i}"), vt));
         }
 
-        let n_verified = 2 + rng.next_range(6);
         for i in 0..n_verified {
             let s = rng.next_range(HORIZON - 1);
             let len = 2 + rng.next_range(12);
@@ -753,7 +766,6 @@ fn metric_temporal_100_trace_discrete_oracle_parity() {
             specs.push(("verified", format!("v-{trace}-{i}"), vt));
         }
 
-        let n_refactored = 1 + rng.next_range(4);
         for i in 0..n_refactored {
             let s = rng.next_range(HORIZON - 1);
             let len = 1 + rng.next_range(3);
@@ -788,27 +800,27 @@ fn metric_temporal_100_trace_discrete_oracle_parity() {
             let t_i128 = i128::try_from(t).expect("i128");
             // Discrete oracle for ♦₋_[0, 24](tested)
             let lo_24 = t.saturating_sub(24);
-            let expected_retested = (lo_24..=t).any(|tp| tested_oracle[tp]);
-            let actual_retested = retested_set.is_some_and(|set| set.contains(t_i128));
+            let is_expected_retested = (lo_24..=t).any(|tp| tested_oracle[tp]);
+            let is_actual_retested = retested_set.is_some_and(|set| set.contains(t_i128));
             assert_eq!(
-                actual_retested, expected_retested,
+                is_actual_retested, is_expected_retested,
                 "trace {trace} tick {t}: retested_within_24h mismatch"
             );
 
             // Discrete oracle for ■₋_[0, 7](verified)
-            let expected_sustained = t >= 7 && ((t - 7)..=t).all(|tp| verified_oracle[tp]);
-            let actual_sustained = sustained_set.is_some_and(|set| set.contains(t_i128));
+            let is_expected_sustained = t >= 7 && ((t - 7)..=t).all(|tp| verified_oracle[tp]);
+            let is_actual_sustained = sustained_set.is_some_and(|set| set.contains(t_i128));
             assert_eq!(
-                actual_sustained, expected_sustained,
+                is_actual_sustained, is_expected_sustained,
                 "trace {trace} tick {t}: sustained_verified_7d mismatch"
             );
 
             // Discrete oracle for verified S_[1, 24] refactored
-            let expected_since = (lo_24..t)
+            let is_expected_since = (lo_24..t)
                 .any(|tp| refactored_oracle[tp] && ((tp + 1)..=t).all(|s| verified_oracle[s]));
-            let actual_since = since_set.is_some_and(|set| set.contains(t_i128));
+            let is_actual_since = since_set.is_some_and(|set| set.contains(t_i128));
             assert_eq!(
-                actual_since, expected_since,
+                is_actual_since, is_expected_since,
                 "trace {trace} tick {t}: verified_since_refactor mismatch"
             );
         }

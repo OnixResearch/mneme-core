@@ -1014,41 +1014,12 @@ fn literal_to_value(literal: &mneme_datalog::Literal) -> mneme_core::Value {
             trigger,
             lower_ns,
             upper_ns,
-        } => mneme_core::Value::symbol_dictionary([
-            (
-                mneme_core::Symbol::from("kind"),
-                mneme_core::Value::symbol("since"),
-            ),
-            (
-                mneme_core::Symbol::from("maintained"),
-                atom_to_value(maintained),
-            ),
-            (mneme_core::Symbol::from("trigger"), atom_to_value(trigger)),
-            (
-                mneme_core::Symbol::from("lower-ns"),
-                mneme_core::Value::string(lower_ns.to_string()),
-            ),
-            (
-                mneme_core::Symbol::from("upper-ns"),
-                mneme_core::Value::string(upper_ns.to_string()),
-            ),
-        ]),
+        } => since_literal_value(maintained, trigger, *lower_ns, *upper_ns),
         mneme_datalog::Literal::Allen {
             relation,
             left,
             right,
-        } => mneme_core::Value::symbol_dictionary([
-            (
-                mneme_core::Symbol::from("kind"),
-                mneme_core::Value::symbol("allen"),
-            ),
-            (
-                mneme_core::Symbol::from("relation"),
-                mneme_core::Value::symbol(format!("{relation:?}").to_lowercase()),
-            ),
-            (mneme_core::Symbol::from("left"), atom_to_value(left)),
-            (mneme_core::Symbol::from("right"), atom_to_value(right)),
-        ]),
+        } => allen_literal_value(*relation, left, right),
         mneme_datalog::Literal::Forbidden(name) => mneme_core::Value::symbol_dictionary([
             (
                 mneme_core::Symbol::from("kind"),
@@ -1060,6 +1031,52 @@ fn literal_to_value(literal: &mneme_datalog::Literal) -> mneme_core::Value {
             ),
         ]),
     }
+}
+
+fn since_literal_value(
+    maintained: &mneme_datalog::Atom,
+    trigger: &mneme_datalog::Atom,
+    lower_ns: i128,
+    upper_ns: i128,
+) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("kind"),
+            mneme_core::Value::symbol("since"),
+        ),
+        (
+            mneme_core::Symbol::from("maintained"),
+            atom_to_value(maintained),
+        ),
+        (mneme_core::Symbol::from("trigger"), atom_to_value(trigger)),
+        (
+            mneme_core::Symbol::from("lower-ns"),
+            mneme_core::Value::string(lower_ns.to_string()),
+        ),
+        (
+            mneme_core::Symbol::from("upper-ns"),
+            mneme_core::Value::string(upper_ns.to_string()),
+        ),
+    ])
+}
+
+fn allen_literal_value(
+    relation: mneme_kernel::temporal::AllenRelation,
+    left: &mneme_datalog::Atom,
+    right: &mneme_datalog::Atom,
+) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("kind"),
+            mneme_core::Value::symbol("allen"),
+        ),
+        (
+            mneme_core::Symbol::from("relation"),
+            mneme_core::Value::symbol(format!("{relation:?}").to_lowercase()),
+        ),
+        (mneme_core::Symbol::from("left"), atom_to_value(left)),
+        (mneme_core::Symbol::from("right"), atom_to_value(right)),
+    ])
 }
 
 fn tagged_atom_literal(kind: &str, atom: &mneme_datalog::Atom) -> mneme_core::Value {
