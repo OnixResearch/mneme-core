@@ -91,6 +91,55 @@ pub(crate) const WORKER_ENV_PATH: &str = "";
 /// `engine` must be the pinned Scryer-compatible executable. The worker refuses
 /// an image whose context or digest does not match the request, so a mismatched
 /// image never reaches the engine.
+#[derive(Clone, Copy)]
+struct ImageSource<'a> {
+    image: &'a crate::snapshot::InputImage,
+    federated: Option<&'a crate::snapshot::FederatedImage>,
+}
+
+impl<'a> ImageSource<'a> {
+    fn single(image: &'a crate::snapshot::InputImage) -> Self {
+        Self {
+            image,
+            federated: None,
+        }
+    }
+
+    fn federated(federated: &'a crate::snapshot::FederatedImage) -> Self {
+        Self {
+            image: &federated.image,
+            federated: Some(federated),
+        }
+    }
+
+    fn base(&self) -> &crate::snapshot::InputImage {
+        self.image
+    }
+
+    fn verify_for_request(&self, request: &crate::Request) -> Result<(), crate::CapabilityError> {
+        let verified = match self.federated {
+            Some(federated) => federated.verify_for_request(request),
+            None => self.image.verify_for_request(request),
+        };
+        verified.map_err(|_| {
+            crate::CapabilityError::InvalidRequest(
+                "input image does not match the request".to_owned(),
+            )
+        })
+    }
+
+    fn protocol_identity(
+        &self,
+        request: &crate::Request,
+        metadata: &crate::CapabilityMetadata,
+    ) -> Result<crate::ProtocolIdentity, crate::CapabilityError> {
+        match self.federated {
+            Some(federated) => request.federated_protocol_identity(metadata, federated),
+            None => request.protocol_identity(metadata, self.image),
+        }
+    }
+}
+
 #[allow(unknown_lints, ambient_clock)] // worker wall-clock budget is the process shell
 pub fn run_worker(
     engine: &std::path::Path,
@@ -99,17 +148,49 @@ pub fn run_worker(
     request: &crate::Request,
     runtime: &WorkerRuntime<'_>,
 ) -> Result<WorkerOutcome, crate::CapabilityError> {
+    run_worker_source(
+        engine,
+        metadata,
+        ImageSource::single(image),
+        request,
+        runtime,
+    )
+}
+
+#[allow(unknown_lints, ambient_clock)] // worker wall-clock budget is the process shell
+pub(crate) fn run_federated_worker(
+    engine: &std::path::Path,
+    metadata: &crate::CapabilityMetadata,
+    federated: &crate::snapshot::FederatedImage,
+    request: &crate::Request,
+    runtime: &WorkerRuntime<'_>,
+) -> Result<WorkerOutcome, crate::CapabilityError> {
+    run_worker_source(
+        engine,
+        metadata,
+        ImageSource::federated(federated),
+        request,
+        runtime,
+    )
+}
+
+#[allow(unknown_lints, ambient_clock)] // worker wall-clock budget is the process shell
+fn run_worker_source(
+    engine: &std::path::Path,
+    metadata: &crate::CapabilityMetadata,
+    source: ImageSource<'_>,
+    request: &crate::Request,
+    runtime: &WorkerRuntime<'_>,
+) -> Result<WorkerOutcome, crate::CapabilityError> {
     metadata.ensure_request(request)?;
-    if image.verify_for_request(request).is_err() {
-        return Err(crate::CapabilityError::InvalidRequest(
-            "input image does not match the request".to_owned(),
-        ));
-    }
+    source.verify_for_request(request)?;
     if runtime.limits.max_wall_ms == 0 || runtime.limits.max_output_bytes == 0 {
         return Err(crate::CapabilityError::LimitExceeded(
             "worker limits must be positive".to_owned(),
         ));
     }
+    assert!(runtime.limits.max_wall_ms > 0);
+    assert!(runtime.limits.max_output_bytes > 0);
     if runtime.control.is_cancelled() {
         return Ok(WorkerOutcome {
             status: WorkerStatus::Cancelled,
@@ -127,7 +208,7 @@ pub fn run_worker(
     let mut worker = start_worker(
         engine,
         metadata,
-        image,
+        source,
         request,
         runtime.limits.max_output_bytes,
     )?;
@@ -202,13 +283,13 @@ struct Observation {
 fn start_worker(
     engine: &std::path::Path,
     metadata: &crate::CapabilityMetadata,
-    image: &crate::snapshot::InputImage,
+    source: ImageSource<'_>,
     request: &crate::Request,
     max_output_bytes: usize,
 ) -> Result<RunningWorker, crate::CapabilityError> {
     let workspace = WorkerDir::new()?;
     let script = workspace.path().join("request.pl");
-    write_program(&script, image, request, metadata)?;
+    write_program(&script, source, request, metadata)?;
     let mut command = std::process::Command::new(engine);
     command
         .arg("-f")
@@ -540,13 +621,14 @@ fn termination_reason(worker: &mut RunningWorker, reason: &str) -> String {
 /// Write the one script that can reach the engine.
 fn write_program(
     path: &std::path::Path,
-    image: &crate::snapshot::InputImage,
+    source: ImageSource<'_>,
     request: &crate::Request,
     metadata: &crate::CapabilityMetadata,
 ) -> Result<(), crate::CapabilityError> {
-    let identity = request.protocol_identity(metadata, image)?;
+    let identity = source.protocol_identity(request, metadata)?;
+    assert!(!identity.image_digest.is_empty());
     let mut text = String::from(EMITTER_SOURCE);
-    for clause in program_clauses(image, request, metadata)? {
+    for clause in program_clauses(source, request, metadata)? {
         text.push_str(&clause);
         text.push('\n');
     }
@@ -559,6 +641,7 @@ fn write_program(
     text.push_str(&emit_solution_clause(&output_variables, &identity));
     text.push('\n');
     text.push_str(&goal_directive(request, metadata, &identity)?);
+    assert!(!text.is_empty());
     let mut file = std::fs::File::create(path).map_err(|error| {
         crate::CapabilityError::InvalidRequest(format!("cannot write script: {error}"))
     })?;
@@ -569,10 +652,11 @@ fn write_program(
 
 /// Every data clause, grouped so one predicate's clauses stay contiguous.
 fn program_clauses(
-    image: &crate::snapshot::InputImage,
+    source: ImageSource<'_>,
     request: &crate::Request,
     metadata: &crate::CapabilityMetadata,
 ) -> Result<Vec<String>, crate::CapabilityError> {
+    let image = source.base();
     let budget = metadata.limits.max_output_bytes;
     let mut groups: std::collections::BTreeMap<(String, usize), Vec<String>> =
         std::collections::BTreeMap::new();
@@ -605,6 +689,9 @@ fn program_clauses(
             push_clause(&mut groups, &atom, metadata.terms, budget)?;
         }
     }
+    if let Some(federated) = source.federated {
+        push_federated_clauses(federated, request, metadata, &mut groups)?;
+    }
     for assumption in &request.assumptions {
         push_clause(&mut groups, &assumption.atom, metadata.terms, budget)?;
     }
@@ -615,7 +702,11 @@ fn program_clauses(
             .or_default()
             .push(clause);
     }
-    for (name, arity) in referenced_predicates(request) {
+    let mut referenced = referenced_predicates(request);
+    if source.federated.is_some() {
+        extend_federated_referenced_predicates(&mut referenced);
+    }
+    for (name, arity) in referenced {
         if groups.contains_key(&(name.clone(), arity)) {
             continue;
         }
@@ -626,7 +717,141 @@ fn program_clauses(
             .or_default()
             .push(empty_relation_clause(&name, arity));
     }
+    assert!(budget > 0);
+    if !request.rules.is_empty() {
+        assert!(!groups.is_empty());
+    }
     Ok(groups.into_values().flatten().collect())
+}
+
+fn extend_federated_referenced_predicates(referenced: &mut Vec<(String, usize)>) {
+    referenced.extend([
+        ("vault_entity".to_owned(), 4),
+        ("vault_relation".to_owned(), 4),
+        ("vault_assertion".to_owned(), 4),
+        ("vault_assertion".to_owned(), 5),
+        ("vault_denial".to_owned(), 5),
+        ("vault_hypothesis".to_owned(), 5),
+    ]);
+}
+
+fn push_federated_clauses(
+    federated: &crate::snapshot::FederatedImage,
+    request: &crate::Request,
+    metadata: &crate::CapabilityMetadata,
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) -> Result<(), crate::CapabilityError> {
+    let budget = metadata.limits.max_output_bytes;
+    assert!(budget > 0);
+    for fact in &federated.facts {
+        push_vault_fact_clause(fact, metadata.terms, budget, groups)?;
+    }
+    push_federated_bridge_clauses(request, groups);
+    Ok(())
+}
+
+fn push_vault_fact_clause(
+    fact: &crate::snapshot::VaultFact,
+    profile: crate::TermProfile,
+    budget: usize,
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) -> Result<(), crate::CapabilityError> {
+    assert!(!fact.predicate.is_empty());
+    assert!(!fact.leading_strings.is_empty());
+    assert!(budget > 0);
+    let rendered_value = fact
+        .trailing_value
+        .as_ref()
+        .map(crate::snapshot::value_term)
+        .transpose()
+        .map_err(|_| unrepresentable_image())?;
+    if let (Some(short_strings), Some(value_term)) =
+        (&fact.short_assertion_strings, &rendered_value)
+    {
+        let mut short_terms = short_strings
+            .iter()
+            .cloned()
+            .map(crate::Term::String)
+            .collect::<Vec<_>>();
+        short_terms.push(value_term.clone());
+        let short_atom = crate::Atom {
+            predicate: fact.predicate.to_owned(),
+            terms: short_terms,
+        };
+        push_clause(groups, &short_atom, profile, budget)?;
+    }
+    let mut terms = fact
+        .leading_strings
+        .iter()
+        .cloned()
+        .map(crate::Term::String)
+        .collect::<Vec<_>>();
+    if let Some(value_term) = rendered_value {
+        terms.push(value_term);
+    }
+    if let Some(record_id) = &fact.trailing_record_id {
+        terms.push(crate::Term::String(record_id.clone()));
+    }
+    let atom = crate::Atom {
+        predicate: fact.predicate.to_owned(),
+        terms,
+    };
+    push_clause(groups, &atom, profile, budget)
+}
+
+const FEDERATED_BRIDGES: [(&str, usize, &str); 5] = [
+    (
+        "entity",
+        3,
+        "entity(Id, Type, Label) :- vault_entity(_, Id, Type, Label).",
+    ),
+    (
+        "relation",
+        3,
+        "relation(Type, From, To) :- vault_relation(_, Type, From, To).",
+    ),
+    (
+        "assertion",
+        4,
+        "assertion(Subj, Pred, Val, Id) :- vault_assertion(_, Subj, Pred, Val, Id).",
+    ),
+    (
+        "denial",
+        4,
+        "denial(Subj, Pred, Val, Id) :- vault_denial(_, Subj, Pred, Val, Id).",
+    ),
+    (
+        "hypothesis",
+        4,
+        "hypothesis(Subj, Pred, Val, Id) :- vault_hypothesis(_, Subj, Pred, Val, Id).",
+    ),
+];
+
+fn push_federated_bridge_clauses(
+    request: &crate::Request,
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) {
+    let referenced = referenced_predicates(request);
+    for bridge in FEDERATED_BRIDGES {
+        maybe_push_bridge(&referenced, bridge, groups);
+    }
+}
+
+fn maybe_push_bridge(
+    referenced: &[(String, usize)],
+    bridge: (&str, usize, &str),
+    groups: &mut std::collections::BTreeMap<(String, usize), Vec<String>>,
+) {
+    let (pred, arity, clause) = bridge;
+    if referenced
+        .iter()
+        .any(|(name, a)| name == pred && *a == arity)
+    {
+        groups
+            .entry((pred.to_owned(), arity))
+            .or_default()
+            .push(clause.to_owned());
+    }
 }
 
 fn unrepresentable_image() -> crate::CapabilityError {

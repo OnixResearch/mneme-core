@@ -4637,3 +4637,79 @@ fn streamed_file_blob_has_the_inline_digest_and_commits_identically() {
     let blob = mneme_store::payload::blob_path(streamed_root.path(), draft.digest());
     assert_eq!(std::fs::read(blob).expect("blob"), bytes);
 }
+
+#[test]
+fn open_read_only_never_writes_allows_concurrent_writer_and_refuses_locked_or_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("temp");
+    let mut writer = mneme_store::Workspace::create(temp.path(), config(1_000)).expect("create");
+    let base = writer.current_revision().expect("base");
+    let entity = mneme_core::fixtures::entity();
+    let entity_id = entity.record_id;
+    writer
+        .commit(mneme_store::CommitCommand {
+            base,
+            actor: "author".to_owned(),
+            scope: scope(),
+            idempotency_key: "seed".to_owned(),
+            records: vec![mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: entity.kind,
+                record_id: entity.record_id,
+                revision_id: entity.revision_id,
+                predecessor: None,
+                scope: scope(),
+                payload: entity.payload.clone(),
+            }],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit");
+    let rev1 = writer.current_revision().expect("rev1");
+
+    // Concurrent shared commit lock does not contend with read-only open or snapshot read.
+    let commit_guard = writer.shared_commit_lock().expect("shared commit lock");
+    let ro = mneme_store::Workspace::open_read_only(temp.path(), config(2_000))
+        .expect("read-only open succeeds while writer holds shared lock");
+    assert!(ro.is_read_only());
+    assert_eq!(ro.current_revision().expect("rev"), rev1);
+    let snap = ro.snapshot_at(rev1, None).expect("snapshot");
+    assert!(snap.records.iter().any(|r| r.record_id == entity_id));
+    drop(commit_guard);
+
+    // Read-only handle refuses writes.
+    assert!(ro.shared_commit_lock().is_err());
+    assert!(ro.exclusive_sweep_lock().is_err());
+    drop(ro);
+
+    // Exclusive sweep lock refuses read-only open.
+    let sweep_guard = writer.exclusive_sweep_lock().expect("sweep lock");
+    assert!(
+        mneme_store::Workspace::open_read_only(temp.path(), config(3_000)).is_err(),
+        "read-only open must refuse an exclusively locked workspace"
+    );
+    drop(sweep_guard);
+    drop(writer);
+
+    // Strictly read-only directory (0555) opens and reads without any writes.
+    let orig_dir_mode = std::fs::metadata(temp.path()).expect("meta").permissions();
+    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o555))
+        .expect("chmod 0555");
+    let ro_dir = mneme_store::Workspace::open_read_only(temp.path(), config(4_000));
+    std::fs::set_permissions(temp.path(), orig_dir_mode).expect("restore dir mode");
+    let ro_dir = ro_dir.expect("read-only open works on 0555 directory");
+    assert_eq!(ro_dir.current_revision().expect("rev"), rev1);
+    drop(ro_dir);
+
+    // Unreadable ledger file (0000) is refused.
+    let ledger_path = temp.path().join("ledger.sqlite3");
+    let orig_ledger_mode = std::fs::metadata(&ledger_path).expect("meta").permissions();
+    std::fs::set_permissions(&ledger_path, std::fs::Permissions::from_mode(0o000))
+        .expect("chmod 0000");
+    let denied = mneme_store::Workspace::open_read_only(temp.path(), config(5_000));
+    std::fs::set_permissions(&ledger_path, orig_ledger_mode).expect("restore ledger mode");
+    assert!(denied.is_err(), "unreadable ledger must be refused");
+}

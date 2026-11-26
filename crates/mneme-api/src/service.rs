@@ -507,6 +507,90 @@ impl ApiService {
         ))
     }
 
+    /// Execute one bounded Prolog query across the primary workspace and
+    /// strictly read-only attached vaults.
+    pub fn execute_federated_reason(&self, request: &FederatedReasonRequest) -> CallResponse {
+        let synthetic = crate::command::ApiCommand::ReasonQuery {
+            request_id: request.request_id.clone(),
+            scope: request.scope.clone(),
+            query: Box::new(request.query.clone()),
+        };
+        if let Err(error) = self.session.authorize(&request.scope) {
+            return response_for_error(&synthetic, error);
+        }
+        format_federated_response(&synthetic, self.dispatch_federated_reason(request))
+    }
+
+    fn dispatch_federated_reason(
+        &self,
+        request: &FederatedReasonRequest,
+    ) -> crate::error::CallResult<Dispatch> {
+        let Some(adapter) = &self.prolog else {
+            return Ok(Dispatch::qualified(
+                reasoning_disabled_value(request.query.mode),
+                None,
+                "disabled",
+            ));
+        };
+        validate_federated_attachments(&request.attachments)?;
+        let mut primary_ws = self.open()?;
+        let access = self.access();
+        let (primary_view, primary_requested, primary_generation) =
+            load_pinned_view(&primary_ws, request.primary_revision, &access)?;
+        let primary_served = primary_view.revision();
+        let attached_loaded = open_attached_views(&request.attachments, &access)?;
+        assert_eq!(attached_loaded.len(), request.attachments.len());
+        let primary_input = mneme_prolog::snapshot::FederatedVaultInput {
+            alias: mneme_datalog::PRIMARY_VAULT_ALIAS,
+            root: primary_ws.root(),
+            view: &primary_view,
+            requested_revision: primary_requested,
+            served_revision: primary_served,
+            eligibility_generation: primary_generation,
+        };
+        let federated = build_federated_image(primary_input, &attached_loaded, &request.scope)?;
+        assert!(!federated.vaults.is_empty());
+        let prolog_request = federated_prolog_request(
+            &self.session.principal,
+            request,
+            primary_served,
+            primary_generation,
+            &federated,
+        );
+        let control = mneme_prolog::process::WorkerControl::new();
+        let runtime = mneme_prolog::process::WorkerRuntime {
+            control: &control,
+            limits: mneme_prolog::process::WorkerLimits {
+                max_wall_ms: prolog_request.limits.max_time_ms,
+                max_output_bytes: prolog_request.limits.max_output_bytes,
+            },
+        };
+        let federated_outcome = mneme_prolog::run_federated_query(
+            &adapter.engine,
+            &adapter.metadata,
+            &federated,
+            &prolog_request,
+            &runtime,
+        )
+        .map_err(reasoning_error)?;
+
+        self.authorize_reasoning_generation(&mut primary_ws, &request.scope, primary_generation)?;
+        verify_attached_generations(&attached_loaded)?;
+        let context = Context {
+            revision: primary_served,
+            scope: request.scope.clone(),
+            generation: primary_generation,
+        };
+        Ok(Dispatch::qualified(
+            federated_reasoning_outcome_value(
+                &federated_outcome.outcome,
+                &federated_outcome.vaults,
+            ),
+            Some(context),
+            reasoning_status(federated_outcome.outcome.status),
+        ))
+    }
+
     fn authorize_reasoning_generation(
         &self,
         workspace: &mut mneme_store::Workspace,
@@ -1918,6 +2002,241 @@ fn reasoning_disabled_value(mode: mneme_prolog::QueryMode) -> mneme_core::Value 
         (
             mneme_core::Symbol::from("reason"),
             mneme_core::Value::string("no reasoning adapter is configured"),
+        ),
+    ])
+}
+
+/// Request for a federated `reason.query` execution across primary and attached vaults.
+#[derive(Clone, Debug)]
+pub struct FederatedReasonRequest {
+    pub request_id: String,
+    pub scope: mneme_core::ScopeId,
+    pub primary_revision: Option<mneme_core::WorkspaceRevisionId>,
+    pub attachments: Vec<mneme_datalog::VaultAttachment>,
+    pub query: crate::command::ReasonQuery,
+}
+
+type LoadedAttachedView = (
+    String,
+    mneme_store::Workspace,
+    mneme_memory::View,
+    mneme_core::WorkspaceRevisionId,
+    u64,
+);
+
+fn format_federated_response(
+    synthetic: &crate::command::ApiCommand,
+    result: crate::error::CallResult<Dispatch>,
+) -> CallResponse {
+    match result {
+        Ok(dispatch) => CallResponse {
+            value: response_envelope(
+                synthetic,
+                dispatch.status,
+                dispatch.context.as_ref(),
+                dispatch.value,
+                None,
+            ),
+            ok: dispatch.status == STATUS_OK,
+        },
+        Err(error) => response_for_error(synthetic, error),
+    }
+}
+
+fn build_federated_image(
+    primary_input: mneme_prolog::snapshot::FederatedVaultInput<'_>,
+    attached_loaded: &[LoadedAttachedView],
+    scope: &mneme_core::ScopeId,
+) -> crate::error::CallResult<mneme_prolog::snapshot::FederatedImage> {
+    assert!(!primary_input.alias.is_empty());
+    let attached_inputs = attached_loaded
+        .iter()
+        .map(|(alias, ws, view, requested, generation)| {
+            mneme_prolog::snapshot::FederatedVaultInput {
+                alias,
+                root: ws.root(),
+                view,
+                requested_revision: *requested,
+                served_revision: view.revision(),
+                eligibility_generation: *generation,
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(attached_inputs.len(), attached_loaded.len());
+    mneme_prolog::snapshot::build_federated_input_image(
+        primary_input,
+        &attached_inputs,
+        scope,
+        Vec::new(),
+    )
+    .map_err(|_| {
+        crate::error::ApiError::new(
+            crate::error::ApiErrorCode::Failed,
+            "federated reasoning input image could not be admitted",
+        )
+    })
+}
+
+fn validate_federated_attachments(
+    attachments: &[mneme_datalog::VaultAttachment],
+) -> crate::error::CallResult<()> {
+    let mut seen_aliases = std::collections::BTreeSet::new();
+    for attachment in attachments {
+        if let Err(error) = mneme_datalog::validate_vault_alias(&attachment.alias) {
+            return Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::InvalidInput,
+                error.to_string(),
+            ));
+        }
+        if !seen_aliases.insert(attachment.alias.as_str()) {
+            return Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::InvalidInput,
+                format!("duplicate attached vault alias {:?}", attachment.alias),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn open_attached_views(
+    attachments: &[mneme_datalog::VaultAttachment],
+    access: &mneme_memory::Access,
+) -> crate::error::CallResult<Vec<LoadedAttachedView>> {
+    attachments
+        .iter()
+        .map(|attachment| open_single_attached_view(attachment, access))
+        .collect()
+}
+
+fn open_single_attached_view(
+    attachment: &mneme_datalog::VaultAttachment,
+    access: &mneme_memory::Access,
+) -> crate::error::CallResult<LoadedAttachedView> {
+    let ws = mneme_store::Workspace::open_read_only(
+        &attachment.root,
+        mneme_store::WorkspaceConfig::new(
+            Box::new(mneme_store::SystemClock),
+            Box::new(mneme_store::NoFaults),
+        ),
+    )
+    .map_err(crate::error::ApiError::from_store)?;
+    let (view, requested, generation) = load_pinned_view(&ws, attachment.revision, access)?;
+    Ok((attachment.alias.clone(), ws, view, requested, generation))
+}
+
+fn federated_prolog_request(
+    actor: &str,
+    request: &FederatedReasonRequest,
+    revision: mneme_core::WorkspaceRevisionId,
+    eligibility_generation: u64,
+    federated: &mneme_prolog::snapshot::FederatedImage,
+) -> mneme_prolog::Request {
+    mneme_prolog::Request {
+        actor: actor.to_owned(),
+        scope: request.scope.clone(),
+        revision,
+        eligibility_generation,
+        image_digest: federated.image.context.image_digest.clone(),
+        mode: request.query.mode,
+        goal: request.query.goal.clone(),
+        variables: request.query.variables.clone(),
+        rules: request.query.rules.clone(),
+        assumptions: request.query.assumptions.clone(),
+        features: request.query.features.clone(),
+        limits: request.query.limits,
+    }
+}
+
+fn verify_attached_generations(attached: &[LoadedAttachedView]) -> crate::error::CallResult<()> {
+    for (_, ws, _, _, generation) in attached {
+        let current_generation = ws
+            .eligibility_generation()
+            .map_err(crate::error::ApiError::from_store)?;
+        if current_generation != *generation {
+            return Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Conflict,
+                "attached vault reasoning result crossed an eligibility change",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn load_pinned_view(
+    workspace: &mneme_store::Workspace,
+    revision: Option<mneme_core::WorkspaceRevisionId>,
+    access: &mneme_memory::Access,
+) -> crate::error::CallResult<(mneme_memory::View, mneme_core::WorkspaceRevisionId, u64)> {
+    for attempt in 0..2 {
+        let generation = workspace
+            .eligibility_generation()
+            .map_err(crate::error::ApiError::from_store)?;
+        let target = match revision {
+            Some(rev) => rev,
+            None => workspace
+                .current_revision()
+                .map_err(crate::error::ApiError::from_store)?,
+        };
+        let snapshot = match workspace.snapshot_at(target, Some(generation)) {
+            Ok(snapshot) => snapshot,
+            Err(mneme_store::Failure::BarrierAdvanced { .. }) if attempt == 0 => continue,
+            Err(error) => return Err(crate::error::ApiError::from_store(error)),
+        };
+        assert_eq!(snapshot.revision, target);
+        let context = mneme_memory::view_context(workspace, &snapshot)
+            .map_err(crate::error::ApiError::from_memory)?;
+        let suppressions = workspace
+            .active_suppressions()
+            .map_err(crate::error::ApiError::from_store)?;
+        let view = mneme_memory::View::with_retention(
+            snapshot,
+            workspace.root(),
+            context.history,
+            context.revision_sequences,
+            suppressions,
+        )
+        .with_access(access.clone());
+        assert!(attempt < 2);
+        return Ok((view, target, generation));
+    }
+    Err(crate::error::ApiError::new(
+        crate::error::ApiErrorCode::Conflict,
+        "eligibility barrier advanced during the request",
+    ))
+}
+
+fn federated_reasoning_outcome_value(
+    outcome: &mneme_prolog::Outcome,
+    vaults: &[mneme_prolog::snapshot::VaultRevision],
+) -> mneme_core::Value {
+    assert!(!vaults.is_empty());
+    let mut base = match reasoning_outcome_value(outcome) {
+        mneme_core::Value::Dictionary(map) => map,
+        other => return other,
+    };
+    let vault_entries =
+        mneme_core::Value::sequence(vaults.iter().map(vault_revision_value).collect());
+    base.insert(mneme_core::Value::symbol("vaults"), vault_entries);
+    mneme_core::Value::Dictionary(base)
+}
+
+fn vault_revision_value(vault: &mneme_prolog::snapshot::VaultRevision) -> mneme_core::Value {
+    mneme_core::Value::symbol_dictionary([
+        (
+            mneme_core::Symbol::from("alias"),
+            mneme_core::Value::string(vault.alias.clone()),
+        ),
+        (
+            mneme_core::Symbol::from("root"),
+            mneme_core::Value::string(vault.root.display().to_string()),
+        ),
+        (
+            mneme_core::Symbol::from("requested-revision"),
+            vault.requested_revision.to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("served-revision"),
+            vault.served_revision.to_value(),
         ),
     ])
 }

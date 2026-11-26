@@ -501,9 +501,19 @@ impl CapabilityMetadata {
             ));
         }
         // An assumption is hypothetical input, never canonical image content.
-        if assumption.atom.predicate.as_str() == ASSERTION_RELATION
-            || assumption.atom.predicate.as_str() == RELATION_RELATION
-        {
+        if matches!(
+            assumption.atom.predicate.as_str(),
+            ASSERTION_RELATION
+                | RELATION_RELATION
+                | "entity"
+                | "denial"
+                | "hypothesis"
+                | "vault_entity"
+                | "vault_relation"
+                | "vault_assertion"
+                | "vault_denial"
+                | "vault_hypothesis"
+        ) {
             return Err(CapabilityError::InvalidRequest(
                 "an assumption cannot name an image relation".to_owned(),
             ));
@@ -1310,13 +1320,42 @@ impl Request {
         metadata: &CapabilityMetadata,
         image: &snapshot::InputImage,
     ) -> Result<ProtocolIdentity, CapabilityError> {
-        metadata.ensure_request(self)?;
         image.verify_for_request(self).map_err(|_| {
             CapabilityError::InvalidRequest(
                 "input image does not match the request identity".to_owned(),
             )
         })?;
-        if image.context.profile != metadata.profile {
+        self.build_protocol_identity(metadata, &image.context, input_order_identity_value(image))
+    }
+
+    /// Derive protocol identities for one immutable federated input image.
+    pub fn federated_protocol_identity(
+        &self,
+        metadata: &CapabilityMetadata,
+        federated: &snapshot::FederatedImage,
+    ) -> Result<ProtocolIdentity, CapabilityError> {
+        federated.verify_for_request(self).map_err(|_| {
+            CapabilityError::InvalidRequest(
+                "federated input image does not match the request identity".to_owned(),
+            )
+        })?;
+        self.build_protocol_identity(
+            metadata,
+            &federated.image.context,
+            federated_input_order_identity_value(federated),
+        )
+    }
+
+    fn build_protocol_identity(
+        &self,
+        metadata: &CapabilityMetadata,
+        context: &SearchContext,
+        input_order_value: mneme_core::Value,
+    ) -> Result<ProtocolIdentity, CapabilityError> {
+        metadata.ensure_request(self)?;
+        assert!(!metadata.profile.is_empty());
+        assert!(!self.image_digest.is_empty());
+        if context.profile != metadata.profile {
             return Err(CapabilityError::InvalidRequest(
                 "input image profile differs from the configured profile".to_owned(),
             ));
@@ -1326,7 +1365,6 @@ impl Request {
         let rules_value =
             mneme_core::Value::sequence(self.rules.iter().map(rule_identity_value).collect());
         let rule_manifest_digest = digest_value(&rules_value);
-        let input_order_value = input_order_identity_value(image);
         let input_order_digest = digest_value(&input_order_value);
         let request_value = request_identity_value(
             self,
@@ -1538,6 +1576,31 @@ fn input_order_identity_value(image: &snapshot::InputImage) -> mneme_core::Value
     )
 }
 
+fn federated_input_order_identity_value(federated: &snapshot::FederatedImage) -> mneme_core::Value {
+    mneme_core::Value::record_named(
+        "prolog-federated-input-order-v1",
+        vec![
+            input_order_identity_value(&federated.image),
+            mneme_core::Value::sequence(
+                federated
+                    .vaults
+                    .iter()
+                    .map(|vault| {
+                        mneme_core::Value::record_named(
+                            "vault-order",
+                            vec![
+                                mneme_core::Value::string(vault.alias.clone()),
+                                vault.served_revision.to_value(),
+                            ],
+                        )
+                    })
+                    .collect(),
+            ),
+            mneme_core::Value::integer(federated.facts.len() as i64),
+        ],
+    )
+}
+
 fn rule_identity_value(rule: &Rule) -> mneme_core::Value {
     mneme_core::Value::record_named(
         "ordered-rule",
@@ -1619,6 +1682,44 @@ fn term_identity_value(term: &Term) -> mneme_core::Value {
             ],
         ),
     }
+}
+
+/// Result of one bounded federated Prolog query, carrying participating vaults.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FederatedOutcome {
+    pub outcome: Outcome,
+    pub vaults: Vec<snapshot::VaultRevision>,
+}
+
+/// Run one bounded query over a federated multi-vault input image.
+pub fn run_federated_query(
+    engine: &std::path::Path,
+    metadata: &CapabilityMetadata,
+    federated: &snapshot::FederatedImage,
+    request: &Request,
+    runtime: &process::WorkerRuntime<'_>,
+) -> Result<FederatedOutcome, CapabilityError> {
+    let identity = request.federated_protocol_identity(metadata, federated)?;
+    assert!(!identity.image_digest.is_empty());
+    let effective = process::WorkerLimits {
+        max_wall_ms: runtime.limits.max_wall_ms.min(request.limits.max_time_ms),
+        max_output_bytes: runtime
+            .limits
+            .max_output_bytes
+            .min(request.limits.max_output_bytes),
+    };
+    let clamped = process::WorkerRuntime {
+        control: runtime.control,
+        limits: effective,
+    };
+    let worker = process::run_federated_worker(engine, metadata, federated, request, &clamped)?;
+    let outcome = outcome_from_worker(&worker, &federated.image, request, &identity);
+    outcome.validate_for_request(request)?;
+    assert!(!federated.vaults.is_empty());
+    Ok(FederatedOutcome {
+        outcome,
+        vaults: federated.vaults.clone(),
+    })
 }
 
 /// Run one bounded query through the configured engine.

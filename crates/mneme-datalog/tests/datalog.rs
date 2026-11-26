@@ -4292,3 +4292,312 @@ fn explain_missing_handles_cycles_derived_subgoals_and_aggregate_non_promotion()
             .any(|reason| { reason.kind == mneme_datalog::MissingReasonKind::UnmetConstraint })
     );
 }
+
+struct TypedEntitySpec<'a> {
+    id: mneme_core::RecordId,
+    scope: &'a mneme_core::ScopeId,
+    entity_type: &'a str,
+    label: &'a str,
+}
+
+fn add_typed_entity(harness: &mut Harness, key: &str, spec: TypedEntitySpec<'_>) {
+    assert!(!key.is_empty());
+    assert!(!spec.entity_type.is_empty());
+    let payload = mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("entity-type"),
+            mneme_core::Value::symbol(spec.entity_type),
+        ),
+        (
+            mneme_core::Symbol::from("label"),
+            mneme_core::Value::string(spec.label),
+        ),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::dictionary([]),
+        ),
+    ]);
+    let base = harness.workspace.current_revision().expect("base");
+    harness
+        .workspace
+        .commit(mneme_store::CommitCommand {
+            base,
+            actor: "test".to_owned(),
+            scope: spec.scope.clone(),
+            idempotency_key: key.to_owned(),
+            records: vec![mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Entity,
+                record_id: spec.id,
+                revision_id: mneme_core::RevisionId::from_bytes(
+                    [spec.id.as_bytes()[0].wrapping_add(1); 16],
+                ),
+                predecessor: None,
+                scope: spec.scope.clone(),
+                payload,
+            }],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit typed entity");
+}
+
+#[test]
+fn federated_query_joins_across_vaults_with_provenance_negation_and_pinned_determinism() {
+    let mut insights = Harness::new();
+    let mut bookmarks = Harness::new();
+    let default_scope = scope();
+
+    // Primary vault (`insights`) holds a `principle` entity, plus an excluded-scope entity.
+    add_typed_entity(
+        &mut insights,
+        "principle-1",
+        TypedEntitySpec {
+            id: rid(0x11),
+            scope: &default_scope,
+            entity_type: "principle",
+            label: "stratified-negation",
+        },
+    );
+    // Excluded-scope entity in `bookmarks` must never leak into federated results.
+    let hidden_scope =
+        mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "secret").expect("scope");
+    add_typed_entity(
+        &mut bookmarks,
+        "hidden-paper",
+        TypedEntitySpec {
+            id: rid(0x21),
+            scope: &hidden_scope,
+            entity_type: "paper",
+            label: "stratified-negation",
+        },
+    );
+    // Visible `paper` entity in `bookmarks` at rev1.
+    add_typed_entity(
+        &mut bookmarks,
+        "paper-1",
+        TypedEntitySpec {
+            id: rid(0x22),
+            scope: &default_scope,
+            entity_type: "paper",
+            label: "stratified-negation",
+        },
+    );
+    let bookmarks_rev1 = bookmarks.workspace.current_revision().expect("rev1");
+
+    // Advance `bookmarks` to rev2 with an extra paper and a `reviewed` entity for negation tests.
+    add_typed_entity(
+        &mut bookmarks,
+        "paper-2",
+        TypedEntitySpec {
+            id: rid(0x23),
+            scope: &default_scope,
+            entity_type: "paper",
+            label: "unreviewed-topic",
+        },
+    );
+    add_typed_entity(
+        &mut insights,
+        "principle-2",
+        TypedEntitySpec {
+            id: rid(0x12),
+            scope: &default_scope,
+            entity_type: "principle",
+            label: "unreviewed-topic",
+        },
+    );
+    // In `insights`, mark `principle-1` (`rid(0x11)`) as already linked to an anchor `rid(0x13)`.
+    add_typed_entity(
+        &mut insights,
+        "anchor-1",
+        TypedEntitySpec {
+            id: rid(0x13),
+            scope: &default_scope,
+            entity_type: "anchor",
+            label: "anchor",
+        },
+    );
+    insights.add_relation("bridge-edge", rid(0x31), &scope(), rid(0x11), rid(0x13));
+
+    let bundle = mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "federated-bridge".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 1,
+        base_predicates: std::collections::BTreeMap::from([
+            ("vault_entity".to_owned(), 4),
+            ("entity".to_owned(), 3),
+            ("relation".to_owned(), 3),
+        ]),
+        complete_predicates: std::collections::BTreeSet::from([
+            "vault_entity".to_owned(),
+            "entity".to_owned(),
+            "relation".to_owned(),
+        ]),
+        rules: vec![
+            // Explicit vault-alias join across primary (`principle`) and bookmarks (`paper`).
+            mneme_datalog::Rule::new(
+                "r-bridge",
+                atom("bridge", vec![var("P"), var("Pr"), var("L")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "vault_entity",
+                        vec![
+                            constant(mneme_core::Value::string("bookmarks")),
+                            var("P"),
+                            constant(mneme_core::Value::symbol("paper")),
+                            var("L"),
+                        ],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "vault_entity",
+                        vec![
+                            constant(mneme_core::Value::string("primary")),
+                            var("Pr"),
+                            constant(mneme_core::Value::symbol("principle")),
+                            var("L"),
+                        ],
+                    )),
+                ],
+            ),
+            // Stratified negation across vaults: bridge candidates whose principle has no `depends` edge.
+            mneme_datalog::Rule::new(
+                "r-unbridged",
+                atom("unbridged", vec![var("P"), var("Pr"), var("L")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "bridge",
+                        vec![var("P"), var("Pr"), var("L")],
+                    )),
+                    mneme_datalog::Literal::Negative(atom(
+                        "relation",
+                        vec![
+                            constant(mneme_core::Value::symbol("depends")),
+                            var("Pr"),
+                            constant(rid(0x13).to_value()),
+                        ],
+                    )),
+                ],
+            ),
+        ],
+    });
+
+    let primary_head = insights.workspace.current_revision().expect("primary head");
+    let bookmarks_head = bookmarks
+        .workspace
+        .current_revision()
+        .expect("bookmarks head");
+
+    // 1. Query at current heads (unpinned attachment defaults to head at query start).
+    let mut service = mneme_datalog::Service::new(&mut insights.workspace);
+    let build_head = service
+        .build_federated(mneme_datalog::FederatedBuildRequest {
+            request: mneme_datalog::BuildRequest {
+                actor: "test".to_owned(),
+                scope: scope(),
+                revision: primary_head,
+                bundle: bundle.clone(),
+                limits: limits(),
+                publish: false,
+                incomplete_extents: std::collections::BTreeSet::new(),
+                cancellation: None,
+                access: mneme_memory::Access::Operator,
+                at: None,
+            },
+            attachments: vec![mneme_datalog::VaultAttachment {
+                alias: "bookmarks".to_owned(),
+                root: bookmarks.temp.path().to_path_buf(),
+                revision: None,
+            }],
+        })
+        .expect("federated build at head");
+    let bridge_res = service
+        .query_build(&build_head, mneme_datalog::Query::all("bridge", 100))
+        .expect("bridge query");
+    assert_eq!(bridge_res.status, mneme_datalog::ExecutionStatus::Complete);
+    assert!(bridge_res.exhaustive);
+    assert_eq!(bridge_res.rows.len(), 2, "expected 2 bridges across vaults");
+    assert_eq!(bridge_res.vaults.len(), 2);
+    assert_eq!(bridge_res.vaults[0].alias, "primary");
+    assert_eq!(bridge_res.vaults[0].served_revision, primary_head);
+    assert_eq!(bridge_res.vaults[1].alias, "bookmarks");
+    assert_eq!(bridge_res.vaults[1].served_revision, bookmarks_head);
+    for row in &bridge_res.rows {
+        assert_eq!(
+            row.supports[0].vaults,
+            std::collections::BTreeSet::from(["bookmarks".to_owned(), "primary".to_owned()])
+        );
+    }
+
+    // Stratified negation + complete-predicate check: `paper-1` is cited by `principle-1`,
+    // so only `paper-2` (`rid(0x23)`) remains unbridged!
+    let unbridged_res = service
+        .query_build(&build_head, mneme_datalog::Query::all("unbridged", 100))
+        .expect("unbridged query");
+    assert_eq!(
+        unbridged_res.status,
+        mneme_datalog::ExecutionStatus::Complete
+    );
+    assert!(unbridged_res.exhaustive);
+    assert_eq!(unbridged_res.rows.len(), 1);
+    assert_eq!(unbridged_res.rows[0].values[0], rid(0x23).to_value());
+
+    // 2. Pinned-revision determinism: pinning `bookmarks` to `bookmarks_rev1` sees only `paper-1`.
+    let build_pinned = service
+        .build_federated(mneme_datalog::FederatedBuildRequest {
+            request: mneme_datalog::BuildRequest {
+                actor: "test".to_owned(),
+                scope: scope(),
+                revision: primary_head,
+                bundle: bundle.clone(),
+                limits: limits(),
+                publish: false,
+                incomplete_extents: std::collections::BTreeSet::new(),
+                cancellation: None,
+                access: mneme_memory::Access::Operator,
+                at: None,
+            },
+            attachments: vec![mneme_datalog::VaultAttachment {
+                alias: "bookmarks".to_owned(),
+                root: bookmarks.temp.path().to_path_buf(),
+                revision: Some(bookmarks_rev1),
+            }],
+        })
+        .expect("federated build pinned");
+    let pinned_res = service
+        .query_build(&build_pinned, mneme_datalog::Query::all("bridge", 100))
+        .expect("pinned bridge query");
+    assert_eq!(pinned_res.rows.len(), 1);
+    assert_eq!(pinned_res.rows[0].values[0], rid(0x22).to_value());
+    assert_eq!(pinned_res.vaults[1].served_revision, bookmarks_rev1);
+    drop(service);
+
+    // 3. Refusal on locked attached vault.
+    let sweep_guard = bookmarks
+        .workspace
+        .exclusive_sweep_lock()
+        .expect("lock bookmarks");
+    let mut service = mneme_datalog::Service::new(&mut insights.workspace);
+    let locked = service.build_federated(mneme_datalog::FederatedBuildRequest {
+        request: mneme_datalog::BuildRequest {
+            actor: "test".to_owned(),
+            scope: scope(),
+            revision: primary_head,
+            bundle,
+            limits: limits(),
+            publish: false,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            cancellation: None,
+            access: mneme_memory::Access::Operator,
+            at: None,
+        },
+        attachments: vec![mneme_datalog::VaultAttachment {
+            alias: "bookmarks".to_owned(),
+            root: bookmarks.temp.path().to_path_buf(),
+            revision: None,
+        }],
+    });
+    assert!(locked.is_err(), "locked attached vault must be refused");
+    drop(sweep_guard);
+}
