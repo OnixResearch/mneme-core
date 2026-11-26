@@ -10,7 +10,7 @@
     "profile_hash": "b3:3626937a7bdf613d21682ea7d0c423f2a9387cd44f26e6984f3464ce8b2b4854",
     "config_hash": "b3:d1ceee4051a80362ca0827d08b581c0cc8796f9555a326407b9e22ecf3c7d654"
   },
-  "baseline_hash": "b3:90d5af8f4d4c03f0f1b9cad49877b24ae376a653d6a7416bab2f984bd589bb9b",
+  "baseline_hash": "b3:8ac25413a83943d32021d9040637449fdfcebc2a201178cff3cea14a986f13fc",
   "findings": [
     {
       "stable_id": "b3:024b564c782fe452",
@@ -20,22 +20,9 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 1216,
+      "line": 1300,
       "column": 24,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:0381f25c32290d7d",
-      "semantic_id": "b3:0381f25c32290d7d",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/repl.rs",
-      "line": 871,
-      "column": 58,
-      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -46,7 +33,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1544,
+      "line": 1622,
       "column": 30,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -59,7 +46,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1272,
+      "line": 1334,
       "column": 25,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -85,7 +72,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 849,
+      "line": 865,
       "column": 30,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -98,7 +85,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2734,
+      "line": 3033,
       "column": 21,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -124,7 +111,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 102,
+      "line": 103,
       "column": 24,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -137,7 +124,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 135,
+      "line": 136,
       "column": 30,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -163,7 +150,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 111,
+      "line": 112,
       "column": 26,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -189,8 +176,21 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1465,
+      "line": 1543,
       "column": 26,
+      "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:21e456649915ed68",
+      "semantic_id": "b3:21e456649915ed68",
+      "identity_status": "computed",
+      "lint": "mutating_input_in_pure",
+      "group": "tigerstyle::purity",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 351,
+      "column": 12,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
     },
@@ -202,7 +202,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2685,
+      "line": 2984,
       "column": 5,
       "message": "same-crate enum `AggregateFunction` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -228,7 +228,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 2116,
+      "line": 2161,
       "column": 12,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -241,9 +241,35 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 192,
+      "line": 203,
       "column": 18,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:28c30ef86b231f3a",
+      "semantic_id": "b3:28c30ef86b231f3a",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 57 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:2a47078941e2d941",
+      "semantic_id": "b3:2a47078941e2d941",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/rules.rs",
+      "line": 379,
+      "column": 5,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -254,7 +280,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 1453,
+      "line": 1471,
       "column": 21,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -286,19 +312,6 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:2f505d1886b5073d",
-      "semantic_id": "b3:2f505d1886b5073d",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1822,
-      "column": 5,
-      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_datalog"
-    },
-    {
       "stable_id": "b3:30901bd440bd40b0",
       "semantic_id": "b3:30901bd440bd40b0",
       "identity_status": "computed",
@@ -306,7 +319,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 1512,
+      "line": 1611,
       "column": 5,
       "message": "same-crate enum `CoverageStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -319,7 +332,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 1673,
+      "line": 1772,
       "column": 9,
       "message": "core scope constructs concrete type `mneme_store::WorkspaceConfig`; inject the dependency through a port or capability",
       "crate_name": "mneme_datalog"
@@ -345,7 +358,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 566,
+      "line": 645,
       "column": 17,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -358,7 +371,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 3187,
+      "line": 3190,
       "column": 26,
       "message": "same-crate enum `CoverageStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -397,7 +410,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 619,
+      "line": 620,
       "column": 13,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -436,7 +449,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1353,
+      "line": 1431,
       "column": 30,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -449,7 +462,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 879,
+      "line": 1009,
       "column": 5,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -475,7 +488,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 1759,
+      "line": 1804,
       "column": 12,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -507,6 +520,19 @@
       "crate_name": "mneme_datalog"
     },
     {
+      "stable_id": "b3:4440b79d0cf607a5",
+      "semantic_id": "b3:4440b79d0cf607a5",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 2071,
+      "column": 9,
+      "message": "same-crate enum `engine::PlanStep` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_datalog"
+    },
+    {
       "stable_id": "b3:457df0597b632b3b",
       "semantic_id": "b3:457df0597b632b3b",
       "identity_status": "computed",
@@ -527,7 +553,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2418,
+      "line": 2717,
       "column": 9,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -592,22 +618,9 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 1205,
+      "line": 1289,
       "column": 18,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:518a0053c76ac1d7",
-      "semantic_id": "b3:518a0053c76ac1d7",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 159,
-      "column": 34,
-      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -618,7 +631,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 179,
+      "line": 180,
       "column": 24,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -631,9 +644,22 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 1144,
+      "line": 1228,
       "column": 16,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:5575e555b134428e",
+      "semantic_id": "b3:5575e555b134428e",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 3118,
+      "column": 5,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -644,7 +670,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 619,
+      "line": 730,
       "column": 22,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_datalog"
@@ -663,8 +689,8 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:585db7d96b0f6ae0",
-      "semantic_id": "b3:585db7d96b0f6ae0",
+      "stable_id": "b3:58f95a8a5cceb698",
+      "semantic_id": "b3:58f95a8a5cceb698",
       "identity_status": "computed",
       "lint": "module_file_count",
       "group": "tigerstyle::structure",
@@ -672,7 +698,7 @@
       "file": "crates/mneme-datalog/src/engine.rs",
       "line": 1,
       "column": 1,
-      "message": "module directory `crates/mneme-datalog/src` contains 8 Rust source files (limit: 7)",
+      "message": "module directory `crates/mneme-datalog/src` contains 9 Rust source files (limit: 7)",
       "crate_name": "mneme_datalog"
     },
     {
@@ -683,7 +709,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 594,
+      "line": 673,
       "column": 29,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -709,7 +735,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 3685,
+      "line": 3689,
       "column": 12,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -728,15 +754,15 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:609d13f13020b493",
-      "semantic_id": "b3:609d13f13020b493",
+      "stable_id": "b3:61159eb8e512775e",
+      "semantic_id": "b3:61159eb8e512775e",
       "identity_status": "computed",
       "lint": "fragile_exhaustive_enum_match",
       "group": "tigerstyle::safety",
       "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1637,
-      "column": 9,
+      "file": "crates/mneme-datalog/src/rules.rs",
+      "line": 1021,
+      "column": 5,
       "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
@@ -787,7 +813,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 372,
+      "line": 415,
       "column": 1,
       "message": "core scope owns interior mutability; prefer explicit state transitions or shell-owned synchronization",
       "crate_name": "mneme_datalog"
@@ -800,7 +826,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 625,
+      "line": 704,
       "column": 61,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -813,7 +839,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 1140,
+      "line": 1224,
       "column": 26,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -826,7 +852,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1169,
+      "line": 1231,
       "column": 27,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_datalog"
@@ -839,7 +865,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 949,
+      "line": 1031,
       "column": 28,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -852,7 +878,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2337,
+      "line": 2636,
       "column": 12,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_datalog"
@@ -878,7 +904,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 3274,
+      "line": 3277,
       "column": 11,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -891,22 +917,9 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1537,
+      "line": 1615,
       "column": 5,
       "message": "same-crate enum `CoverageStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:76a64e77f72b1d73",
-      "semantic_id": "b3:76a64e77f72b1d73",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 640,
-      "column": 17,
-      "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_datalog"
     },
     {
@@ -923,19 +936,6 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:7e1998d459469a3d",
-      "semantic_id": "b3:7e1998d459469a3d",
-      "identity_status": "computed",
-      "lint": "allocation_in_loop",
-      "group": "tigerstyle::performance",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1875,
-      "column": 32,
-      "message": "Vec allocation constructor runs inside a loop",
-      "crate_name": "mneme_datalog"
-    },
-    {
       "stable_id": "b3:7e788c7f23b8dd27",
       "semantic_id": "b3:7e788c7f23b8dd27",
       "identity_status": "computed",
@@ -949,16 +949,16 @@
       "crate_name": "datalog"
     },
     {
-      "stable_id": "b3:7ec1e4d60ef705a5",
-      "semantic_id": "b3:7ec1e4d60ef705a5",
+      "stable_id": "b3:7edad63105e86230",
+      "semantic_id": "b3:7edad63105e86230",
       "identity_status": "computed",
       "lint": "fragile_exhaustive_enum_match",
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1835,
-      "column": 5,
-      "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "line": 1719,
+      "column": 9,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -969,7 +969,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 1567,
+      "line": 1585,
       "column": 12,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -982,9 +982,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 707,
+      "line": 837,
       "column": 5,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:837d072b0f17b6c8",
+      "semantic_id": "b3:837d072b0f17b6c8",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 1973,
+      "column": 5,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1008,9 +1021,22 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 1108,
+      "line": 1126,
       "column": 16,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:87bc84b6345e01ab",
+      "semantic_id": "b3:87bc84b6345e01ab",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/ivm.rs",
+      "line": 1638,
+      "column": 9,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1021,7 +1047,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 913,
+      "line": 1043,
       "column": 43,
       "message": "same-crate enum `AggregateFunction` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -1034,9 +1060,35 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2475,
+      "line": 2774,
       "column": 5,
       "message": "same-crate enum `CompareOp` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:8ab1f10ba24366e6",
+      "semantic_id": "b3:8ab1f10ba24366e6",
+      "identity_status": "computed",
+      "lint": "mutating_input_in_pure",
+      "group": "tigerstyle::purity",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 1760,
+      "column": 53,
+      "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:8ce00d1a81db26e4",
+      "semantic_id": "b3:8ce00d1a81db26e4",
+      "identity_status": "computed",
+      "lint": "mutating_input_in_pure",
+      "group": "tigerstyle::purity",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/engine/derivation.rs",
+      "line": 58,
+      "column": 13,
+      "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1060,7 +1112,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 1930,
+      "line": 1975,
       "column": 26,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1086,7 +1138,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2064,
+      "line": 2363,
       "column": 16,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1099,7 +1151,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 290,
+      "line": 333,
       "column": 9,
       "message": "same-crate enum `ExecutionStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -1112,7 +1164,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 890,
+      "line": 957,
       "column": 18,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1128,19 +1180,6 @@
       "line": 955,
       "column": 12,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:97e6e6841ff54a97",
-      "semantic_id": "b3:97e6e6841ff54a97",
-      "identity_status": "computed",
-      "lint": "interior_mutability_in_core",
-      "group": "tigerstyle::purity",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 80,
-      "column": 1,
-      "message": "core scope owns interior mutability; prefer explicit state transitions or shell-owned synchronization",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1164,7 +1203,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 578,
+      "line": 657,
       "column": 21,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_datalog"
@@ -1177,9 +1216,22 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 1809,
+      "line": 1854,
       "column": 14,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:a1d1f78ba2b6b613",
+      "semantic_id": "b3:a1d1f78ba2b6b613",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/rules.rs",
+      "line": 548,
+      "column": 37,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1203,7 +1255,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2449,
+      "line": 2748,
       "column": 5,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -1229,7 +1281,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1426,
+      "line": 1504,
       "column": 29,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1242,22 +1294,9 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 575,
+      "line": 654,
       "column": 36,
       "message": "String allocation constructor runs inside a loop",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:a83e39ef62c3b49e",
-      "semantic_id": "b3:a83e39ef62c3b49e",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 52 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1268,7 +1307,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1913,
+      "line": 2186,
       "column": 76,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1281,35 +1320,9 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 1946,
+      "line": 1991,
       "column": 23,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:adb3b593668d907a",
-      "semantic_id": "b3:adb3b593668d907a",
-      "identity_status": "computed",
-      "lint": "mutating_input_in_pure",
-      "group": "tigerstyle::purity",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2826,
-      "column": 11,
-      "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:afd7d8f2fcf7e6f2",
-      "semantic_id": "b3:afd7d8f2fcf7e6f2",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 368,
-      "column": 5,
-      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1323,6 +1336,19 @@
       "line": 213,
       "column": 12,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:b0f12714e18fc025",
+      "semantic_id": "b3:b0f12714e18fc025",
+      "identity_status": "computed",
+      "lint": "catch_all_on_enum",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 1791,
+      "column": 13,
+      "message": "catch-all `_` on enum match returns deny value — new variants will be silently handled",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1372,7 +1398,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1376,
+      "line": 1454,
       "column": 27,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1385,22 +1411,9 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 905,
+      "line": 923,
       "column": 20,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:b44f86a342220589",
-      "semantic_id": "b3:b44f86a342220589",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/ivm.rs",
-      "line": 1620,
-      "column": 9,
-      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1411,7 +1424,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 908,
+      "line": 988,
       "column": 9,
       "message": "foreign enum `mneme_core::Reference` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_datalog"
@@ -1437,22 +1450,9 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 3541,
+      "line": 3544,
       "column": 17,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:bc654597cf9ac21b",
-      "semantic_id": "b3:bc654597cf9ac21b",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 440,
-      "column": 8,
-      "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1469,19 +1469,6 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:bd8619cac23a7428",
-      "semantic_id": "b3:bd8619cac23a7428",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1848,
-      "column": 9,
-      "message": "same-crate enum `engine::PlanStep` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_datalog"
-    },
-    {
       "stable_id": "b3:bdcac590c758b2d0",
       "semantic_id": "b3:bdcac590c758b2d0",
       "identity_status": "computed",
@@ -1489,7 +1476,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 3971,
+      "line": 3975,
       "column": 20,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1515,9 +1502,22 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2116,
+      "line": 2415,
       "column": 13,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:c396da3c50cf6f37",
+      "semantic_id": "b3:c396da3c50cf6f37",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/rules.rs",
+      "line": 159,
+      "column": 34,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1532,6 +1532,19 @@
       "column": 1,
       "message": "`#[allow(...)]` without justification comment",
       "crate_name": "datalog"
+    },
+    {
+      "stable_id": "b3:c51fe411934518eb",
+      "semantic_id": "b3:c51fe411934518eb",
+      "identity_status": "computed",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 1784,
+      "column": 15,
+      "message": "function `plan_rule_body` is 73 lines (limit: 70)",
+      "crate_name": "mneme_datalog"
     },
     {
       "stable_id": "b3:c5ef3166cbe1b638",
@@ -1567,22 +1580,9 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 12,
+      "line": 14,
       "column": 5,
       "message": "core scope performs direct time effect; inject a port or move the call to the shell",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:c8d018ed7e0b9f96",
-      "semantic_id": "b3:c8d018ed7e0b9f96",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1810,
-      "column": 37,
-      "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1625,16 +1625,29 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:d72f3c321f3499a7",
-      "semantic_id": "b3:d72f3c321f3499a7",
+      "stable_id": "b3:d11773c9c261aeb8",
+      "semantic_id": "b3:d11773c9c261aeb8",
       "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
+      "lint": "interior_mutability_in_core",
+      "group": "tigerstyle::purity",
       "severity": "warning",
-      "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 1459,
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 76,
+      "column": 1,
+      "message": "core scope owns interior mutability; prefer explicit state transitions or shell-owned synchronization",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:d2da58424a2d5874",
+      "semantic_id": "b3:d2da58424a2d5874",
+      "identity_status": "computed",
+      "lint": "mutating_input_in_pure",
+      "group": "tigerstyle::purity",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/engine.rs",
+      "line": 1936,
       "column": 17,
-      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1645,7 +1658,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2439,
+      "line": 2738,
       "column": 5,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -1658,7 +1671,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 4338,
+      "line": 4399,
       "column": 17,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1703,6 +1716,19 @@
       "crate_name": "mneme_datalog"
     },
     {
+      "stable_id": "b3:dc8545a52c323d92",
+      "semantic_id": "b3:dc8545a52c323d92",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/lib.rs",
+      "line": 1543,
+      "column": 17,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_datalog"
+    },
+    {
       "stable_id": "b3:dd9288d46b784382",
       "semantic_id": "b3:dd9288d46b784382",
       "identity_status": "computed",
@@ -1710,7 +1736,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 3374,
+      "line": 3377,
       "column": 19,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1736,7 +1762,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 3116,
+      "line": 3093,
       "column": 40,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1762,7 +1788,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1104,
+      "line": 1184,
       "column": 9,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_datalog"
@@ -1775,7 +1801,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 3815,
+      "line": 3819,
       "column": 13,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1788,9 +1814,22 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2767,
+      "line": 4273,
       "column": 13,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
+      "crate_name": "mneme_datalog"
+    },
+    {
+      "stable_id": "b3:e8bf2b9901a82658",
+      "semantic_id": "b3:e8bf2b9901a82658",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-datalog/src/repl.rs",
+      "line": 871,
+      "column": 58,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1801,7 +1840,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 311,
+      "line": 354,
       "column": 9,
       "message": "same-crate enum `CoverageStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -1827,7 +1866,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 1307,
+      "line": 1391,
       "column": 21,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1866,7 +1905,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 3798,
+      "line": 3802,
       "column": 16,
       "message": "core scope constructs concrete type `mneme_core::SnapshotIndex`; inject the dependency through a port or capability",
       "crate_name": "mneme_datalog"
@@ -1879,7 +1918,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 2399,
+      "line": 2698,
       "column": 34,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
@@ -1911,19 +1950,6 @@
       "crate_name": "mneme_datalog"
     },
     {
-      "stable_id": "b3:f5c16da72d284dc8",
-      "semantic_id": "b3:f5c16da72d284dc8",
-      "identity_status": "computed",
-      "lint": "catch_all_on_enum",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1665,
-      "column": 13,
-      "message": "catch-all `_` on enum match returns deny value — new variants will be silently handled",
-      "crate_name": "mneme_datalog"
-    },
-    {
       "stable_id": "b3:f62383dd7ff36947",
       "semantic_id": "b3:f62383dd7ff36947",
       "identity_status": "computed",
@@ -1931,7 +1957,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/engine.rs",
-      "line": 1293,
+      "line": 1355,
       "column": 12,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_datalog"
@@ -1957,22 +1983,9 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/repl.rs",
-      "line": 901,
+      "line": 913,
       "column": 54,
       "message": "String allocation constructor runs inside a loop",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:f94ab18d660ba27f",
-      "semantic_id": "b3:f94ab18d660ba27f",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 891,
-      "column": 5,
-      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_datalog"
     },
     {
@@ -1983,7 +1996,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-datalog/src/lib.rs",
-      "line": 575,
+      "line": 641,
       "column": 1,
       "message": "core scope owns interior mutability; prefer explicit state transitions or shell-owned synchronization",
       "crate_name": "mneme_datalog"
@@ -2012,19 +2025,6 @@
       "line": 292,
       "column": 15,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
-      "crate_name": "mneme_datalog"
-    },
-    {
-      "stable_id": "b3:fc394723ccacb105",
-      "semantic_id": "b3:fc394723ccacb105",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-datalog/src/rules.rs",
-      "line": 640,
-      "column": 17,
-      "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_datalog"
     }
   ]

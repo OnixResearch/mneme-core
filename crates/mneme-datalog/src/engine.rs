@@ -4150,7 +4150,14 @@ fn merged_fact_data(
         .canonical_roots
         .extend(incoming.canonical_roots.iter().copied());
     merged.vaults.extend(incoming.vaults.iter().cloned());
-    merge_strings(&mut merged.temporal, incoming.temporal.clone());
+    if let Some(bounded) = merged.validity.union_bounded(
+        &incoming.validity,
+        crate::DEFAULT_MAX_INTERVALS_PER_FACT,
+        u64::MAX,
+    ) {
+        merged.validity = bounded.validity;
+        merged.truncated |= bounded.is_truncated;
+    }
     merged.truncated |= incoming.truncated;
     merged.canonical = match (merged.canonical, incoming.canonical) {
         (Some(left), Some(right)) => Some(left.min(right)),

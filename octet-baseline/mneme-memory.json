@@ -10,7 +10,7 @@
     "profile_hash": "b3:bf18a37d4cf030c126efb02263458fbc9dbb43bd859fc23c69799b9536246fa0",
     "config_hash": "b3:45bfd11c58db88e4095ffb2f6e79e225692aa3cc068869d1112fe271aba984c4"
   },
-  "baseline_hash": "b3:14c5bd5e133054e400010e366294ba1ce5be7408ec755b7548fe7580fbbf1cf4",
+  "baseline_hash": "b3:c91e3e5d16c735acb89654e00f93531fb3d5a4d0be740473fe76cb6c3bcd2253",
   "findings": [
     {
       "stable_id": "b3:006f540070deb8c7",
@@ -98,7 +98,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1350,
+      "line": 1493,
       "column": 12,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_memory"
@@ -182,6 +182,19 @@
       "crate_name": "mneme_memory"
     },
     {
+      "stable_id": "b3:0cbb42f4fd4a9f7a",
+      "semantic_id": "b3:0cbb42f4fd4a9f7a",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-memory/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 98 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_memory"
+    },
+    {
       "stable_id": "b3:0d6c70088c269d80",
       "semantic_id": "b3:0d6c70088c269d80",
       "identity_status": "computed",
@@ -228,7 +241,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 152,
+      "line": 222,
       "column": 9,
       "message": "same-crate enum `beliefs::SourceStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_memory"
@@ -306,7 +319,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1334,
+      "line": 1477,
       "column": 13,
       "message": "foreign enum `std::result::Result` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_memory"
@@ -338,19 +351,6 @@
       "crate_name": "mneme_memory"
     },
     {
-      "stable_id": "b3:22d32923f4dc6f96",
-      "semantic_id": "b3:22d32923f4dc6f96",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-memory/src/lib.rs",
-      "line": 15,
-      "column": 1,
-      "message": "module exposes 17 public items (limit: 12) — split unrelated public surface into focused modules",
-      "crate_name": "mneme_memory"
-    },
-    {
       "stable_id": "b3:22fd701648e3acde",
       "semantic_id": "b3:22fd701648e3acde",
       "identity_status": "computed",
@@ -358,7 +358,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1932,
+      "line": 2075,
       "column": 13,
       "message": "same-crate enum `beliefs::Ancestry<'v>::evaluate::Step` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_memory"
@@ -423,7 +423,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 616,
+      "line": 686,
       "column": 9,
       "message": "same-crate enum `model::SourceAvailability` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_memory"
@@ -453,6 +453,19 @@
       "column": 16,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_memory"
+    },
+    {
+      "stable_id": "b3:3c05e301c8b4b7e6",
+      "semantic_id": "b3:3c05e301c8b4b7e6",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-memory/tests/bitemporal.rs",
+      "line": 7,
+      "column": 1,
+      "message": "module exposes 17 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "bitemporal"
     },
     {
       "stable_id": "b3:446294d611940be4",
@@ -488,7 +501,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1892,
+      "line": 2035,
       "column": 9,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_memory"
@@ -527,7 +540,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 2249,
+      "line": 2390,
       "column": 46,
       "message": "core scope constructs concrete type `mneme_core::SourcePin`; inject the dependency through a port or capability",
       "crate_name": "mneme_memory"
@@ -605,7 +618,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1878,
+      "line": 2021,
       "column": 15,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_memory"
@@ -644,7 +657,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1822,
+      "line": 1965,
       "column": 9,
       "message": "same-crate enum `beliefs::NodePlan` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_memory"
@@ -689,19 +702,6 @@
       "crate_name": "mneme_memory"
     },
     {
-      "stable_id": "b3:5d56071794afc580",
-      "semantic_id": "b3:5d56071794afc580",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 987,
-      "column": 49,
-      "message": "unprotected unsigned addition may overflow",
-      "crate_name": "mneme_memory"
-    },
-    {
       "stable_id": "b3:5edb7f05f91e8ccb",
       "semantic_id": "b3:5edb7f05f91e8ccb",
       "identity_status": "computed",
@@ -712,19 +712,6 @@
       "line": 1178,
       "column": 27,
       "message": "core scope performs direct filesystem effect; inject a port or move the call to the shell",
-      "crate_name": "mneme_memory"
-    },
-    {
-      "stable_id": "b3:62eed1769e92a225",
-      "semantic_id": "b3:62eed1769e92a225",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-memory/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 94 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_memory"
     },
     {
@@ -865,7 +852,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 2035,
+      "line": 2178,
       "column": 13,
       "message": "foreign enum `mneme_core::RecordKind` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_memory"
@@ -878,7 +865,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1925,
+      "line": 2068,
       "column": 17,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_memory"
@@ -917,7 +904,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 612,
+      "line": 682,
       "column": 19,
       "message": "core scope constructs concrete type `mneme_core::SourcePin`; inject the dependency through a port or capability",
       "crate_name": "mneme_memory"
@@ -982,7 +969,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 2259,
+      "line": 2400,
       "column": 13,
       "message": "foreign enum `mneme_core::RecordKind` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_memory"
@@ -1008,7 +995,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1462,
+      "line": 1605,
       "column": 17,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_memory"
@@ -1086,7 +1073,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1348,
+      "line": 1491,
       "column": 19,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_memory"
@@ -1151,7 +1138,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 717,
+      "line": 787,
       "column": 27,
       "message": "core scope constructs concrete type `mneme_core::SourcePin`; inject the dependency through a port or capability",
       "crate_name": "mneme_memory"
@@ -1320,7 +1307,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 1652,
+      "line": 1795,
       "column": 5,
       "message": "same-crate enum `model::DecisionKind` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_memory"
@@ -1391,19 +1378,6 @@
       "crate_name": "comments"
     },
     {
-      "stable_id": "b3:cd8abbca70f9bd98",
-      "semantic_id": "b3:cd8abbca70f9bd98",
-      "identity_status": "computed",
-      "lint": "compound_condition",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 2187,
-      "column": 12,
-      "message": "condition has 3 boolean operators",
-      "crate_name": "mneme_memory"
-    },
-    {
       "stable_id": "b3:d0959e17e16c3ca5",
       "semantic_id": "b3:d0959e17e16c3ca5",
       "identity_status": "computed",
@@ -1414,6 +1388,19 @@
       "line": 1278,
       "column": 25,
       "message": "core scope performs direct filesystem effect; inject a port or move the call to the shell",
+      "crate_name": "mneme_memory"
+    },
+    {
+      "stable_id": "b3:d27ff1262d0b7e64",
+      "semantic_id": "b3:d27ff1262d0b7e64",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-memory/src/lib.rs",
+      "line": 15,
+      "column": 1,
+      "message": "module exposes 21 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_memory"
     },
     {
@@ -1619,7 +1606,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 360,
+      "line": 430,
       "column": 54,
       "message": "core scope constructs concrete type `mneme_core::SourcePin`; inject the dependency through a port or capability",
       "crate_name": "mneme_memory"
@@ -1658,7 +1645,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-memory/src/beliefs.rs",
-      "line": 2073,
+      "line": 2216,
       "column": 9,
       "message": "same-crate enum `beliefs::NodePlan` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_memory"

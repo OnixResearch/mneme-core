@@ -10,7 +10,7 @@
     "profile_hash": "b3:c2dde83cf9d9a07e31e137df6db33ed749739d41f8079a9c37a0fbfe40855576",
     "config_hash": "b3:4fcf56f78265e5e468520293d94da306281cb534c2d708c9d0bd710e7770eb84"
   },
-  "baseline_hash": "b3:563ff1c27ce2ef4a3335006fec05ca966eb7e2e39ed9c9096061986c2b959f86",
+  "baseline_hash": "b3:9db9d218f697624b50a87a5a53dd437c9cd9965ec2125827d5e9e80d14f295c1",
   "findings": [
     {
       "stable_id": "b3:0180858cc4e2017d",
@@ -689,19 +689,6 @@
       "crate_name": "mneme_doc"
     },
     {
-      "stable_id": "b3:71d84a5594a5f159",
-      "semantic_id": "b3:71d84a5594a5f159",
-      "identity_status": "computed",
-      "lint": "catch_all_on_enum",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/datalog.rs",
-      "line": 989,
-      "column": 17,
-      "message": "catch-all `_` on enum match returns deny value — new variants will be silently handled",
-      "crate_name": "mneme_doc"
-    },
-    {
       "stable_id": "b3:77597ebd05c3f71a",
       "semantic_id": "b3:77597ebd05c3f71a",
       "identity_status": "computed",
@@ -816,6 +803,19 @@
       "line": 912,
       "column": 36,
       "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:8c88c0c95a869ae1",
+      "semantic_id": "b3:8c88c0c95a869ae1",
+      "identity_status": "computed",
+      "lint": "catch_all_on_enum",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/datalog.rs",
+      "line": 989,
+      "column": 17,
+      "message": "catch-all `_` on enum match returns deny value — new variants will be silently handled",
       "crate_name": "mneme_doc"
     },
     {
