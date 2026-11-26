@@ -1,8 +1,9 @@
 # Verification gates for the public engine.
 #
-# Runs three independent jobs on every push to main, every pull request, and on
+# Runs four independent jobs on every push to main, every pull request, and on
 # demand:
 #   - `nix-flake-check`: sandboxed `nix flake check` (Rust checks, fmt, Octet).
+#   - `benches-smoke`: Criterion benchmark compilation & smoke gate (`cargo test --benches`).
 #   - `kernel-proofs`: Charon/Aeneas/Lean proof gate (`just proofs`) with a
 #     cached `proofs/kernel/.lake` directory.
 #   - `patchbay`: Linux-namespace fault-injection sync tests with
@@ -187,3 +188,46 @@ jobs:
         run: >-
           nix develop --no-update-lock-file --command bash -euo pipefail -c
           'export PATH="$PATH:/usr/sbin:/sbin"; MNEME_REQUIRE_PATCHBAY=1 cargo test --locked -p mneme-sync --test patchbay'
+
+  benches-smoke:
+    name: benches smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Refuse credential-bearing flake inputs
+        run: |
+          if grep -n 'ssh://' flake.lock; then
+            echo "::error::flake.lock pins an SSH input and this job has no credentials"
+            exit 1
+          fi
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.36.0/install
+
+      - name: Fetch the public bounded-exec source without an SSH key
+        run: |
+          git config --global url."https://github.com/OnixResearch/bounded-exec.git".insteadOf \
+            "ssh://git@github.com/OnixResearch/bounded-exec.git"
+
+      - name: Cache Cargo registry and git dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Smoke-test all Criterion benchmark targets
+        run: >-
+          nix develop --no-update-lock-file --command
+          cargo test --locked --workspace --benches --all-features

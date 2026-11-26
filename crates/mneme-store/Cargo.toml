@@ -19,7 +19,17 @@ thiserror.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 num-bigint.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "dedup_zstd"
+harness = false
+
+[[bench]]
+name = "store_scale"
+harness = false
 
 [lints]
 workspace = true

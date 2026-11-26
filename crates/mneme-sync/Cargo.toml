@@ -25,7 +25,13 @@ tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sy
 tracing = "0.1"
 
 [dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[[bench]]
+name = "rbsr"
+harness = false
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 anyhow = "1"
