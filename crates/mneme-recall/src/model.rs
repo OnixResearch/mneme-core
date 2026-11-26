@@ -11,6 +11,7 @@ pub enum Mode {
     Structured,
     Vector,
     Semantic,
+    GraphPpr,
 }
 
 impl Mode {
@@ -21,6 +22,7 @@ impl Mode {
             Mode::Structured => "structured",
             Mode::Vector => "vector",
             Mode::Semantic => "semantic",
+            Mode::GraphPpr => "graph-ppr",
         }
     }
 }
@@ -63,6 +65,39 @@ pub struct StructuredRequest {
     pub incomplete_extents: std::collections::BTreeSet<String>,
 }
 
+/// Opt-in Conformal Risk Control threshold filtering over pre-RRF normalized scores.
+///
+/// Filtering candidates below `1.0 - lambda_hat` before packing is strictly
+/// statistical abstention and never establishes factual absence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CalibrationConfig {
+    /// Content-addressed digest of the offline `CalibrationProfile`.
+    pub profile_digest: String,
+    /// Calibrated CRC parameter `lambda_hat` in `[0.0, 1.0]`.
+    pub lambda_hat: f64,
+    /// Target risk level `alpha` in `(0.0, 1.0]` used during calibration.
+    pub alpha: f64,
+    /// Specific ranked mode whose pre-RRF normalized score is checked. When
+    /// `None`, the maximum pre-RRF normalized score across contributing ranked
+    /// modes is used.
+    pub score_mode: Option<Mode>,
+}
+
+impl CalibrationConfig {
+    /// Minimum pre-RRF normalized score `1.0 - lambda_hat` required to survive
+    /// conformal filtering.
+    pub const fn score_threshold(&self) -> f64 {
+        let threshold = 1.0 - self.lambda_hat;
+        if threshold < 0.0 {
+            0.0
+        } else if threshold > 1.0 {
+            1.0
+        } else {
+            threshold
+        }
+    }
+}
+
 /// One recall operation.
 #[derive(Clone, Debug)]
 pub struct Request {
@@ -84,6 +119,14 @@ pub struct Request {
     /// Operator-configured semantic adapter. It is used only when `modes`
     /// explicitly contains [`Mode::Semantic`].
     pub semantic: Option<crate::semantic::SemanticRequest>,
+    /// Opt-in Heterogeneous Personalized PageRank configuration. Used only when
+    /// `modes` explicitly contains [`Mode::GraphPpr`]. When `None` and
+    /// `Mode::GraphPpr` is requested, default parameters with automatic top-M
+    /// BM25F seeding are used.
+    pub graph_ppr: Option<crate::ppr::Config>,
+    /// Opt-in Conformal Risk Control threshold filter applied to pre-RRF
+    /// normalized scores before packing.
+    pub calibration: Option<CalibrationConfig>,
     /// Permit an older served revision when explicitly requested.
     pub allow_stale: bool,
     /// Permit other explicitly requested modes to continue when one mode is
@@ -130,6 +173,8 @@ impl Request {
             modes: std::collections::BTreeSet::from([Mode::Lexical]),
             structured: None,
             semantic: None,
+            graph_ppr: None,
+            calibration: None,
             allow_stale: false,
             allow_fallback: true,
             allow_partial: true,
@@ -141,6 +186,19 @@ impl Request {
             max_time_ms: 500,
             cancellation: None,
         }
+    }
+
+    /// Enable opt-in Heterogeneous Personalized PageRank with `config`.
+    pub fn with_graph_ppr(mut self, config: crate::ppr::Config) -> Self {
+        self.modes.insert(Mode::GraphPpr);
+        self.graph_ppr = Some(config);
+        self
+    }
+
+    /// Enable opt-in Conformal Risk Control threshold filtering.
+    pub fn with_calibration(mut self, calibration: CalibrationConfig) -> Self {
+        self.calibration = Some(calibration);
+        self
     }
 
     /// The authorization a memory view is built with.

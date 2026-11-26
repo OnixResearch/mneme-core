@@ -15,15 +15,16 @@ pub mod failure;
 pub mod inference;
 pub mod lookup;
 pub mod model;
+pub mod ppr;
 pub mod semantic;
 
-pub use engine::{FUSION_POLICY_VERSION, Service};
+pub use engine::{FUSION_POLICY_VERSION, Service, pre_rrf_normalized_score};
 pub use failure::{QueryError, Result};
 pub use lookup::{LEXICAL_INDEX_VERSION, VECTOR_INDEX_VERSION, lexical_terms};
 pub use model::{
-    BudgetUse, Candidate, ClaimStatus, ContentKind, Context, DataBoundary, Evidence, Execution,
-    IndexCoverage, InvocationObservation, MediaCitation, Mode, ModeReport, ModeStatus, Omission,
-    Request, Response, SemanticObservation, StructuredRequest, TemporalMode,
+    BudgetUse, CalibrationConfig, Candidate, ClaimStatus, ContentKind, Context, DataBoundary,
+    Evidence, Execution, IndexCoverage, InvocationObservation, MediaCitation, Mode, ModeReport,
+    ModeStatus, Omission, Request, Response, SemanticObservation, StructuredRequest, TemporalMode,
 };
 pub use semantic::{
     DocumentAggregation, EmbeddingNormalization, EmbeddingPooling, EmbeddingSettings,
