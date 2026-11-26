@@ -775,6 +775,14 @@ impl AdvanceAccumulator {
                 .entry(pred.clone())
                 .or_default()
                 .add_in_place(delta)?;
+            if !delta.is_empty() {
+                let dirty_entry = dirty_by_pred.entry(pred.clone()).or_default();
+                for (key, weight) in delta.iter() {
+                    if weight != 0 {
+                        dirty_entry.insert(key.clone());
+                    }
+                }
+            }
         }
         let affected_set = all_deltas
             .iter()
@@ -786,7 +794,13 @@ impl AdvanceAccumulator {
             .iter()
             .map(|comp| comp.predicates.len())
             .sum();
-        debug_assert!(dirty_by_pred.len() <= request.dirty_provenance.len());
+        debug_assert!(
+            dirty_by_pred.len()
+                <= request
+                    .dirty_provenance
+                    .len()
+                    .saturating_add(all_deltas.len())
+        );
         debug_assert!(all_deltas.len() < usize::MAX);
         Ok(Self {
             next_view,
@@ -895,7 +909,9 @@ impl AdvanceAccumulator {
                 }
             }
         }
-        debug_assert!(self.all_deltas.len() >= component.predicates.len());
+        debug_assert!(
+            !is_component_affected || self.all_deltas.len() >= component.predicates.len()
+        );
         Ok(())
     }
 }

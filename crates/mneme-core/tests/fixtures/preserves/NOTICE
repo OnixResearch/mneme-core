@@ -1,0 +1,14 @@
+Upstream Preserves Conformance Test Suite
+=========================================
+
+File: samples.bin
+Source repository: https://gitlab.com/preserves/preserves
+Pinned repository commit: 6bb75e3d418314d3e580f53055814b8e450a3761
+File last-modified commit: 25b5c59f20d34f4781b16007e7198ff59a5e415e
+File URL: https://gitlab.com/preserves/preserves/-/raw/6bb75e3d418314d3e580f53055814b8e450a3761/tests/samples.bin
+SHA-256 (samples.bin): 081381c788bad2c5787121a0f57bae38f5424796b940e7da83414dd98676913b
+
+Copyright (c) Tony Garnock-Jones and Preserves contributors.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+See the adjacent LICENSE file for the full Apache License 2.0 text.

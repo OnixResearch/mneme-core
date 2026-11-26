@@ -3573,6 +3573,7 @@ fn evaluate_delta_parts(
             temp_facts: &evaluation.facts,
             temp_contribs: &evaluation.record_contributions,
             target_revision: request.target_revision,
+            max_supports: request.limits.max_supports_per_fact,
         },
         reconciled,
     )?;
@@ -4067,6 +4068,7 @@ struct ReconcileDeltaInput<'a> {
     temp_facts: &'a std::collections::BTreeMap<String, FactStore>,
     temp_contribs: &'a std::collections::BTreeMap<mneme_core::RecordId, Vec<(String, FactKey)>>,
     target_revision: mneme_core::WorkspaceRevisionId,
+    max_supports: usize,
 }
 
 struct ExistingRowTransition<'a> {
@@ -4119,6 +4121,44 @@ fn reconcile_existing_row(
     Ok(())
 }
 
+fn merged_fact_data(
+    existing: &crate::FactData,
+    incoming: &crate::FactData,
+    max_supports: usize,
+) -> (crate::FactData, Option<i64>, bool) {
+    let was_active = existing.is_active();
+    let mut merged = existing.clone();
+    merged.epistemic = merged.epistemic.union(incoming.epistemic);
+    for support in &incoming.supports {
+        if let Some(found) = merged
+            .supports
+            .iter_mut()
+            .find(|current| same_proof(current, support))
+        {
+            merge_premises(found, support);
+        } else if merged.supports.len() >= max_supports {
+            merged.truncated = true;
+        } else {
+            merged.supports.push(support.clone());
+        }
+    }
+    merged.sources.extend(incoming.sources.iter().cloned());
+    merged
+        .canonical_roots
+        .extend(incoming.canonical_roots.iter().copied());
+    merged.vaults.extend(incoming.vaults.iter().cloned());
+    merge_strings(&mut merged.temporal, incoming.temporal.clone());
+    merged.truncated |= incoming.truncated;
+    merged.canonical = match (merged.canonical, incoming.canonical) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (left, right) => left.or(right),
+    };
+    let is_now_active = merged.is_active();
+    let delta_weight = (!was_active && is_now_active).then_some(1);
+    let is_dirty = was_active && is_now_active && !same_semantic_fact_data(existing, &merged);
+    (merged, delta_weight, is_dirty)
+}
+
 fn reconcile_delta_facts(
     input: ReconcileDeltaInput<'_>,
     reconciled: &mut ReconciledFacts,
@@ -4149,22 +4189,27 @@ fn reconcile_delta_facts(
             &mut accum,
         )?;
     }
+    let mut merged_existing_count: usize = 0;
     for (pred, store) in input.temp_facts {
         for (key, new_data) in &store.rows {
-            if !input.old_rows.contains_key(&(pred.clone(), key.clone())) {
-                reconciled
-                    .next_facts
+            if input.old_rows.contains_key(&(pred.clone(), key.clone())) {
+                continue;
+            }
+            let target_rows = &mut reconciled.next_facts.entry(pred.clone()).or_default().rows;
+            let (final_data, delta_weight, is_dirty) = match target_rows.get(key) {
+                Some(existing) => merged_fact_data(existing, new_data, input.max_supports),
+                None => (new_data.clone(), new_data.is_active().then_some(1), false),
+            };
+            target_rows.insert(key.clone(), final_data);
+            if let Some(weight) = delta_weight {
+                accum
+                    .base_deltas
                     .entry(pred.clone())
                     .or_default()
-                    .rows
-                    .insert(key.clone(), new_data.clone());
-                if new_data.is_active() {
-                    accum
-                        .base_deltas
-                        .entry(pred.clone())
-                        .or_default()
-                        .insert_weighted(key.clone(), 1)?;
-                }
+                    .insert_weighted(key.clone(), weight)?;
+            } else if is_dirty {
+                accum.dirty_provenance.insert((pred.clone(), key.clone()));
+                merged_existing_count = merged_existing_count.saturating_add(1);
             }
         }
     }
@@ -4178,7 +4223,9 @@ fn reconcile_delta_facts(
         }
         reconciled.next_contribs.insert(*record_id, entries.clone());
     }
-    debug_assert!(accum.dirty_provenance.len() <= input.old_rows.len());
+    debug_assert!(
+        accum.dirty_provenance.len() <= input.old_rows.len().saturating_add(merged_existing_count)
+    );
     Ok((accum.base_deltas, accum.dirty_provenance))
 }
 

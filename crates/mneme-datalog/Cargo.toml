@@ -13,8 +13,18 @@ mneme-memory.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 mneme-retention.workspace = true
+proptest.workspace = true
 tempfile.workspace = true
+
+[[bench]]
+name = "freejoin"
+harness = false
+
+[[bench]]
+name = "dbsp_ivm"
+harness = false
 
 [lints]
 workspace = true
