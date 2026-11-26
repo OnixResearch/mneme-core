@@ -635,10 +635,8 @@ fn build_synthetic_item(
         scope: scope(),
         payload: mneme_core::Payload::new(payload_entries),
     };
-    let blob = mneme_store::SourceBlobDraft::inline(
-        bytes,
-        mneme_core::Symbol::from("text/asciidoc"),
-    );
+    let blob =
+        mneme_store::SourceBlobDraft::inline(bytes, mneme_core::Symbol::from("text/asciidoc"));
     (draft, blob)
 }
 

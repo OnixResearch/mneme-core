@@ -390,9 +390,10 @@ impl Scrub<'_> {
             ));
             return;
         }
-        let is_framed =
-            crate::payload::read_frame_header_length(path, metadata.len()).ok().flatten()
-                == Some(expected);
+        let is_framed = crate::payload::read_frame_header_length(path, metadata.len())
+            .ok()
+            .flatten()
+            == Some(expected);
         if metadata.len() != expected && !is_framed {
             self.push(blob_issue(
                 IssueKind::SizeMismatch,
@@ -462,7 +463,8 @@ impl Scrub<'_> {
             }
             VerifyMode::Full => match crate::payload::verify(self.root, digest, expected) {
                 Ok(()) => {
-                    self.report.bytes_verified = self.report.bytes_verified.saturating_add(expected);
+                    self.report.bytes_verified =
+                        self.report.bytes_verified.saturating_add(expected);
                     self.report.bytes_sized = self.report.bytes_sized.saturating_add(expected);
                     self.verified.insert(bytes);
                 }

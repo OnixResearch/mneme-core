@@ -683,8 +683,8 @@ pub(crate) fn stage_with_policy(
             media_type,
         });
     }
-    let is_compressed =
-        is_compressible_media_type(media_type) && !matches!(policy.compression, BlobCompression::None);
+    let is_compressed = is_compressible_media_type(media_type)
+        && !matches!(policy.compression, BlobCompression::None);
     let disk_bytes = encode_for_storage(
         root,
         digest,
