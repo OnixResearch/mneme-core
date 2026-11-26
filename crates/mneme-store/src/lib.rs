@@ -38,6 +38,7 @@ pub use lifecycle::{
     RetentionSelector, RetentionSuppression, SuppressionMode,
 };
 pub use outboard::verify_span_range;
+pub use payload::BlobCompression;
 
 /// Ensure a `bao-tree` outboard sidecar exists for a large BLAKE3 blob.
 pub fn ensure_outboard(
