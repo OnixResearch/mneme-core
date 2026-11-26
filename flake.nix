@@ -186,6 +186,7 @@
               {
                 nativeBuildInputs = [
                   rustToolchain
+                  pkgs.nodejs_22
                   octet.packages.${system}.cargo-octet
                 ];
               }
@@ -200,9 +201,8 @@
                 export CARGO_HOME="$PWD/.cargo-home"
                 mkdir -p "$CARGO_HOME"
                 cp ${octetVendor}/config.toml "$CARGO_HOME/config.toml"
-                cargo-octet check \
-                  --workspace --baseline octet-baseline.json \
-                  -- --all-targets --all-features --ignore-rust-version --offline
+                export CARGO_NET_OFFLINE=true
+                node scripts/octet-sharded.mjs check
                 touch "$out"
               '';
         in
