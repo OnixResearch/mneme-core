@@ -134,19 +134,19 @@ impl ArchiveWriter {
         digest: mneme_core::ContentDigest,
         bytes: &[u8],
     ) -> crate::error::Result<()> {
-        let length =
+        let length_bytes =
             u64::try_from(bytes.len()).map_err(|_| crate::error::Failure::HistoryLimitExceeded)?;
-        if length > super::MAX_PORTABLE_BLOB_BYTES {
+        if length_bytes > super::MAX_PORTABLE_BLOB_BYTES {
             return Err(crate::error::Failure::HistoryLimitExceeded);
         }
-        if mneme_core::ContentDigest::of_source_bytes(bytes) != digest {
+        if mneme_core::ContentDigest::of_source_bytes_with(bytes, digest.algorithm()) != digest {
             return Err(crate::error::Failure::CorruptBlob {
                 digest: digest.to_hex(),
                 reason: "source bytes do not hash to their committed digest".to_owned(),
             });
         }
         self.write(digest.as_bytes())?;
-        self.write(&length.to_le_bytes())?;
+        self.write(&length_bytes.to_le_bytes())?;
         self.write(bytes)
     }
 
@@ -233,6 +233,7 @@ impl ArchiveReader {
 
     /// Read one blob and verify its digest and declared length.
     pub(super) fn blob(&self, digest: mneme_core::ContentDigest) -> crate::error::Result<Vec<u8>> {
+        debug_assert!(!self.path.as_os_str().is_empty());
         let Some((offset, length)) = self.blob_offsets.get(digest.as_bytes()).copied() else {
             return Err(invalid(format!(
                 "archive does not carry blob {}",
@@ -242,13 +243,14 @@ impl ArchiveReader {
         if length > super::MAX_PORTABLE_BLOB_BYTES {
             return Err(crate::error::Failure::HistoryLimitExceeded);
         }
-        let length_usize =
+        let byte_count =
             usize::try_from(length).map_err(|_| crate::error::Failure::HistoryLimitExceeded)?;
-        let mut bytes = vec![0_u8; length_usize];
+        let mut bytes = vec![0_u8; byte_count];
         std::os::unix::fs::FileExt::read_exact_at(&self.file, &mut bytes, offset)
             .map_err(|error| io(&self.path, error))?;
+        debug_assert_eq!(bytes.len(), byte_count);
         if bytes.len() as u64 != length
-            || mneme_core::ContentDigest::of_source_bytes(&bytes) != digest
+            || mneme_core::ContentDigest::of_source_bytes_with(&bytes, digest.algorithm()) != digest
         {
             return Err(crate::error::Failure::CorruptBlob {
                 digest: digest.to_hex(),

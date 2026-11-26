@@ -45,11 +45,15 @@ pub fn path(root: &std::path::Path, digest: mneme_core::ContentDigest) -> std::p
 }
 
 /// Read and verify `range` (`[start, end)`) of `digest` without loading the
-/// whole blob when a BLAKE3 `bao-tree` outboard is present.
+/// whole blob when a BLAKE3 `bao-tree` outboard or FastCDC chunk manifest is
+/// present.
 ///
-/// Falls back cleanly to streaming full-blob verification for small BLAKE3
-/// blobs without outboards and for legacy SHA-256 blobs. Fails closed if a
-/// present outboard is malformed or disagrees with the BLAKE3 root digest.
+/// Handles raw BLAKE3 blobs (`O(log N)` `.obao4` range proofs or full-blob
+/// fallback), FastCDC chunked blobs (`MNCDC01\0`, verifying only chunks
+/// overlapping `[start, end)`), Zstd/Zstd-dictionary framed blobs
+/// (`MNZSTD01`/`MNZSTD02`, verifying full digest and length before slicing),
+/// and legacy SHA-256 blobs. Fails closed if a present outboard, manifest,
+/// chunk, dictionary, or frame is malformed or disagrees with the digest.
 pub fn verify_span_range(
     root: &std::path::Path,
     digest: mneme_core::ContentDigest,
@@ -61,8 +65,18 @@ pub fn verify_span_range(
         ));
     }
     let blob_file_path = crate::payload::blob_path(root, digest);
-    let file = open_regular_blob(&blob_file_path, digest)?;
+    let mut file = open_regular_blob(&blob_file_path, digest)?;
     let blob_bytes = file_len_bytes(&file, &blob_file_path)?;
+    let framing = crate::payload::inspect_file_framing(&mut file, &blob_file_path, blob_bytes)?;
+    if matches!(
+        framing,
+        crate::payload::BlobFraming::Zstd | crate::payload::BlobFraming::ZstdDict
+    ) {
+        return verify_zstd_span(root, digest, &range);
+    }
+    if framing == crate::payload::BlobFraming::FastCdc {
+        return verify_cdc_span(root, &blob_file_path, digest, &range);
+    }
     if range.end > blob_bytes {
         return Err(crate::error::Failure::CorruptBlob {
             digest: digest.to_hex(),
@@ -80,6 +94,88 @@ pub fn verify_span_range(
         return verify_full_and_slice(file, &blob_file_path, &query);
     }
     verify_blake3_span(root, &file, &blob_file_path, &query)
+}
+
+fn verify_zstd_span(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    range: &std::ops::Range<u64>,
+) -> crate::error::Result<Vec<u8>> {
+    let bytes = crate::payload::read(root, digest)?;
+    slice_verified_bytes(digest, &bytes, range)
+}
+
+fn verify_cdc_span(
+    root: &std::path::Path,
+    blob_file_path: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    range: &std::ops::Range<u64>,
+) -> crate::error::Result<Vec<u8>> {
+    let disk_bytes = std::fs::read(blob_file_path)
+        .map_err(|error| crate::error::Failure::io(blob_file_path, error))?;
+    if crate::payload::hash_bytes(digest.algorithm(), &disk_bytes) == *digest.as_bytes() {
+        return slice_verified_bytes(digest, &disk_bytes, range);
+    }
+    let (expected_len_bytes, chunks) = crate::dedup::parse_cdc_manifest(
+        digest,
+        &disk_bytes,
+        crate::payload::MAX_DECOMPRESSED_BLOB_BYTES,
+    )?;
+    if range.end > expected_len_bytes {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored bytes end before the requested range".to_owned(),
+        });
+    }
+    if range.start == range.end {
+        return Ok(Vec::new());
+    }
+    let out_len = usize::try_from(range.end.saturating_sub(range.start))
+        .map_err(|_| crate::error::Failure::ValueOutOfRange("span range length"))?;
+    debug_assert!(range.start < range.end);
+    debug_assert!(range.end <= expected_len_bytes);
+    let mut selected = Vec::with_capacity(out_len);
+    let mut position_bytes = 0_u64;
+    for (chunk_digest, chunk_len_bytes) in chunks {
+        let chunk_end_bytes = position_bytes.saturating_add(chunk_len_bytes);
+        if chunk_end_bytes > range.start && position_bytes < range.end {
+            let chunk_bytes = crate::payload::read_chunk(root, chunk_digest, chunk_len_bytes)?;
+            append_overlap(&mut selected, position_bytes, &chunk_bytes, range)?;
+        }
+        position_bytes = chunk_end_bytes;
+        if position_bytes >= range.end {
+            break;
+        }
+    }
+    if selected.len() != out_len {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "verified FastCDC chunks did not cover requested span".to_owned(),
+        });
+    }
+    Ok(selected)
+}
+
+fn slice_verified_bytes(
+    digest: mneme_core::ContentDigest,
+    bytes: &[u8],
+    range: &std::ops::Range<u64>,
+) -> crate::error::Result<Vec<u8>> {
+    let total_bytes = u64::try_from(bytes.len())
+        .map_err(|_| crate::error::Failure::ValueOutOfRange("blob length"))?;
+    if range.end > total_bytes {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "stored bytes end before the requested range".to_owned(),
+        });
+    }
+    let start = usize::try_from(range.start)
+        .map_err(|_| crate::error::Failure::ValueOutOfRange("span start"))?;
+    let end = usize::try_from(range.end)
+        .map_err(|_| crate::error::Failure::ValueOutOfRange("span end"))?;
+    debug_assert!(start <= end);
+    debug_assert!(end <= bytes.len());
+    Ok(bytes[start..end].to_vec())
 }
 
 /// Ensure a sidecar exists for a large BLAKE3 blob (`>= THRESHOLD_BYTES`).
@@ -121,6 +217,7 @@ pub fn rebuild(
     digest: mneme_core::ContentDigest,
 ) -> crate::error::Result<bool> {
     let Some((file, blob_bytes)) = open_large_blake3_blob(root, digest)? else {
+        remove_for_blob_path(&crate::payload::blob_path(root, digest))?;
         return Ok(false);
     };
     let sidecar_bytes = compute_from_reader(file, blob_bytes, digest)?;
@@ -224,8 +321,13 @@ fn open_large_blake3_blob(
         return Ok(None);
     }
     let blob_file_path = crate::payload::blob_path(root, digest);
-    let file = open_regular_blob(&blob_file_path, digest)?;
+    let mut file = open_regular_blob(&blob_file_path, digest)?;
     let blob_bytes = file_len_bytes(&file, &blob_file_path)?;
+    if crate::payload::inspect_file_framing(&mut file, &blob_file_path, blob_bytes)?
+        != crate::payload::BlobFraming::Raw
+    {
+        return Ok(None);
+    }
     if blob_bytes < THRESHOLD_BYTES {
         return Ok(None);
     }

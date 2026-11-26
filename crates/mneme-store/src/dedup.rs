@@ -20,7 +20,7 @@ const DEFAULT_MIN_CHUNK_BYTES: u32 = 16 * 1024;
 const DEFAULT_NORMAL_CHUNK_BYTES: u32 = 32 * 1024;
 const DEFAULT_MAX_CHUNK_BYTES: u32 = 64 * 1024;
 const DEFAULT_MIN_BLOB_BYTES: u64 = 128 * 1024;
-const MAX_ZSTD_DICTIONARY_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_ZSTD_DICTIONARY_BYTES: u64 = 16 * 1024 * 1024;
 
 /// On-disk magic prefix for FastCDC chunk manifest blobs.
 pub(crate) const CDC_MANIFEST_MAGIC: &[u8; 8] = b"MNCDC01\0";
@@ -323,8 +323,39 @@ pub fn dictionary_path(
     let hex = digest.to_hex();
     root.join(crate::payload::BLOB_DIRECTORY)
         .join(DICTIONARY_DIRECTORY)
+        .join(digest.algorithm().symbol())
         .join(&hex[0..2])
         .join(hex)
+}
+
+/// Legacy pre-namespaced dictionary path (`blobs/dicts/<ab>/<hex>`), kept for
+/// read and garbage-collection compatibility with existing workspaces.
+pub(crate) fn legacy_dictionary_path(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> std::path::PathBuf {
+    let hex = digest.to_hex();
+    root.join(crate::payload::BLOB_DIRECTORY)
+        .join(DICTIONARY_DIRECTORY)
+        .join(&hex[0..2])
+        .join(hex)
+}
+
+/// Resolve an on-disk dictionary path, preferring the algorithm-namespaced path
+/// and falling back to the legacy un-namespaced path when present.
+pub(crate) fn resolve_dictionary_path(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> std::path::PathBuf {
+    let namespaced = dictionary_path(root, digest);
+    if namespaced.exists() {
+        return namespaced;
+    }
+    let legacy = legacy_dictionary_path(root, digest);
+    if legacy.exists() {
+        return legacy;
+    }
+    namespaced
 }
 
 /// The filesystem path for a content-addressed FastCDC chunk digest.
@@ -332,8 +363,39 @@ pub fn chunk_path(root: &std::path::Path, digest: mneme_core::ContentDigest) -> 
     let hex = digest.to_hex();
     root.join(crate::payload::BLOB_DIRECTORY)
         .join(CHUNK_DIRECTORY)
+        .join(digest.algorithm().symbol())
         .join(&hex[0..2])
         .join(hex)
+}
+
+/// Legacy pre-namespaced chunk path (`blobs/chunks/<ab>/<hex>`), kept for read
+/// and garbage-collection compatibility with existing workspaces.
+pub(crate) fn legacy_chunk_path(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> std::path::PathBuf {
+    let hex = digest.to_hex();
+    root.join(crate::payload::BLOB_DIRECTORY)
+        .join(CHUNK_DIRECTORY)
+        .join(&hex[0..2])
+        .join(hex)
+}
+
+/// Resolve an on-disk FastCDC chunk path, preferring the algorithm-namespaced
+/// path and falling back to the legacy un-namespaced path when present.
+pub(crate) fn resolve_chunk_path(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> std::path::PathBuf {
+    let namespaced = chunk_path(root, digest);
+    if namespaced.exists() {
+        return namespaced;
+    }
+    let legacy = legacy_chunk_path(root, digest);
+    if legacy.exists() {
+        return legacy;
+    }
+    namespaced
 }
 
 /// Train a deterministic Zstd dictionary from sample payloads.
@@ -403,7 +465,7 @@ pub fn read_dictionary(
     root: &std::path::Path,
     digest: mneme_core::ContentDigest,
 ) -> crate::error::Result<Vec<u8>> {
-    let path = dictionary_path(root, digest);
+    let path = resolve_dictionary_path(root, digest);
     let bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             crate::error::Failure::MissingBlob {

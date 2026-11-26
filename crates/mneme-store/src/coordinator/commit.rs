@@ -342,9 +342,14 @@ impl super::Workspace {
         let mut staged = std::collections::BTreeMap::new();
         let mut record_files = std::collections::BTreeMap::new();
         self.stage_record_blobs(new_records, &mut staged, &mut record_files)?;
-        self.stage_source_blobs(&command.source_blobs, &mut staged)?;
+        self.stage_source_blobs(&command.source_blobs, new_records, &mut staged)?;
         self.stage_import_candidate_blobs(&command.import_candidates, new_records, &mut staged)?;
-        self.stage_publication_blobs(&command.publications, &mut staged)?;
+        self.stage_publication_blobs(
+            &command.publications,
+            &command.source_blobs,
+            new_records,
+            &mut staged,
+        )?;
         Ok((staged, record_files))
     }
 
@@ -382,12 +387,14 @@ impl super::Workspace {
     fn stage_source_blobs(
         &self,
         sources: &[crate::requests::SourceBlobDraft],
+        new_records: &[mneme_core::RecordEnvelope],
         staged: &mut super::BlobIndex,
     ) -> crate::error::Result<()> {
-        let policy = crate::payload::StoragePolicy {
-            compression: self.blob_compression,
-            chunking: self.blob_chunking,
-        };
+        let policy = self.storage_policy();
+        let referenced: std::collections::BTreeSet<mneme_core::ContentDigest> = new_records
+            .iter()
+            .filter_map(super::validation::retained_source_digest)
+            .collect();
         debug_assert!(self.root.is_absolute());
         debug_assert!(
             sources
@@ -395,30 +402,36 @@ impl super::Workspace {
                 .all(|source| !source.media_type.as_str().is_empty())
         );
         for source in sources {
-            let digest = source.digest();
-            let staged_blob = match &source.file {
-                Some(file) => {
-                    crate::payload::stage_file(&self.root, digest, &file.path, file.size_bytes)?
-                }
-                None => crate::payload::stage_with_policy(
+            if let Some(file) = &source.file {
+                let digest = source.digest();
+                let staged_blob = crate::payload::stage_file_with_policy(
+                    &self.root,
+                    digest,
+                    crate::payload::StreamedStageInput {
+                        source: &file.path,
+                        expected_bytes: file.size_bytes,
+                        policy,
+                        media_type: source.media_type.as_str(),
+                    },
+                )?;
+                debug_assert_eq!(staged_blob.digest, digest);
+                debug_assert_eq!(staged_blob.byte_length, source.byte_length());
+                insert_staged_source(staged, staged_blob);
+                continue;
+            }
+            let target_digests = matching_inline_source_digests(&source.bytes, &referenced);
+            for digest in target_digests {
+                let staged_blob = crate::payload::stage_with_policy(
                     &self.root,
                     digest,
                     &source.bytes,
                     policy,
                     source.media_type.as_str(),
-                )?,
-            };
-            debug_assert_eq!(staged_blob.digest, digest);
-            debug_assert_eq!(staged_blob.byte_length, source.byte_length());
-            staged.insert(
-                *digest.as_bytes(),
-                (
-                    digest,
-                    staged_blob.byte_length,
-                    mneme_core::EncodingProfile::RawBytesV1,
-                    mneme_core::ValueBoundary::SourceBytes,
-                ),
-            );
+                )?;
+                debug_assert_eq!(staged_blob.digest, digest);
+                debug_assert_eq!(staged_blob.byte_length, source.byte_length());
+                insert_staged_source(staged, staged_blob);
+            }
         }
         Ok(())
     }
@@ -429,29 +442,32 @@ impl super::Workspace {
         records: &[mneme_core::RecordEnvelope],
         staged: &mut super::BlobIndex,
     ) -> crate::error::Result<()> {
+        let policy = self.storage_policy();
+        debug_assert!(!self.root.as_os_str().is_empty());
         for candidate in candidates {
             crate::payload::validate_relative_path(&candidate.path)?;
             let current = crate::payload::read_working_file(&self.root, &candidate.path)?;
-            if current.as_deref() != Some(candidate.bytes.as_slice())
-                || !records
-                    .iter()
-                    .any(|record| super::validation::candidate_matches(candidate, record))
-            {
+            let matching_record = records
+                .iter()
+                .find(|record| super::validation::candidate_matches(candidate, record));
+            if current.as_deref() != Some(candidate.bytes.as_slice()) || matching_record.is_none() {
                 return Err(crate::error::Failure::InvalidCandidate {
                     path: candidate.path.clone(),
                 });
             }
+            let media_type = matching_record
+                .and_then(super::validation::retained_source_media_type)
+                .map(|(_, media_type)| media_type);
             let digest = candidate.digest();
-            let staged_blob = crate::payload::stage(&self.root, digest, &candidate.bytes)?;
-            staged.insert(
-                *digest.as_bytes(),
-                (
-                    digest,
-                    staged_blob.byte_length,
-                    mneme_core::EncodingProfile::RawBytesV1,
-                    mneme_core::ValueBoundary::SourceBytes,
-                ),
-            );
+            let staged_blob = crate::payload::stage_with_policy(
+                &self.root,
+                digest,
+                &candidate.bytes,
+                policy,
+                media_type.as_ref().map_or("", mneme_core::Symbol::as_str),
+            )?;
+            insert_staged_source(staged, staged_blob);
+            debug_assert!(staged.contains_key(digest.as_bytes()));
         }
         Ok(())
     }
@@ -459,21 +475,23 @@ impl super::Workspace {
     fn stage_publication_blobs(
         &self,
         publications: &[crate::requests::PublicationDraft],
+        sources: &[crate::requests::SourceBlobDraft],
+        records: &[mneme_core::RecordEnvelope],
         staged: &mut super::BlobIndex,
     ) -> crate::error::Result<()> {
+        let policy = self.storage_policy();
         for publication in publications {
             crate::payload::validate_relative_path(&publication.path)?;
             let digest = publication.desired_digest();
-            let staged_blob = crate::payload::stage(&self.root, digest, &publication.bytes)?;
-            staged.insert(
-                *digest.as_bytes(),
-                (
-                    digest,
-                    staged_blob.byte_length,
-                    mneme_core::EncodingProfile::RawBytesV1,
-                    mneme_core::ValueBoundary::SourceBytes,
-                ),
-            );
+            let media_type = publication_media_type(publication, digest, sources, records);
+            let staged_blob = crate::payload::stage_with_policy(
+                &self.root,
+                digest,
+                &publication.bytes,
+                policy,
+                media_type,
+            )?;
+            insert_staged_source(staged, staged_blob);
         }
         Ok(())
     }
@@ -598,6 +616,8 @@ impl super::Workspace {
         command: &crate::requests::CommitCommand,
         prepared: &super::PreparedCommit,
     ) -> crate::error::Result<super::CommitWrite> {
+        let policy = self.storage_policy();
+        debug_assert!(!self.root.as_os_str().is_empty());
         let transaction = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -647,7 +667,8 @@ impl super::Workspace {
                 });
             }
         }
-        Self::ensure_commit_blobs_present(&self.root, command, prepared)?;
+        debug_assert_eq!(current_now.as_slice(), prepared.base.as_bytes());
+        Self::ensure_commit_blobs_present(&self.root, command, prepared, policy)?;
         let intent_ids = Self::insert_prepared_commit(&transaction, command, prepared)?;
         transaction.commit()?;
         Ok(super::CommitWrite::New(intent_ids))
@@ -664,12 +685,15 @@ impl super::Workspace {
         root: &std::path::Path,
         command: &crate::requests::CommitCommand,
         prepared: &super::PreparedCommit,
+        policy: crate::payload::StoragePolicy,
     ) -> crate::error::Result<()> {
+        debug_assert!(!root.as_os_str().is_empty());
         super::publishing::restore_staged_blobs(
             root,
             command,
             &prepared.new_records,
             &prepared.staged,
+            policy,
         )?;
         for digest in &prepared.manifest.blobs {
             if prepared.staged.contains_key(digest.as_bytes()) {
@@ -689,6 +713,7 @@ impl super::Workspace {
                 });
             }
         }
+        debug_assert!(prepared.staged.len() <= prepared.manifest.blobs.len());
         Ok(())
     }
 
@@ -1138,6 +1163,7 @@ impl super::Workspace {
         command: &crate::requests::CommitCommand,
     ) -> crate::error::Result<()> {
         let forgotten = self.forgotten_suppressions()?;
+        debug_assert!(!self.root.as_os_str().is_empty());
         for draft in &command.records {
             if forgotten.identities.contains(&draft.record_id)
                 || forgotten
@@ -1150,20 +1176,35 @@ impl super::Workspace {
             }
         }
         // Every command input contributes at most one digest reference.
-        let mut digests: Vec<mneme_core::ContentDigest> = Vec::with_capacity(
-            command.source_blobs.len()
-                + command.publications.len()
-                + command.import_candidates.len()
-                + command.records.len(),
-        );
+        let digest_count = command
+            .source_blobs
+            .len()
+            .saturating_add(command.publications.len())
+            .saturating_add(command.import_candidates.len())
+            .saturating_add(command.records.len());
+        let mut digests: Vec<mneme_core::ContentDigest> = Vec::with_capacity(digest_count);
         for blob in &command.source_blobs {
             digests.push(blob.digest());
+            if blob.file.is_none() {
+                digests.push(mneme_core::ContentDigest::of_source_bytes_with(
+                    &blob.bytes,
+                    mneme_core::HashAlgorithm::Sha256,
+                ));
+            }
         }
         for publication in &command.publications {
             digests.push(publication.desired_digest());
+            digests.push(mneme_core::ContentDigest::of_source_bytes_with(
+                &publication.bytes,
+                mneme_core::HashAlgorithm::Sha256,
+            ));
         }
         for candidate in &command.import_candidates {
             digests.push(candidate.digest());
+            digests.push(mneme_core::ContentDigest::of_source_bytes_with(
+                &candidate.bytes,
+                mneme_core::HashAlgorithm::Sha256,
+            ));
         }
         for draft in &command.records {
             if let Some((digest, _, _)) = super::validation::retained_source_draft(draft)? {
@@ -1173,6 +1214,7 @@ impl super::Workspace {
         if digests.is_empty() {
             return Ok(());
         }
+        debug_assert!(!digests.is_empty());
         let forbidden = super::sweep::forgotten_content_digests(&self.connection, &command.scope)?;
         if forbidden.is_empty() {
             return Ok(());
@@ -1254,5 +1296,81 @@ impl super::Workspace {
             eligibility_generation: row.eligibility_generation,
             publications,
         })
+    }
+}
+
+fn insert_staged_source(staged: &mut super::BlobIndex, staged_blob: crate::payload::StagedBlob) {
+    staged.insert(
+        *staged_blob.digest.as_bytes(),
+        (
+            staged_blob.digest,
+            staged_blob.byte_length,
+            mneme_core::EncodingProfile::RawBytesV1,
+            mneme_core::ValueBoundary::SourceBytes,
+        ),
+    );
+}
+
+fn matching_inline_source_digests(
+    bytes: &[u8],
+    referenced: &std::collections::BTreeSet<mneme_core::ContentDigest>,
+) -> Vec<mneme_core::ContentDigest> {
+    let blake3 = mneme_core::ContentDigest::of_source_bytes(bytes);
+    let sha256 =
+        mneme_core::ContentDigest::of_source_bytes_with(bytes, mneme_core::HashAlgorithm::Sha256);
+    let mut matched = Vec::with_capacity(2);
+    if referenced.contains(&blake3) {
+        matched.push(blake3);
+    }
+    if referenced.contains(&sha256) {
+        matched.push(sha256);
+    }
+    if matched.is_empty() {
+        matched.push(blake3);
+    }
+    matched
+}
+
+fn publication_media_type<'a>(
+    publication: &'a crate::requests::PublicationDraft,
+    digest: mneme_core::ContentDigest,
+    sources: &'a [crate::requests::SourceBlobDraft],
+    records: &[mneme_core::RecordEnvelope],
+) -> &'a str {
+    if let Some(source) = sources.iter().find(|source| source.digest() == digest) {
+        return source.media_type.as_str();
+    }
+    for record in records {
+        if let Some((record_digest, media_type)) =
+            super::validation::retained_source_media_type(record)
+            && record_digest == digest
+            && crate::payload::is_compressible_media_type(media_type.as_str())
+        {
+            return "text/plain";
+        }
+    }
+    infer_publication_media_type(&publication.path)
+}
+
+const TEXT_PUBLICATION_EXTENSIONS: &[&str] =
+    &["adoc", "txt", "md", "markdown", "rs", "toml", "yaml", "yml"];
+
+pub(super) fn infer_publication_media_type(path: &str) -> &'static str {
+    let Some((_, ext)) = path.rsplit_once('.') else {
+        return "";
+    };
+    if TEXT_PUBLICATION_EXTENSIONS
+        .iter()
+        .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+    {
+        "text/plain"
+    } else if ext.eq_ignore_ascii_case("json") {
+        "application/json"
+    } else if ext.eq_ignore_ascii_case("xml") {
+        "application/xml"
+    } else if ext.eq_ignore_ascii_case("pr") || ext.eq_ignore_ascii_case("preserves") {
+        "application/preserves"
+    } else {
+        ""
     }
 }

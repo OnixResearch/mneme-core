@@ -22,9 +22,18 @@ use sha2::Digest;
 const ZSTD_FRAME_MAGIC: &[u8; 8] = b"MNZSTD01";
 const ZSTD_HEADER_LEN: usize = 16;
 const ZSTD_DICT_FRAME_MAGIC: &[u8; 8] = b"MNZSTD02";
-const ZSTD_DICT_HEADER_LEN: usize = 49;
+pub(crate) const ZSTD_DICT_HEADER_LEN: usize = 49;
 const ZSTD_COMPRESSION_LEVEL: i32 = 3;
-const MAX_DECOMPRESSED_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_DECOMPRESSED_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+
+/// On-disk framing detected from a blob file's magic prefix and header length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlobFraming {
+    Raw,
+    Zstd,
+    ZstdDict,
+    FastCdc,
+}
 
 /// On-disk compression policy for newly staged `source-bytes` blobs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -76,6 +85,9 @@ pub const JOB_DIRECTORY: &str = "jobs";
 /// beside the blob store and never in it, so no part of an asset is a
 /// canonical source before the whole of it is verified and committed.
 pub const TRANSFER_DIRECTORY: &str = "transfers";
+/// Store-owned directory holding peer synchronization state (`identity.key`,
+/// capability leases, and revocations).
+pub const SYNC_DIRECTORY: &str = "sync";
 /// Workspace-root file naming a working tree other than `working/`: `..` for
 /// the directory containing the workspace root, or the absolute path of a
 /// folder elsewhere.
@@ -1062,12 +1074,12 @@ fn read_zstd_stream<R: Read>(
     Ok(decompressed)
 }
 
-fn read_chunk(
+pub(crate) fn read_chunk(
     root: &std::path::Path,
     chunk_digest: mneme_core::ContentDigest,
     expected_len: u64,
 ) -> crate::error::Result<Vec<u8>> {
-    let path = crate::dedup::chunk_path(root, chunk_digest);
+    let path = crate::dedup::resolve_chunk_path(root, chunk_digest);
     let disk_bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             crate::error::Failure::MissingBlob {
@@ -1156,29 +1168,125 @@ fn verify_decompressed(
     Ok(())
 }
 
-/// Stream the file at `source` into the immutable blob store.
-///
-/// The digest is recomputed while copying and must equal `digest` and the
-/// declared length, so a file that changed after it was measured is refused and
-/// nothing is installed. Memory use is constant.
-pub(crate) fn stage_file(
+/// Input parameters for staging a streamed source file under a storage policy.
+#[derive(Clone, Copy)]
+pub(crate) struct StreamedStageInput<'a> {
+    pub(crate) source: &'a std::path::Path,
+    pub(crate) expected_bytes: u64,
+    pub(crate) policy: StoragePolicy,
+    pub(crate) media_type: &'a str,
+}
+
+#[cfg(test)]
+fn stage_file(
     root: &std::path::Path,
     digest: mneme_core::ContentDigest,
     source: &std::path::Path,
     expected_bytes: u64,
 ) -> crate::error::Result<StagedBlob> {
+    stage_file_with_policy(
+        root,
+        digest,
+        StreamedStageInput {
+            source,
+            expected_bytes,
+            policy: StoragePolicy::default(),
+            media_type: "",
+        },
+    )
+}
+
+/// Stream the file at `input.source` into the immutable blob store using
+/// `input.policy`.
+///
+/// The digest is recomputed while copying and must equal `digest` and the
+/// declared length, so a file that changed after it was measured is refused and
+/// nothing is installed. Unframed blobs stream in constant memory; framed
+/// compression/FastCDC policies apply identically to inline staging when the
+/// payload is within [`MAX_DECOMPRESSED_BLOB_BYTES`].
+pub(crate) fn stage_file_with_policy(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    input: StreamedStageInput<'_>,
+) -> crate::error::Result<StagedBlob> {
+    debug_assert!(!root.as_os_str().is_empty());
+    debug_assert!(!input.source.as_os_str().is_empty());
     let target = blob_path(root, digest);
     if target.exists() {
-        verify(root, digest, expected_bytes)?;
-        let _ = crate::outboard::ensure(root, digest)?;
+        verify(root, digest, input.expected_bytes)?;
+        let file_len = std::fs::metadata(&target)
+            .map_err(|error| crate::error::Failure::io(&target, error))?
+            .len();
+        if read_frame_header_length(&target, file_len)?.is_none() {
+            let _ = crate::outboard::ensure(root, digest)?;
+        }
         if let Some(parent) = target.parent() {
             flush_directory(parent)?;
         }
         return Ok(StagedBlob {
             digest,
-            byte_length: expected_bytes,
+            byte_length: input.expected_bytes,
         });
     }
+    if should_frame_streamed_blob(input.policy, input.media_type, input.expected_bytes) {
+        let bytes = read_verified_source_file(input.source, digest, input.expected_bytes)?;
+        return stage_with_policy(root, digest, &bytes, input.policy, input.media_type);
+    }
+    stage_file_raw(root, digest, input.source, input.expected_bytes, &target)
+}
+
+fn should_frame_streamed_blob(
+    policy: StoragePolicy,
+    media_type: &str,
+    expected_bytes: u64,
+) -> bool {
+    if expected_bytes > MAX_DECOMPRESSED_BLOB_BYTES {
+        return false;
+    }
+    let is_chunked = matches!(
+        policy.chunking,
+        crate::dedup::BlobChunking::FastCdc(config) if expected_bytes >= config.min_blob_bytes()
+    );
+    let is_compressed = is_compressible_media_type(media_type)
+        && !matches!(policy.compression, BlobCompression::None);
+    is_chunked || is_compressed
+}
+
+fn read_verified_source_file(
+    source: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    expected_bytes: u64,
+) -> crate::error::Result<Vec<u8>> {
+    let capacity_bytes = usize::try_from(expected_bytes)
+        .map_err(|_| crate::error::Failure::ValueOutOfRange("staged file size"))?;
+    let input =
+        std::fs::File::open(source).map_err(|error| crate::error::Failure::io(source, error))?;
+    let mut bytes = Vec::with_capacity(capacity_bytes);
+    input
+        .take(expected_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| crate::error::Failure::io(source, error))?;
+    let actual_bytes = u64::try_from(bytes.len())
+        .map_err(|_| crate::error::Failure::ValueOutOfRange("staged file size"))?;
+    let actual_hash = hash_bytes(digest.algorithm(), &bytes);
+    if actual_bytes != expected_bytes || actual_hash != *digest.as_bytes() {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "streamed source file does not match its declared digest and length".to_owned(),
+        });
+    }
+    debug_assert_eq!(actual_bytes, expected_bytes);
+    debug_assert_eq!(actual_hash, *digest.as_bytes());
+    Ok(bytes)
+}
+
+fn stage_file_raw(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    source: &std::path::Path,
+    expected_bytes: u64,
+    target: &std::path::Path,
+) -> crate::error::Result<StagedBlob> {
     let parent = target.parent().ok_or_else(|| {
         crate::error::Failure::InvalidCommand("blob path has no parent".to_owned())
     })?;
@@ -1203,8 +1311,8 @@ pub(crate) fn stage_file(
     }
     debug_assert_eq!(actual, *digest.as_bytes());
     debug_assert_eq!(actual_bytes, expected_bytes);
-    std::fs::rename(&temporary, &target)
-        .map_err(|error| crate::error::Failure::io(&target, error))?;
+    std::fs::rename(&temporary, target)
+        .map_err(|error| crate::error::Failure::io(target, error))?;
     flush_directory(parent)?;
     let _ = crate::outboard::ensure(root, digest)?;
     Ok(StagedBlob {
@@ -1327,6 +1435,74 @@ fn frame_min_length(magic: &[u8]) -> u64 {
     } else {
         0
     }
+}
+
+/// Inspect the magic prefix of an open blob file and rewind it to offset 0.
+pub(crate) fn inspect_file_framing(
+    file: &mut std::fs::File,
+    path: &std::path::Path,
+    file_len: u64,
+) -> crate::error::Result<BlobFraming> {
+    std::io::Seek::seek(file, std::io::SeekFrom::Start(0))
+        .map_err(|error| crate::error::Failure::io(path, error))?;
+    let magic = read_file_magic(file, path)?;
+    std::io::Seek::seek(file, std::io::SeekFrom::Start(0))
+        .map_err(|error| crate::error::Failure::io(path, error))?;
+    Ok(classify_framing(magic.as_ref(), file_len))
+}
+
+/// Inspect the on-disk framing of a blob file at `path`.
+pub(crate) fn inspect_path_framing(
+    path: &std::path::Path,
+    file_len: u64,
+) -> crate::error::Result<BlobFraming> {
+    let mut file =
+        std::fs::File::open(path).map_err(|error| crate::error::Failure::io(path, error))?;
+    inspect_file_framing(&mut file, path, file_len)
+}
+
+fn classify_framing(magic: Option<&[u8; 8]>, file_len: u64) -> BlobFraming {
+    let Some(magic) = magic else {
+        return BlobFraming::Raw;
+    };
+    if magic == ZSTD_FRAME_MAGIC && file_len >= ZSTD_HEADER_LEN as u64 {
+        BlobFraming::Zstd
+    } else if magic == ZSTD_DICT_FRAME_MAGIC && file_len >= ZSTD_DICT_HEADER_LEN as u64 {
+        BlobFraming::ZstdDict
+    } else if magic == crate::dedup::CDC_MANIFEST_MAGIC
+        && file_len >= crate::dedup::CDC_HEADER_LEN as u64
+    {
+        BlobFraming::FastCdc
+    } else {
+        BlobFraming::Raw
+    }
+}
+
+/// Read the uncompressed length and dictionary digest from an `MNZSTD02` header.
+pub(crate) fn read_zstd_dict_header_info(
+    path: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> crate::error::Result<(u64, mneme_core::ContentDigest)> {
+    let mut file =
+        std::fs::File::open(path).map_err(|error| crate::error::Failure::io(path, error))?;
+    let mut header = [0_u8; ZSTD_DICT_HEADER_LEN];
+    let mut read_so_far = 0_usize;
+    while read_so_far < ZSTD_DICT_HEADER_LEN {
+        let count = file
+            .read(&mut header[read_so_far..])
+            .map_err(|error| crate::error::Failure::io(path, error))?;
+        if count == 0 {
+            return Err(corrupt_dict_header(
+                digest,
+                "compressed dictionary blob header is truncated",
+            ));
+        }
+        read_so_far = read_so_far.saturating_add(count);
+    }
+    debug_assert!(!path.as_os_str().is_empty());
+    debug_assert_eq!(read_so_far, ZSTD_DICT_HEADER_LEN);
+    let (expected_len, dict_digest, _) = parse_zstd_dict_header(digest, &header)?;
+    Ok((expected_len, dict_digest))
 }
 
 /// Create `path` and flush the parent of every directory the call creates.
@@ -1936,45 +2112,378 @@ pub fn install_working_file(target: &std::path::Path, bytes: &[u8]) -> crate::er
     }
 }
 
-/// Remove staged temporary files and any blob file without a ledger row.
+/// Remove staged temporary files and any blob, chunk, or dictionary file that
+/// no ledger row or surviving framed manifest references.
 #[allow(unknown_lints, usize_in_public_api)] // local directory-entry counts
 pub fn cleanup_orphans(
     root: &std::path::Path,
     known: &std::collections::BTreeSet<[u8; 32]>,
 ) -> crate::error::Result<(usize, usize)> {
-    let mut staged = 0;
-    let staging = root.join(STAGING_DIRECTORY);
-    if staging.is_dir() {
-        for entry in std::fs::read_dir(&staging)
-            .map_err(|error| crate::error::Failure::io(&staging, error))?
-        {
-            let entry = entry.map_err(|error| crate::error::Failure::io(&staging, error))?;
-            if entry
-                .file_type()
-                .map(|kind| kind.is_file())
-                .unwrap_or(false)
-            {
-                std::fs::remove_file(entry.path())
-                    .map_err(|error| crate::error::Failure::io(entry.path(), error))?;
-                staged += 1;
-            }
-        }
-    }
-    let mut blobs = 0;
+    debug_assert!(!root.as_os_str().is_empty());
+    let staged = cleanup_staging_directory(&root.join(STAGING_DIRECTORY))?;
+    let mut blobs = 0_usize;
     let blob_root = root.join(BLOB_DIRECTORY);
     if blob_root.is_dir() {
-        // Each file is decided and removed as it is read, so the sweep holds no
-        // inventory of the store and needs no bound on the number of blobs.
         for file in BlobFiles::open(&blob_root)? {
             let file = file?;
-            if !known.contains(&file.digest) {
+            if matches!(
+                file.kind,
+                StoredObjectKind::Primary(_) | StoredObjectKind::Outboard(_)
+            ) && !known.contains(&file.digest)
+            {
                 std::fs::remove_file(&file.path)
                     .map_err(|error| crate::error::Failure::io(&file.path, error))?;
-                blobs += 1;
+                blobs = blobs.saturating_add(1);
             }
         }
+        blobs = blobs.saturating_add(cleanup_orphan_subobjects(root, &blob_root)?);
     }
+    debug_assert!(!blob_root.as_os_str().is_empty());
     Ok((staged, blobs))
+}
+
+fn cleanup_staging_directory(staging: &std::path::Path) -> crate::error::Result<usize> {
+    debug_assert!(!staging.as_os_str().is_empty());
+    let mut staged = 0_usize;
+    if !staging.is_dir() {
+        return Ok(staged);
+    }
+    debug_assert!(staging.is_dir());
+    for entry in
+        std::fs::read_dir(staging).map_err(|error| crate::error::Failure::io(staging, error))?
+    {
+        let entry = entry.map_err(|error| crate::error::Failure::io(staging, error))?;
+        if entry
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false)
+        {
+            std::fs::remove_file(entry.path())
+                .map_err(|error| crate::error::Failure::io(entry.path(), error))?;
+            staged = staged.saturating_add(1);
+        }
+    }
+    Ok(staged)
+}
+
+fn cleanup_orphan_subobjects(
+    root: &std::path::Path,
+    blob_root: &std::path::Path,
+) -> crate::error::Result<usize> {
+    debug_assert!(!root.as_os_str().is_empty());
+    debug_assert!(blob_root.starts_with(root));
+    let has_subobjects = blob_root.join(crate::dedup::CHUNK_DIRECTORY).is_dir()
+        || blob_root.join(crate::dedup::DICTIONARY_DIRECTORY).is_dir();
+    if !has_subobjects {
+        return Ok(0);
+    }
+    let Some(live) = collect_live_framed_references_if_readable(root, blob_root)? else {
+        return Ok(0);
+    };
+    let mut removed = 0_usize;
+    for file in BlobFiles::open(blob_root)? {
+        let file = file?;
+        if is_orphan_subobject(&live, file.kind, file.digest) {
+            std::fs::remove_file(&file.path)
+                .map_err(|error| crate::error::Failure::io(&file.path, error))?;
+            if let Some(parent) = file.path.parent() {
+                flush_directory(parent)?;
+            }
+            removed = removed.saturating_add(1);
+        }
+    }
+    Ok(removed)
+}
+
+fn is_orphan_subobject(live: &FramedReferences, kind: StoredObjectKind, digest: [u8; 32]) -> bool {
+    if let StoredObjectKind::Chunk(algo) = kind {
+        return !live.contains_chunk(algo, digest);
+    }
+    if let StoredObjectKind::Dictionary(algo) = kind {
+        return !live.contains_dict(algo, digest);
+    }
+    false
+}
+
+/// FastCDC chunk and Zstd dictionary digests referenced by one or more framed blobs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FramedReferences {
+    pub(crate) chunks: std::collections::BTreeSet<(mneme_core::HashAlgorithm, [u8; 32])>,
+    pub(crate) dicts: std::collections::BTreeSet<(mneme_core::HashAlgorithm, [u8; 32])>,
+}
+
+impl FramedReferences {
+    fn is_empty(&self) -> bool {
+        self.chunks.is_empty() && self.dicts.is_empty()
+    }
+
+    pub(crate) fn contains_chunk(
+        &self,
+        algorithm: Option<mneme_core::HashAlgorithm>,
+        digest: [u8; 32],
+    ) -> bool {
+        match algorithm {
+            Some(algo) => self.chunks.contains(&(algo, digest)),
+            None => self.chunks.iter().any(|(_, existing)| *existing == digest),
+        }
+    }
+
+    pub(crate) fn contains_dict(
+        &self,
+        algorithm: Option<mneme_core::HashAlgorithm>,
+        digest: [u8; 32],
+    ) -> bool {
+        match algorithm {
+            Some(algo) => self.dicts.contains(&(algo, digest)),
+            None => self.dicts.iter().any(|(_, existing)| *existing == digest),
+        }
+    }
+}
+
+/// Remove one blob file, its companion outboard, and any FastCDC chunks or Zstd
+/// dictionaries that no surviving live blob still references.
+///
+/// Must be called under the workspace's exclusive sweep lock so no concurrent
+/// commit can introduce a new reference between removing the blob and sweeping
+/// unreferenced chunks/dictionaries.
+pub(crate) fn remove_blob_and_gc(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> crate::error::Result<bool> {
+    let path = blob_path(root, digest);
+    let candidates = extract_blob_framed_references(root, &path, digest)?;
+    crate::outboard::remove_for_blob_path(&path)?;
+    let was_removed = match std::fs::remove_file(&path) {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                flush_directory(parent)?;
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(crate::error::Failure::io(&path, error)),
+    };
+    if was_removed && !candidates.is_empty() {
+        let _ = sweep_unreferenced_framed_objects(root, &candidates)?;
+    }
+    Ok(was_removed)
+}
+
+struct FramedRefScan<'a> {
+    root: &'a std::path::Path,
+    refs: &'a mut FramedReferences,
+    visited_chunks: &'a mut std::collections::BTreeSet<(mneme_core::HashAlgorithm, [u8; 32])>,
+}
+
+fn extract_blob_framed_references(
+    root: &std::path::Path,
+    path: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> crate::error::Result<FramedReferences> {
+    let mut refs = FramedReferences::default();
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => return Ok(refs),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(refs),
+        Err(error) => return Err(crate::error::Failure::io(path, error)),
+    };
+    let mut visited_chunks = std::collections::BTreeSet::new();
+    let mut scan = FramedRefScan {
+        root,
+        refs: &mut refs,
+        visited_chunks: &mut visited_chunks,
+    };
+    collect_blob_framed_refs(&mut scan, path, digest, metadata.len())?;
+    Ok(refs)
+}
+
+fn collect_blob_framed_refs(
+    scan: &mut FramedRefScan<'_>,
+    path: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    file_len: u64,
+) -> crate::error::Result<()> {
+    debug_assert!(!path.as_os_str().is_empty());
+    debug_assert!(!scan.root.as_os_str().is_empty());
+    let framing = inspect_path_framing(path, file_len)?;
+    if framing == BlobFraming::ZstdDict {
+        if let Ok((_, dict_digest)) = read_zstd_dict_header_info(path, digest) {
+            scan.refs
+                .dicts
+                .insert((dict_digest.algorithm(), *dict_digest.as_bytes()));
+        }
+        return Ok(());
+    }
+    if framing != BlobFraming::FastCdc {
+        return Ok(());
+    }
+    let disk_bytes = std::fs::read(path).map_err(|error| crate::error::Failure::io(path, error))?;
+    if hash_bytes(digest.algorithm(), &disk_bytes) == *digest.as_bytes() {
+        return Ok(());
+    }
+    let Ok((_, chunks)) =
+        crate::dedup::parse_cdc_manifest(digest, &disk_bytes, MAX_DECOMPRESSED_BLOB_BYTES)
+    else {
+        return Ok(());
+    };
+    for (chunk_digest, _) in chunks {
+        let key = (chunk_digest.algorithm(), *chunk_digest.as_bytes());
+        scan.refs.chunks.insert(key);
+        if scan.visited_chunks.insert(key) {
+            collect_chunk_dict_ref(scan.root, chunk_digest, scan.refs)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_chunk_dict_ref(
+    root: &std::path::Path,
+    chunk_digest: mneme_core::ContentDigest,
+    refs: &mut FramedReferences,
+) -> crate::error::Result<()> {
+    let chunk_file = crate::dedup::resolve_chunk_path(root, chunk_digest);
+    let metadata = match std::fs::symlink_metadata(&chunk_file) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(crate::error::Failure::io(&chunk_file, error)),
+    };
+    if inspect_path_framing(&chunk_file, metadata.len())? == BlobFraming::ZstdDict
+        && let Ok((_, dict_digest)) = read_zstd_dict_header_info(&chunk_file, chunk_digest)
+    {
+        refs.dicts
+            .insert((dict_digest.algorithm(), *dict_digest.as_bytes()));
+    }
+    Ok(())
+}
+
+fn collect_live_framed_references_if_readable(
+    root: &std::path::Path,
+    blob_root: &std::path::Path,
+) -> crate::error::Result<Option<FramedReferences>> {
+    match collect_live_framed_references(root, blob_root) {
+        Ok(live) => Ok(Some(live)),
+        Err(crate::error::Failure::Io { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn collect_live_framed_references(
+    root: &std::path::Path,
+    blob_root: &std::path::Path,
+) -> crate::error::Result<FramedReferences> {
+    debug_assert!(!root.as_os_str().is_empty());
+    debug_assert!(!blob_root.as_os_str().is_empty());
+    let mut live = FramedReferences::default();
+    let mut visited_chunks = std::collections::BTreeSet::new();
+    let mut scan = FramedRefScan {
+        root,
+        refs: &mut live,
+        visited_chunks: &mut visited_chunks,
+    };
+    for file in BlobFiles::open(blob_root)? {
+        let file = file?;
+        let StoredObjectKind::Primary(algo) = file.kind else {
+            continue;
+        };
+        let Ok(digest) = mneme_core::ContentDigest::from_parts(
+            algo,
+            mneme_core::EncodingProfile::RawBytesV1,
+            mneme_core::ValueBoundary::SourceBytes,
+            file.digest,
+        ) else {
+            continue;
+        };
+        let metadata = match std::fs::symlink_metadata(&file.path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(crate::error::Failure::io(&file.path, error)),
+        };
+        collect_blob_framed_refs(&mut scan, &file.path, digest, metadata.len())?;
+    }
+    Ok(live)
+}
+
+fn sweep_unreferenced_framed_objects(
+    root: &std::path::Path,
+    candidates: &FramedReferences,
+) -> crate::error::Result<usize> {
+    debug_assert!(!root.as_os_str().is_empty());
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    let blob_root = root.join(BLOB_DIRECTORY);
+    let live = if blob_root.is_dir() {
+        collect_live_framed_references(root, &blob_root)?
+    } else {
+        FramedReferences::default()
+    };
+    let mut removed = 0_usize;
+    for &(algo, hash) in &candidates.chunks {
+        if live.chunks.contains(&(algo, hash)) {
+            continue;
+        }
+        let Ok(digest) = mneme_core::ContentDigest::from_parts(
+            algo,
+            mneme_core::EncodingProfile::RawBytesV1,
+            mneme_core::ValueBoundary::SourceBytes,
+            hash,
+        ) else {
+            continue;
+        };
+        if remove_file_flushed(&crate::dedup::chunk_path(root, digest))? {
+            removed = removed.saturating_add(1);
+        }
+        if !live.contains_chunk(None, hash)
+            && remove_file_flushed(&crate::dedup::legacy_chunk_path(root, digest))?
+        {
+            removed = removed.saturating_add(1);
+        }
+    }
+    for &(algo, hash) in &candidates.dicts {
+        if live.dicts.contains(&(algo, hash)) {
+            continue;
+        }
+        let Ok(digest) = mneme_core::ContentDigest::from_parts(
+            algo,
+            mneme_core::EncodingProfile::RawBytesV1,
+            mneme_core::ValueBoundary::SourceBytes,
+            hash,
+        ) else {
+            continue;
+        };
+        if remove_file_flushed(&crate::dedup::dictionary_path(root, digest))? {
+            removed = removed.saturating_add(1);
+        }
+        if !live.contains_dict(None, hash)
+            && remove_file_flushed(&crate::dedup::legacy_dictionary_path(root, digest))?
+        {
+            removed = removed.saturating_add(1);
+        }
+    }
+    debug_assert!(
+        removed
+            <= candidates
+                .chunks
+                .len()
+                .saturating_add(candidates.dicts.len())
+                .saturating_mul(2)
+    );
+    Ok(removed)
+}
+
+fn remove_file_flushed(path: &std::path::Path) -> crate::error::Result<bool> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            if let Some(parent) = path.parent() {
+                flush_directory(parent)?;
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(crate::error::Failure::io(path, error)),
+    }
 }
 
 /// Remove temporary publication files left under `working/`.
@@ -2120,162 +2629,195 @@ fn cleanup_temporaries_in(
     Ok(removed)
 }
 
-/// One regular blob file: its path and the digest its name encodes.
-struct BlobFile {
-    path: std::path::PathBuf,
-    digest: [u8; 32],
+/// Classification of one content-addressed file under `blobs/`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StoredObjectKind {
+    /// Canonical or framed top-level blob under `blobs/<algo>/<ab>/<hex>`.
+    Primary(mneme_core::HashAlgorithm),
+    /// Companion `bao-tree` outboard sidecar under `blobs/<algo>/<ab>/<hex>.obao4`.
+    Outboard(mneme_core::HashAlgorithm),
+    /// FastCDC chunk under `blobs/chunks/<algo>/<ab>/<hex>` or legacy `blobs/chunks/<ab>/<hex>`.
+    Chunk(Option<mneme_core::HashAlgorithm>),
+    /// Zstd dictionary under `blobs/dicts/<algo>/<ab>/<hex>` or legacy `blobs/dicts/<ab>/<hex>`.
+    Dictionary(Option<mneme_core::HashAlgorithm>),
 }
 
-/// The regular blob files under one store's blob directory, visited one entry at
-/// a time.
+/// One regular blob, outboard, chunk, or dictionary file on disk.
+pub(crate) struct StoredFile {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) digest: [u8; 32],
+    pub(crate) kind: StoredObjectKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SubTree {
+    Chunks,
+    Dictionaries,
+}
+
+impl SubTree {
+    fn kind(self, algorithm: Option<mneme_core::HashAlgorithm>) -> StoredObjectKind {
+        if self == SubTree::Chunks {
+            StoredObjectKind::Chunk(algorithm)
+        } else {
+            StoredObjectKind::Dictionary(algorithm)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum WalkLevel {
+    /// Top-level `blobs/`: expects `<algo>`, `chunks`, or `dicts`.
+    Root,
+    /// `blobs/chunks/` or `blobs/dicts/`: expects `<algo>` or legacy `<shard>`.
+    SubRoot(SubTree),
+    /// Shard directory container: expects `<shard>` subdirectories.
+    Shards(StoredObjectKind),
+    /// Leaf shard directory: expects `<64-hex>` (and `.obao4` for `Primary`).
+    Files(StoredObjectKind),
+}
+
+struct WalkFrame {
+    dir: std::path::PathBuf,
+    level: WalkLevel,
+    entries: std::fs::ReadDir,
+}
+
+/// The regular content files under one store's `blobs/` directory, visited one
+/// entry at a time.
 ///
-/// The walk descends `blobs/<algorithm>/<shard>/<digest>` and yields each regular
-/// file whose name is a lowercase hex digest as it is read, so a caller never
-/// holds an inventory of the whole store and no bound on the number of files is
-/// needed. Every non-directory algorithm or shard entry, non-regular file and
-/// unparsable name is skipped, exactly as a collected inventory skipped them, and
-/// the visit order never affects what a caller decides.
+/// The walk descends `blobs/<algorithm>/<shard>/<digest>[.obao4]`,
+/// `blobs/chunks/[<algorithm>/]<shard>/<digest>`, and
+/// `blobs/dicts/[<algorithm>/]<shard>/<digest>`, keeping at most four open
+/// directory handles and holding no full-store inventory in memory.
 struct BlobFiles {
-    blob_root: std::path::PathBuf,
-    algorithms: std::fs::ReadDir,
-    algorithm_dir: std::path::PathBuf,
-    shards: Option<std::fs::ReadDir>,
-    shard_dir: std::path::PathBuf,
-    files: Option<std::fs::ReadDir>,
+    stack: Vec<WalkFrame>,
 }
 
 impl BlobFiles {
     /// Start a streaming walk under one store's blob directory.
     fn open(blob_root: &std::path::Path) -> crate::error::Result<Self> {
-        Ok(BlobFiles {
-            blob_root: blob_root.to_path_buf(),
-            algorithms: std::fs::read_dir(blob_root)
-                .map_err(|error| crate::error::Failure::io(blob_root, error))?,
-            algorithm_dir: blob_root.to_path_buf(),
-            shards: None,
-            shard_dir: blob_root.to_path_buf(),
-            files: None,
-        })
+        let entries = std::fs::read_dir(blob_root)
+            .map_err(|error| crate::error::Failure::io(blob_root, error))?;
+        let mut stack = Vec::with_capacity(4);
+        stack.push(WalkFrame {
+            dir: blob_root.to_path_buf(),
+            level: WalkLevel::Root,
+            entries,
+        });
+        Ok(BlobFiles { stack })
     }
 
-    /// Enter one directory of the walk, or report why it cannot be read.
-    ///
-    /// A non-directory entry is skipped, so a stray file at either directory level
-    /// never becomes part of the walk.
     fn descend(
-        entry: std::fs::DirEntry,
-    ) -> crate::error::Result<Option<(std::path::PathBuf, std::fs::ReadDir)>> {
+        entry: &std::fs::DirEntry,
+        next_level: WalkLevel,
+    ) -> crate::error::Result<Option<WalkFrame>> {
         if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
             return Ok(None);
         }
         let path = entry.path();
-        let directory =
+        let entries =
             std::fs::read_dir(&path).map_err(|error| crate::error::Failure::io(&path, error))?;
-        Ok(Some((path, directory)))
+        Ok(Some(WalkFrame {
+            dir: path,
+            level: next_level,
+            entries,
+        }))
     }
 
-    /// The next regular blob file of the shard being read.
-    ///
-    /// `None` means the shard is exhausted (or absent), so the walk advances to
-    /// the next shard instead of reporting an error.
-    fn next_file(&mut self) -> Option<crate::error::Result<BlobFile>> {
-        loop {
-            let entry = match self.files.as_mut().map(|files| files.next()) {
-                Some(Some(Ok(entry))) => entry,
-                Some(Some(Err(error))) => {
-                    return Some(Err(crate::error::Failure::io(&self.shard_dir, error)));
-                }
-                Some(None) => {
-                    self.files = None;
-                    return None;
-                }
-                None => return None,
-            };
-            if !entry
-                .file_type()
-                .map(|kind| kind.is_file())
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let Some(digest) = parse_hex_32(&name).or_else(|| {
-                name.strip_suffix(&format!(".{}", crate::outboard::EXTENSION))
-                    .and_then(parse_hex_32)
-            }) else {
-                continue;
-            };
-            return Some(Ok(BlobFile {
+    fn parse_leaf_entry(entry: &std::fs::DirEntry, kind: StoredObjectKind) -> Option<StoredFile> {
+        if !entry
+            .file_type()
+            .map(|file_type| file_type.is_file())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        debug_assert!(!name.is_empty());
+        if let Some(digest) = parse_hex_32(&name) {
+            debug_assert_eq!(name.len(), 64);
+            return Some(StoredFile {
                 path: entry.path(),
                 digest,
-            }));
+                kind,
+            });
         }
+        if let StoredObjectKind::Primary(algo) = kind
+            && let Some(digest) = name
+                .strip_suffix(&format!(".{}", crate::outboard::EXTENSION))
+                .and_then(parse_hex_32)
+        {
+            return Some(StoredFile {
+                path: entry.path(),
+                digest,
+                kind: StoredObjectKind::Outboard(algo),
+            });
+        }
+        None
     }
 
-    /// Enter the next shard directory of the algorithm being read.
-    ///
-    /// Returns whether a shard was entered; running out of shards is not an
-    /// error, so the caller advances to the next algorithm.
-    fn enter_next_shard(&mut self) -> crate::error::Result<bool> {
-        loop {
-            let entry = match self.shards.as_mut().map(|shards| shards.next()) {
-                Some(Some(Ok(entry))) => entry,
-                Some(Some(Err(error))) => {
-                    return Err(crate::error::Failure::io(&self.algorithm_dir, error));
-                }
-                Some(None) => {
-                    self.shards = None;
-                    return Ok(false);
-                }
-                None => return Ok(false),
-            };
-            if let Some((directory, files)) = BlobFiles::descend(entry)? {
-                self.shard_dir = directory;
-                self.files = Some(files);
-                return Ok(true);
+    fn child_level(level: WalkLevel, entry: &std::fs::DirEntry) -> Option<WalkLevel> {
+        let name = entry.file_name();
+        let name_str = name.to_str()?;
+        debug_assert!(!name_str.is_empty());
+        if matches!(level, WalkLevel::Root) {
+            if let Some(algo) = mneme_core::HashAlgorithm::parse(name_str) {
+                return Some(WalkLevel::Shards(StoredObjectKind::Primary(algo)));
             }
+            if name_str == crate::dedup::CHUNK_DIRECTORY {
+                return Some(WalkLevel::SubRoot(SubTree::Chunks));
+            }
+            if name_str == crate::dedup::DICTIONARY_DIRECTORY {
+                return Some(WalkLevel::SubRoot(SubTree::Dictionaries));
+            }
+            return None;
         }
+        if let WalkLevel::SubRoot(sub) = level {
+            debug_assert!(name_str != crate::dedup::CHUNK_DIRECTORY);
+            return if let Some(algo) = mneme_core::HashAlgorithm::parse(name_str) {
+                Some(WalkLevel::Shards(sub.kind(Some(algo))))
+            } else {
+                Some(WalkLevel::Files(sub.kind(None)))
+            };
+        }
+        if let WalkLevel::Shards(kind) = level {
+            return Some(WalkLevel::Files(kind));
+        }
+        None
     }
 }
 
 impl Iterator for BlobFiles {
-    type Item = crate::error::Result<BlobFile>;
+    type Item = crate::error::Result<StoredFile>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if self.files.is_some() {
-                if let Some(file) = self.next_file() {
-                    return Some(file);
-                }
-                continue;
-            }
-            if self.shards.is_some() {
-                match self.enter_next_shard() {
-                    Ok(_) => continue,
-                    Err(error) => return Some(Err(error)),
-                }
-            }
-            let entry = match self.algorithms.next() {
+            let top = self.stack.last_mut()?;
+            let level = top.level;
+            let entry = match top.entries.next() {
                 Some(Ok(entry)) => entry,
                 Some(Err(error)) => {
-                    return Some(Err(crate::error::Failure::io(&self.blob_root, error)));
+                    let dir = top.dir.clone();
+                    return Some(Err(crate::error::Failure::io(&dir, error)));
                 }
-                None => return None,
+                None => {
+                    self.stack.pop();
+                    continue;
+                }
             };
-            let is_algorithm = entry
-                .file_name()
-                .to_str()
-                .and_then(mneme_core::HashAlgorithm::parse)
-                .is_some();
-            if !is_algorithm {
+            if let WalkLevel::Files(kind) = level {
+                if let Some(file) = Self::parse_leaf_entry(&entry, kind) {
+                    return Some(Ok(file));
+                }
                 continue;
             }
-            match BlobFiles::descend(entry) {
-                Ok(Some((directory, shards))) => {
-                    self.algorithm_dir = directory;
-                    self.shards = Some(shards);
-                }
+            let Some(next_level) = Self::child_level(level, &entry) else {
+                continue;
+            };
+            match Self::descend(&entry, next_level) {
+                Ok(Some(frame)) => self.stack.push(frame),
                 Ok(None) => continue,
                 Err(error) => return Some(Err(error)),
             }
@@ -2326,20 +2868,18 @@ pub(crate) fn flush_directory(path: &std::path::Path) -> crate::error::Result<()
     Ok(())
 }
 
-/// Every regular blob file on disk, by the digest its name encodes.
+/// Every regular blob, outboard, chunk, and dictionary file on disk.
 ///
 /// Read-only: nothing is removed or opened for writing. The integrity scrub
-/// compares this inventory with the ledger to name files no row accounts for.
+/// compares this inventory with the ledger and live framed manifests to report
+/// unreferenced files as orphans.
 #[allow(unknown_lints, assertion_density)] // read-only directory walk returns Result<Vec<_>>
-pub(crate) fn blob_file_inventory(
-    root: &std::path::Path,
-) -> crate::error::Result<Vec<([u8; 32], std::path::PathBuf)>> {
+pub(crate) fn blob_file_inventory(root: &std::path::Path) -> crate::error::Result<Vec<StoredFile>> {
     let blob_root = root.join(BLOB_DIRECTORY);
     let mut files = Vec::new();
     if blob_root.is_dir() {
         for file in BlobFiles::open(&blob_root)? {
-            let file = file?;
-            files.push((file.digest, file.path));
+            files.push(file?);
         }
     }
     Ok(files)

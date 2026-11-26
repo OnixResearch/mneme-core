@@ -183,6 +183,7 @@ impl super::Workspace {
     /// the removal and its recorded outcome happen inside one immediate
     /// transaction while the exclusive sweep lock is held, so no commit can
     /// install a new requirement between the check and the delete.
+    #[allow(unknown_lints, ambiguous_params)] // public retention API
     pub fn purge_retention_blob(
         &mut self,
         operation_id: &str,
@@ -197,6 +198,8 @@ impl super::Workspace {
             locator,
         )?;
         let path = crate::payload::blob_path(&self.root, digest);
+        debug_assert!(!self.root.as_os_str().is_empty());
+        debug_assert!(path.starts_with(&self.root));
         let now_ns = self.clock.now().nanos();
         let _sweep = self.exclusive_sweep_lock()?;
         // The requirement read runs under the ledger transaction, so the fact
@@ -212,7 +215,8 @@ impl super::Workspace {
             required: requirements.digests.contains(digest.as_bytes()),
             present: is_present,
         });
-        let (outcome, state, detail) = purge_decided_blob(self.faults.as_ref(), &path, decision)?;
+        let (outcome, state, detail) =
+            purge_decided_blob(self.faults.as_ref(), &self.root, digest, decision)?;
         update_retention_location_in(
             &transaction,
             now_ns,
@@ -1219,6 +1223,7 @@ fn include_source_record_digest(
         current,
         required,
     } = input;
+    debug_assert!(!root.as_os_str().is_empty());
     let payload = super::digest_with(
         payload_digest,
         full.algorithm().symbol(),
@@ -1246,12 +1251,13 @@ fn include_source_record_digest(
             ),
         }
     })?;
-    if record.payload_digest() != payload {
+    if record.payload_digest_with(full.algorithm()) != payload {
         return Err(crate::error::Failure::Integrity {
             revision: context,
             reason: "source record payload digest disagrees".to_owned(),
         });
     }
+    debug_assert_eq!(record.payload_digest_with(full.algorithm()), payload);
     if let Some(digest) = super::validation::retained_source_digest(&record)
         && !super::source_payload_pruned(current, record_id)
     {
@@ -1536,27 +1542,12 @@ fn blob_file_present(path: &std::path::Path) -> crate::error::Result<bool> {
     }
 }
 
-/// Remove one blob file and any companion outboard, flush its directory, and
-/// report whether the canonical blob existed.
-fn remove_blob_file(path: &std::path::Path) -> crate::error::Result<bool> {
-    crate::outboard::remove_for_blob_path(path)?;
-    match std::fs::remove_file(path) {
-        Ok(()) => {
-            if let Some(parent) = path.parent() {
-                super::sync_directory(parent)?;
-            }
-            Ok(true)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(crate::error::Failure::io(path, error)),
-    }
-}
-
 /// Apply one kernel blob decision: only bytes no live revision needs are removed,
 /// and a removal is reported only when the file really existed.
 fn purge_decided_blob(
     faults: &dyn crate::injectors::FaultInjector,
-    path: &std::path::Path,
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
     decision: mneme_kernel::purge::BlobDecision,
 ) -> crate::error::Result<(
     crate::lifecycle::BlobPurgeOutcome,
@@ -1576,7 +1567,7 @@ fn purge_decided_blob(
         )),
         mneme_kernel::purge::BlobDecision::Purge => {
             crate::injectors::check(faults, crate::injectors::FaultPoint::BeforeRetentionPurge)?;
-            let is_removed = remove_blob_file(path)?;
+            let is_removed = crate::payload::remove_blob_and_gc(root, digest)?;
             crate::injectors::check(faults, crate::injectors::FaultPoint::AfterRetentionPurge)?;
             if is_removed {
                 Ok((
@@ -1631,34 +1622,49 @@ fn participant_file_decision(
 ) -> crate::error::Result<mneme_kernel::purge::WorkingDecision> {
     // The kernel ignores the planned digest for an absent or unsupported entry;
     // this placeholder only satisfies the facts struct.
-    let placeholder = mneme_core::ContentDigest::of_source_bytes(b"").to_kernel();
+    let placeholder_digest = mneme_core::ContentDigest::of_source_bytes(b"");
+    debug_assert_eq!(
+        placeholder_digest.algorithm(),
+        mneme_core::HashAlgorithm::Blake3
+    );
+    let placeholder = placeholder_digest.to_kernel();
     let facts = match guard.entry() {
         None => mneme_kernel::purge::WorkingFacts {
             kind: mneme_kernel::purge::EntryKind::Absent,
             observed: None,
             planned: placeholder,
         },
-        Some(file) => match file.read()? {
-            crate::payload::WorkingEntry::Absent => mneme_kernel::purge::WorkingFacts {
-                kind: mneme_kernel::purge::EntryKind::Absent,
-                observed: None,
-                planned: placeholder,
-            },
-            crate::payload::WorkingEntry::NotRegular => mneme_kernel::purge::WorkingFacts {
-                kind: mneme_kernel::purge::EntryKind::Other,
-                observed: None,
-                planned: placeholder,
-            },
-            crate::payload::WorkingEntry::Regular(bytes) => {
-                let observed = mneme_core::ContentDigest::of_source_bytes(&bytes);
+        Some(file) => {
+            let entry = file.read()?;
+            if let crate::payload::WorkingEntry::Regular(bytes) = entry {
+                let algorithm = planned
+                    .map(mneme_core::ContentDigest::algorithm)
+                    .unwrap_or(mneme_core::HashAlgorithm::Blake3);
+                let observed = mneme_core::ContentDigest::of_source_bytes_with(&bytes, algorithm);
                 mneme_kernel::purge::WorkingFacts {
                     kind: mneme_kernel::purge::EntryKind::Regular,
                     observed: Some(observed.to_kernel()),
                     planned: planned.unwrap_or(observed).to_kernel(),
                 }
+            } else if matches!(entry, crate::payload::WorkingEntry::Absent) {
+                mneme_kernel::purge::WorkingFacts {
+                    kind: mneme_kernel::purge::EntryKind::Absent,
+                    observed: None,
+                    planned: placeholder,
+                }
+            } else {
+                mneme_kernel::purge::WorkingFacts {
+                    kind: mneme_kernel::purge::EntryKind::Other,
+                    observed: None,
+                    planned: placeholder,
+                }
             }
-        },
+        }
     };
+    debug_assert_eq!(
+        matches!(facts.kind, mneme_kernel::purge::EntryKind::Regular),
+        facts.observed.is_some()
+    );
     Ok(mneme_kernel::purge::decide_working(&facts))
 }
 
@@ -2170,6 +2176,8 @@ pub(super) fn purge_working_copy(
     crate::lifecycle::RetentionLocationState,
     Option<&'static str>,
 )> {
+    debug_assert!(!root.as_os_str().is_empty());
+    debug_assert!(!relative.is_empty());
     let mut guard = crate::payload::quarantine_working_file(root, relative)?;
     let planned = digest.to_kernel();
     let facts = match guard.entry() {
@@ -2178,23 +2186,31 @@ pub(super) fn purge_working_copy(
             observed: None,
             planned,
         },
-        Some(file) => match file.read()? {
-            crate::payload::WorkingEntry::Absent => mneme_kernel::purge::WorkingFacts {
-                kind: mneme_kernel::purge::EntryKind::Absent,
-                observed: None,
-                planned,
-            },
-            crate::payload::WorkingEntry::NotRegular => mneme_kernel::purge::WorkingFacts {
-                kind: mneme_kernel::purge::EntryKind::Other,
-                observed: None,
-                planned,
-            },
-            crate::payload::WorkingEntry::Regular(bytes) => mneme_kernel::purge::WorkingFacts {
-                kind: mneme_kernel::purge::EntryKind::Regular,
-                observed: Some(mneme_core::ContentDigest::of_source_bytes(&bytes).to_kernel()),
-                planned,
-            },
-        },
+        Some(file) => {
+            let entry = file.read()?;
+            if let crate::payload::WorkingEntry::Regular(bytes) = entry {
+                mneme_kernel::purge::WorkingFacts {
+                    kind: mneme_kernel::purge::EntryKind::Regular,
+                    observed: Some(
+                        mneme_core::ContentDigest::of_source_bytes_with(&bytes, digest.algorithm())
+                            .to_kernel(),
+                    ),
+                    planned,
+                }
+            } else if matches!(entry, crate::payload::WorkingEntry::Absent) {
+                mneme_kernel::purge::WorkingFacts {
+                    kind: mneme_kernel::purge::EntryKind::Absent,
+                    observed: None,
+                    planned,
+                }
+            } else {
+                mneme_kernel::purge::WorkingFacts {
+                    kind: mneme_kernel::purge::EntryKind::Other,
+                    observed: None,
+                    planned,
+                }
+            }
+        }
     };
     match mneme_kernel::purge::decide_working(&facts) {
         mneme_kernel::purge::WorkingDecision::Purge => {

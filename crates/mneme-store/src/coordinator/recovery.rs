@@ -348,7 +348,7 @@ fn source_envelope_facts(
     let Some((record, encoded_bytes)) = read_record_envelope(root, digest) else {
         return SourceEnvelopeFacts::unknown();
     };
-    let payload_digest = record.payload_digest();
+    let payload_digest = record.payload_digest_with(digest.algorithm());
     if let Some(file) = super::stable_blob_identity(root, digest, identity_before, encoded_bytes) {
         facts.store_envelope(digest, record.clone(), payload_digest, encoded_bytes, file);
     }
@@ -377,7 +377,7 @@ fn read_record_envelope(
     let bytes = crate::payload::read(root, digest).ok()?;
     let value = mneme_core::binary::decode(&bytes).ok()?;
     let record = mneme_core::RecordEnvelope::from_value(&value).ok()?;
-    if record.full_digest() != digest {
+    if record.full_digest_with(digest.algorithm()) != digest {
         return None;
     }
     Some((record, bytes.len()))
@@ -973,6 +973,8 @@ fn purge_restored_blob(
     Option<&'static str>,
 )> {
     let path = crate::payload::blob_path(root, digest);
+    debug_assert!(!root.as_os_str().is_empty());
+    debug_assert!(path.starts_with(root));
     let is_present = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata.is_file(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
@@ -991,18 +993,10 @@ fn purge_restored_blob(
             Ok((crate::lifecycle::RetentionLocationState::Absent, None))
         }
         mneme_kernel::purge::BlobDecision::Purge => {
-            crate::outboard::remove_for_blob_path(&path)?;
-            match std::fs::remove_file(&path) {
-                Ok(()) => {
-                    if let Some(parent) = path.parent() {
-                        super::sync_directory(parent)?;
-                    }
-                    Ok((crate::lifecycle::RetentionLocationState::Purged, None))
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok((crate::lifecycle::RetentionLocationState::Absent, None))
-                }
-                Err(error) => Err(crate::error::Failure::io(&path, error)),
+            if crate::payload::remove_blob_and_gc(root, digest)? {
+                Ok((crate::lifecycle::RetentionLocationState::Purged, None))
+            } else {
+                Ok((crate::lifecycle::RetentionLocationState::Absent, None))
             }
         }
     }
