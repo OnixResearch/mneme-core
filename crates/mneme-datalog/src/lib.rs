@@ -1026,6 +1026,8 @@ impl<'w> Service<'w> {
         build: &Build,
         allow_stale: bool,
     ) -> Result<(mneme_core::WorkspaceRevisionId, bool), Error> {
+        assert!(!build.context.projection_build_id.is_empty());
+        assert!(build.context.schema_version > 0);
         let current_generation = self.workspace.eligibility_generation()?;
         if current_generation != build.context.eligibility_generation {
             return Err(mneme_store::Failure::BarrierAdvanced {
@@ -1222,25 +1224,29 @@ fn dependency_coverage(build: &Build, predicate: &str) -> Vec<Coverage> {
         .collect()
 }
 
+fn matches_query_constants(query: &Query, terms: &[mneme_core::Value]) -> bool {
+    (query.constants.is_empty() || query.constants.len() == terms.len())
+        && query
+            .constants
+            .iter()
+            .zip(terms)
+            .all(|(constant, value)| constant.as_ref().is_none_or(|c| c == value))
+}
+
 fn matching_query_rows(build: &Build, query: &Query) -> Vec<QueryRow> {
-    let mut rows = Vec::new();
-    if let Some(facts) = build.facts.get(&query.predicate) {
-        for (terms, data) in facts {
-            if (query.constants.is_empty() || query.constants.len() == terms.len())
-                && query.constants.iter().zip(terms).all(|(constant, value)| {
-                    constant.as_ref().is_none_or(|constant| constant == value)
-                })
-            {
-                rows.push(QueryRow {
-                    values: terms.clone(),
-                    supports: data.supports.clone(),
-                    support_truncated: data.truncated,
-                    epistemic: data.epistemic,
-                });
-            }
-        }
-    }
-    rows
+    let Some(facts) = build.facts.get(&query.predicate) else {
+        return Vec::new();
+    };
+    facts
+        .iter()
+        .filter(|(terms, _)| matches_query_constants(query, terms))
+        .map(|(terms, data)| QueryRow {
+            values: terms.clone(),
+            supports: data.supports.clone(),
+            support_truncated: data.truncated,
+            epistemic: data.epistemic,
+        })
+        .collect()
 }
 
 fn kernel_coverage(status: CoverageStatus) -> mneme_kernel::completeness::Coverage {

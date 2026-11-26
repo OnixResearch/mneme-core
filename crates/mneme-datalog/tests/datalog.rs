@@ -3314,21 +3314,27 @@ fn cyclic_triangle_and_permuted_body_orders_complete_with_identical_results() {
     assert_eq!(forward_values, reversed_values);
 }
 
-fn status_entity_payload(entity_type: &str, label: &str, status: &str) -> mneme_core::Payload {
+struct EntityPayloadSpec<'a> {
+    entity_type: &'a str,
+    label: &'a str,
+    status: mneme_datalog::EpistemicStatus,
+}
+
+fn status_entity_payload(spec: EntityPayloadSpec<'_>) -> mneme_core::Payload {
     mneme_core::Payload::new([
         (
             mneme_core::Symbol::from("entity-type"),
-            mneme_core::Value::symbol(entity_type),
+            mneme_core::Value::symbol(spec.entity_type),
         ),
         (
             mneme_core::Symbol::from("label"),
-            mneme_core::Value::string(label.to_owned()),
+            mneme_core::Value::string(spec.label.to_owned()),
         ),
         (
             mneme_core::Symbol::from("properties"),
             mneme_core::Value::symbol_dictionary([(
                 mneme_core::Symbol::from("status"),
-                mneme_core::Value::symbol(status),
+                mneme_core::Value::symbol(spec.status.name()),
             )]),
         ),
     ])
@@ -3338,7 +3344,7 @@ fn status_relation_payload(
     relation_type: &str,
     from: mneme_core::RecordId,
     to: mneme_core::RecordId,
-    status: &str,
+    status: mneme_datalog::EpistemicStatus,
 ) -> mneme_core::Payload {
     mneme_core::Payload::new([
         (
@@ -3357,7 +3363,7 @@ fn status_relation_payload(
             mneme_core::Symbol::from("properties"),
             mneme_core::Value::symbol_dictionary([(
                 mneme_core::Symbol::from("status"),
-                mneme_core::Value::symbol(status),
+                mneme_core::Value::symbol(status.name()),
             )]),
         ),
     ])
@@ -3365,20 +3371,35 @@ fn status_relation_payload(
 
 #[test]
 fn epistemic_semiring_laws_and_non_promotion_hold_algebraically() {
-    use mneme_datalog::EpistemicStatus::{self, Accepted, Proposed, Rejected};
-    assert!(Accepted > Proposed);
-    assert!(Proposed > Rejected);
+    assert!(mneme_datalog::EpistemicStatus::Accepted > mneme_datalog::EpistemicStatus::Proposed);
+    assert!(mneme_datalog::EpistemicStatus::Proposed > mneme_datalog::EpistemicStatus::Rejected);
 
     // Core non-promotion and union equations.
-    assert_eq!(Accepted * Proposed, Proposed);
-    assert_eq!(Proposed + Accepted, Accepted);
-    assert_eq!(Rejected * Accepted, Rejected);
+    assert_eq!(
+        mneme_datalog::EpistemicStatus::Accepted * mneme_datalog::EpistemicStatus::Proposed,
+        mneme_datalog::EpistemicStatus::Proposed
+    );
+    assert_eq!(
+        mneme_datalog::EpistemicStatus::Proposed + mneme_datalog::EpistemicStatus::Accepted,
+        mneme_datalog::EpistemicStatus::Accepted
+    );
+    assert_eq!(
+        mneme_datalog::EpistemicStatus::Rejected * mneme_datalog::EpistemicStatus::Accepted,
+        mneme_datalog::EpistemicStatus::Rejected
+    );
 
-    let all = [Rejected, Proposed, Accepted];
+    let all = [
+        mneme_datalog::EpistemicStatus::Rejected,
+        mneme_datalog::EpistemicStatus::Proposed,
+        mneme_datalog::EpistemicStatus::Accepted,
+    ];
     for &a in &all {
-        assert_eq!(a + EpistemicStatus::ZERO, a);
-        assert_eq!(a * EpistemicStatus::ONE, a);
-        assert_eq!(a * EpistemicStatus::ZERO, EpistemicStatus::ZERO);
+        assert_eq!(a + mneme_datalog::EpistemicStatus::ZERO, a);
+        assert_eq!(a * mneme_datalog::EpistemicStatus::ONE, a);
+        assert_eq!(
+            a * mneme_datalog::EpistemicStatus::ZERO,
+            mneme_datalog::EpistemicStatus::ZERO
+        );
         assert_eq!(a + a, a);
         assert_eq!(a * a, a);
         for &b in &all {
@@ -3414,7 +3435,11 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
             revision_id: indexed_rev(1),
             predecessor: None,
             scope: scope(),
-            payload: status_entity_payload("node", "AcceptedNode", "accepted"),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "AcceptedNode",
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
         },
         mneme_store::RecordDraft {
             schema_version: 1,
@@ -3423,7 +3448,11 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
             revision_id: indexed_rev(2),
             predecessor: None,
             scope: scope(),
-            payload: status_entity_payload("node", "ProposedNode", "proposed"),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "ProposedNode",
+                status: mneme_datalog::EpistemicStatus::Proposed,
+            }),
         },
         mneme_store::RecordDraft {
             schema_version: 1,
@@ -3432,7 +3461,11 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
             revision_id: indexed_rev(3),
             predecessor: None,
             scope: scope(),
-            payload: status_entity_payload("node", "RejectedNode", "rejected"),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "RejectedNode",
+                status: mneme_datalog::EpistemicStatus::Rejected,
+            }),
         },
         mneme_store::RecordDraft {
             schema_version: 1,
@@ -3441,7 +3474,11 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
             revision_id: indexed_rev(4),
             predecessor: None,
             scope: scope(),
-            payload: status_entity_payload("node", "TargetNode", "accepted"),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "TargetNode",
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
         },
         // Accepted edge + Proposed edge joining to e_tgt -> Proposed
         mneme_store::RecordDraft {
@@ -3451,7 +3488,12 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
             revision_id: indexed_rev(10),
             predecessor: None,
             scope: scope(),
-            payload: status_relation_payload("step_a", e_acc, e_prop, "accepted"),
+            payload: status_relation_payload(
+                "step_a",
+                e_acc,
+                e_prop,
+                mneme_datalog::EpistemicStatus::Accepted,
+            ),
         },
         mneme_store::RecordDraft {
             schema_version: 1,
@@ -3460,7 +3502,12 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
             revision_id: indexed_rev(11),
             predecessor: None,
             scope: scope(),
-            payload: status_relation_payload("step_b", e_prop, e_tgt, "proposed"),
+            payload: status_relation_payload(
+                "step_b",
+                e_prop,
+                e_tgt,
+                mneme_datalog::EpistemicStatus::Proposed,
+            ),
         },
         // Independent Accepted path from e_acc to e_tgt via step_direct
         mneme_store::RecordDraft {
@@ -3470,7 +3517,12 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
             revision_id: indexed_rev(12),
             predecessor: None,
             scope: scope(),
-            payload: status_relation_payload("step_direct", e_acc, e_tgt, "accepted"),
+            payload: status_relation_payload(
+                "step_direct",
+                e_acc,
+                e_tgt,
+                mneme_datalog::EpistemicStatus::Accepted,
+            ),
         },
         // Rejected + Accepted -> Rejected
         mneme_store::RecordDraft {
@@ -3480,7 +3532,12 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
             revision_id: indexed_rev(13),
             predecessor: None,
             scope: scope(),
-            payload: status_relation_payload("step_a", e_rej, e_tgt, "rejected"),
+            payload: status_relation_payload(
+                "step_a",
+                e_rej,
+                e_tgt,
+                mneme_datalog::EpistemicStatus::Rejected,
+            ),
         },
         mneme_store::RecordDraft {
             schema_version: 1,
@@ -3489,7 +3546,12 @@ fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
             revision_id: indexed_rev(14),
             predecessor: None,
             scope: scope(),
-            payload: status_relation_payload("step_b", e_tgt, e_acc, "accepted"),
+            payload: status_relation_payload(
+                "step_b",
+                e_tgt,
+                e_acc,
+                mneme_datalog::EpistemicStatus::Accepted,
+            ),
         },
     ];
     harness.commit("epistemic-seed", records, Vec::new());
@@ -3620,32 +3682,17 @@ fn explain_missing_on_atms_verdict_fixture_covers_missing_blocker_constraint_and
     let c_missing = indexed_rid(41);
 
     let entities = [
-        (h1, "hypothesis", "Sparse attention beats dense", "proposed"),
-        (h2, "hypothesis", "Rotary scaling holds", "proposed"),
-        (b1, "blocker", "KV-cache memory OOM", "proposed"),
-        (b2, "blocker", "Tokenizer mismatch", "proposed"),
-        (x1, "unblocker", "PagedAttention paper", "proposed"),
-        (x2, "unblocker", "RingAttention commit", "proposed"),
-        (x3, "unblocker", "Byte-fallback adapter", "proposed"),
-        (v1, "oracle_verdict", "ChaosControl OOM receipt", "proposed"),
-        (c1, "context", "1M context length", "proposed"),
-        (c_missing, "context", "4K context length", "proposed"),
+        (h1, "hypothesis", "Sparse attention beats dense"),
+        (h2, "hypothesis", "Rotary scaling holds"),
+        (b1, "blocker", "KV-cache memory OOM"),
+        (b2, "blocker", "Tokenizer mismatch"),
+        (x1, "unblocker", "PagedAttention paper"),
+        (x2, "unblocker", "RingAttention commit"),
+        (x3, "unblocker", "Byte-fallback adapter"),
+        (v1, "oracle_verdict", "ChaosControl OOM receipt"),
+        (c1, "context", "1M context length"),
+        (c_missing, "context", "4K context length"),
     ];
-    let mut records = Vec::new();
-    let mut next_tag = 100_u16;
-    for (id, etype, label, status) in entities {
-        records.push(mneme_store::RecordDraft {
-            schema_version: 1,
-            kind: mneme_core::RecordKind::Entity,
-            record_id: id,
-            revision_id: indexed_rev(next_tag),
-            predecessor: None,
-            scope: scope(),
-            payload: status_entity_payload(etype, label, status),
-        });
-        next_tag = next_tag.saturating_add(1);
-    }
-
     let rels = [
         ("denied_because", h1, b1),
         ("mitigates", x1, b1),
@@ -3655,6 +3702,25 @@ fn explain_missing_on_atms_verdict_fixture_covers_missing_blocker_constraint_and
         ("falsifies", v1, h1),
         ("boundary_condition", v1, c1),
     ];
+    let mut records = Vec::with_capacity(entities.len() + rels.len());
+    let mut next_tag = 100_u16;
+    for (id, etype, label) in entities {
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: id,
+            revision_id: indexed_rev(next_tag),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: etype,
+                label,
+                status: mneme_datalog::EpistemicStatus::Proposed,
+            }),
+        });
+        next_tag = next_tag.saturating_add(1);
+    }
+
     for (rtype, from, to) in rels {
         records.push(mneme_store::RecordDraft {
             schema_version: 1,
@@ -3663,7 +3729,12 @@ fn explain_missing_on_atms_verdict_fixture_covers_missing_blocker_constraint_and
             revision_id: indexed_rev(next_tag),
             predecessor: None,
             scope: scope(),
-            payload: status_relation_payload(rtype, from, to, "proposed"),
+            payload: status_relation_payload(
+                rtype,
+                from,
+                to,
+                mneme_datalog::EpistemicStatus::Proposed,
+            ),
         });
         next_tag = next_tag.saturating_add(1);
     }
@@ -3929,7 +4000,11 @@ fn explain_missing_handles_cycles_derived_subgoals_and_aggregate_non_promotion()
             revision_id: indexed_rev(1),
             predecessor: None,
             scope: scope(),
-            payload: status_entity_payload("node", "A", "accepted"),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "A",
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
         },
         mneme_store::RecordDraft {
             schema_version: 1,
@@ -3938,7 +4013,11 @@ fn explain_missing_handles_cycles_derived_subgoals_and_aggregate_non_promotion()
             revision_id: indexed_rev(2),
             predecessor: None,
             scope: scope(),
-            payload: status_entity_payload("node", "B", "proposed"),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "B",
+                status: mneme_datalog::EpistemicStatus::Proposed,
+            }),
         },
         mneme_store::RecordDraft {
             schema_version: 1,
@@ -3947,7 +4026,11 @@ fn explain_missing_handles_cycles_derived_subgoals_and_aggregate_non_promotion()
             revision_id: indexed_rev(3),
             predecessor: None,
             scope: scope(),
-            payload: status_entity_payload("node", "C", "accepted"),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "C",
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
         },
         mneme_store::RecordDraft {
             schema_version: 1,
@@ -3956,7 +4039,12 @@ fn explain_missing_handles_cycles_derived_subgoals_and_aggregate_non_promotion()
             revision_id: indexed_rev(10),
             predecessor: None,
             scope: scope(),
-            payload: status_relation_payload("link", a, b, "accepted"),
+            payload: status_relation_payload(
+                "link",
+                a,
+                b,
+                mneme_datalog::EpistemicStatus::Accepted,
+            ),
         },
         mneme_store::RecordDraft {
             schema_version: 1,
@@ -3965,7 +4053,12 @@ fn explain_missing_handles_cycles_derived_subgoals_and_aggregate_non_promotion()
             revision_id: indexed_rev(11),
             predecessor: None,
             scope: scope(),
-            payload: status_relation_payload("link", b, a, "proposed"),
+            payload: status_relation_payload(
+                "link",
+                b,
+                a,
+                mneme_datalog::EpistemicStatus::Proposed,
+            ),
         },
     ];
     harness.commit("cycle-agg", records, Vec::new());

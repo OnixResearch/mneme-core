@@ -735,6 +735,15 @@ fn plain_row(record: &mneme_core::RecordEnvelope) -> CanonicalRow<'_> {
     }
 }
 
+struct CanonicalSupportInput<'a> {
+    record: &'a mneme_core::RecordEnvelope,
+    context: &'a crate::BuildContext,
+    sources: std::collections::BTreeSet<crate::SourceKey>,
+    availability: Option<String>,
+    temporal: Vec<String>,
+    epistemic: crate::EpistemicStatus,
+}
+
 fn add_canonical_fact(
     evaluation: &mut Evaluation<'_>,
     predicate: &str,
@@ -748,14 +757,14 @@ fn add_canonical_fact(
         temporal,
         epistemic,
     } = row;
-    let support = canonical_support(
+    let support = canonical_support(CanonicalSupportInput {
         record,
-        evaluation.context,
-        sources.clone(),
+        context: evaluation.context,
+        sources: sources.clone(),
         availability,
-        temporal.clone(),
+        temporal: temporal.clone(),
         epistemic,
-    );
+    });
     add_fact(
         evaluation,
         predicate,
@@ -771,34 +780,42 @@ fn add_canonical_fact(
     );
 }
 
-fn canonical_support(
+fn canonical_premise(
     record: &mneme_core::RecordEnvelope,
-    context: &crate::BuildContext,
     sources: std::collections::BTreeSet<crate::SourceKey>,
     availability: Option<String>,
-    temporal: Vec<String>,
     epistemic: crate::EpistemicStatus,
-) -> crate::Derivation {
+) -> crate::Premise {
+    crate::Premise {
+        predicate: record.kind.symbol().to_owned(),
+        terms: Vec::new(),
+        canonical: Some(record.record_id),
+        canonical_roots: std::collections::BTreeSet::from([record.record_id]),
+        sources,
+        source_availability: availability,
+        absent: false,
+        coverage: None,
+        epistemic,
+    }
+}
+
+fn canonical_support(input: CanonicalSupportInput<'_>) -> crate::Derivation {
+    let premise = canonical_premise(
+        input.record,
+        input.sources.clone(),
+        input.availability,
+        input.epistemic,
+    );
     crate::Derivation {
         rule_id: "canonical".to_owned(),
         rule_version: "1".to_owned(),
-        premises: vec![crate::Premise {
-            predicate: record.kind.symbol().to_owned(),
-            terms: Vec::new(),
-            canonical: Some(record.record_id),
-            canonical_roots: std::collections::BTreeSet::from([record.record_id]),
-            sources: sources.clone(),
-            source_availability: availability,
-            absent: false,
-            coverage: None,
-            epistemic,
-        }],
-        sources,
-        temporal_parameters: temporal,
-        revision: context.served_revision,
-        scope: context.scope.clone(),
+        premises: vec![premise],
+        sources: input.sources,
+        temporal_parameters: input.temporal,
+        revision: input.context.served_revision,
+        scope: input.context.scope.clone(),
         truncated: false,
-        epistemic,
+        epistemic: input.epistemic,
     }
 }
 
@@ -842,6 +859,8 @@ fn merge_existing_fact(
         epistemic,
         ..
     } = contents;
+    assert!(!support.rule_id.is_empty());
+    assert_eq!(support.epistemic, epistemic);
     let Some(data) = store.rows.get_mut(&terms) else {
         return false;
     };
@@ -882,6 +901,8 @@ fn insert_new_fact(store: &mut FactStore, contents: FactContents) {
         temporal,
         epistemic,
     } = contents;
+    assert!(!support.rule_id.is_empty());
+    assert_eq!(support.epistemic, epistemic);
     if !store.indexes.is_empty() {
         for ((arity, cols), index) in &mut store.indexes {
             if terms.len() == *arity {
