@@ -23,6 +23,7 @@ pub mod hashing;
 pub mod ids;
 pub mod layout;
 pub mod lineage;
+pub mod miner;
 pub mod payload;
 pub mod pointer;
 pub mod problem;
