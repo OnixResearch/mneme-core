@@ -66,36 +66,42 @@ pub(crate) enum Stop {
 
 impl Stop {
     /// The execution outcome this stop reports.
-    fn outcome(self) -> crate::model::Execution {
-        match self {
-            Stop::Cancelled => crate::model::Execution::Cancelled,
-            Stop::Timeout | Stop::WorkLimit => crate::model::Execution::Timeout,
+    const fn outcome(self) -> crate::model::Execution {
+        if matches!(self, Stop::Cancelled) {
+            crate::model::Execution::Cancelled
+        } else {
+            crate::model::Execution::Timeout
         }
     }
 
     /// The response-level reason text.
-    fn reason(self) -> &'static str {
-        match self {
-            Stop::Cancelled => "recall cancelled",
-            Stop::Timeout => "recall exceeded its time budget",
-            Stop::WorkLimit => "recall exceeded its work budget",
+    const fn reason(self) -> &'static str {
+        if matches!(self, Stop::Cancelled) {
+            "recall cancelled"
+        } else if matches!(self, Stop::Timeout) {
+            "recall exceeded its time budget"
+        } else {
+            "recall exceeded its work budget"
         }
     }
 
     /// The omission reason for the candidate that could not be finished.
-    fn omission(self) -> &'static str {
-        match self {
-            Stop::Cancelled => "cancelled",
-            Stop::Timeout => "time-budget",
-            Stop::WorkLimit => "work-budget",
+    const fn omission(self) -> &'static str {
+        if matches!(self, Stop::Cancelled) {
+            "cancelled"
+        } else if matches!(self, Stop::Timeout) {
+            "time-budget"
+        } else {
+            "work-budget"
         }
     }
 
     /// How a requested mode is reported when this stop ended the attempt.
-    fn mode_status(self) -> crate::model::ModeStatus {
-        match self {
-            Stop::Cancelled => crate::model::ModeStatus::Omitted,
-            Stop::Timeout | Stop::WorkLimit => crate::model::ModeStatus::TimedOut,
+    const fn mode_status(self) -> crate::model::ModeStatus {
+        if matches!(self, Stop::Cancelled) {
+            crate::model::ModeStatus::Omitted
+        } else {
+            crate::model::ModeStatus::TimedOut
         }
     }
 }
@@ -470,6 +476,64 @@ impl<'w> Service<'w> {
         budget.check()?;
         self.require_generation(generation)?;
         let mut progress = Progress::default();
+        self.run_modes(ModeRunContext {
+            modes: &modes,
+            is_structured_requested,
+            pinned: &pinned,
+            index: &mut index,
+            request,
+            served_revision,
+            generation,
+            budget,
+            progress: &mut progress,
+        })?;
+        self.require_generation(generation)?;
+        let mut fused = fuse(progress.candidates.clone(), &progress.ranking);
+        enrich_claims(&mut fused, &pinned.view, budget, &mut progress.reasons)?;
+        let (filtered, conformal_omissions) =
+            apply_conformal_filter(fused, request.calibration.as_ref());
+        self.require_generation(generation)?;
+        let mut packed = pack(PackInputs {
+            candidates: filtered,
+            index: index.as_ref(),
+            request,
+            budget: &mut *budget,
+            execution: &mut progress.execution,
+            reasons: &mut progress.reasons,
+        });
+        if !conformal_omissions.is_empty() {
+            packed.omissions.extend(conformal_omissions);
+        }
+        if let Some(index) = index.take() {
+            self.indexes.insert(key, index);
+        }
+        withhold_partial_results(request, &mut progress, &mut packed);
+        self.require_generation(generation)?;
+        Ok(finish_response(
+            CompletionContext {
+                request,
+                budget,
+                served_revision,
+                current_revision,
+                generation,
+            },
+            progress,
+            packed,
+        ))
+    }
+
+    fn run_modes(&mut self, context: ModeRunContext<'_>) -> AttemptResult<()> {
+        let ModeRunContext {
+            modes,
+            is_structured_requested,
+            pinned,
+            index,
+            request,
+            served_revision,
+            generation,
+            budget,
+            progress,
+        } = context;
         if modes.use_lexical {
             progress.add_lexical(index.as_ref(), request, modes.fallback_lexical, budget)?;
         }
@@ -492,37 +556,13 @@ impl<'w> Service<'w> {
                 progress.add_lexical(index.as_ref(), request, true, budget)?;
             }
         }
+        if modes.use_graph_ppr {
+            progress.add_graph_ppr(index.as_ref(), &pinned.view, request, budget)?;
+        }
         if is_structured_requested {
-            self.add_structured_mode(request, served_revision, &mut progress);
+            self.add_structured_mode(request, served_revision, progress);
         }
-        self.require_generation(generation)?;
-        let mut fused = fuse(progress.candidates.clone(), &progress.ranking);
-        enrich_claims(&mut fused, &pinned.view, budget, &mut progress.reasons)?;
-        self.require_generation(generation)?;
-        let mut packed = pack(PackInputs {
-            candidates: fused,
-            index: index.as_ref(),
-            request,
-            budget: &mut *budget,
-            execution: &mut progress.execution,
-            reasons: &mut progress.reasons,
-        });
-        if let Some(index) = index.take() {
-            self.indexes.insert(key, index);
-        }
-        withhold_partial_results(request, &mut progress, &mut packed);
-        self.require_generation(generation)?;
-        Ok(finish_response(
-            CompletionContext {
-                request,
-                budget,
-                served_revision,
-                current_revision,
-                generation,
-            },
-            progress,
-            packed,
-        ))
+        Ok(())
     }
 
     /// Resolve the attempt's preconditions, pinned view, key and index.
@@ -561,7 +601,7 @@ impl<'w> Service<'w> {
             include_disputed: request.include_disputed,
             include_hypothetical: request.include_hypothetical,
         };
-        let index = if modes.use_lexical || modes.use_vector || modes.use_semantic {
+        let index = if modes.needs_index() {
             Some(self.take_index(&key, &pinned, request, budget)?)
         } else {
             None
@@ -707,11 +747,8 @@ impl<'w> Service<'w> {
                         // Only current-mode recall is an instant-bounded view;
                         // historical and inspection recall keeps every retained
                         // claim and records its validity instead.
-                        at: match request.temporal {
-                            crate::model::TemporalMode::Current => Some(request.at),
-                            crate::model::TemporalMode::Historical
-                            | crate::model::TemporalMode::Inspection => None,
-                        },
+                        at: matches!(request.temporal, crate::model::TemporalMode::Current)
+                            .then_some(request.at),
                     },
                 );
                 match build {
@@ -797,11 +834,32 @@ impl<'w> Service<'w> {
     }
 }
 
+struct ModeRunContext<'a> {
+    modes: &'a Modes,
+    is_structured_requested: bool,
+    pinned: &'a PinnedView,
+    index: &'a mut Option<crate::model::CachedIndex>,
+    request: &'a crate::model::Request,
+    served_revision: mneme_core::WorkspaceRevisionId,
+    generation: u64,
+    budget: &'a mut WorkBudget,
+    progress: &'a mut Progress,
+}
+
 struct Modes {
     fallback_lexical: bool,
     use_lexical: bool,
     use_vector: bool,
     use_semantic: bool,
+    use_graph_ppr: bool,
+}
+
+impl Modes {
+    const fn needs_index(&self) -> bool {
+        let has_text_index = self.use_lexical || self.use_vector;
+        let has_model_or_graph = self.use_semantic || self.use_graph_ppr;
+        has_text_index || has_model_or_graph
+    }
 }
 
 fn modes(
@@ -816,24 +874,27 @@ fn modes(
         request.modes.contains(&crate::model::Mode::Lexical) || is_fallback_lexical;
     let is_vector_used = request.modes.contains(&crate::model::Mode::Vector);
     let is_semantic_used = request.modes.contains(&crate::model::Mode::Semantic);
+    let is_graph_ppr_used = request.modes.contains(&crate::model::Mode::GraphPpr);
     if is_semantic_used && request.semantic.is_none() && !request.allow_fallback {
         return Err(crate::failure::QueryError::ModeUnavailable {
             mode: crate::model::Mode::Semantic.name().to_owned(),
             reason: "no semantic embedding backend is configured".to_owned(),
         });
     }
-    if !is_lexical_used && !is_vector_used && !is_semantic_used && request.structured.is_none() {
+    let built = Modes {
+        fallback_lexical: is_fallback_lexical,
+        use_lexical: is_lexical_used,
+        use_vector: is_vector_used,
+        use_semantic: is_semantic_used,
+        use_graph_ppr: is_graph_ppr_used,
+    };
+    if !built.needs_index() && request.structured.is_none() {
         return Err(crate::failure::QueryError::ModeUnavailable {
             mode: "all requested modes".to_owned(),
             reason: "no candidate mode can execute".to_owned(),
         });
     }
-    Ok(Modes {
-        fallback_lexical: is_fallback_lexical,
-        use_lexical: is_lexical_used,
-        use_vector: is_vector_used,
-        use_semantic: is_semantic_used,
-    })
+    Ok(built)
 }
 
 struct Progress {
@@ -1081,6 +1142,62 @@ impl Progress {
         Ok(needs_lexical_fallback)
     }
 
+    fn add_graph_ppr(
+        &mut self,
+        index: Option<&crate::model::CachedIndex>,
+        view: &mneme_memory::View,
+        request: &crate::model::Request,
+        budget: &mut WorkBudget,
+    ) -> AttemptResult<()> {
+        let index = index.ok_or_else(|| {
+            crate::failure::QueryError::InvalidRequest("graph-ppr index was not built".to_owned())
+        })?;
+        let default_config = crate::ppr::Config::new();
+        let config = request.graph_ppr.as_ref().unwrap_or(&default_config);
+        let lexical_ranking = self
+            .ranking
+            .iter()
+            .find(|(mode, _)| *mode == crate::model::Mode::Lexical)
+            .map(|(_, entries)| entries.as_slice());
+        let output = crate::ppr::rank(crate::ppr::RankInputs {
+            index,
+            view,
+            request,
+            config,
+            lexical_ranking,
+            budget,
+        })?;
+        for (id, score) in &output.ranking {
+            budget.charge(1)?;
+            let Some(document) = index.document(id) else {
+                continue;
+            };
+            add_candidate(
+                &mut self.candidates,
+                candidate_from_document(document),
+                crate::model::Mode::GraphPpr,
+                *score,
+                id,
+            );
+        }
+        let candidate_count = output.ranking.len();
+        self.ranking
+            .push((crate::model::Mode::GraphPpr, output.ranking));
+        self.mode_reports.push(crate::model::ModeReport {
+            mode: crate::model::Mode::GraphPpr,
+            status: crate::model::ModeStatus::Used,
+            index_version: Some(crate::ppr::GRAPH_INDEX_VERSION.to_owned()),
+            revision: Some(index.revision),
+            coverage: index.coverage.clone(),
+            candidates: candidate_count,
+            relation_exhaustive: None,
+            reason: None,
+            structured_work: Some(output.work),
+            semantic_observation: None,
+        });
+        Ok(())
+    }
+
     fn record_semantic_failure(
         &mut self,
         served_revision: mneme_core::WorkspaceRevisionId,
@@ -1312,7 +1429,7 @@ fn finish_response(
             packed.omissions.clear();
         }
     }
-    let facts = answer_facts(&mode_reports, &packed, execution);
+    let facts = answer_facts(request, &mode_reports, &packed, execution);
     let is_exhaustive = mneme_kernel::completeness::answer_complete(&facts);
     let is_absence_established = mneme_kernel::completeness::absence_established(&facts);
     let budget_report = budget_use(SpentAmounts {
@@ -1363,12 +1480,13 @@ fn finish_response(
 
 /// The completeness facts of this answer, as the kernel sees them.
 fn answer_facts(
+    request: &crate::model::Request,
     mode_reports: &[crate::model::ModeReport],
     packed: &Packed,
     execution: crate::model::Execution,
 ) -> mneme_kernel::completeness::AnswerFacts {
     let mut coverage: Option<mneme_kernel::completeness::Coverage> = None;
-    let mut is_ranked = false;
+    let mut is_ranked = request.calibration.is_some();
     let mut is_structured_exhaustive = false;
     for report in mode_reports {
         let level = if report.coverage.complete {
@@ -1387,7 +1505,10 @@ fn answer_facts(
             );
         let is_ranked_mode = matches!(
             report.mode,
-            crate::model::Mode::Lexical | crate::model::Mode::Vector | crate::model::Mode::Semantic
+            crate::model::Mode::Lexical
+                | crate::model::Mode::Vector
+                | crate::model::Mode::Semantic
+                | crate::model::Mode::GraphPpr
         );
         if is_contributing && is_ranked_mode {
             is_ranked = true;
@@ -1458,6 +1579,41 @@ fn validate(request: &crate::model::Request) -> crate::failure::Result<()> {
         return Err(crate::failure::QueryError::InvalidRequest(format!(
             "query is longer than {MAX_QUERY_BYTES} bytes"
         )));
+    }
+    if let Some(config) = &request.graph_ppr {
+        if !request.modes.contains(&crate::model::Mode::GraphPpr) {
+            return Err(crate::failure::QueryError::InvalidRequest(
+                "a graph-ppr configuration requires the graph-ppr mode".to_owned(),
+            ));
+        }
+        crate::ppr::validate(config)?;
+    }
+    if let Some(calibration) = &request.calibration {
+        validate_calibration(calibration)?;
+    }
+    Ok(())
+}
+
+fn validate_calibration(
+    calibration: &crate::model::CalibrationConfig,
+) -> crate::failure::Result<()> {
+    if calibration.profile_digest.trim().is_empty() {
+        return Err(crate::failure::QueryError::InvalidRequest(
+            "calibration profile_digest must not be empty".to_owned(),
+        ));
+    }
+    if !calibration.lambda_hat.is_finite()
+        || calibration.lambda_hat < 0.0
+        || calibration.lambda_hat > 1.0
+    {
+        return Err(crate::failure::QueryError::InvalidRequest(
+            "calibration lambda_hat must be finite and in [0.0, 1.0]".to_owned(),
+        ));
+    }
+    if !calibration.alpha.is_finite() || calibration.alpha <= 0.0 || calibration.alpha > 1.0 {
+        return Err(crate::failure::QueryError::InvalidRequest(
+            "calibration alpha must be finite and in (0.0, 1.0]".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -1535,7 +1691,7 @@ fn stopped_mode(mode: crate::model::Mode, stop: Stop) -> crate::model::ModeRepor
     }
 }
 
-fn lexical_rank(
+pub(crate) fn lexical_rank(
     index: &crate::model::CachedIndex,
     request: &crate::model::Request,
     budget: &mut WorkBudget,
@@ -1736,12 +1892,12 @@ fn fuse(
         .iter()
         .any(|(mode, ranking)| *mode == crate::model::Mode::Lexical && !ranking.is_empty());
     for (mode, ranking) in rankings {
-        let weight = match mode {
-            crate::model::Mode::Vector if has_lexical_ranking => VECTOR_RRF_WEIGHT_WITH_LEXICAL,
-            crate::model::Mode::Semantic => SEMANTIC_RRF_WEIGHT,
-            crate::model::Mode::Lexical
-            | crate::model::Mode::Structured
-            | crate::model::Mode::Vector => 1.0,
+        let weight = if *mode == crate::model::Mode::Vector && has_lexical_ranking {
+            VECTOR_RRF_WEIGHT_WITH_LEXICAL
+        } else if *mode == crate::model::Mode::Semantic {
+            SEMANTIC_RRF_WEIGHT
+        } else {
+            1.0
         };
         for (rank, (id, _raw)) in ranking.iter().enumerate() {
             if let Some(candidate) = fused.get_mut(id) {
@@ -1761,6 +1917,76 @@ fn fuse(
             .then_with(|| left.id.cmp(&right.id))
     });
     values
+}
+
+/// Conformal omission reason recorded for candidates below `1.0 - lambda_hat`.
+const BELOW_CONFORMAL_THRESHOLD: &str = "below-conformal-threshold";
+
+/// Filter candidates whose pre-RRF normalized score falls strictly below
+/// `1.0 - lambda_hat`, returning surviving candidates and recorded omissions.
+fn apply_conformal_filter(
+    candidates: Vec<crate::model::Candidate>,
+    calibration: Option<&crate::model::CalibrationConfig>,
+) -> (Vec<crate::model::Candidate>, Vec<crate::model::Omission>) {
+    let Some(calibration) = calibration else {
+        return (candidates, Vec::new());
+    };
+    let threshold = calibration.score_threshold();
+    let mut kept = Vec::with_capacity(candidates.len());
+    let mut omissions = Vec::new();
+    for candidate in candidates {
+        let score = pre_rrf_normalized_score(&candidate, calibration.score_mode);
+        if score < threshold {
+            push_conformal_omission(&mut omissions, candidate.id);
+        } else {
+            kept.push(candidate);
+        }
+    }
+    (kept, omissions)
+}
+
+fn push_conformal_omission(omissions: &mut Vec<crate::model::Omission>, candidate: String) {
+    omissions.push(crate::model::Omission {
+        candidate,
+        reason: BELOW_CONFORMAL_THRESHOLD.to_owned(),
+    });
+}
+
+/// Extract a candidate's pre-RRF normalized score in `[0.0, 1.0]`.
+///
+/// Never reads post-RRF `rrf-*` rank reciprocals.
+pub fn pre_rrf_normalized_score(
+    candidate: &crate::model::Candidate,
+    score_mode: Option<crate::model::Mode>,
+) -> f64 {
+    if let Some(mode) = score_mode {
+        return candidate
+            .score_components
+            .get(mode.name())
+            .copied()
+            .map(clamp_unit_score)
+            .unwrap_or(0.0);
+    }
+    const RANKED_MODES: [crate::model::Mode; 4] = [
+        crate::model::Mode::Lexical,
+        crate::model::Mode::Vector,
+        crate::model::Mode::Semantic,
+        crate::model::Mode::GraphPpr,
+    ];
+    let mut best = 0.0_f64;
+    for mode in RANKED_MODES {
+        if let Some(raw) = candidate.score_components.get(mode.name()).copied() {
+            best = best.max(clamp_unit_score(raw));
+        }
+    }
+    best
+}
+
+fn clamp_unit_score(raw: f64) -> f64 {
+    if !raw.is_finite() || raw <= 0.0 {
+        return 0.0;
+    }
+    raw.min(1.0)
 }
 
 /// Fill in the support ancestry and limitation of every ranked claim.

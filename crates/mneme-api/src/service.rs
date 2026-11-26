@@ -710,6 +710,8 @@ impl ApiService {
             modes: selection.modes.clone(),
             structured: selection.structured.clone(),
             semantic: self.semantic.clone(),
+            graph_ppr: None,
+            calibration: None,
             // A caller that named no revision asked for the head read above, so
             // a commit that lands before recall re-reads the head must serve
             // that pinned revision rather than report a conflict the caller

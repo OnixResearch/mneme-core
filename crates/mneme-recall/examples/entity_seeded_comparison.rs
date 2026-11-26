@@ -337,6 +337,7 @@ fn gold(seed: u8) -> std::collections::BTreeSet<(mneme_core::RecordId, mneme_cor
 enum Condition {
     Lexical,
     Expansion(mneme_recall::expansion::Order),
+    GraphPpr,
 }
 
 impl Condition {
@@ -349,6 +350,7 @@ impl Condition {
             Condition::Expansion(mneme_recall::expansion::Order::Distance) => {
                 "lexical + expansion (distance order)"
             }
+            Condition::GraphPpr => "lexical + graph-ppr",
         }
     }
 }
@@ -402,6 +404,12 @@ fn recall(
         };
         request.modes.insert(mneme_recall::Mode::Structured);
         request.structured = Some(profile.structured_request()?);
+    } else if matches!(condition, Condition::GraphPpr) {
+        let mut config = mneme_recall::ppr::Config::new();
+        config.seeds.insert(record(1, question.seed));
+        config.relation_types.insert("depends".to_owned());
+        request.modes.insert(mneme_recall::Mode::GraphPpr);
+        request.graph_ppr = Some(config);
     }
     Ok(mneme_recall::Service::new(workspace).recall(request)?)
 }
@@ -473,6 +481,7 @@ fn main() -> Result<(), Error> {
         Condition::Lexical,
         Condition::Expansion(mneme_recall::expansion::Order::Record),
         Condition::Expansion(mneme_recall::expansion::Order::Distance),
+        Condition::GraphPpr,
     ];
     println!(
         "| Budget (items, bytes) | Condition | Evidence reached | Citable evidence | Mean packed items | Mean packed expansion rows | Mean packed bytes | Mean structured work | Mean time (µs) |"

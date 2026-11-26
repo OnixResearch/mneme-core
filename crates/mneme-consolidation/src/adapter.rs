@@ -1370,6 +1370,8 @@ fn recall(
         modes: std::collections::BTreeSet::from([mneme_recall::Mode::Lexical]),
         structured: None,
         semantic: None,
+        graph_ppr: None,
+        calibration: None,
         allow_stale: false,
         allow_fallback: true,
         allow_partial: true,
