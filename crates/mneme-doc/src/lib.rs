@@ -10,6 +10,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod asciidoc;
+pub mod datalog;
 pub mod images;
 pub mod markdown;
 
@@ -3403,22 +3404,47 @@ fn render_preview_artifact(
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_time_ms);
     let generation = context.generation;
     let revision = context.view.revision();
-    let mut image_loader = |scope: &mneme_core::ScopeId,
-                            pin: SourcePin|
-     -> Option<(images::Loaded, images::Decoded)> {
-        let (loaded, decoded) = images::load_decoded(workspace, scope, pin, Some(revision)).ok()?;
-        (loaded.generation == generation).then_some((loaded, decoded))
+    let scope = document.record.scope.clone();
+    struct Host<'a> {
+        workspace: &'a mut mneme_store::Workspace,
+        generation: u64,
+        revision: mneme_core::WorkspaceRevisionId,
+        scope: mneme_core::ScopeId,
+    }
+    impl preview::PreviewHost for Host<'_> {
+        fn load_image(
+            &mut self,
+            scope: &mneme_core::ScopeId,
+            pin: SourcePin,
+        ) -> Option<(images::Loaded, images::Decoded)> {
+            let (loaded, decoded) =
+                images::load_decoded(self.workspace, scope, pin, Some(self.revision)).ok()?;
+            (loaded.generation == self.generation).then_some((loaded, decoded))
+        }
+
+        fn run_query(&mut self, prepared: &datalog::PreparedQuery) -> datalog::QueryOutcome {
+            datalog::evaluate(
+                self.workspace,
+                &datalog::EvaluationContext {
+                    revision: self.revision,
+                    scope: self.scope.clone(),
+                    allow_stale: true,
+                },
+                prepared,
+            )
+        }
+    }
+    let mut host = Host {
+        workspace,
+        generation,
+        revision,
+        scope,
     };
     let rendered = sources.root.as_ref().map(|root| {
-        preview::Renderer::new_with_images(
-            &sources.sources,
-            config,
-            Some(deadline),
-            &mut image_loader,
-        )
-        .render(root, metadata)
+        preview::Renderer::new_with_host(&sources.sources, config, Some(deadline), &mut host)
+            .render(root, metadata)
     });
-    workspace.recheck(context.view.snapshot())?;
+    host.workspace.recheck(context.view.snapshot())?;
     if let Some(rendered) = &rendered {
         sources.diagnostics.extend(rendered.diagnostics.clone());
     }
