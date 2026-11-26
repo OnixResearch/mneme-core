@@ -222,6 +222,8 @@ fn prepare_standing(spec: &QuerySpec) -> Result<PreparedQuery, String> {
     let bundle_name = spec.bundle.as_deref().unwrap_or_else(|| {
         if is_base_predicate(relation) {
             "base"
+        } else if is_code_analysis_relation(relation) {
+            "code-analysis"
         } else {
             "auto-relations"
         }
@@ -230,6 +232,17 @@ fn prepare_standing(spec: &QuerySpec) -> Result<PreparedQuery, String> {
         "auto-relations" | "builtin-auto-relations" => {
             let bundle = builtin_auto_relations_bundle();
             let columns = standing_columns(relation)?;
+            Ok(PreparedQuery {
+                spec: spec.clone(),
+                bundle,
+                relation: relation.to_owned(),
+                columns,
+                constants: Vec::new(),
+            })
+        }
+        "code-analysis" | "code-analysis-standing" | "builtin-code-analysis" => {
+            let bundle = builtin_code_analysis_bundle();
+            let columns = code_analysis_columns(relation)?;
             Ok(PreparedQuery {
                 spec: spec.clone(),
                 bundle,
@@ -264,6 +277,26 @@ fn standing_columns(relation: &str) -> Result<Vec<String>, String> {
         ]),
         other => Err(format!(
             "relation `{other}` is not defined in standing bundle `auto-relations`"
+        )),
+    }
+}
+
+fn is_code_analysis_relation(relation: &str) -> bool {
+    code_analysis_columns(relation).is_ok()
+}
+
+fn code_analysis_columns(relation: &str) -> Result<Vec<String>, String> {
+    match relation {
+        "blast_radius" => Ok(vec!["symbol".to_owned(), "caller".to_owned()]),
+        "tested_symbol" => Ok(vec!["fn".to_owned()]),
+        "untested_public_api" => Ok(vec!["fn".to_owned()]),
+        "dep_reach" => Ok(vec!["from".to_owned(), "to".to_owned()]),
+        "dependency_cycle" => Ok(vec!["mod_a".to_owned(), "mod_b".to_owned()]),
+        "cross_repo_clone" => Ok(vec!["a".to_owned(), "b".to_owned()]),
+        "live_symbol_label" => Ok(vec!["label".to_owned()]),
+        "stale_doc_ref" => Ok(vec!["doc".to_owned(), "ref".to_owned()]),
+        other => Err(format!(
+            "relation `{other}` is not defined in standing bundle `code-analysis`"
         )),
     }
 }
@@ -417,6 +450,181 @@ fn builtin_auto_relations_bundle() -> mneme_datalog::RuleBundle {
 
     mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
         id: "builtin-auto-relations".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 3,
+        base_predicates,
+        complete_predicates,
+        rules,
+    })
+}
+
+fn builtin_code_analysis_bundle() -> mneme_datalog::RuleBundle {
+    use mneme_datalog::{Atom, CompareOp, Literal, Rule, Term};
+
+    let mut base_predicates = BTreeMap::new();
+    base_predicates.insert("document".to_owned(), 3);
+    base_predicates.insert("entity".to_owned(), 3);
+    base_predicates.insert("relation".to_owned(), 3);
+
+    let mut complete_predicates = std::collections::BTreeSet::new();
+    complete_predicates.insert("document".to_owned());
+    complete_predicates.insert("entity".to_owned());
+    complete_predicates.insert("live_symbol_label".to_owned());
+    complete_predicates.insert("relation".to_owned());
+    complete_predicates.insert("tested_symbol".to_owned());
+
+    let sym = |name: &str| Term::constant(mneme_core::Value::symbol(name));
+    let var = Term::var;
+
+    let mut rules = vec![
+        Rule::new(
+            "blast-radius-direct",
+            Atom::new("blast_radius", vec![var("Symbol"), var("Caller")]),
+            vec![Literal::Positive(Atom::new(
+                "relation",
+                vec![sym("calls"), var("Caller"), var("Symbol")],
+            ))],
+        ),
+        Rule::new(
+            "blast-radius-transitive",
+            Atom::new("blast_radius", vec![var("Symbol"), var("Outer")]),
+            vec![
+                Literal::Positive(Atom::new("blast_radius", vec![var("Symbol"), var("Mid")])),
+                Literal::Positive(Atom::new(
+                    "relation",
+                    vec![sym("calls"), var("Outer"), var("Mid")],
+                )),
+            ],
+        ),
+        Rule::new(
+            "tested-symbol-rel",
+            Atom::new("tested_symbol", vec![var("Fn")]),
+            vec![Literal::Positive(Atom::new(
+                "relation",
+                vec![sym("tests"), var("Test"), var("Fn")],
+            ))],
+        ),
+        Rule::new(
+            "tested-symbol-call",
+            Atom::new("tested_symbol", vec![var("Fn")]),
+            vec![
+                Literal::Positive(Atom::new(
+                    "entity",
+                    vec![var("Test"), sym("test"), var("TestLabel")],
+                )),
+                Literal::Positive(Atom::new(
+                    "relation",
+                    vec![sym("calls"), var("Test"), var("Fn")],
+                )),
+            ],
+        ),
+        Rule::new(
+            "untested-public-api",
+            Atom::new("untested_public_api", vec![var("Fn")]),
+            vec![
+                Literal::Positive(Atom::new(
+                    "entity",
+                    vec![var("Fn"), sym("fn"), var("FnLabel")],
+                )),
+                Literal::Positive(Atom::new(
+                    "relation",
+                    vec![sym("exports"), var("File"), var("Fn")],
+                )),
+                Literal::Negative(Atom::new("tested_symbol", vec![var("Fn")])),
+            ],
+        ),
+        Rule::new(
+            "dep-reach-direct",
+            Atom::new("dep_reach", vec![var("A"), var("B")]),
+            vec![Literal::Positive(Atom::new(
+                "relation",
+                vec![sym("imports"), var("A"), var("B")],
+            ))],
+        ),
+        Rule::new(
+            "dep-reach-transitive",
+            Atom::new("dep_reach", vec![var("A"), var("C")]),
+            vec![
+                Literal::Positive(Atom::new("dep_reach", vec![var("A"), var("B")])),
+                Literal::Positive(Atom::new(
+                    "relation",
+                    vec![sym("imports"), var("B"), var("C")],
+                )),
+            ],
+        ),
+        Rule::new(
+            "dependency-cycle",
+            Atom::new("dependency_cycle", vec![var("ModA"), var("ModB")]),
+            vec![
+                Literal::Positive(Atom::new("dep_reach", vec![var("ModA"), var("ModB")])),
+                Literal::Positive(Atom::new("dep_reach", vec![var("ModB"), var("ModA")])),
+                Literal::Compare {
+                    op: CompareOp::Ne,
+                    left: var("ModA"),
+                    right: var("ModB"),
+                },
+            ],
+        ),
+        Rule::new(
+            "cross-repo-clone",
+            Atom::new("cross_repo_clone", vec![var("A"), var("B")]),
+            vec![
+                Literal::Positive(Atom::new(
+                    "relation",
+                    vec![sym("ast_clone_of"), var("A"), var("B")],
+                )),
+                Literal::Positive(Atom::new(
+                    "relation",
+                    vec![sym("in_repo"), var("A"), var("RepoA")],
+                )),
+                Literal::Positive(Atom::new(
+                    "relation",
+                    vec![sym("in_repo"), var("B"), var("RepoB")],
+                )),
+                Literal::Compare {
+                    op: CompareOp::Ne,
+                    left: var("RepoA"),
+                    right: var("RepoB"),
+                },
+            ],
+        ),
+    ];
+
+    for kind in [
+        "fn", "struct", "trait", "enum", "type", "module", "file", "test",
+    ] {
+        rules.push(Rule::new(
+            format!("live-symbol-{kind}"),
+            Atom::new("live_symbol_label", vec![var("Label")]),
+            vec![Literal::Positive(Atom::new(
+                "entity",
+                vec![var("Sym"), sym(kind), var("Label")],
+            ))],
+        ));
+    }
+
+    rules.push(Rule::new(
+        "stale-doc-ref",
+        Atom::new("stale_doc_ref", vec![var("Doc"), var("Ref")]),
+        vec![
+            Literal::Positive(Atom::new(
+                "document",
+                vec![var("Doc"), var("DocEnt"), var("DocPath")],
+            )),
+            Literal::Positive(Atom::new(
+                "relation",
+                vec![sym("references_symbol"), var("Doc"), var("Ref")],
+            )),
+            Literal::Positive(Atom::new(
+                "entity",
+                vec![var("Ref"), sym("symbol_ref"), var("Label")],
+            )),
+            Literal::Negative(Atom::new("live_symbol_label", vec![var("Label")])),
+        ],
+    ));
+
+    mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "code-analysis-standing".to_owned(),
         version: "1".to_owned(),
         schema_version: 3,
         base_predicates,
@@ -1215,6 +1423,169 @@ mod tests {
         assert_eq!(
             prepared.bundle.base_predicates.get("relation").copied(),
             Some(3)
+        );
+    }
+
+    #[test]
+    fn code_analysis_standing_bundle_evaluates_blast_radius_untested_and_cycles() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = mneme_store::WorkspaceConfig::new(
+            Box::new(mneme_store::FixedClock::new(
+                mneme_core::Timestamp::from_nanos(1_700_000_000_000_000_000),
+            )),
+            Box::new(mneme_store::NoFaults),
+        );
+        let mut workspace =
+            mneme_store::Workspace::create(dir.path(), config).expect("create workspace");
+        let scope =
+            mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "code").expect("scope");
+        let base = workspace.current_revision().expect("base");
+
+        let file_id = mneme_core::RecordId::from_bytes([0x01; 16]);
+        let fn_core = mneme_core::RecordId::from_bytes([0x02; 16]);
+        let fn_mid = mneme_core::RecordId::from_bytes([0x03; 16]);
+        let fn_outer = mneme_core::RecordId::from_bytes([0x04; 16]);
+        let test_fn = mneme_core::RecordId::from_bytes([0x05; 16]);
+        let mod_a = mneme_core::RecordId::from_bytes([0x06; 16]);
+        let mod_b = mneme_core::RecordId::from_bytes([0x07; 16]);
+
+        let entity_draft =
+            |id: mneme_core::RecordId, rev: u8, kind: &str, label: &str| mneme_store::RecordDraft {
+                schema_version: 2,
+                kind: mneme_core::RecordKind::Entity,
+                record_id: id,
+                revision_id: mneme_core::RevisionId::from_bytes([rev; 16]),
+                predecessor: None,
+                scope: scope.clone(),
+                payload: mneme_core::Payload::new([
+                    (
+                        mneme_core::Symbol::from("entity-type"),
+                        mneme_core::Value::symbol(kind),
+                    ),
+                    (
+                        mneme_core::Symbol::from("label"),
+                        mneme_core::Value::string(label),
+                    ),
+                    (
+                        mneme_core::Symbol::from("properties"),
+                        mneme_core::Value::dictionary([]),
+                    ),
+                ]),
+            };
+        let rel_draft =
+            |id: u8, kind: &str, from: mneme_core::RecordId, to: mneme_core::RecordId| {
+                mneme_store::RecordDraft {
+                    schema_version: 2,
+                    kind: mneme_core::RecordKind::Relation,
+                    record_id: mneme_core::RecordId::from_bytes([id; 16]),
+                    revision_id: mneme_core::RevisionId::from_bytes([id.wrapping_add(0x40); 16]),
+                    predecessor: None,
+                    scope: scope.clone(),
+                    payload: mneme_core::Payload::new([
+                        (
+                            mneme_core::Symbol::from("relation-type"),
+                            mneme_core::Value::symbol(kind),
+                        ),
+                        (
+                            mneme_core::Symbol::from("from"),
+                            mneme_core::Reference::local(from, mneme_core::RecordKind::Entity)
+                                .to_value(),
+                        ),
+                        (
+                            mneme_core::Symbol::from("to"),
+                            mneme_core::Reference::local(to, mneme_core::RecordKind::Entity)
+                                .to_value(),
+                        ),
+                        (
+                            mneme_core::Symbol::from("properties"),
+                            mneme_core::Value::dictionary([]),
+                        ),
+                    ]),
+                }
+            };
+
+        workspace
+            .commit(mneme_store::CommitCommand {
+                base,
+                actor: "code-index".to_owned(),
+                scope: scope.clone(),
+                idempotency_key: "code-analysis-seed".to_owned(),
+                records: vec![
+                    entity_draft(file_id, 0x11, "file", "src/lib.rs"),
+                    entity_draft(fn_core, 0x12, "fn", "core_fn"),
+                    entity_draft(fn_mid, 0x13, "fn", "mid_fn"),
+                    entity_draft(fn_outer, 0x14, "fn", "outer_fn"),
+                    entity_draft(test_fn, 0x15, "test", "test_core"),
+                    entity_draft(mod_a, 0x16, "module", "mod_a"),
+                    entity_draft(mod_b, 0x17, "module", "mod_b"),
+                    rel_draft(0x21, "calls", fn_mid, fn_core),
+                    rel_draft(0x22, "calls", fn_outer, fn_mid),
+                    rel_draft(0x23, "exports", file_id, fn_core),
+                    rel_draft(0x24, "exports", file_id, fn_outer),
+                    rel_draft(0x25, "tests", test_fn, fn_core),
+                    rel_draft(0x26, "imports", mod_a, mod_b),
+                    rel_draft(0x27, "imports", mod_b, mod_a),
+                ],
+                source_blobs: Vec::new(),
+                publications: Vec::new(),
+                import_candidates: Vec::new(),
+                retention: None,
+            })
+            .expect("commit code graph");
+
+        let rev = workspace.current_revision().expect("rev");
+        let ctx = EvaluationContext {
+            revision: rev,
+            scope,
+            allow_stale: false,
+        };
+
+        // 1. blast_radius (direct + transitive)
+        let blast_spec =
+            parse_attribute_line("[mneme-query, bundle=code-analysis, relation=blast_radius]")
+                .expect("match")
+                .expect("parse");
+        let blast_prepared = prepare(&blast_spec, None).expect("prepare blast_radius");
+        let blast_out = evaluate(&mut workspace, &ctx, &blast_prepared);
+        assert_eq!(blast_out.status, mneme_datalog::ExecutionStatus::Complete);
+        assert!(
+            blast_out
+                .rows
+                .iter()
+                .any(|row| row[0].display == "core_fn" && row[1].display == "outer_fn"),
+            "expected transitive blast_radius(core_fn, outer_fn), got {:?}",
+            blast_out.rows
+        );
+
+        // 2. untested_public_api (outer_fn is exported & untested; core_fn is tested)
+        let untested_spec = parse_attribute_line(
+            "[mneme-query, bundle=code-analysis, relation=untested_public_api]",
+        )
+        .expect("match")
+        .expect("parse");
+        let untested_prepared = prepare(&untested_spec, None).expect("prepare untested");
+        let untested_out = evaluate(&mut workspace, &ctx, &untested_prepared);
+        assert_eq!(
+            untested_out.status,
+            mneme_datalog::ExecutionStatus::Complete
+        );
+        assert_eq!(untested_out.rows.len(), 1);
+        assert_eq!(untested_out.rows[0][0].display, "outer_fn");
+
+        // 3. dependency_cycle (mod_a <-> mod_b)
+        let cycle_spec =
+            parse_attribute_line("[mneme-query, bundle=code-analysis, relation=dependency_cycle]")
+                .expect("match")
+                .expect("parse");
+        let cycle_prepared = prepare(&cycle_spec, None).expect("prepare cycle");
+        let cycle_out = evaluate(&mut workspace, &ctx, &cycle_prepared);
+        assert_eq!(cycle_out.status, mneme_datalog::ExecutionStatus::Complete);
+        assert_eq!(cycle_out.rows.len(), 2);
+        assert!(
+            cycle_out
+                .rows
+                .iter()
+                .any(|row| row[0].display == "mod_a" && row[1].display == "mod_b")
         );
     }
 }

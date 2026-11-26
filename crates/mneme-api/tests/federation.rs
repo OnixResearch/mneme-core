@@ -197,6 +197,8 @@ async fn run_protocol_checks(
             predicate: "entity_label".to_owned(),
             constants: Vec::new(),
             limit: 16,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
             stale_policy: mneme_api::federation::StalePolicy::Refuse,
             limits: mneme_api::federation::FederationLimits::standard(),
         })
@@ -204,6 +206,7 @@ async fn run_protocol_checks(
     assert_eq!(eval_rev1.status, "complete");
     assert_eq!(eval_rev1.served_revision, *pinned_rev.as_bytes());
     assert_eq!(eval_rev1.rows.len(), 1);
+    assert_eq!(eval_rev1.rows[0].epistemic, "accepted");
     assert!(eval_rev1.exhaustive);
 
     let eval_head = client
@@ -214,6 +217,8 @@ async fn run_protocol_checks(
             predicate: "entity_label".to_owned(),
             constants: Vec::new(),
             limit: 16,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
             stale_policy: mneme_api::federation::StalePolicy::Refuse,
             limits: mneme_api::federation::FederationLimits::standard(),
         })
@@ -615,6 +620,8 @@ async fn scope_isolation_and_budget_enforcement_fail_closed()
             predicate: "entity_label".to_owned(),
             constants: Vec::new(),
             limit: 1,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
             stale_policy: mneme_api::federation::StalePolicy::Refuse,
             limits: server_ceiling,
         })
@@ -632,6 +639,8 @@ async fn scope_isolation_and_budget_enforcement_fail_closed()
             predicate: "entity_label".to_owned(),
             constants: Vec::new(),
             limit: 10,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
             stale_policy: mneme_api::federation::StalePolicy::Refuse,
             limits: mneme_api::federation::FederationLimits {
                 max_work: 1,
@@ -1209,5 +1218,289 @@ fn federation_auth_kernel_attenuation_and_revocation_dominance()
         auth.authorize_scope(peer_key.public(), &scope_a, Some(&doc), now_secs + 30)
             .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_datalog_preserves_proposed_epistemic_and_explain_missing_rpc()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let scope = cedar()?;
+    let mut workspace = mneme_store::Workspace::create(
+        temp.path(),
+        mneme_store::WorkspaceConfig::new(
+            Box::new(mneme_store::FixedClock::new(
+                mneme_core::Timestamp::from_nanos(1_700_000_000_000_000_000),
+            )),
+            Box::new(mneme_store::NoFaults),
+        ),
+    )?;
+    let base = workspace.current_revision()?;
+
+    let accepted_entity = mneme_core::RecordId::from_bytes([0x61; 16]);
+    let proposed_entity = mneme_core::RecordId::from_bytes([0x62; 16]);
+    let relation_id = mneme_core::RecordId::from_bytes([0x63; 16]);
+
+    let accepted_draft = mneme_store::RecordDraft {
+        schema_version: 2,
+        kind: mneme_core::RecordKind::Entity,
+        record_id: accepted_entity,
+        revision_id: mneme_core::RevisionId::from_bytes([0x71; 16]),
+        predecessor: None,
+        scope: scope.clone(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("entity-type"),
+                mneme_core::Value::symbol("topic"),
+            ),
+            (
+                mneme_core::Symbol::from("label"),
+                mneme_core::Value::string("verified-node"),
+            ),
+            (
+                mneme_core::Symbol::from("properties"),
+                mneme_core::Value::dictionary([]),
+            ),
+        ]),
+    };
+    let proposed_draft = mneme_store::RecordDraft {
+        schema_version: 2,
+        kind: mneme_core::RecordKind::Entity,
+        record_id: proposed_entity,
+        revision_id: mneme_core::RevisionId::from_bytes([0x72; 16]),
+        predecessor: None,
+        scope: scope.clone(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("entity-type"),
+                mneme_core::Value::symbol("topic"),
+            ),
+            (
+                mneme_core::Symbol::from("label"),
+                mneme_core::Value::string("candidate-node"),
+            ),
+            (
+                mneme_core::Symbol::from("properties"),
+                mneme_core::Value::symbol_dictionary([(
+                    mneme_core::Symbol::from("status"),
+                    mneme_core::Value::symbol("proposed"),
+                )]),
+            ),
+        ]),
+    };
+    let relation_draft = mneme_store::RecordDraft {
+        schema_version: 2,
+        kind: mneme_core::RecordKind::Relation,
+        record_id: relation_id,
+        revision_id: mneme_core::RevisionId::from_bytes([0x73; 16]),
+        predecessor: None,
+        scope: scope.clone(),
+        payload: mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("relation-type"),
+                mneme_core::Value::symbol("links"),
+            ),
+            (
+                mneme_core::Symbol::from("from"),
+                mneme_core::Reference::local(accepted_entity, mneme_core::RecordKind::Entity)
+                    .to_value(),
+            ),
+            (
+                mneme_core::Symbol::from("to"),
+                mneme_core::Reference::local(proposed_entity, mneme_core::RecordKind::Entity)
+                    .to_value(),
+            ),
+            (
+                mneme_core::Symbol::from("properties"),
+                mneme_core::Value::symbol_dictionary([(
+                    mneme_core::Symbol::from("status"),
+                    mneme_core::Value::symbol("proposed"),
+                )]),
+            ),
+        ]),
+    };
+    workspace.commit(mneme_store::CommitCommand {
+        base,
+        actor: "epistemic-test".to_owned(),
+        scope: scope.clone(),
+        idempotency_key: "epistemic-seed".to_owned(),
+        records: vec![accepted_draft, proposed_draft, relation_draft],
+        source_blobs: Vec::new(),
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: None,
+    })?;
+
+    let mut base_predicates = std::collections::BTreeMap::new();
+    base_predicates.insert("entity".to_owned(), 3);
+    base_predicates.insert("relation".to_owned(), 3);
+    let mut complete_predicates = std::collections::BTreeSet::new();
+    complete_predicates.insert("entity".to_owned());
+    complete_predicates.insert("relation".to_owned());
+    let bundle = mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "epistemic-federation".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 3,
+        base_predicates,
+        complete_predicates,
+        rules: vec![mneme_datalog::Rule::new(
+            "linked-label",
+            mneme_datalog::Atom::new(
+                "linked_label",
+                vec![
+                    mneme_datalog::Term::var("FromLabel"),
+                    mneme_datalog::Term::var("ToLabel"),
+                ],
+            ),
+            vec![
+                mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                    "entity",
+                    vec![
+                        mneme_datalog::Term::var("From"),
+                        mneme_datalog::Term::constant(mneme_core::Value::symbol("topic")),
+                        mneme_datalog::Term::var("FromLabel"),
+                    ],
+                )),
+                mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                    "relation",
+                    vec![
+                        mneme_datalog::Term::constant(mneme_core::Value::symbol("links")),
+                        mneme_datalog::Term::var("From"),
+                        mneme_datalog::Term::var("To"),
+                    ],
+                )),
+                mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                    "entity",
+                    vec![
+                        mneme_datalog::Term::var("To"),
+                        mneme_datalog::Term::constant(mneme_core::Value::symbol("topic")),
+                        mneme_datalog::Term::var("ToLabel"),
+                    ],
+                )),
+            ],
+        )],
+    });
+
+    let caller = iroh::SecretKey::from_bytes(&[0x64; 32]).public();
+    let mut allowlist = mneme_api::federation::PeerAllowlist::empty();
+    allowlist.allow_scopes(caller, [scope.clone()]);
+    let server = mneme_api::federation::VaultFederationServer::spawn(
+        mneme_api::federation::ServerConfig::new(temp.path(), allowlist),
+    )?;
+    let client = server.local_client_for(caller);
+
+    // 1. EvaluateDatalog preserves Proposed epistemic status on row, derivation, and premises.
+    let eval = client
+        .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
+            scope: scope.clone(),
+            revision: None,
+            bundle: bundle.clone(),
+            predicate: "linked_label".to_owned(),
+            constants: Vec::new(),
+            limit: 16,
+            at: Some(mneme_core::Timestamp::from_nanos(1_700_000_000_000_000_000)),
+            incomplete_extents: std::collections::BTreeSet::new(),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+        })
+        .await?;
+    assert_eq!(eval.status, "complete");
+    assert_eq!(eval.at, Some(1_700_000_000_000_000_000));
+    assert_eq!(eval.rows.len(), 1);
+    assert_eq!(eval.rows[0].epistemic, "proposed");
+    assert_eq!(eval.rows[0].supports.len(), 1);
+    assert_eq!(eval.rows[0].supports[0].epistemic, "proposed");
+    assert!(
+        eval.rows[0].supports[0]
+            .premises
+            .iter()
+            .any(|p| p.epistemic == "proposed")
+    );
+    assert!(
+        eval.rows[0].supports[0]
+            .premises
+            .iter()
+            .any(|p| p.epistemic == "accepted")
+    );
+    assert!(
+        eval.rows[0].supports[0]
+            .premises
+            .iter()
+            .all(|p| !p.canonical_roots.is_empty())
+    );
+
+    // 2. Incomplete extents propagate into coverage on EvaluateDatalog.
+    let incomplete_eval = client
+        .evaluate_datalog(mneme_api::federation::RemoteDatalogRequest {
+            scope: scope.clone(),
+            revision: None,
+            bundle: bundle.clone(),
+            predicate: "linked_label".to_owned(),
+            constants: Vec::new(),
+            limit: 16,
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::from(["relation".to_owned()]),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+        })
+        .await?;
+    assert_eq!(
+        incomplete_eval.incomplete_extents,
+        vec!["relation".to_owned()]
+    );
+    assert!(
+        incomplete_eval
+            .coverage
+            .iter()
+            .any(|c| c.predicate == "relation" && c.status == "incomplete")
+    );
+
+    // 3. ExplainMissing RPC reports `present` + `proposed` epistemic for derived tuple.
+    let present_explain = client
+        .explain_missing(mneme_api::federation::client::RemoteExplainMissingRequest {
+            scope: scope.clone(),
+            revision: None,
+            bundle: bundle.clone(),
+            predicate: "linked_label".to_owned(),
+            terms: vec![
+                mneme_core::Value::string("verified-node"),
+                mneme_core::Value::string("candidate-node"),
+            ],
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+            explain_limits: mneme_api::federation::protocol::RemoteExplainLimits::standard(),
+        })
+        .await?;
+    assert_eq!(present_explain.status, "present");
+    assert_eq!(
+        present_explain.present_epistemic.as_deref(),
+        Some("proposed")
+    );
+    assert_eq!(present_explain.present_supports.len(), 1);
+    assert_eq!(present_explain.present_supports[0].epistemic, "proposed");
+
+    // 4. ExplainMissing RPC reports structured `missing` reasons for an absent tuple.
+    let missing_explain = client
+        .explain_missing(mneme_api::federation::client::RemoteExplainMissingRequest {
+            scope,
+            revision: None,
+            bundle,
+            predicate: "linked_label".to_owned(),
+            terms: vec![
+                mneme_core::Value::string("verified-node"),
+                mneme_core::Value::string("nonexistent-node"),
+            ],
+            at: None,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            stale_policy: mneme_api::federation::StalePolicy::Refuse,
+            limits: mneme_api::federation::FederationLimits::standard(),
+            explain_limits: mneme_api::federation::protocol::RemoteExplainLimits::standard(),
+        })
+        .await?;
+    assert_eq!(missing_explain.status, "missing");
+    assert!(!missing_explain.reasons.is_empty());
+    assert!(missing_explain.exhaustive);
     Ok(())
 }

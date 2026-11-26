@@ -2320,3 +2320,209 @@ fn capability_kernel_attenuation_and_gset_revocation_dominance() {
         Err(mneme_sync::Failure::CapabilityRevoked { .. })
     ));
 }
+
+#[tokio::test]
+async fn multi_mib_blake3_blob_transfers_zero_rehash_via_sidecar_and_enforces_limits() {
+    let dir_a = tempfile::tempdir().expect("tempdir a");
+    let dir_b = tempfile::tempdir().expect("tempdir b");
+    let (mut ws_a, vault_id) = create_fixture_workspace(dir_a.path());
+
+    let key_a = deterministic_secret_key(81);
+    let key_b = deterministic_secret_key(82);
+
+    let mut allow_a = mneme_sync::PeerAllowlist::new();
+    allow_a.allow(mneme_sync::AllowedPeer {
+        node_id: key_b.public(),
+        label: Some("peer-b".to_owned()),
+        allowance: mneme_sync::ScopeAllowance::Any,
+    });
+    let mut allow_b = mneme_sync::PeerAllowlist::new();
+    allow_b.allow(mneme_sync::AllowedPeer {
+        node_id: key_a.public(),
+        label: Some("peer-a".to_owned()),
+        allowance: mneme_sync::ScopeAllowance::Any,
+    });
+
+    let clock: std::sync::Arc<dyn mneme_store::Clock> = std::sync::Arc::new(
+        mneme_store::FixedClock::new(mneme_core::Timestamp::from_nanos(1_700_000_000_000_000_000)),
+    );
+    let node_a = mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
+        secret_key: key_a.clone(),
+        allowlist: mneme_sync::SharedAllowlist::new(allow_a),
+        revocations: mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+        trusted_roots: std::collections::BTreeSet::new(),
+        clock: std::sync::Arc::clone(&clock),
+        discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
+        relay: mneme_sync::RelayPreference::Disabled,
+        bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
+    })
+    .await
+    .expect("bind node_a");
+    let node_b = mneme_sync::SyncNode::bind(mneme_sync::SyncNodeConfig {
+        secret_key: key_b.clone(),
+        allowlist: mneme_sync::SharedAllowlist::new(allow_b),
+        revocations: mneme_sync::SharedRevocationSet::new(mneme_sync::RevocationSet::new()),
+        trusted_roots: std::collections::BTreeSet::new(),
+        clock,
+        discovery: mneme_sync::DiscoveryMode::OfflineLoopback,
+        relay: mneme_sync::RelayPreference::Disabled,
+        bind_addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], 0))],
+    })
+    .await
+    .expect("bind node_b");
+    node_b.add_peer_addr(node_a.addr());
+
+    // 1. Initial sync to B so subsequent 3 MiB commit exercises RBSR delta blob transfer!
+    let _initial = node_a
+        .publish_workspace(&ws_a, &vault_id, &scope())
+        .await
+        .expect("publish initial");
+    let dest_ws = dir_b.path().join("replica");
+    let first_pull = node_b
+        .pull_scope(mneme_sync::PullRequest {
+            peer: node_a.node_id(),
+            scope: scope(),
+            destination: dest_ws.clone(),
+            state_dir: None,
+            workspace_config: config_factory(),
+        })
+        .await
+        .expect("initial restore");
+    assert_eq!(
+        first_pull.disposition,
+        mneme_sync::PullDisposition::Restored
+    );
+
+    // 2. Commit a 3 MiB BLAKE3 source blob on A; mneme-store creates its .obao4 sidecar.
+    let large_len: usize = 3 * 1024 * 1024 + 517;
+    let large_bytes: Vec<u8> = (0..large_len)
+        .map(|idx| ((idx.wrapping_mul(29).wrapping_add(idx >> 6)) & 0xff) as u8)
+        .collect();
+    let large_digest = mneme_core::ContentDigest::of_source_bytes(&large_bytes);
+    let retained =
+        mneme_core::RetainedSource::new(large_digest, large_len as u64, "application/octet-stream")
+            .expect("retained");
+    let base = ws_a.current_revision().expect("base");
+    ws_a.commit(mneme_store::CommitCommand {
+        base,
+        actor: "large-blob-author".to_owned(),
+        scope: scope(),
+        idempotency_key: "large-blob-3mib".to_owned(),
+        records: vec![mneme_store::RecordDraft {
+            schema_version: 2,
+            kind: mneme_core::RecordKind::SourceRevision,
+            record_id: mneme_core::RecordId::from_bytes([0xd1; 16]),
+            revision_id: mneme_core::RevisionId::from_bytes([0xd2; 16]),
+            predecessor: None,
+            scope: scope(),
+            payload: mneme_core::Payload::new([
+                (
+                    mneme_core::Symbol::from("content"),
+                    mneme_core::SourceContent::Retained(retained).to_value(),
+                ),
+                (
+                    mneme_core::Symbol::from("acquisition"),
+                    mneme_core::Value::symbol("authored"),
+                ),
+            ]),
+        }],
+        source_blobs: vec![mneme_store::SourceBlobDraft::inline(
+            large_bytes.clone(),
+            mneme_core::Symbol::from("application/octet-stream"),
+        )],
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: None,
+    })
+    .expect("commit large blob");
+
+    let sidecar_path = mneme_store::outboard::path(ws_a.root(), large_digest);
+    assert!(
+        sidecar_path.is_file(),
+        "mneme-store must have generated .obao4 sidecar for 3 MiB blob"
+    );
+
+    // 3. Publish on A and prove the disk store reused the workspace .obao4 sidecar directly!
+    let _snap = node_a
+        .publish_workspace(&ws_a, &vault_id, &scope())
+        .await
+        .expect("publish large");
+    let transport_hash = iroh_blobs::Hash::from_bytes(*large_digest.as_bytes());
+    assert!(
+        node_a
+            .blob_store()
+            .entry_reuses_workspace_sidecar(transport_hash),
+        "3 MiB BLAKE3 blob must be served directly from workspace blobs/blake3 + .obao4 sidecar"
+    );
+
+    // 4. Streaming download budget enforcement refuses before reading payload when max_bytes < size.
+    let conn = node_b
+        .endpoint()
+        .connect(node_a.node_id(), iroh_blobs::ALPN)
+        .await
+        .expect("connect blobs");
+    let oversized_target = dir_b.path().join("oversized.part");
+    let budget_err = mneme_sync::blobstore::download_blob_to_file(
+        &conn,
+        transport_hash,
+        1024 * 1024,
+        &oversized_target,
+        None,
+    )
+    .await;
+    assert!(
+        matches!(
+            budget_err,
+            Err(mneme_sync::Failure::SizeLimitExceeded { .. })
+        ),
+        "download exceeding max_bytes must fail closed with SizeLimitExceeded, got: {budget_err:?}"
+    );
+    assert!(
+        !oversized_target.exists(),
+        "aborted oversized download must clean up staged file"
+    );
+
+    // 5. Incremental RBSR delta pull transfers the 3 MiB blob over DiskBlobsProtocol and verifies!
+    let delta_pull = node_b
+        .pull_scope(mneme_sync::PullRequest {
+            peer: node_a.node_id(),
+            scope: scope(),
+            destination: dest_ws.clone(),
+            state_dir: None,
+            workspace_config: config_factory(),
+        })
+        .await
+        .expect("delta pull 3 MiB blob");
+    assert_eq!(delta_pull.disposition, mneme_sync::PullDisposition::Updated);
+    assert_eq!(delta_pull.stats.blobs_fetched, 1);
+    assert_eq!(delta_pull.stats.blob_bytes_fetched, large_len as u64);
+    assert!(delta_pull.verify_report.is_healthy());
+    let restored_bytes = mneme_store::payload::read(&dest_ws, large_digest).expect("read restored");
+    assert_eq!(restored_bytes, large_bytes);
+
+    // 6. Corrupting the workspace .obao4 sidecar on disk fails closed during transfer!
+    let mut corrupt_sidecar = std::fs::read(&sidecar_path).expect("read sidecar");
+    corrupt_sidecar[0] ^= 0xff;
+    std::fs::write(&sidecar_path, &corrupt_sidecar).expect("corrupt sidecar");
+    let conn_corrupt = node_b
+        .endpoint()
+        .connect(node_a.node_id(), iroh_blobs::ALPN)
+        .await
+        .expect("connect blobs corrupt");
+    let corrupt_target = dir_b.path().join("corrupt.part");
+    let corrupt_res = mneme_sync::blobstore::download_blob_to_file(
+        &conn_corrupt,
+        transport_hash,
+        (large_len as u64) + 1024,
+        &corrupt_target,
+        None,
+    )
+    .await;
+    assert!(
+        corrupt_res.is_err(),
+        "corrupted on-disk .obao4 sidecar must fail closed on transfer"
+    );
+
+    node_a.shutdown().await.expect("shutdown a");
+    node_b.shutdown().await.expect("shutdown b");
+}

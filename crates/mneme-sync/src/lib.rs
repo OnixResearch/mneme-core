@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))] // tests fail via panic rather than Result
 
+pub mod blobstore;
 pub mod bundle;
 pub mod capability;
 pub mod error;
@@ -21,6 +22,7 @@ pub mod rbsr;
 pub mod state;
 pub mod trust;
 
+pub use blobstore::{DiskBlobEntry, DiskBlobStore, DiskBlobsProtocol, DownloadedBlob};
 pub use bundle::{
     ExportedSyncBundle, IngestedWorkspace, PullDisposition, collect_local_rbsr_set,
     export_scope_to_store, ingest_delta_to_workspace, ingest_downloaded_archive,

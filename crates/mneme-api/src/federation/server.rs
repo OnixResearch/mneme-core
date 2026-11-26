@@ -392,6 +392,9 @@ async fn dispatch_message(
         super::protocol::VaultFederationMessage::EvaluateDatalog(msg) => {
             dispatch_evaluate_datalog(ctx, caller, msg).await;
         }
+        super::protocol::VaultFederationMessage::ExplainMissing(msg) => {
+            dispatch_explain_missing(ctx, caller, msg).await;
+        }
     }
 }
 
@@ -508,6 +511,33 @@ async fn dispatch_evaluate_datalog(
         .max(1);
     let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
         handle_evaluate_datalog(&cfg, &msg.inner)
+    })
+    .await;
+    let _sent = msg.tx.send(result).await.is_ok();
+}
+
+async fn dispatch_explain_missing(
+    ctx: ActorContext,
+    caller: iroh::EndpointId,
+    msg: irpc::WithChannels<
+        super::protocol::ExplainMissingRpcRequest,
+        super::protocol::VaultFederationProtocol,
+    >,
+) {
+    let auth = authorize_request(
+        &ctx,
+        caller,
+        &msg.inner.scope,
+        msg.inner.capability_document.as_deref(),
+    );
+    let timeout_ms = msg
+        .inner
+        .limits
+        .max_time_ms
+        .min(ctx.config.max_limits.max_time_ms)
+        .max(1);
+    let result = run_authorized_blocking(&ctx, auth, timeout_ms, move |cfg| {
+        handle_explain_missing(&cfg, &msg.inner)
     })
     .await;
     let _sent = msg.tx.send(result).await.is_ok();
@@ -1007,25 +1037,44 @@ fn decode_datalog_constants(
     Ok(constants)
 }
 
+fn decode_ground_terms(
+    term_documents: &[String],
+) -> Result<Vec<mneme_core::Value>, super::protocol::RpcError> {
+    let mut terms = Vec::with_capacity(term_documents.len());
+    for entry in term_documents {
+        let parsed = mneme_core::decode_document(entry).map_err(|diag| {
+            super::protocol::RpcError::new(
+                super::protocol::RpcErrorCode::InvalidInput,
+                diag.to_string(),
+            )
+        })?;
+        terms.push(parsed);
+    }
+    assert_eq!(terms.len(), term_documents.len());
+    Ok(terms)
+}
+
+fn parse_bundle_document(
+    bundle_document: &str,
+) -> Result<mneme_datalog::RuleBundle, super::protocol::RpcError> {
+    let bundle_value = mneme_core::decode_document(bundle_document).map_err(|diag| {
+        super::protocol::RpcError::new(
+            super::protocol::RpcErrorCode::InvalidInput,
+            diag.to_string(),
+        )
+    })?;
+    crate::parse_bundle(&bundle_value, &mneme_core::Path::root()).map_err(|error| {
+        super::protocol::RpcError::new(super::protocol::RpcErrorCode::InvalidInput, error.message)
+    })
+}
+
 fn handle_evaluate_datalog(
     config: &ServerConfig,
     request: &super::protocol::EvaluateDatalogRequest,
 ) -> Result<super::protocol::RemoteDatalogResult, super::protocol::RpcError> {
     request.limits.check_within(&config.max_limits)?;
     let scope = parse_scope(&request.scope)?;
-    let bundle_value = mneme_core::decode_document(&request.bundle_document).map_err(|diag| {
-        super::protocol::RpcError::new(
-            super::protocol::RpcErrorCode::InvalidInput,
-            diag.to_string(),
-        )
-    })?;
-    let bundle =
-        crate::parse_bundle(&bundle_value, &mneme_core::Path::root()).map_err(|error| {
-            super::protocol::RpcError::new(
-                super::protocol::RpcErrorCode::InvalidInput,
-                error.message,
-            )
-        })?;
+    let bundle = parse_bundle_document(&request.bundle_document)?;
     let constants = decode_datalog_constants(&request.constant_documents)?;
     let datalog_limits = request.limits.to_datalog_limits()?;
     let max_result_rows = usize::try_from(request.max_rows).map_err(|_| {
@@ -1034,6 +1083,8 @@ fn handle_evaluate_datalog(
             "query row limit exceeds platform capacity",
         )
     })?;
+    let incomplete_extents: std::collections::BTreeSet<String> =
+        request.incomplete_extents.iter().cloned().collect();
     let mut workspace = open_read_only_vault(&config.vault_root)?;
     let generation = workspace
         .eligibility_generation()
@@ -1052,13 +1103,82 @@ fn handle_evaluate_datalog(
             predicate: &request.predicate,
             constants,
             query_limit: max_result_rows,
+            at: request.at.map(mneme_core::Timestamp::from_nanos),
+            incomplete_extents: incomplete_extents.clone(),
             stale_policy: request.stale_policy,
         },
     )?;
     verify_generation_unchanged(&workspace, generation, "remote Datalog evaluation")?;
-    let encoded = encode_datalog_result(&result);
+    let encoded = encode_datalog_result(
+        &result,
+        request.at,
+        incomplete_extents.into_iter().collect(),
+    );
     check_payload_byte_budget(&encoded, request.limits.max_bytes, "Datalog result")?;
     assert_eq!(encoded.served_revision, *result.served_revision.as_bytes());
+    assert_eq!(encoded.protocol_version, super::protocol::PROTOCOL_VERSION);
+    Ok(encoded)
+}
+
+fn handle_explain_missing(
+    config: &ServerConfig,
+    request: &super::protocol::ExplainMissingRpcRequest,
+) -> Result<super::protocol::RemoteMissingExplanation, super::protocol::RpcError> {
+    request.limits.check_within(&config.max_limits)?;
+    request.explain_limits.check_within(&config.max_limits)?;
+    let scope = parse_scope(&request.scope)?;
+    let bundle = parse_bundle_document(&request.bundle_document)?;
+    let terms = decode_ground_terms(&request.term_documents)?;
+    let datalog_limits = request.limits.to_datalog_limits()?;
+    let incomplete_extents: std::collections::BTreeSet<String> =
+        request.incomplete_extents.iter().cloned().collect();
+    let mut workspace = open_read_only_vault(&config.vault_root)?;
+    let generation = workspace
+        .eligibility_generation()
+        .map_err(store_rpc_error)?;
+    let head = workspace.current_revision().map_err(store_rpc_error)?;
+    let revision = request
+        .revision
+        .map_or(head, mneme_core::WorkspaceRevisionId::from_bytes);
+    let access = mneme_memory::Access::scopes([scope.clone()]);
+    let mut service = mneme_datalog::Service::new(&mut workspace);
+    let build = service
+        .build(mneme_datalog::BuildRequest {
+            actor: "remote-federation-peer".to_owned(),
+            scope,
+            revision,
+            bundle,
+            limits: datalog_limits,
+            publish: false,
+            incomplete_extents: incomplete_extents.clone(),
+            cancellation: None,
+            access,
+            at: request.at.map(mneme_core::Timestamp::from_nanos),
+        })
+        .map_err(datalog_rpc_error)?;
+    let explanation = service
+        .explain_missing_build(
+            &build,
+            mneme_datalog::ExplainMissingRequest {
+                predicate: request.predicate.clone(),
+                terms,
+                limits: request.explain_limits.to_datalog_limits(),
+                allow_stale: matches!(request.stale_policy, super::protocol::StalePolicy::Allow),
+                cancellation: None,
+            },
+        )
+        .map_err(datalog_rpc_error)?;
+    verify_generation_unchanged(&workspace, generation, "remote explain-missing")?;
+    let encoded = encode_missing_explanation(
+        &explanation,
+        request.at,
+        incomplete_extents.into_iter().collect(),
+    );
+    check_payload_byte_budget(&encoded, request.limits.max_bytes, "explain-missing result")?;
+    assert_eq!(
+        encoded.served_revision,
+        *explanation.served_revision.as_bytes()
+    );
     assert_eq!(encoded.protocol_version, super::protocol::PROTOCOL_VERSION);
     Ok(encoded)
 }
@@ -1071,6 +1191,8 @@ struct DatalogEvalParams<'a> {
     predicate: &'a str,
     constants: Vec<Option<mneme_core::Value>>,
     query_limit: usize,
+    at: Option<mneme_core::Timestamp>,
+    incomplete_extents: std::collections::BTreeSet<String>,
     stale_policy: super::protocol::StalePolicy,
 }
 
@@ -1088,10 +1210,10 @@ fn run_read_only_datalog(
             bundle: params.bundle,
             limits: params.datalog_limits,
             publish: false,
-            incomplete_extents: std::collections::BTreeSet::new(),
+            incomplete_extents: params.incomplete_extents,
             cancellation: None,
             access,
-            at: None,
+            at: params.at,
         })
         .map_err(datalog_rpc_error)?;
     let mut query = mneme_datalog::Query::all(params.predicate, params.query_limit);
@@ -1102,8 +1224,72 @@ fn run_read_only_datalog(
         .map_err(datalog_rpc_error)
 }
 
+fn encode_source_keys(
+    sources: &std::collections::BTreeSet<mneme_datalog::SourceKey>,
+) -> Vec<super::protocol::RemoteSourceKey> {
+    sources
+        .iter()
+        .map(
+            |(record_id, revision_id)| super::protocol::RemoteSourceKey {
+                record_id: *record_id.as_bytes(),
+                revision_id: *revision_id.as_bytes(),
+            },
+        )
+        .collect()
+}
+
+fn encode_coverage(coverage: &[mneme_datalog::Coverage]) -> Vec<super::protocol::RemoteCoverage> {
+    coverage
+        .iter()
+        .map(|entry| super::protocol::RemoteCoverage {
+            predicate: entry.predicate.clone(),
+            status: entry.status.name().to_owned(),
+            reason: entry.reason.clone(),
+        })
+        .collect()
+}
+
+fn encode_premise(premise: &mneme_datalog::Premise) -> super::protocol::RemotePremise {
+    super::protocol::RemotePremise {
+        predicate: premise.predicate.clone(),
+        term_documents: premise
+            .terms
+            .iter()
+            .map(mneme_core::encode_document_string)
+            .collect(),
+        canonical: premise.canonical.map(|id| *id.as_bytes()),
+        canonical_roots: premise
+            .canonical_roots
+            .iter()
+            .map(|id| *id.as_bytes())
+            .collect(),
+        sources: encode_source_keys(&premise.sources),
+        vault: premise.vault.clone(),
+        vaults: premise.vaults.iter().cloned().collect(),
+        absent: premise.absent,
+        coverage: premise.coverage.clone(),
+        source_availability: premise.source_availability.clone(),
+        epistemic: premise.epistemic.name().to_owned(),
+    }
+}
+
+fn encode_derivation(support: &mneme_datalog::Derivation) -> super::protocol::RemoteDerivation {
+    super::protocol::RemoteDerivation {
+        rule_id: support.rule_id.clone(),
+        rule_version: support.rule_version.clone(),
+        premises: support.premises.iter().map(encode_premise).collect(),
+        sources: encode_source_keys(&support.sources),
+        vaults: support.vaults.iter().cloned().collect(),
+        temporal_parameters: support.temporal_parameters.clone(),
+        truncated: support.truncated,
+        epistemic: support.epistemic.name().to_owned(),
+    }
+}
+
 fn encode_datalog_result(
     result: &mneme_datalog::QueryResult,
+    at: Option<i64>,
+    incomplete_extents: Vec<String>,
 ) -> super::protocol::RemoteDatalogResult {
     super::protocol::RemoteDatalogResult {
         protocol_version: super::protocol::PROTOCOL_VERSION,
@@ -1112,15 +1298,9 @@ fn encode_datalog_result(
         requested_revision: *result.requested_revision.as_bytes(),
         served_revision: *result.served_revision.as_bytes(),
         eligibility_generation: result.context.eligibility_generation,
-        coverage: result
-            .coverage
-            .iter()
-            .map(|entry| super::protocol::RemoteCoverage {
-                predicate: entry.predicate.clone(),
-                status: entry.status.name().to_owned(),
-                reason: entry.reason.clone(),
-            })
-            .collect(),
+        at,
+        incomplete_extents,
+        coverage: encode_coverage(&result.coverage),
         rows: result
             .rows
             .iter()
@@ -1130,33 +1310,9 @@ fn encode_datalog_result(
                     .iter()
                     .map(mneme_core::encode_document_string)
                     .collect(),
-                supports: row
-                    .supports
-                    .iter()
-                    .map(|support| super::protocol::RemoteDerivation {
-                        rule_id: support.rule_id.clone(),
-                        rule_version: support.rule_version.clone(),
-                        premises: support
-                            .premises
-                            .iter()
-                            .map(|premise| super::protocol::RemotePremise {
-                                predicate: premise.predicate.clone(),
-                                term_documents: premise
-                                    .terms
-                                    .iter()
-                                    .map(mneme_core::encode_document_string)
-                                    .collect(),
-                                vault: premise.vault.clone(),
-                                vaults: premise.vaults.iter().cloned().collect(),
-                                absent: premise.absent,
-                                source_availability: premise.source_availability.clone(),
-                            })
-                            .collect(),
-                        vaults: support.vaults.iter().cloned().collect(),
-                        truncated: support.truncated,
-                    })
-                    .collect(),
+                supports: row.supports.iter().map(encode_derivation).collect(),
                 support_truncated: row.support_truncated,
+                epistemic: row.epistemic.name().to_owned(),
             })
             .collect(),
         exhaustive: result.exhaustive,
@@ -1165,6 +1321,79 @@ fn encode_datalog_result(
         stale: result.stale,
         reason: result.reason.clone(),
         work: result.work,
+    }
+}
+
+fn encode_missing_term(term: &mneme_datalog::Term) -> super::protocol::RemoteMissingTerm {
+    match term {
+        mneme_datalog::Term::Variable(name) => {
+            super::protocol::RemoteMissingTerm::Variable(name.clone())
+        }
+        mneme_datalog::Term::Constant(value) => {
+            super::protocol::RemoteMissingTerm::Constant(mneme_core::encode_document_string(value))
+        }
+    }
+}
+
+fn encode_missing_reason(
+    reason: &mneme_datalog::MissingReason,
+) -> super::protocol::RemoteMissingReason {
+    super::protocol::RemoteMissingReason {
+        kind: reason.kind.name().to_owned(),
+        rule_id: reason.rule_id.clone(),
+        predicate: reason.predicate.clone(),
+        terms: reason.terms.iter().map(encode_missing_term).collect(),
+        detail: reason.detail.clone(),
+        blocker_epistemic: reason
+            .blocker_epistemic
+            .map(|status| status.name().to_owned()),
+        blocker_supports: reason
+            .blocker_supports
+            .iter()
+            .map(encode_derivation)
+            .collect(),
+        causes: reason.causes.iter().map(encode_missing_reason).collect(),
+    }
+}
+
+fn encode_missing_explanation(
+    explanation: &mneme_datalog::MissingExplanation,
+    at: Option<i64>,
+    incomplete_extents: Vec<String>,
+) -> super::protocol::RemoteMissingExplanation {
+    super::protocol::RemoteMissingExplanation {
+        protocol_version: super::protocol::PROTOCOL_VERSION,
+        predicate: explanation.predicate.clone(),
+        term_documents: explanation
+            .terms
+            .iter()
+            .map(mneme_core::encode_document_string)
+            .collect(),
+        status: explanation.status.name().to_owned(),
+        build_status: explanation.build_status.name().to_owned(),
+        requested_revision: *explanation.requested_revision.as_bytes(),
+        served_revision: *explanation.served_revision.as_bytes(),
+        eligibility_generation: explanation.context.eligibility_generation,
+        at,
+        incomplete_extents,
+        coverage: encode_coverage(&explanation.coverage),
+        present_epistemic: explanation
+            .present_epistemic
+            .map(|status| status.name().to_owned()),
+        present_supports: explanation
+            .present_supports
+            .iter()
+            .map(encode_derivation)
+            .collect(),
+        reasons: explanation
+            .reasons
+            .iter()
+            .map(encode_missing_reason)
+            .collect(),
+        truncated: explanation.truncated,
+        exhaustive: explanation.exhaustive,
+        stale: explanation.stale,
+        work: explanation.work,
     }
 }
 
