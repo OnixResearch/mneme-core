@@ -1242,6 +1242,10 @@ impl SyncControlHandler {
         };
         if self.auth.allowlist.is_allowed(remote) {
             if !self.auth.allowlist.allows_scope(remote, &parsed_scope) {
+                #[cfg(feature = "trace-spec")]
+                mneme_store::trace::emit(mneme_store::trace::Event::ScopeDenied {
+                    scope: scope.to_owned(),
+                });
                 return Err(SyncControlResponse::Refused {
                     reason: format!("peer is not authorized for scope {scope}"),
                 });
@@ -1263,7 +1267,35 @@ impl SyncControlHandler {
         Ok(entry)
     }
 
-    fn resolve_request(
+    pub(crate) fn handle_control_frame(
+        &self,
+        remote: iroh::EndpointId,
+        request_bytes: &[u8],
+    ) -> crate::error::Result<Vec<u8>> {
+        let is_authorized =
+            self.auth.allowlist.is_allowed(remote) || self.auth.has_any_active_lease(remote);
+        let max_bytes = if is_authorized {
+            MAX_CONTROL_MESSAGE_BYTES
+        } else {
+            MAX_UNAUTH_CONTROL_FRAME_BYTES
+        };
+        if request_bytes.len() > max_bytes {
+            return Err(crate::error::Failure::SizeLimitExceeded {
+                actual_bytes: request_bytes.len() as u64,
+                limit_bytes: max_bytes as u64,
+            });
+        }
+        let request: SyncControlRequest =
+            serde_json::from_slice(request_bytes).map_err(|error| {
+                crate::error::Failure::Protocol(format!("decode control request: {error}"))
+            })?;
+        let response = self.resolve_request(remote, &request);
+        serde_json::to_vec(&response).map_err(|error| {
+            crate::error::Failure::Protocol(format!("encode control response: {error}"))
+        })
+    }
+
+    pub(crate) fn resolve_request(
         &self,
         remote: iroh::EndpointId,
         request: &SyncControlRequest,
@@ -1483,6 +1515,12 @@ impl SyncControlHandler {
         if let Some(&high_water) = guard.push_high_water.get(&key)
             && announcement.seq <= high_water
         {
+            #[cfg(feature = "trace-spec")]
+            mneme_store::trace::emit(mneme_store::trace::Event::PushHeadRejected {
+                scope: announcement.scope.clone(),
+                origin: origin.to_string(),
+                sequence: announcement.seq,
+            });
             return SyncControlResponse::Refused {
                 reason: format!(
                     "stale or rollback head push seq {} (high-water {})",
@@ -1494,6 +1532,12 @@ impl SyncControlHandler {
         guard
             .received_pushes
             .insert(parsed_scope, announcement.clone());
+        #[cfg(feature = "trace-spec")]
+        mneme_store::trace::emit(mneme_store::trace::Event::PushHeadAccepted {
+            scope: announcement.scope.clone(),
+            origin: origin.to_string(),
+            sequence: announcement.seq,
+        });
         SyncControlResponse::HeadAccepted {
             vault_id: announcement.vault_id.clone(),
             scope: announcement.scope.clone(),
@@ -1539,6 +1583,8 @@ impl SyncControlHandler {
                 reason: error.to_string(),
             };
         }
+        #[cfg(feature = "trace-spec")]
+        emit_merged_revocations(incoming);
         self.auth.evict_inactive_leases();
         let page_limit = limit
             .unwrap_or(crate::capability::MAX_REVOCATIONS_PER_PAGE)
@@ -1593,7 +1639,17 @@ impl SyncControlHandler {
                 trusted_roots: &self.auth.trusted_roots,
                 revocations: &rev_snapshot,
             })
-            .map_err(map_capability_failure)?;
+            .map_err(|error| {
+                #[cfg(feature = "trace-spec")]
+                emit_capability_rejected(token, &error);
+                map_capability_failure(error)
+            })?;
+        #[cfg(feature = "trace-spec")]
+        if let Some(leaf) = token.leaf() {
+            mneme_store::trace::emit(mneme_store::trace::Event::CapabilityAccepted {
+                token: leaf.token_id.to_string(),
+            });
+        }
         self.auth.authorized_issuers.record_verified(&verified);
         self.auth
             .leases
@@ -1963,4 +2019,38 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 
 pub(crate) fn parse_hex_32(text: &str) -> crate::error::Result<[u8; 32]> {
     decode_hex_32(text).map_err(|reason| crate::error::Failure::Protocol(reason.to_owned()))
+}
+
+#[cfg(feature = "trace-spec")]
+fn emit_merged_revocations(incoming: &[crate::capability::RevocationTombstone]) {
+    for tombstone in incoming {
+        emit_single_revocation(tombstone);
+    }
+}
+
+#[cfg(feature = "trace-spec")]
+fn emit_single_revocation(tombstone: &crate::capability::RevocationTombstone) {
+    mneme_store::trace::emit(mneme_store::trace::Event::RevocationMerged {
+        token: tombstone.target_token_id.to_string(),
+    });
+}
+
+#[cfg(feature = "trace-spec")]
+fn emit_capability_rejected(
+    token: &crate::capability::CapabilityToken,
+    error: &crate::error::Failure,
+) {
+    let token_id = token
+        .leaf()
+        .map(|leaf| leaf.token_id.to_string())
+        .unwrap_or_default();
+    let reason = if matches!(error, crate::error::Failure::CapabilityRevoked { .. }) {
+        "revoked"
+    } else {
+        "denied"
+    };
+    mneme_store::trace::emit(mneme_store::trace::Event::CapabilityRejected {
+        token: token_id,
+        reason: reason.to_owned(),
+    });
 }

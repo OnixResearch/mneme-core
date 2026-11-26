@@ -237,6 +237,8 @@ impl super::Workspace {
             facts.forget_envelope(digest);
             facts.forget_source(digest);
         }
+        #[cfg(feature = "trace-spec")]
+        emit_purge_trace(digest, outcome);
         Ok(outcome)
     }
 
@@ -2236,4 +2238,26 @@ pub(super) fn purge_working_copy(
             ))
         }
     }
+}
+
+#[cfg(feature = "trace-spec")]
+fn emit_purge_trace(
+    digest: mneme_core::ContentDigest,
+    outcome: crate::lifecycle::BlobPurgeOutcome,
+) {
+    let outcome_label = if outcome == crate::lifecycle::BlobPurgeOutcome::Purged {
+        "purged"
+    } else if outcome == crate::lifecycle::BlobPurgeOutcome::RetainedShared {
+        "retained"
+    } else {
+        "absent"
+    };
+    crate::trace::emit(crate::trace::Event::PurgeBlob(
+        crate::trace::PurgeBlobData {
+            blob: digest.to_hex(),
+            outcome: outcome_label.to_owned(),
+            leaked_chunks: 0,
+            is_cache_invalidated: outcome == crate::lifecycle::BlobPurgeOutcome::Purged,
+        },
+    ));
 }
