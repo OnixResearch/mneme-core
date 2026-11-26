@@ -1,9 +1,10 @@
 //! In-memory lexical and local token-vector index over one scoped snapshot.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
-/// Index schema, term and weighting version: English Snowball stems with their
-/// counts, weighted by BM25 over the request's own index.
-pub const LEXICAL_INDEX_VERSION: &str = "mneme-lexical-bm25-v2";
+/// Index schema, term and weighting version: English Snowball stems with
+/// camelCase/snake_case symbol sub-tokenization across four typed fields,
+/// weighted by pre-saturation BM25F over the request's own index.
+pub const LEXICAL_INDEX_VERSION: &str = "mneme-lexical-bm25f-v3";
 /// Sparse character-trigram vector projection. This is not a learned model.
 pub const VECTOR_INDEX_VERSION: &str = "mneme-trigram-hash-v1";
 
@@ -241,10 +242,18 @@ impl IndexBuild {
             .map(mneme_core::text::render)
             .unwrap_or_default();
         let body = format!("{label} {entity_type} {properties}");
+        let fields = build_field_terms(
+            &[label.as_str()],
+            &[],
+            &[],
+            &[entity_type.as_str(), properties.as_str()],
+        );
         self.documents.push(document(IndexedDocumentInput {
             id: format!("entity:{}", record.record_id),
             kind: crate::model::ContentKind::TypedField,
             text: body,
+            normalized: None,
+            fields,
             field_path: "entity.label".to_owned(),
             source: None,
             source_revision: None,
@@ -265,12 +274,8 @@ impl IndexBuild {
         record: &mneme_core::RecordEnvelope,
     ) -> BuildResult<()> {
         let episode = mneme_memory::EpisodeView::parse(record.clone())?;
-        let body = format!(
-            "{} {} {}",
-            episode.summary,
-            episode.actor,
-            episode.episode_type.name()
-        );
+        let episode_kind = episode.episode_type.name().to_owned();
+        let body = format!("{} {} {}", episode.summary, episode.actor, episode_kind);
         // The memory engine treats an episode's source revision as its root, so
         // an episode and its own source never count as independent evidence.
         // A source the caller cannot read leaves the episode as its own root.
@@ -293,10 +298,18 @@ impl IndexBuild {
         }
         let root = resolved.map_or((record.record_id, record.revision_id), |(_, root)| root);
         let source = resolved.map(|(key, _)| key);
+        let fields = build_field_terms(
+            &[],
+            &[],
+            &[episode.summary.as_str()],
+            &[episode.actor.as_str(), episode_kind.as_str()],
+        );
         self.documents.push(document(IndexedDocumentInput {
             id: format!("episode:{}", record.record_id),
             kind: crate::model::ContentKind::EpisodeSummary,
             text: body,
+            normalized: None,
+            fields,
             field_path: "episode.summary".to_owned(),
             source: source.map(|key| key.0),
             source_revision: source.map(|key| key.1),
@@ -335,47 +348,31 @@ impl IndexBuild {
                 return Ok(());
             }
         };
-        if let Some(path) = &facts.view.path_hint {
-            self.push_source_path_document(record, path, facts.view.entity, &roots);
-        }
+        let is_retained = facts.availability == mneme_memory::SourceAvailability::Retained;
         if let Some(reason) = facts.content_omission {
-            self.skipped += 1;
+            if is_retained && let Some(path) = &facts.view.path_hint {
+                self.push_source_path_document(record, path, facts.view.entity, &roots);
+            }
+            self.skipped = self.skipped.saturating_add(1);
             self.skip_reasons.insert(reason.to_owned());
             return Ok(());
         }
         match facts.bytes {
             Some(bytes) => match String::from_utf8(bytes) {
                 Ok(body) => {
-                    let content = IndexedDocumentInput {
-                        id: format!("source:{}:{}", record.record_id, record.revision_id),
-                        kind: crate::model::ContentKind::SourceExcerpt,
-                        text: body,
-                        field_path: "source.content".to_owned(),
-                        source: Some(record.record_id),
-                        source_revision: Some(record.revision_id),
-                        span: None,
-                        assertion: None,
-                        episode: None,
-                        entity: facts.view.entity,
-                        claim_status: None,
-                        evidence: Vec::new(),
-                        ancestry_roots: roots,
-                        media_locations: scope
-                            .media_locations
-                            .get(&mneme_core::SourcePin::new(key.0, key.1))
-                            .cloned()
-                            .unwrap_or_default(),
-                    };
-                    self.documents.push(document(content));
+                    self.push_utf8_source_document(scope, record, &facts.view, body, roots);
                 }
                 Err(_) => {
-                    self.skipped += 1;
+                    if is_retained && let Some(path) = &facts.view.path_hint {
+                        self.push_source_path_document(record, path, facts.view.entity, &roots);
+                    }
+                    self.skipped = self.skipped.saturating_add(1);
                     self.skip_reasons
                         .insert("source bytes are not UTF-8 text".to_owned());
                 }
             },
             None => {
-                self.skipped += 1;
+                self.skipped = self.skipped.saturating_add(1);
                 self.skip_reasons.insert(format!(
                     "source is {} and has no searchable bytes",
                     facts.availability.name()
@@ -385,6 +382,54 @@ impl IndexBuild {
         Ok(())
     }
 
+    fn push_utf8_source_document(
+        &mut self,
+        scope: &BuildScope<'_>,
+        record: &mneme_core::RecordEnvelope,
+        source_view: &mneme_memory::SourceView,
+        body: String,
+        roots: std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
+    ) {
+        if body.is_empty()
+            && let Some(path) = &source_view.path_hint
+        {
+            self.push_source_path_document(record, path, source_view.entity, &roots);
+            return;
+        }
+        let fields = extract_source_fields(
+            source_view.path_hint.as_deref(),
+            source_view
+                .media_type
+                .as_ref()
+                .map(mneme_core::Symbol::as_str),
+            &body,
+        );
+        let normalized = source_view
+            .path_hint
+            .as_deref()
+            .map(|path| format!("{}\n{}", path.to_lowercase(), body.to_lowercase()));
+        let pin = mneme_core::SourcePin::new(record.record_id, record.revision_id);
+        let content = IndexedDocumentInput {
+            id: format!("source:{}:{}", record.record_id, record.revision_id),
+            kind: crate::model::ContentKind::SourceExcerpt,
+            text: body,
+            normalized,
+            fields,
+            field_path: "source.content".to_owned(),
+            source: Some(record.record_id),
+            source_revision: Some(record.revision_id),
+            span: None,
+            assertion: None,
+            episode: None,
+            entity: source_view.entity,
+            claim_status: None,
+            evidence: Vec::new(),
+            ancestry_roots: roots,
+            media_locations: scope.media_locations.get(&pin).cloned().unwrap_or_default(),
+        };
+        self.documents.push(document(content));
+    }
+
     fn push_source_path_document(
         &mut self,
         record: &mneme_core::RecordEnvelope,
@@ -392,10 +437,13 @@ impl IndexBuild {
         entity: Option<mneme_core::RecordId>,
         roots: &std::collections::BTreeSet<(mneme_core::RecordId, mneme_core::RevisionId)>,
     ) {
+        let fields = build_field_terms(&[path], &[], &[], &[]);
         self.documents.push(document(IndexedDocumentInput {
             id: format!("source-path:{}:{}", record.record_id, record.revision_id),
             kind: crate::model::ContentKind::TypedField,
             text: path.to_owned(),
+            normalized: None,
+            fields,
             field_path: "source.path-hint".to_owned(),
             source: Some(record.record_id),
             source_revision: Some(record.revision_id),
@@ -426,17 +474,23 @@ impl IndexBuild {
             // A subject outside the readable scopes is named by nothing: the
             // claim stays retrievable without leaking a foreign identifier.
             .unwrap_or_else(|| "unlabeled-subject".to_owned());
+        let value_text = mneme_core::text::render(&assertion.value);
         let body = format!(
             "{} {} {} {}",
-            assertion.predicate,
-            mneme_core::text::render(&assertion.value),
-            subject,
-            assertion.asserted_by
+            assertion.predicate, value_text, subject, assertion.asserted_by
+        );
+        let fields = build_field_terms(
+            &[subject.as_str()],
+            &[assertion.predicate.as_str()],
+            &[value_text.as_str()],
+            &[assertion.asserted_by.as_str()],
         );
         self.documents.push(document(IndexedDocumentInput {
             id: format!("assertion:{}", assertion.record.record_id),
             kind: crate::model::ContentKind::Claim,
             text: body,
+            normalized: None,
+            fields,
             field_path: format!("assertion.{}", assertion.predicate),
             source: None,
             source_revision: None,
@@ -720,10 +774,339 @@ fn evidence_availability(
     }
 }
 
+/// Maximum Markdown/AsciiDoc heading depth recognized for fielded indexing.
+const MAX_HEADING_LEVEL: usize = 6;
+/// Minimum run of `-` characters opening/closing an AsciiDoc listing block.
+const ASCIIDOC_LISTING_DASHES: usize = 4;
+/// Code declaration keywords whose immediately following identifier is indexed
+/// in `HeadingOrSymbol`.
+const CODE_DECLARATION_KEYWORDS: [&str; 13] = [
+    "fn",
+    "struct",
+    "enum",
+    "trait",
+    "type",
+    "const",
+    "static",
+    "mod",
+    "def",
+    "class",
+    "function",
+    "interface",
+    "func",
+];
+/// File extensions where `# ` starts a comment rather than a Markdown heading.
+const HASH_COMMENT_EXTENSIONS: [&str; 10] = [
+    ".py", ".sh", ".bash", ".zsh", ".rb", ".yml", ".yaml", ".toml", ".nix", ".r",
+];
+/// Media-type substrings where `# ` starts a comment rather than a heading.
+const HASH_COMMENT_MEDIA: [&str; 5] = ["python", "shell", "yaml", "toml", "ruby"];
+/// Media-type substrings recognized as source code for `HeadingOrSymbol` extraction.
+const CODE_MEDIA_SUBSTRINGS: [&str; 6] = [
+    "text/x-",
+    "rust",
+    "python",
+    "javascript",
+    "typescript",
+    "shell",
+];
+/// File extensions recognized as source code for `HeadingOrSymbol` extraction.
+const CODE_SOURCE_EXTENSIONS: [&str; 22] = [
+    ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".java", ".c", ".h", ".cpp", ".cc", ".hpp",
+    ".rb", ".swift", ".kt", ".cs", ".zig", ".lean", ".nix", ".sql", ".sh",
+];
+/// Minimum leading lowercase prefix length for a `lowerCamelCase` identifier
+/// in plain prose to be treated as a code symbol (avoids brand names like
+/// `iOS` / `eBay` while matching `parseHttpRequest`, `getUserId`, etc.).
+const PROSE_LOWER_CAMEL_PREFIX: usize = 2;
+
+fn build_field_terms(
+    title_or_label: &[&str],
+    heading_or_symbol: &[&str],
+    body_or_value: &[&str],
+    metadata: &[&str],
+) -> [crate::model::FieldTerms; crate::model::LEXICAL_FIELD_COUNT] {
+    let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
+    [
+        field_terms_from_segments(&stemmer, title_or_label),
+        field_terms_from_segments(&stemmer, heading_or_symbol),
+        field_terms_from_segments(&stemmer, body_or_value),
+        field_terms_from_segments(&stemmer, metadata),
+    ]
+}
+
+fn field_terms_from_segments(
+    stemmer: &rust_stemmers::Stemmer,
+    segments: &[&str],
+) -> crate::model::FieldTerms {
+    let mut field = crate::model::FieldTerms::default();
+    let mut terms = Vec::new();
+    for segment in segments {
+        add_segment_terms(stemmer, segment, &mut terms, &mut field);
+    }
+    field
+}
+
+fn add_segment_terms(
+    stemmer: &rust_stemmers::Stemmer,
+    segment: &str,
+    buffer: &mut Vec<String>,
+    field: &mut crate::model::FieldTerms,
+) {
+    buffer.clear();
+    collect_terms_with(stemmer, segment, buffer);
+    for term in buffer.drain(..) {
+        let entry = field.counts.entry(term).or_insert(0);
+        *entry = entry.saturating_add(1);
+        field.total = field.total.saturating_add(1);
+    }
+}
+
+/// Extract typed BM25F fields from a retained UTF-8 source document.
+///
+/// Merges `path_hint` into `TitleOrLabel` alongside Markdown H1 / AsciiDoc
+/// document titles, routes subheadings and code symbols into
+/// `HeadingOrSymbol`, and places remaining content in `BodyOrValue`.
+fn extract_source_fields(
+    path_hint: Option<&str>,
+    media_type: Option<&str>,
+    body: &str,
+) -> [crate::model::FieldTerms; crate::model::LEXICAL_FIELD_COUNT] {
+    let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
+    let mut fields: [crate::model::FieldTerms; crate::model::LEXICAL_FIELD_COUNT] =
+        std::array::from_fn(|_| crate::model::FieldTerms::default());
+    let mut term_buf = Vec::new();
+    let title_idx = crate::model::LexicalField::TitleOrLabel.index();
+    let heading_idx = crate::model::LexicalField::HeadingOrSymbol.index();
+    let body_idx = crate::model::LexicalField::BodyOrValue.index();
+    if let Some(path) = path_hint {
+        add_segment_terms(&stemmer, path, &mut term_buf, &mut fields[title_idx]);
+    }
+    let is_hash_heading_enabled = !is_hash_comment_source(media_type, path_hint);
+    let is_code_file = is_code_source(media_type, path_hint);
+    let mut fence = CodeBlockState::Outside;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if let Some(next_fence) = next_code_block_state(fence, trimmed) {
+            fence = next_fence;
+            continue;
+        }
+        if fence == CodeBlockState::Outside {
+            if is_hash_heading_enabled
+                && let Some((level, heading)) = parse_heading_line(trimmed, '#')
+            {
+                let target = if level == 1 { title_idx } else { heading_idx };
+                add_segment_terms(&stemmer, heading, &mut term_buf, &mut fields[target]);
+                continue;
+            }
+            if let Some((level, heading)) = parse_heading_line(trimmed, '=') {
+                let target = if level == 1 { title_idx } else { heading_idx };
+                add_segment_terms(&stemmer, heading, &mut term_buf, &mut fields[target]);
+                continue;
+            }
+        }
+        add_segment_terms(&stemmer, line, &mut term_buf, &mut fields[body_idx]);
+        let context = if is_code_file || fence != CodeBlockState::Outside {
+            SymbolContext::Code
+        } else {
+            SymbolContext::Prose
+        };
+        extract_code_symbols(
+            line,
+            context,
+            &stemmer,
+            &mut term_buf,
+            &mut fields[heading_idx],
+        );
+    }
+    fields
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SymbolContext {
+    Code,
+    Prose,
+}
+
+fn is_code_source(media_type: Option<&str>, path_hint: Option<&str>) -> bool {
+    if let Some(media) = media_type {
+        let base = media
+            .split_once(';')
+            .map_or(media, |(prefix, _)| prefix)
+            .trim()
+            .to_ascii_lowercase();
+        if CODE_MEDIA_SUBSTRINGS
+            .iter()
+            .any(|needle| base.contains(needle))
+        {
+            return true;
+        }
+    }
+    if let Some(path) = path_hint {
+        let lower = path.to_ascii_lowercase();
+        if CODE_SOURCE_EXTENSIONS
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CodeBlockState {
+    Outside,
+    BacktickFence,
+    TildeFence,
+    AsciiDocListing,
+}
+
+fn toggle_code_block(current: CodeBlockState, target: CodeBlockState) -> Option<CodeBlockState> {
+    if current == CodeBlockState::Outside {
+        Some(target)
+    } else if current == target {
+        Some(CodeBlockState::Outside)
+    } else {
+        None
+    }
+}
+
+fn next_code_block_state(current: CodeBlockState, trimmed: &str) -> Option<CodeBlockState> {
+    if trimmed.starts_with("```") {
+        return toggle_code_block(current, CodeBlockState::BacktickFence);
+    }
+    if trimmed.starts_with("~~~") {
+        return toggle_code_block(current, CodeBlockState::TildeFence);
+    }
+    let clean = trimmed.trim_end();
+    if clean.len() >= ASCIIDOC_LISTING_DASHES && clean.bytes().all(|byte| byte == b'-') {
+        return toggle_code_block(current, CodeBlockState::AsciiDocListing);
+    }
+    None
+}
+
+fn is_hash_comment_source(media_type: Option<&str>, path_hint: Option<&str>) -> bool {
+    if let Some(media) = media_type {
+        let base = media
+            .split_once(';')
+            .map_or(media, |(prefix, _)| prefix)
+            .trim()
+            .to_ascii_lowercase();
+        if HASH_COMMENT_MEDIA
+            .iter()
+            .any(|needle| base.contains(needle))
+        {
+            return true;
+        }
+    }
+    if let Some(path) = path_hint {
+        let lower = path.to_ascii_lowercase();
+        if HASH_COMMENT_EXTENSIONS
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_heading_line(trimmed: &str, marker: char) -> Option<(usize, &str)> {
+    let level = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if level == 0 || level > MAX_HEADING_LEVEL {
+        return None;
+    }
+    let after = trimmed.get(level.saturating_mul(marker.len_utf8())..)?;
+    if !after.starts_with(' ') && !after.starts_with('\t') {
+        return None;
+    }
+    let heading = after.trim().trim_end_matches(marker).trim();
+    if heading.is_empty() {
+        return None;
+    }
+    Some((level, heading))
+}
+
+/// Extract code symbol identifiers into `HeadingOrSymbol`.
+///
+/// Inside code files, fenced code blocks, or inline backticks, every compound
+/// camelCase/PascalCase/snake_case identifier (and every identifier after a
+/// declaration keyword) is indexed as a symbol. In plain prose, `snake_case`,
+/// `lowerCamelCase`, and declared identifiers are indexed without inflating
+/// proper nouns such as `SQLite` or `GitHub`.
+fn extract_code_symbols(
+    line: &str,
+    context: SymbolContext,
+    stemmer: &rust_stemmers::Stemmer,
+    term_buf: &mut Vec<String>,
+    field: &mut crate::model::FieldTerms,
+) {
+    if context == SymbolContext::Code {
+        extract_symbols_from_segment(line, SymbolContext::Code, stemmer, term_buf, field);
+        return;
+    }
+    // Split on inline backticks so `` `PascalCaseSymbol` `` in prose gets full
+    // code-symbol treatment while surrounding prose stays prose.
+    let mut is_inline_code = false;
+    for segment in line.split('`') {
+        let seg_ctx = if is_inline_code {
+            SymbolContext::Code
+        } else {
+            SymbolContext::Prose
+        };
+        extract_symbols_from_segment(segment, seg_ctx, stemmer, term_buf, field);
+        is_inline_code = !is_inline_code;
+    }
+}
+
+fn extract_symbols_from_segment(
+    segment: &str,
+    context: SymbolContext,
+    stemmer: &rust_stemmers::Stemmer,
+    term_buf: &mut Vec<String>,
+    field: &mut crate::model::FieldTerms,
+) {
+    let mut is_after_decl = false;
+    for raw in raw_identifier_tokens(segment) {
+        let is_ident_start = raw
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_alphabetic() || ch == '_');
+        let has_alpha = raw.chars().any(char::is_alphabetic);
+        if is_ident_start && has_alpha {
+            let subparts = split_identifier_subparts(raw);
+            let is_symbol = is_after_decl
+                || (subparts.len() > 1
+                    && (context == SymbolContext::Code || is_prose_code_symbol(raw, &subparts)));
+            if is_symbol {
+                add_segment_terms(stemmer, raw, term_buf, field);
+            }
+            is_after_decl = CODE_DECLARATION_KEYWORDS.contains(&raw);
+        } else {
+            is_after_decl = false;
+        }
+    }
+}
+
+fn is_prose_code_symbol(raw: &str, subparts: &[&str]) -> bool {
+    if raw.contains('_') {
+        return true;
+    }
+    subparts.first().is_some_and(|first| {
+        first.chars().count() >= PROSE_LOWER_CAMEL_PREFIX
+            && first
+                .chars()
+                .all(|ch| ch.is_lowercase() || ch.is_ascii_digit())
+    })
+}
+
 struct IndexedDocumentInput {
     id: String,
     kind: crate::model::ContentKind,
     text: String,
+    normalized: Option<String>,
+    fields: [crate::model::FieldTerms; crate::model::LEXICAL_FIELD_COUNT],
     field_path: String,
     source: Option<mneme_core::RecordId>,
     source_revision: Option<mneme_core::RevisionId>,
@@ -742,6 +1125,8 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
         id,
         kind,
         text,
+        normalized,
+        fields,
         field_path,
         source,
         source_revision,
@@ -754,8 +1139,7 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
         ancestry_roots,
         media_locations,
     } = input;
-    let normalized = text.to_lowercase();
-    let (term_counts, term_total) = term_counts(&normalized);
+    let normalized = normalized.unwrap_or_else(|| text.to_lowercase());
     let trigrams = trigram_counts(&normalized);
     let trigram_norm = trigrams
         .values()
@@ -767,8 +1151,7 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
         kind,
         text,
         normalized,
-        term_counts,
-        term_total,
+        fields,
         trigrams,
         trigram_norm,
         field_path,
@@ -786,33 +1169,82 @@ fn document(input: IndexedDocumentInput) -> crate::model::IndexedDocument {
 }
 
 /// The lexical terms of a text, in order and with repeats: each run of
-/// alphanumeric characters, lowercased and reduced to its English Snowball
-/// stem. Documents and queries are both read this way, so "joined" and "join"
-/// meet at "join".
+/// alphanumeric characters (and underscores), with deterministic camelCase and
+/// snake_case sub-tokenization, lowercased and reduced to English Snowball
+/// stems. Documents and queries are both read this way, so "joined" and "join"
+/// meet at "join", and `parseHttpRequest` / `parse_http_request` match both
+/// their full symbol form and their component words.
 pub fn lexical_terms(text: &str) -> Vec<String> {
-    stems(&text.to_lowercase())
-}
-
-/// Stems of an already lowercased text.
-fn stems(lowercase: &str) -> Vec<String> {
     let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
-    lowercase
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(|word| stemmer.stem(word).into_owned())
-        .collect()
+    let mut terms = Vec::new();
+    collect_terms_with(&stemmer, text, &mut terms);
+    terms
 }
 
-/// Occurrences of each stem of an already lowercased text, and their total.
-fn term_counts(lowercase: &str) -> (std::collections::BTreeMap<String, u32>, usize) {
-    let terms = stems(lowercase);
-    let total = terms.len();
-    let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
-    for term in terms {
-        let entry = counts.entry(term).or_insert(0);
-        *entry = entry.saturating_add(1);
+fn collect_terms_with(stemmer: &rust_stemmers::Stemmer, text: &str, out: &mut Vec<String>) {
+    for raw in raw_identifier_tokens(text) {
+        let subparts = split_identifier_subparts(raw);
+        if subparts.is_empty() {
+            continue;
+        }
+        if subparts.len() == 1 {
+            let lowered = subparts[0].to_lowercase();
+            out.push(stemmer.stem(&lowered).into_owned());
+            continue;
+        }
+        for part in subparts {
+            let lowered = part.to_lowercase();
+            out.push(stemmer.stem(&lowered).into_owned());
+        }
+        let whole = raw.trim_matches('_').to_lowercase();
+        if !whole.is_empty() {
+            if whole.contains('_') {
+                out.push(whole);
+            } else {
+                out.push(stemmer.stem(&whole).into_owned());
+            }
+        }
     }
-    (counts, total)
+}
+
+fn raw_identifier_tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|character: char| !character.is_alphanumeric() && character != '_')
+        .filter(|segment| !segment.is_empty())
+}
+
+fn split_identifier_subparts(raw: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    for segment in raw.split('_').filter(|part| !part.is_empty()) {
+        split_camel_case_into(segment, &mut parts);
+    }
+    parts
+}
+
+fn split_camel_case_into<'a>(segment: &'a str, out: &mut Vec<&'a str>) {
+    let chars: Vec<(usize, char)> = segment.char_indices().collect();
+    if chars.is_empty() {
+        return;
+    }
+    let mut start = 0_usize;
+    for idx in 1..chars.len() {
+        let prev = chars[idx.saturating_sub(1)].1;
+        let curr = chars[idx].1;
+        let next = chars.get(idx.saturating_add(1)).map(|(_, ch)| *ch);
+        let is_lower_or_digit_to_upper =
+            (prev.is_lowercase() || prev.is_ascii_digit()) && curr.is_uppercase();
+        let is_acronym_to_word =
+            prev.is_uppercase() && curr.is_uppercase() && next.is_some_and(char::is_lowercase);
+        if is_lower_or_digit_to_upper || is_acronym_to_word {
+            let split_at = chars[idx].0;
+            if split_at > start {
+                out.push(&segment[start..split_at]);
+                start = split_at;
+            }
+        }
+    }
+    if start < segment.len() {
+        out.push(&segment[start..]);
+    }
 }
 
 /// The distinct lowercase alphanumeric words of a text, unstemmed. Excerpt
@@ -975,8 +1407,47 @@ mod lexical_term_tests {
             super::lexical_terms("Joined the CHOIRS; joined again, 2023-05"),
             vec!["join", "the", "choir", "join", "again", "2023", "05"]
         );
-        let (counts, total) = super::term_counts("joined the choir joined");
-        assert_eq!(counts.get("join"), Some(&2));
-        assert_eq!(total, 4);
+        let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
+        let terms = super::field_terms_from_segments(&stemmer, &["joined the choir joined"]);
+        assert_eq!(terms.counts.get("join"), Some(&2));
+        assert_eq!(terms.total, 4);
+    }
+
+    #[test]
+    fn camel_case_and_snake_case_symbols_sub_tokenize_deterministically() {
+        assert_eq!(
+            super::lexical_terms("parseHttpRequest"),
+            vec!["pars", "http", "request", "parsehttprequest"]
+        );
+        assert_eq!(
+            super::lexical_terms("HTTPServerConfig"),
+            vec!["http", "server", "config", "httpserverconfig"]
+        );
+        assert_eq!(
+            super::lexical_terms("parse_http_request"),
+            vec!["pars", "http", "request", "parse_http_request"]
+        );
+        assert_eq!(
+            super::lexical_terms("MAX_LEIDEN_ITERS"),
+            vec!["max", "leiden", "iter", "max_leiden_iters"]
+        );
+    }
+
+    #[test]
+    fn source_field_extraction_separates_title_headings_symbols_and_body() {
+        let doc = "# Sparse Routing\n\n## Kernel Notes\n\nfn parseHttpRequest(x: u32) {}\nPlain body text.\n";
+        let fields =
+            super::extract_source_fields(Some("docs/routing.md"), Some("text/markdown"), doc);
+        let title = &fields[crate::model::LexicalField::TitleOrLabel.index()].counts;
+        let heading = &fields[crate::model::LexicalField::HeadingOrSymbol.index()].counts;
+        let body = &fields[crate::model::LexicalField::BodyOrValue.index()].counts;
+        assert!(title.contains_key("spars"));
+        assert!(title.contains_key("rout"));
+        assert!(title.contains_key("md"));
+        assert!(heading.contains_key("kernel"));
+        assert!(heading.contains_key("parsehttprequest"));
+        assert!(heading.contains_key("http"));
+        assert!(body.contains_key("plain"));
+        assert!(body.contains_key("text"));
     }
 }

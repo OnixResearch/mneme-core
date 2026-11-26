@@ -3410,3 +3410,217 @@ fn a_pruned_capture_keeps_its_selection_in_a_view_without_its_history() {
     assert_eq!(pins(&selection.selected), vec![reprocessed]);
     assert_eq!(pins(&selection.alternatives), vec![original]);
 }
+
+#[test]
+fn bm25f_v3_merges_source_path_hint_into_single_candidate_slot() {
+    let mut harness = Harness::new();
+    let src_id = rid(0xf1);
+    let src_rev = rev(0xf1);
+    let (record, blob) = mneme_memory::build_source(
+        src_id,
+        src_rev,
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"Detailed notes on quartz oscillators and clock drift.",
+            media_type: "text/plain",
+            entity: None,
+            path_hint: Some("hardware/quartz_manual.txt"),
+        },
+    )
+    .expect("source");
+    harness.commit(scope(), "bm25f-merged-path", vec![record], vec![blob]);
+
+    let mut request = harness.request("quartz");
+    request.max_items = 8;
+    let response = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(request)
+        .expect("bm25f recall");
+
+    let lexical = response
+        .modes
+        .iter()
+        .find(|mode| mode.mode == mneme_recall::Mode::Lexical)
+        .expect("lexical mode report");
+    assert_eq!(
+        lexical.index_version.as_deref(),
+        Some("mneme-lexical-bm25f-v3")
+    );
+
+    let matching: Vec<_> = response
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.source == Some(src_id))
+        .collect();
+    assert_eq!(matching.len(), 1);
+    assert_eq!(
+        matching[0].content_kind,
+        mneme_recall::ContentKind::SourceExcerpt
+    );
+    assert!(matching[0].id.starts_with("source:"));
+    assert!(
+        response
+            .candidates
+            .iter()
+            .all(|candidate| !candidate.id.starts_with("source-path:"))
+    );
+
+    // Path-only term still retrieves the owning source in one slot.
+    let path_req = harness.request("quartz_manual");
+    let by_path = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(path_req)
+        .expect("path-only recall");
+    let path_hits: Vec<_> = by_path
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.source == Some(src_id))
+        .collect();
+    assert_eq!(path_hits.len(), 1);
+    assert_eq!(
+        path_hits[0].content_kind,
+        mneme_recall::ContentKind::SourceExcerpt
+    );
+}
+
+#[test]
+fn bm25f_ranks_title_above_heading_above_body_and_preserves_phrase_ceiling() {
+    let mut harness = Harness::new();
+    let title_doc = rid(0xf2);
+    let heading_doc = rid(0xf3);
+    let body_doc = rid(0xf4);
+
+    let docs = [
+        (
+            title_doc,
+            rev(0xf2),
+            "notes/alpha.md",
+            "# Photonic Routing\n\nGeneral laboratory overview with standard calibration notes and bench measurements for daily runs.",
+        ),
+        (
+            heading_doc,
+            rev(0xf3),
+            "notes/beta.md",
+            "# Laboratory Overview\n\n## Photonic Routing\n\nGeneral laboratory overview with standard calibration notes and bench measurements for daily runs.",
+        ),
+        (
+            body_doc,
+            rev(0xf4),
+            "notes/gamma.md",
+            "# Laboratory Overview\n\nGeneral laboratory overview with photonic notes and calibration routing measurements for daily runs.",
+        ),
+    ];
+    let (records, blobs): (Vec<_>, Vec<_>) = docs
+        .into_iter()
+        .map(|(id, rev_id, path, content)| {
+            mneme_memory::build_source(
+                id,
+                rev_id,
+                &scope(),
+                mneme_memory::SourceOptions {
+                    bytes: content.as_bytes(),
+                    media_type: "text/markdown",
+                    entity: None,
+                    path_hint: Some(path),
+                },
+            )
+            .expect("doc")
+        })
+        .unzip();
+    harness.commit(scope(), "bm25f-fields", records, blobs);
+
+    // Query terms split across non-adjacent words so phrase boost does not apply
+    // to any doc; pure BM25F field weights decide the order.
+    let field_req = harness.request("routing photonic");
+    let response = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(field_req)
+        .expect("fielded recall");
+
+    let order: Vec<mneme_core::RecordId> = response
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.source)
+        .filter(|id| *id == title_doc || *id == heading_doc || *id == body_doc)
+        .collect();
+    assert_eq!(order, vec![title_doc, heading_doc, body_doc]);
+
+    for candidate in &response.candidates {
+        let score = candidate
+            .score_components
+            .get(mneme_recall::Mode::Lexical.name())
+            .copied()
+            .expect("lexical score");
+        assert!(score > 0.0);
+        assert!(score < 1.0);
+    }
+}
+
+#[test]
+fn bm25f_camel_case_and_snake_case_code_symbols_rank_above_prose() {
+    let mut harness = Harness::new();
+    let camel_src = rid(0xf5);
+    let snake_src = rid(0xf6);
+    let prose_src = rid(0xf7);
+
+    let sources = [
+        (
+            camel_src,
+            rev(0xf5),
+            "src/http_camel.rs",
+            "pub fn parseHttpRequest(raw: &[u8]) -> usize { raw.len() }\n",
+        ),
+        (
+            snake_src,
+            rev(0xf6),
+            "src/http_snake.rs",
+            "pub fn parse_http_request(raw: &[u8]) -> usize { raw.len() }\n",
+        ),
+        (
+            prose_src,
+            rev(0xf7),
+            "notes/prose.txt",
+            "Later we plan to parse an incoming http payload and forward the request downstream.\n",
+        ),
+    ];
+    let (records, blobs): (Vec<_>, Vec<_>) = sources
+        .into_iter()
+        .map(|(id, rev_id, path, content)| {
+            mneme_memory::build_source(
+                id,
+                rev_id,
+                &scope(),
+                mneme_memory::SourceOptions {
+                    bytes: content.as_bytes(),
+                    media_type: "text/plain",
+                    entity: None,
+                    path_hint: Some(path),
+                },
+            )
+            .expect("source")
+        })
+        .unzip();
+    harness.commit(scope(), "bm25f-symbols", records, blobs);
+
+    // Natural-language query finds camelCase and snake_case symbols via sub-tokenization
+    // and ranks both code symbol definitions above plain prose.
+    let nl_req = harness.request("parse http request");
+    let nl_response = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(nl_req)
+        .expect("nl recall");
+    let nl_order: Vec<mneme_core::RecordId> = nl_response
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.source)
+        .filter(|id| *id == camel_src || *id == snake_src || *id == prose_src)
+        .collect();
+    assert_eq!(nl_order.len(), 3);
+    assert_eq!(nl_order[2], prose_src);
+
+    // Exact camelCase query ranks the camelCase source strictly first.
+    let exact_req = harness.request("parseHttpRequest");
+    let exact_camel = mneme_recall::Service::new(&mut harness.workspace)
+        .recall(exact_req)
+        .expect("exact camel recall");
+    assert_eq!(
+        exact_camel.candidates.first().and_then(|c| c.source),
+        Some(camel_src)
+    );
+}
