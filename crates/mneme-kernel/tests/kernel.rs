@@ -562,3 +562,215 @@ fn lifecycle_is_born_proposed_and_retraction_is_final() {
         None, proposed, &None, &commit
     ));
 }
+
+#[test]
+fn epistemic_semiring_laws_and_annihilator_exclusion() {
+    use mneme_kernel::epistemic::{EpistemicStatus, is_active, join, negation_blocks, rank, union};
+
+    let all = [
+        EpistemicStatus::Rejected,
+        EpistemicStatus::Proposed,
+        EpistemicStatus::Accepted,
+    ];
+    for a in all {
+        assert_eq!(join(a, a), a);
+        assert_eq!(union(a, a), a);
+        assert_eq!(join(EpistemicStatus::Accepted, a), a);
+        assert_eq!(join(a, EpistemicStatus::Accepted), a);
+        assert_eq!(
+            join(EpistemicStatus::Rejected, a),
+            EpistemicStatus::Rejected
+        );
+        assert_eq!(
+            join(a, EpistemicStatus::Rejected),
+            EpistemicStatus::Rejected
+        );
+        assert_eq!(union(EpistemicStatus::Rejected, a), a);
+        assert_eq!(union(a, EpistemicStatus::Rejected), a);
+        assert_eq!(
+            union(EpistemicStatus::Accepted, a),
+            EpistemicStatus::Accepted
+        );
+        assert_eq!(
+            union(a, EpistemicStatus::Accepted),
+            EpistemicStatus::Accepted
+        );
+        assert_eq!(is_active(a), a != EpistemicStatus::Rejected);
+        assert_eq!(negation_blocks(a), a != EpistemicStatus::Rejected);
+        for b in all {
+            assert_eq!(join(a, b), join(b, a));
+            assert_eq!(union(a, b), union(b, a));
+            assert!(rank(join(a, b)) <= rank(a));
+            assert!(rank(join(a, b)) <= rank(b));
+            for c in all {
+                assert_eq!(join(join(a, b), c), join(a, join(b, c)));
+                assert_eq!(union(union(a, b), c), union(a, union(b, c)));
+                assert_eq!(join(a, union(b, c)), union(join(a, b), join(a, c)));
+            }
+        }
+    }
+}
+
+#[test]
+fn assertion_and_non_monotonic_admission_gates() {
+    for has_accepted_decision in [false, true] {
+        for has_current_basis in [false, true] {
+            for suppressed in [false, true] {
+                for subject_live in [false, true] {
+                    let input = mneme_kernel::admission::AssertionAdmissionInput {
+                        has_accepted_decision,
+                        has_current_basis,
+                        suppressed,
+                        subject_live,
+                    };
+                    let expected =
+                        has_accepted_decision && has_current_basis && !suppressed && subject_live;
+                    assert_eq!(
+                        mneme_kernel::admission::assertion_admissible(&input),
+                        expected
+                    );
+                }
+            }
+        }
+    }
+
+    assert!(mneme_kernel::admission::non_monotonic_rule_admissible(
+        mneme_kernel::completeness::Coverage::Complete
+    ));
+    assert!(!mneme_kernel::admission::non_monotonic_rule_admissible(
+        mneme_kernel::completeness::Coverage::Incomplete
+    ));
+    assert!(!mneme_kernel::admission::non_monotonic_rule_admissible(
+        mneme_kernel::completeness::Coverage::Unknown
+    ));
+}
+
+#[test]
+fn capability_attenuation_and_gset_revocation_dominance() {
+    use mneme_kernel::capability::{
+        Authority, LinkPolicy, RevocationState, ScopeMode, attenuation_valid, authority_attenuates,
+        authority_permits, is_revoked, is_revoked_in_merge, merge_revocation_state,
+        revocation_state, scope_subset,
+    };
+    use mneme_kernel::hashing::Digest;
+
+    let vault_a = Digest { hi: 1, lo: 1 };
+    let vault_b = Digest { hi: 2, lo: 2 };
+    let scope_1 = Digest { hi: 10, lo: 1 };
+    let scope_2 = Digest { hi: 10, lo: 2 };
+    let scope_3 = Digest { hi: 10, lo: 3 };
+
+    assert!(authority_permits(Authority::SyncPush, Authority::ReadOnly));
+    assert!(!authority_permits(Authority::ReadOnly, Authority::SyncPull));
+    assert!(authority_attenuates(
+        Authority::SyncPush,
+        Authority::SyncPull
+    ));
+    assert!(!authority_attenuates(
+        Authority::ReadOnly,
+        Authority::SyncPush
+    ));
+
+    assert!(scope_subset(
+        ScopeMode::Explicit,
+        &[scope_1],
+        ScopeMode::Wildcard,
+        &[]
+    ));
+    assert!(!scope_subset(
+        ScopeMode::Wildcard,
+        &[],
+        ScopeMode::Explicit,
+        &[scope_1]
+    ));
+    assert!(scope_subset(
+        ScopeMode::Explicit,
+        &[scope_1],
+        ScopeMode::Explicit,
+        &[scope_1, scope_2]
+    ));
+    assert!(!scope_subset(
+        ScopeMode::Explicit,
+        &[scope_1, scope_3],
+        ScopeMode::Explicit,
+        &[scope_1, scope_2]
+    ));
+
+    let root = LinkPolicy {
+        vault_id: vault_a,
+        authority: Authority::SyncPush,
+        scope_mode: ScopeMode::Wildcard,
+        expires_at: 2_000,
+        remaining_depth: 4,
+    };
+    let mid = LinkPolicy {
+        vault_id: vault_a,
+        authority: Authority::SyncPull,
+        scope_mode: ScopeMode::Explicit,
+        expires_at: 1_500,
+        remaining_depth: 3,
+    };
+    let leaf = LinkPolicy {
+        vault_id: vault_a,
+        authority: Authority::ReadOnly,
+        scope_mode: ScopeMode::Explicit,
+        expires_at: 1_200,
+        remaining_depth: 2,
+    };
+    assert!(attenuation_valid(
+        &root,
+        &[],
+        &mid,
+        &[scope_1, scope_2],
+        2,
+        8
+    ));
+    assert!(attenuation_valid(
+        &mid,
+        &[scope_1, scope_2],
+        &leaf,
+        &[scope_1],
+        3,
+        8
+    ));
+    assert!(attenuation_valid(&root, &[], &leaf, &[scope_1], 3, 8));
+
+    let wrong_vault = LinkPolicy {
+        vault_id: vault_b,
+        ..leaf
+    };
+    assert!(!attenuation_valid(
+        &mid,
+        &[scope_1, scope_2],
+        &wrong_vault,
+        &[scope_1],
+        3,
+        8
+    ));
+    assert!(!attenuation_valid(
+        &mid,
+        &[scope_1, scope_2],
+        &leaf,
+        &[scope_1],
+        9,
+        8
+    ));
+
+    let chain = [101_u128, 202_u128, 303_u128];
+    let left = [999_u128];
+    let right = [202_u128];
+    assert!(!is_revoked(&chain, &left));
+    assert!(is_revoked(&chain, &right));
+    assert_eq!(revocation_state(&chain, &left), RevocationState::Active);
+    assert_eq!(revocation_state(&chain, &right), RevocationState::Revoked);
+    assert_eq!(
+        merge_revocation_state(RevocationState::Active, RevocationState::Revoked),
+        RevocationState::Revoked
+    );
+    assert_eq!(
+        merge_revocation_state(RevocationState::Revoked, RevocationState::Active),
+        RevocationState::Revoked
+    );
+    assert!(is_revoked_in_merge(&chain, &left, &right));
+    assert!(is_revoked_in_merge(&chain, &right, &left));
+}

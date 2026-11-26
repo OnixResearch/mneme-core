@@ -64,6 +64,11 @@ impl TokenId {
         &self.0
     }
 
+    /// Convert to the 128-bit big-endian identifier used by `mneme_kernel::capability`.
+    pub const fn to_kernel(&self) -> u128 {
+        u128::from_be_bytes(self.0)
+    }
+
     /// Encode as 32 lowercase hexadecimal characters.
     pub fn to_hex(&self) -> String {
         encode_hex(&self.0)
@@ -127,6 +132,11 @@ impl TombstoneId {
     /// Borrow the underlying 16 bytes.
     pub const fn as_bytes(&self) -> &[u8; ID_BYTES_LEN] {
         &self.0
+    }
+
+    /// Convert to the 128-bit big-endian identifier used by `mneme_kernel::capability`.
+    pub const fn to_kernel(&self) -> u128 {
+        u128::from_be_bytes(self.0)
     }
 
     /// Encode as 32 lowercase hexadecimal characters.
@@ -266,22 +276,27 @@ impl CapabilityAuthority {
         }
     }
 
+    /// Convert to the formally verified kernel authority lattice element.
+    pub const fn to_kernel(self) -> mneme_kernel::capability::Authority {
+        match self {
+            CapabilityAuthority::ReadOnly => mneme_kernel::capability::Authority::ReadOnly,
+            CapabilityAuthority::SyncPull => mneme_kernel::capability::Authority::SyncPull,
+            CapabilityAuthority::SyncPush => mneme_kernel::capability::Authority::SyncPush,
+        }
+    }
+
     /// Whether `self` satisfies `required` (`self >= required`).
-    pub const fn permits(self, required: Self) -> bool {
-        self.rank() >= required.rank()
+    pub fn permits(self, required: Self) -> bool {
+        mneme_kernel::capability::authority_permits(self.to_kernel(), required.to_kernel())
     }
 
     /// Whether delegating from `self` to `child` is a valid non-escalating attenuation.
-    pub const fn allows_attenuation_to(self, child: Self) -> bool {
-        child.rank() <= self.rank()
+    pub fn allows_attenuation_to(self, child: Self) -> bool {
+        mneme_kernel::capability::authority_attenuates(self.to_kernel(), child.to_kernel())
     }
 
-    const fn rank(self) -> u8 {
-        match self {
-            CapabilityAuthority::ReadOnly => 1,
-            CapabilityAuthority::SyncPull => 2,
-            CapabilityAuthority::SyncPush => 3,
-        }
+    fn rank(self) -> u8 {
+        mneme_kernel::capability::authority_rank(self.to_kernel())
     }
 }
 
@@ -387,18 +402,40 @@ impl CapabilityScope {
         }
     }
 
+    /// Project this scope constraint into `(ScopeMode, Vec<Digest>)` for `mneme_kernel::capability`.
+    fn to_kernel(
+        &self,
+    ) -> (
+        mneme_kernel::capability::ScopeMode,
+        Vec<mneme_kernel::hashing::Digest>,
+    ) {
+        match self {
+            CapabilityScope::Wildcard => {
+                (mneme_kernel::capability::ScopeMode::Wildcard, Vec::new())
+            }
+            CapabilityScope::Scopes(scopes) => {
+                let digests = scopes
+                    .iter()
+                    .map(|scope| kernel_text_digest(scope))
+                    .collect();
+                (mneme_kernel::capability::ScopeMode::Explicit, digests)
+            }
+        }
+    }
+
     /// Whether `self` is a valid non-escalating attenuation of `parent`.
     pub fn is_attenuation_of(&self, parent: &Self) -> bool {
         if self.validate().is_err() {
             return false;
         }
-        match (self, parent) {
-            (_, CapabilityScope::Wildcard) => true,
-            (CapabilityScope::Wildcard, CapabilityScope::Scopes(_)) => false,
-            (CapabilityScope::Scopes(child), CapabilityScope::Scopes(allowed)) => {
-                child.is_subset(allowed)
-            }
-        }
+        let (child_mode, child_scopes) = self.to_kernel();
+        let (parent_mode, parent_scopes) = parent.to_kernel();
+        mneme_kernel::capability::scope_subset(
+            child_mode,
+            &child_scopes,
+            parent_mode,
+            &parent_scopes,
+        )
     }
 }
 
@@ -859,6 +896,21 @@ impl RevocationSet {
         self.tombstones.len() as u64
     }
 
+    /// Collect target token IDs revoked for `vault_id` by any issuer in `authorized_revokers`.
+    fn authorized_revoked_ids(
+        &self,
+        vault_id: &str,
+        authorized_revokers: &std::collections::BTreeSet<iroh::EndpointId>,
+    ) -> Vec<u128> {
+        self.tombstones
+            .values()
+            .filter(|tombstone| {
+                tombstone.vault_id == vault_id && authorized_revokers.contains(&tombstone.revoker)
+            })
+            .map(|tombstone| tombstone.target_token_id.to_kernel())
+            .collect()
+    }
+
     /// Find an authorized revocation matching `(vault_id, target_token_id)`.
     pub fn find_valid_revocation(
         &self,
@@ -1242,10 +1294,9 @@ impl VerifiedLease {
         let mut authorized_revokers = trusted_roots.clone();
         for (link_id, issuer) in self.link_ids.iter().zip(self.issuer_chain.iter()) {
             authorized_revokers.insert(*issuer);
-            if revocations
-                .find_valid_revocation(&self.vault_id, *link_id, &authorized_revokers)
-                .is_some()
-            {
+            let active_revoked_ids =
+                revocations.authorized_revoked_ids(&self.vault_id, &authorized_revokers);
+            if mneme_kernel::capability::is_revoked(&[link_id.to_kernel()], &active_revoked_ids) {
                 return false;
             }
         }
@@ -1791,10 +1842,15 @@ fn validate_token_envelope(token: &CapabilityToken) -> crate::error::Result<()> 
 
 fn verify_chain_links(request: &VerificationRequest<'_>) -> crate::error::Result<()> {
     let mut previous: Option<&CapabilityLink> = None;
-    for link in &request.token.links {
+    for (index, link) in request.token.links.iter().enumerate() {
         verify_single_link(link, request.vault_id, request.now_secs)?;
         if let Some(parent) = previous {
-            verify_attenuation_step(parent, link)?;
+            let depth = u8::try_from(index.saturating_add(1)).map_err(|_| {
+                crate::error::Failure::CapabilityDenied(
+                    "capability chain depth overflow".to_owned(),
+                )
+            })?;
+            verify_attenuation_step(parent, link, depth)?;
         }
         previous = Some(link);
     }
@@ -1846,9 +1902,33 @@ fn verify_single_link(
         })
 }
 
+fn kernel_text_digest(text: &str) -> mneme_kernel::hashing::Digest {
+    mneme_core::kernel_digest(&mneme_core::HashAlgorithm::Blake3.hash_bytes(text.as_bytes()))
+}
+
+fn link_to_kernel_policy(
+    link: &CapabilityLink,
+) -> (
+    mneme_kernel::capability::LinkPolicy,
+    Vec<mneme_kernel::hashing::Digest>,
+) {
+    let (scope_mode, scopes) = link.scope.to_kernel();
+    (
+        mneme_kernel::capability::LinkPolicy {
+            vault_id: kernel_text_digest(&link.vault_id),
+            authority: link.authority.to_kernel(),
+            scope_mode,
+            expires_at: link.expires_at_secs,
+            remaining_depth: link.remaining_depth,
+        },
+        scopes,
+    )
+}
+
 fn verify_attenuation_step(
     parent: &CapabilityLink,
     child: &CapabilityLink,
+    depth: u8,
 ) -> crate::error::Result<()> {
     if child.parent_id != Some(parent.token_id) {
         return Err(crate::error::Failure::CapabilityDenied(format!(
@@ -1886,6 +1966,21 @@ fn verify_attenuation_step(
             child.token_id, child.remaining_depth, parent.remaining_depth
         )));
     }
+    let (parent_policy, parent_scopes) = link_to_kernel_policy(parent);
+    let (child_policy, child_scopes) = link_to_kernel_policy(child);
+    if !mneme_kernel::capability::attenuation_valid(
+        &parent_policy,
+        &parent_scopes,
+        &child_policy,
+        &child_scopes,
+        depth,
+        MAX_DELEGATION_DEPTH,
+    ) {
+        return Err(crate::error::Failure::CapabilityDenied(format!(
+            "link {} failed kernel attenuation check beneath {}",
+            child.token_id, parent.token_id
+        )));
+    }
     Ok(())
 }
 
@@ -1893,14 +1988,14 @@ fn check_causal_revocations(request: &VerificationRequest<'_>) -> crate::error::
     let mut authorized_revokers = request.trusted_roots.clone();
     for link in &request.token.links {
         authorized_revokers.insert(link.issuer);
-        if let Some(tombstone) = request.revocations.find_valid_revocation(
-            request.vault_id,
-            link.token_id,
-            &authorized_revokers,
-        ) {
-            let reason = tombstone
-                .reason
-                .as_deref()
+        let revoked_ids = request
+            .revocations
+            .authorized_revoked_ids(request.vault_id, &authorized_revokers);
+        if mneme_kernel::capability::is_revoked(&[link.token_id.to_kernel()], &revoked_ids) {
+            let reason = request
+                .revocations
+                .find_valid_revocation(request.vault_id, link.token_id, &authorized_revokers)
+                .and_then(|tombstone| tombstone.reason.as_deref())
                 .unwrap_or("revoked by authorized issuer");
             return Err(crate::error::Failure::CapabilityRevoked {
                 token_id: link.token_id.to_string(),

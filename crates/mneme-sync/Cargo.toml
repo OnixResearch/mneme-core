@@ -14,6 +14,7 @@ iroh-gossip = { version = "0.103", default-features = false, features = ["net"] 
 iroh-mainline-address-lookup = "0.6"
 iroh-mdns-address-lookup = "0.6"
 mneme-core.workspace = true
+mneme-kernel.workspace = true
 mneme-store.workspace = true
 n0-future = "0.3"
 serde.workspace = true

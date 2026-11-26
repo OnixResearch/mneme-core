@@ -302,6 +302,73 @@ def admission.decide_replay
       then ok admission.ReplayDecision.Replay
       else ok admission.ReplayDecision.Conflict
 
+/-- [mneme_kernel::admission::AssertionAdmissionInput]
+    Source: 'crates/mneme-kernel/src/admission.rs', lines 125:0-134:1
+    Visibility: public -/
+structure admission.AssertionAdmissionInput where
+  has_accepted_decision : Bool
+  has_current_basis : Bool
+  suppressed : Bool
+  subject_live : Bool
+
+/-- [mneme_kernel::admission::{impl core::clone::Clone for mneme_kernel::admission::AssertionAdmissionInput}::clone]:
+    Source: 'crates/mneme-kernel/src/admission.rs', lines 123:9-123:14
+    Visibility: public -/
+def admission.AssertionAdmissionInput.Insts.CoreCloneClone.clone
+  (self : admission.AssertionAdmissionInput) :
+  Result admission.AssertionAdmissionInput
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::admission::{impl core::clone::Clone for mneme_kernel::admission::AssertionAdmissionInput}]
+    Source: 'crates/mneme-kernel/src/admission.rs', lines 123:9-123:14 -/
+@[reducible]
+def admission.AssertionAdmissionInput.Insts.CoreCloneClone : core.clone.Clone
+  admission.AssertionAdmissionInput := {
+  clone := admission.AssertionAdmissionInput.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::admission::{impl core::marker::Copy for mneme_kernel::admission::AssertionAdmissionInput}]
+    Source: 'crates/mneme-kernel/src/admission.rs', lines 123:16-123:20 -/
+@[reducible]
+def admission.AssertionAdmissionInput.Insts.CoreMarkerCopy : core.marker.Copy
+  admission.AssertionAdmissionInput := {
+  cloneInst := admission.AssertionAdmissionInput.Insts.CoreCloneClone
+}
+
+/-- [mneme_kernel::admission::assertion_admissible]:
+    Source: 'crates/mneme-kernel/src/admission.rs', lines 140:0-145:1
+    Visibility: public -/
+def admission.assertion_admissible
+  (input : admission.AssertionAdmissionInput) : Result Bool := do
+  if input.has_accepted_decision
+  then
+    if input.has_current_basis
+    then if input.suppressed
+         then ok false
+         else ok input.subject_live
+    else ok false
+  else ok false
+
+/-- [mneme_kernel::completeness::Coverage]
+    Source: 'crates/mneme-kernel/src/completeness.rs', lines 11:0-18:1
+    Visibility: public -/
+@[discriminant isize]
+inductive completeness.Coverage where
+| Complete : completeness.Coverage
+| Incomplete : completeness.Coverage
+| Unknown : completeness.Coverage
+
+/-- [mneme_kernel::admission::non_monotonic_rule_admissible]:
+    Source: 'crates/mneme-kernel/src/admission.rs', lines 151:0-153:1
+    Visibility: public -/
+def admission.non_monotonic_rule_admissible
+  (coverage : completeness.Coverage) : Result Bool := do
+  match coverage with
+  | completeness.Coverage.Complete => ok true
+  | completeness.Coverage.Incomplete => ok false
+  | completeness.Coverage.Unknown => ok false
+
 /-- [mneme_kernel::budget::charge]:
     Source: 'crates/mneme-kernel/src/budget.rs', lines 11:0-22:1
     Visibility: public -/
@@ -315,6 +382,572 @@ def budget.charge
   | some total => if total <= limit
                   then ok o
                   else ok none
+
+/-- [mneme_kernel::capability::Authority]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 15:0-22:1
+    Visibility: public -/
+@[discriminant isize]
+inductive capability.Authority where
+| ReadOnly : capability.Authority
+| SyncPull : capability.Authority
+| SyncPush : capability.Authority
+
+/-- [mneme_kernel::capability::{impl core::clone::Clone for mneme_kernel::capability::Authority}::clone]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 13:9-13:14
+    Visibility: public -/
+def capability.Authority.Insts.CoreCloneClone.clone
+  (self : capability.Authority) : Result capability.Authority := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::clone::Clone for mneme_kernel::capability::Authority}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 13:9-13:14 -/
+@[reducible]
+def capability.Authority.Insts.CoreCloneClone : core.clone.Clone
+  capability.Authority := {
+  clone := capability.Authority.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::marker::Copy for mneme_kernel::capability::Authority}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 13:16-13:20 -/
+@[reducible]
+def capability.Authority.Insts.CoreMarkerCopy : core.marker.Copy
+  capability.Authority := {
+  cloneInst := capability.Authority.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::marker::StructuralPartialEq for mneme_kernel::capability::Authority}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 13:22-13:31 -/
+@[reducible]
+def capability.Authority.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq capability.Authority := {
+}
+
+/-- [mneme_kernel::capability::{impl core::cmp::PartialEq<mneme_kernel::capability::Authority> for mneme_kernel::capability::Authority}::eq]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 13:22-13:31
+    Visibility: public -/
+def capability.Authority.Insts.CoreCmpPartialEqAuthority.eq
+  (self : capability.Authority) (other : capability.Authority) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::cmp::PartialEq<mneme_kernel::capability::Authority> for mneme_kernel::capability::Authority}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 13:22-13:31 -/
+@[reducible]
+def capability.Authority.Insts.CoreCmpPartialEqAuthority : core.cmp.PartialEq
+  capability.Authority capability.Authority := {
+  eq := capability.Authority.Insts.CoreCmpPartialEqAuthority.eq
+}
+
+/-- [mneme_kernel::capability::{impl core::cmp::Eq for mneme_kernel::capability::Authority}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 13:33-13:35
+    Visibility: public -/
+def capability.Authority.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : capability.Authority) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::cmp::Eq for mneme_kernel::capability::Authority}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 13:33-13:35 -/
+@[reducible]
+def capability.Authority.Insts.CoreCmpEq : core.cmp.Eq capability.Authority
+  := {
+  partialEqInst := capability.Authority.Insts.CoreCmpPartialEqAuthority
+  assert_fields_are_eq :=
+    capability.Authority.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::capability::authority_rank]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 25:0-31:1
+    Visibility: public -/
+def capability.authority_rank
+  (level : capability.Authority) : Result Std.U8 := do
+  match level with
+  | capability.Authority.ReadOnly => ok 1#u8
+  | capability.Authority.SyncPull => ok 2#u8
+  | capability.Authority.SyncPush => ok 3#u8
+
+/-- [mneme_kernel::capability::authority_permits]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 34:0-36:1
+    Visibility: public -/
+def capability.authority_permits
+  (held : capability.Authority) (required : capability.Authority) :
+  Result Bool
+  := do
+  let i ← capability.authority_rank held
+  let i1 ← capability.authority_rank required
+  ok (i >= i1)
+
+/-- [mneme_kernel::capability::authority_attenuates]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 39:0-41:1
+    Visibility: public -/
+def capability.authority_attenuates
+  (parent : capability.Authority) (child : capability.Authority) :
+  Result Bool
+  := do
+  let i ← capability.authority_rank child
+  let i1 ← capability.authority_rank parent
+  ok (i <= i1)
+
+/-- [mneme_kernel::capability::ScopeMode]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 46:0-51:1
+    Visibility: public -/
+@[discriminant isize]
+inductive capability.ScopeMode where
+| Wildcard : capability.ScopeMode
+| Explicit : capability.ScopeMode
+
+/-- [mneme_kernel::capability::{impl core::clone::Clone for mneme_kernel::capability::ScopeMode}::clone]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 44:9-44:14
+    Visibility: public -/
+def capability.ScopeMode.Insts.CoreCloneClone.clone
+  (self : capability.ScopeMode) : Result capability.ScopeMode := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::clone::Clone for mneme_kernel::capability::ScopeMode}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 44:9-44:14 -/
+@[reducible]
+def capability.ScopeMode.Insts.CoreCloneClone : core.clone.Clone
+  capability.ScopeMode := {
+  clone := capability.ScopeMode.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::marker::Copy for mneme_kernel::capability::ScopeMode}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 44:16-44:20 -/
+@[reducible]
+def capability.ScopeMode.Insts.CoreMarkerCopy : core.marker.Copy
+  capability.ScopeMode := {
+  cloneInst := capability.ScopeMode.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::marker::StructuralPartialEq for mneme_kernel::capability::ScopeMode}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 44:22-44:31 -/
+@[reducible]
+def capability.ScopeMode.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq capability.ScopeMode := {
+}
+
+/-- [mneme_kernel::capability::{impl core::cmp::PartialEq<mneme_kernel::capability::ScopeMode> for mneme_kernel::capability::ScopeMode}::eq]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 44:22-44:31
+    Visibility: public -/
+def capability.ScopeMode.Insts.CoreCmpPartialEqScopeMode.eq
+  (self : capability.ScopeMode) (other : capability.ScopeMode) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::cmp::PartialEq<mneme_kernel::capability::ScopeMode> for mneme_kernel::capability::ScopeMode}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 44:22-44:31 -/
+@[reducible]
+def capability.ScopeMode.Insts.CoreCmpPartialEqScopeMode : core.cmp.PartialEq
+  capability.ScopeMode capability.ScopeMode := {
+  eq := capability.ScopeMode.Insts.CoreCmpPartialEqScopeMode.eq
+}
+
+/-- [mneme_kernel::capability::{impl core::cmp::Eq for mneme_kernel::capability::ScopeMode}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 44:33-44:35
+    Visibility: public -/
+def capability.ScopeMode.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : capability.ScopeMode) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::cmp::Eq for mneme_kernel::capability::ScopeMode}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 44:33-44:35 -/
+@[reducible]
+def capability.ScopeMode.Insts.CoreCmpEq : core.cmp.Eq capability.ScopeMode
+  := {
+  partialEqInst := capability.ScopeMode.Insts.CoreCmpPartialEqScopeMode
+  assert_fields_are_eq :=
+    capability.ScopeMode.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::capability::digest_in_slice]: loop body 0:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 60:4-63:5
+    Visibility: public -/
+@[rust_loop_body]
+def capability.digest_in_slice_loop.body
+  (needle : hashing.Digest) (haystack : Slice hashing.Digest) (found : Bool)
+  (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len haystack
+  if index < i
+  then
+    if found
+    then ok (done true)
+    else
+      let d ← Slice.index_usize haystack index
+      let found1 ← hashing.digest_eq needle d
+      let index1 ← index + 1#usize
+      ok (cont (found1, index1))
+  else ok (done found)
+
+/-- [mneme_kernel::capability::digest_in_slice]: loop 0:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 60:4-63:5
+    Visibility: public -/
+@[rust_loop]
+def capability.digest_in_slice_loop
+  (needle : hashing.Digest) (haystack : Slice hashing.Digest) (found : Bool)
+  (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (found1, index1) => capability.digest_in_slice_loop.body needle
+      haystack found1 index1)
+    (found, index)
+
+/-- [mneme_kernel::capability::digest_in_slice]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 54:0-65:1
+    Visibility: public -/
+@[reducible]
+def capability.digest_in_slice
+  (needle : hashing.Digest) (haystack : Slice hashing.Digest) :
+  Result Bool
+  := do
+  capability.digest_in_slice_loop needle haystack false 0#usize
+
+/-- [mneme_kernel::capability::slice_is_subset]: loop body 0:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 74:4-77:5
+    Visibility: public -/
+@[rust_loop_body]
+def capability.slice_is_subset_loop.body
+  (child : Slice hashing.Digest) (parent : Slice hashing.Digest)
+  (all_present : Bool) (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len child
+  if index < i
+  then
+    if all_present
+    then
+      let d ← Slice.index_usize child index
+      let all_present1 ← capability.digest_in_slice d parent
+      let index1 ← index + 1#usize
+      ok (cont (all_present1, index1))
+    else ok (done false)
+  else ok (done all_present)
+
+/-- [mneme_kernel::capability::slice_is_subset]: loop 0:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 74:4-77:5
+    Visibility: public -/
+@[rust_loop]
+def capability.slice_is_subset_loop
+  (child : Slice hashing.Digest) (parent : Slice hashing.Digest)
+  (all_present : Bool) (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (all_present1, index1) => capability.slice_is_subset_loop.body child
+      parent all_present1 index1)
+    (all_present, index)
+
+/-- [mneme_kernel::capability::slice_is_subset]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 68:0-79:1
+    Visibility: public -/
+@[reducible]
+def capability.slice_is_subset
+  (child : Slice hashing.Digest) (parent : Slice hashing.Digest) :
+  Result Bool
+  := do
+  capability.slice_is_subset_loop child parent true 0#usize
+
+/-- [mneme_kernel::capability::scope_subset]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 86:0-102:1
+    Visibility: public -/
+def capability.scope_subset
+  (child_mode : capability.ScopeMode) (child_scopes : Slice hashing.Digest)
+  (parent_mode : capability.ScopeMode) (parent_scopes : Slice hashing.Digest) :
+  Result Bool
+  := do
+  match child_mode with
+  | capability.ScopeMode.Wildcard =>
+    match parent_mode with
+    | capability.ScopeMode.Wildcard => ok true
+    | capability.ScopeMode.Explicit => ok false
+  | capability.ScopeMode.Explicit =>
+    match parent_mode with
+    | capability.ScopeMode.Wildcard =>
+      let b ← core.slice.Slice.is_empty child_scopes
+      ok (¬ b)
+    | capability.ScopeMode.Explicit =>
+      let b ← core.slice.Slice.is_empty child_scopes
+      if b
+      then ok false
+      else
+        let b1 ← core.slice.Slice.is_empty parent_scopes
+        if b1
+        then ok false
+        else capability.slice_is_subset child_scopes parent_scopes
+
+/-- [mneme_kernel::capability::LinkPolicy]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 107:0-118:1
+    Visibility: public -/
+structure capability.LinkPolicy where
+  vault_id : hashing.Digest
+  authority : capability.Authority
+  scope_mode : capability.ScopeMode
+  expires_at : Std.U64
+  remaining_depth : Std.U8
+
+/-- [mneme_kernel::capability::{impl core::clone::Clone for mneme_kernel::capability::LinkPolicy}::clone]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 105:9-105:14
+    Visibility: public -/
+def capability.LinkPolicy.Insts.CoreCloneClone.clone
+  (self : capability.LinkPolicy) : Result capability.LinkPolicy := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::clone::Clone for mneme_kernel::capability::LinkPolicy}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 105:9-105:14 -/
+@[reducible]
+def capability.LinkPolicy.Insts.CoreCloneClone : core.clone.Clone
+  capability.LinkPolicy := {
+  clone := capability.LinkPolicy.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::marker::Copy for mneme_kernel::capability::LinkPolicy}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 105:16-105:20 -/
+@[reducible]
+def capability.LinkPolicy.Insts.CoreMarkerCopy : core.marker.Copy
+  capability.LinkPolicy := {
+  cloneInst := capability.LinkPolicy.Insts.CoreCloneClone
+}
+
+/-- [mneme_kernel::capability::attenuation_valid]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 122:0-141:1
+    Visibility: public -/
+def capability.attenuation_valid
+  (parent : capability.LinkPolicy) (parent_scopes : Slice hashing.Digest)
+  (child : capability.LinkPolicy) (child_scopes : Slice hashing.Digest)
+  (depth : Std.U8) (max_depth : Std.U8) :
+  Result Bool
+  := do
+  let b ← hashing.digest_eq child.vault_id parent.vault_id
+  if b
+  then
+    let b1 ← capability.authority_attenuates parent.authority child.authority
+    if b1
+    then
+      let b2 ←
+        capability.scope_subset child.scope_mode child_scopes parent.scope_mode
+          parent_scopes
+      if b2
+      then
+        if child.expires_at <= parent.expires_at
+        then
+          if child.remaining_depth < parent.remaining_depth
+          then ok (depth <= max_depth)
+          else ok false
+        else ok false
+      else ok false
+    else ok false
+  else ok false
+
+/-- [mneme_kernel::capability::RevocationState]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 146:0-151:1
+    Visibility: public -/
+@[discriminant isize]
+inductive capability.RevocationState where
+| Active : capability.RevocationState
+| Revoked : capability.RevocationState
+
+/-- [mneme_kernel::capability::{impl core::clone::Clone for mneme_kernel::capability::RevocationState}::clone]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 144:9-144:14
+    Visibility: public -/
+def capability.RevocationState.Insts.CoreCloneClone.clone
+  (self : capability.RevocationState) : Result capability.RevocationState := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::clone::Clone for mneme_kernel::capability::RevocationState}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 144:9-144:14 -/
+@[reducible]
+def capability.RevocationState.Insts.CoreCloneClone : core.clone.Clone
+  capability.RevocationState := {
+  clone := capability.RevocationState.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::marker::Copy for mneme_kernel::capability::RevocationState}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 144:16-144:20 -/
+@[reducible]
+def capability.RevocationState.Insts.CoreMarkerCopy : core.marker.Copy
+  capability.RevocationState := {
+  cloneInst := capability.RevocationState.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::marker::StructuralPartialEq for mneme_kernel::capability::RevocationState}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 144:22-144:31 -/
+@[reducible]
+def capability.RevocationState.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq capability.RevocationState := {
+}
+
+/-- [mneme_kernel::capability::{impl core::cmp::PartialEq<mneme_kernel::capability::RevocationState> for mneme_kernel::capability::RevocationState}::eq]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 144:22-144:31
+    Visibility: public -/
+def capability.RevocationState.Insts.CoreCmpPartialEqRevocationState.eq
+  (self : capability.RevocationState) (other : capability.RevocationState) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::cmp::PartialEq<mneme_kernel::capability::RevocationState> for mneme_kernel::capability::RevocationState}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 144:22-144:31 -/
+@[reducible]
+def capability.RevocationState.Insts.CoreCmpPartialEqRevocationState :
+  core.cmp.PartialEq capability.RevocationState capability.RevocationState := {
+  eq := capability.RevocationState.Insts.CoreCmpPartialEqRevocationState.eq
+}
+
+/-- [mneme_kernel::capability::{impl core::cmp::Eq for mneme_kernel::capability::RevocationState}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 144:33-144:35
+    Visibility: public -/
+def capability.RevocationState.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : capability.RevocationState) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::capability::{impl core::cmp::Eq for mneme_kernel::capability::RevocationState}]
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 144:33-144:35 -/
+@[reducible]
+def capability.RevocationState.Insts.CoreCmpEq : core.cmp.Eq
+  capability.RevocationState := {
+  partialEqInst :=
+    capability.RevocationState.Insts.CoreCmpPartialEqRevocationState
+  assert_fields_are_eq :=
+    capability.RevocationState.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::capability::token_in_revocations]: loop body 0:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 157:4-160:5
+    Visibility: public -/
+@[rust_loop_body]
+def capability.token_in_revocations_loop.body
+  (token : Std.U128) (revocations : Slice Std.U128) (found : Bool)
+  (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len revocations
+  if index < i
+  then
+    if found
+    then ok (done true)
+    else
+      let i1 ← Slice.index_usize revocations index
+      let index1 ← index + 1#usize
+      ok (cont (token = i1, index1))
+  else ok (done found)
+
+/-- [mneme_kernel::capability::token_in_revocations]: loop 0:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 157:4-160:5
+    Visibility: public -/
+@[rust_loop]
+def capability.token_in_revocations_loop
+  (token : Std.U128) (revocations : Slice Std.U128) (found : Bool)
+  (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (found1, index1) => capability.token_in_revocations_loop.body token
+      revocations found1 index1)
+    (found, index)
+
+/-- [mneme_kernel::capability::token_in_revocations]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 154:0-162:1
+    Visibility: public -/
+@[reducible]
+def capability.token_in_revocations
+  (token : Std.U128) (revocations : Slice Std.U128) : Result Bool := do
+  capability.token_in_revocations_loop token revocations false 0#usize
+
+/-- [mneme_kernel::capability::is_revoked]: loop body 0:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 168:4-171:5
+    Visibility: public -/
+@[rust_loop_body]
+def capability.is_revoked_loop.body
+  (chain_ids : Slice Std.U128) (revocations : Slice Std.U128) (revoked : Bool)
+  (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len chain_ids
+  if index < i
+  then
+    if revoked
+    then ok (done true)
+    else
+      let i1 ← Slice.index_usize chain_ids index
+      let revoked1 ← capability.token_in_revocations i1 revocations
+      let index1 ← index + 1#usize
+      ok (cont (revoked1, index1))
+  else ok (done revoked)
+
+/-- [mneme_kernel::capability::is_revoked]: loop 0:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 168:4-171:5
+    Visibility: public -/
+@[rust_loop]
+def capability.is_revoked_loop
+  (chain_ids : Slice Std.U128) (revocations : Slice Std.U128) (revoked : Bool)
+  (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (revoked1, index1) => capability.is_revoked_loop.body chain_ids
+      revocations revoked1 index1)
+    (revoked, index)
+
+/-- [mneme_kernel::capability::is_revoked]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 165:0-173:1
+    Visibility: public -/
+@[reducible]
+def capability.is_revoked
+  (chain_ids : Slice Std.U128) (revocations : Slice Std.U128) :
+  Result Bool
+  := do
+  capability.is_revoked_loop chain_ids revocations false 0#usize
+
+/-- [mneme_kernel::capability::revocation_state]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 176:0-182:1
+    Visibility: public -/
+def capability.revocation_state
+  (chain_ids : Slice Std.U128) (revocations : Slice Std.U128) :
+  Result capability.RevocationState
+  := do
+  let b ← capability.is_revoked chain_ids revocations
+  if b
+  then ok capability.RevocationState.Revoked
+  else ok capability.RevocationState.Active
+
+/-- [mneme_kernel::capability::merge_revocation_state]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 185:0-191:1
+    Visibility: public -/
+def capability.merge_revocation_state
+  (left : capability.RevocationState) (right : capability.RevocationState) :
+  Result capability.RevocationState
+  := do
+  match left with
+  | capability.RevocationState.Active =>
+    match right with
+    | capability.RevocationState.Active => ok capability.RevocationState.Active
+    | capability.RevocationState.Revoked =>
+      ok capability.RevocationState.Revoked
+  | capability.RevocationState.Revoked => ok capability.RevocationState.Revoked
+
+/-- [mneme_kernel::capability::is_revoked_in_merge]:
+    Source: 'crates/mneme-kernel/src/capability.rs', lines 194:0-202:1
+    Visibility: public -/
+def capability.is_revoked_in_merge
+  (chain_ids : Slice Std.U128) (left : Slice Std.U128) (right : Slice Std.U128)
+  :
+  Result Bool
+  := do
+  let rs ← capability.revocation_state chain_ids left
+  let rs1 ← capability.revocation_state chain_ids right
+  let rs2 ← capability.merge_revocation_state rs rs1
+  match rs2 with
+  | capability.RevocationState.Active => ok false
+  | capability.RevocationState.Revoked => ok true
 
 /-- [mneme_kernel::claim::Lifecycle]
     Source: 'crates/mneme-kernel/src/claim.rs', lines 11:0-22:1
@@ -975,15 +1608,6 @@ def cleanup.summarize
       then ok cleanup.JobSummary.Partial
       else ok cleanup.JobSummary.Complete
 
-/-- [mneme_kernel::completeness::Coverage]
-    Source: 'crates/mneme-kernel/src/completeness.rs', lines 11:0-18:1
-    Visibility: public -/
-@[discriminant isize]
-inductive completeness.Coverage where
-| Complete : completeness.Coverage
-| Incomplete : completeness.Coverage
-| Unknown : completeness.Coverage
-
 /-- [mneme_kernel::completeness::{impl core::clone::Clone for mneme_kernel::completeness::Coverage}::clone]:
     Source: 'crates/mneme-kernel/src/completeness.rs', lines 9:9-9:14
     Visibility: public -/
@@ -1135,6 +1759,136 @@ def completeness.combine_coverage
     | completeness.Coverage.Incomplete => ok completeness.Coverage.Incomplete
     | completeness.Coverage.Unknown => ok completeness.Coverage.Unknown
   | completeness.Coverage.Unknown => ok completeness.Coverage.Unknown
+
+/-- [mneme_kernel::epistemic::EpistemicStatus]
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 16:0-23:1
+    Visibility: public -/
+@[discriminant isize]
+inductive epistemic.EpistemicStatus where
+| Rejected : epistemic.EpistemicStatus
+| Proposed : epistemic.EpistemicStatus
+| Accepted : epistemic.EpistemicStatus
+
+/-- [mneme_kernel::epistemic::{impl core::clone::Clone for mneme_kernel::epistemic::EpistemicStatus}::clone]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 14:9-14:14
+    Visibility: public -/
+def epistemic.EpistemicStatus.Insts.CoreCloneClone.clone
+  (self : epistemic.EpistemicStatus) : Result epistemic.EpistemicStatus := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::epistemic::{impl core::clone::Clone for mneme_kernel::epistemic::EpistemicStatus}]
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 14:9-14:14 -/
+@[reducible]
+def epistemic.EpistemicStatus.Insts.CoreCloneClone : core.clone.Clone
+  epistemic.EpistemicStatus := {
+  clone := epistemic.EpistemicStatus.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::epistemic::{impl core::marker::Copy for mneme_kernel::epistemic::EpistemicStatus}]
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 14:16-14:20 -/
+@[reducible]
+def epistemic.EpistemicStatus.Insts.CoreMarkerCopy : core.marker.Copy
+  epistemic.EpistemicStatus := {
+  cloneInst := epistemic.EpistemicStatus.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::epistemic::{impl core::marker::StructuralPartialEq for mneme_kernel::epistemic::EpistemicStatus}]
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 14:22-14:31 -/
+@[reducible]
+def epistemic.EpistemicStatus.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq epistemic.EpistemicStatus := {
+}
+
+/-- [mneme_kernel::epistemic::{impl core::cmp::PartialEq<mneme_kernel::epistemic::EpistemicStatus> for mneme_kernel::epistemic::EpistemicStatus}::eq]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 14:22-14:31
+    Visibility: public -/
+def epistemic.EpistemicStatus.Insts.CoreCmpPartialEqEpistemicStatus.eq
+  (self : epistemic.EpistemicStatus) (other : epistemic.EpistemicStatus) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::epistemic::{impl core::cmp::PartialEq<mneme_kernel::epistemic::EpistemicStatus> for mneme_kernel::epistemic::EpistemicStatus}]
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 14:22-14:31 -/
+@[reducible]
+def epistemic.EpistemicStatus.Insts.CoreCmpPartialEqEpistemicStatus :
+  core.cmp.PartialEq epistemic.EpistemicStatus epistemic.EpistemicStatus := {
+  eq := epistemic.EpistemicStatus.Insts.CoreCmpPartialEqEpistemicStatus.eq
+}
+
+/-- [mneme_kernel::epistemic::{impl core::cmp::Eq for mneme_kernel::epistemic::EpistemicStatus}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 14:33-14:35
+    Visibility: public -/
+def epistemic.EpistemicStatus.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : epistemic.EpistemicStatus) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::epistemic::{impl core::cmp::Eq for mneme_kernel::epistemic::EpistemicStatus}]
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 14:33-14:35 -/
+@[reducible]
+def epistemic.EpistemicStatus.Insts.CoreCmpEq : core.cmp.Eq
+  epistemic.EpistemicStatus := {
+  partialEqInst :=
+    epistemic.EpistemicStatus.Insts.CoreCmpPartialEqEpistemicStatus
+  assert_fields_are_eq :=
+    epistemic.EpistemicStatus.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::epistemic::rank]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 26:0-32:1
+    Visibility: public -/
+def epistemic.rank (status : epistemic.EpistemicStatus) : Result Std.U8 := do
+  match status with
+  | epistemic.EpistemicStatus.Rejected => ok 0#u8
+  | epistemic.EpistemicStatus.Proposed => ok 1#u8
+  | epistemic.EpistemicStatus.Accepted => ok 2#u8
+
+/-- [mneme_kernel::epistemic::join]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 35:0-41:1
+    Visibility: public -/
+def epistemic.join
+  (left : epistemic.EpistemicStatus) (right : epistemic.EpistemicStatus) :
+  Result epistemic.EpistemicStatus
+  := do
+  let i ← epistemic.rank left
+  let i1 ← epistemic.rank right
+  if i <= i1
+  then ok left
+  else ok right
+
+/-- [mneme_kernel::epistemic::union]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 44:0-50:1
+    Visibility: public -/
+def epistemic.union
+  (left : epistemic.EpistemicStatus) (right : epistemic.EpistemicStatus) :
+  Result epistemic.EpistemicStatus
+  := do
+  let i ← epistemic.rank left
+  let i1 ← epistemic.rank right
+  if i >= i1
+  then ok left
+  else ok right
+
+/-- [mneme_kernel::epistemic::is_active]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 53:0-55:1
+    Visibility: public -/
+def epistemic.is_active
+  (status : epistemic.EpistemicStatus) : Result Bool := do
+  let b ←
+    match status with
+    | epistemic.EpistemicStatus.Rejected => ok true
+    | epistemic.EpistemicStatus.Proposed => ok false
+    | epistemic.EpistemicStatus.Accepted => ok false
+  ok (¬ b)
+
+/-- [mneme_kernel::epistemic::negation_blocks]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 61:0-63:1
+    Visibility: public -/
+def epistemic.negation_blocks
+  (status : epistemic.EpistemicStatus) : Result Bool := do
+  epistemic.is_active status
 
 /-- [mneme_kernel::extent::ExcerptRequest]
     Source: 'crates/mneme-kernel/src/extent.rs', lines 9:0-18:1

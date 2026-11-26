@@ -1,7 +1,9 @@
 import MnemeKernelProofs.Budget
+import MnemeKernelProofs.Capability
 import MnemeKernelProofs.Cleanup
 import MnemeKernelProofs.Admission
 import MnemeKernelProofs.Completeness
+import MnemeKernelProofs.Epistemic
 import MnemeKernelProofs.Hashing
 import MnemeKernelProofs.Claim
 import MnemeKernelProofs.Publish

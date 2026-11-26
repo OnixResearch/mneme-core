@@ -141,6 +141,11 @@ impl TokenId {
         &self.0
     }
 
+    /// Convert to the 128-bit big-endian identifier used by `mneme_kernel::capability`.
+    pub const fn to_kernel(&self) -> u128 {
+        u128::from_be_bytes(self.0)
+    }
+
     /// Encode as 32 lowercase hexadecimal characters.
     pub fn to_hex(&self) -> String {
         encode_hex(&self.0)
@@ -192,6 +197,11 @@ impl TombstoneId {
     /// Borrow underlying 16 bytes.
     pub const fn as_bytes(&self) -> &[u8; ID_BYTES_LEN] {
         &self.0
+    }
+
+    /// Convert to the 128-bit big-endian identifier used by `mneme_kernel::capability`.
+    pub const fn to_kernel(&self) -> u128 {
+        u128::from_be_bytes(self.0)
     }
 
     /// Encode as 32 lowercase hexadecimal characters.
@@ -291,22 +301,27 @@ pub enum CapabilityAuthority {
 }
 
 impl CapabilityAuthority {
+    /// Convert to the formally verified kernel authority lattice element.
+    pub const fn to_kernel(self) -> mneme_kernel::capability::Authority {
+        match self {
+            CapabilityAuthority::ReadOnly => mneme_kernel::capability::Authority::ReadOnly,
+            CapabilityAuthority::SyncPull => mneme_kernel::capability::Authority::SyncPull,
+            CapabilityAuthority::SyncPush => mneme_kernel::capability::Authority::SyncPush,
+        }
+    }
+
     /// Whether `self` satisfies `required`.
-    pub const fn permits(self, required: Self) -> bool {
-        self.rank() >= required.rank()
+    pub fn permits(self, required: Self) -> bool {
+        mneme_kernel::capability::authority_permits(self.to_kernel(), required.to_kernel())
     }
 
     /// Whether delegating from `self` to `child` is non-escalating.
-    pub const fn allows_attenuation_to(self, child: Self) -> bool {
-        child.rank() <= self.rank()
+    pub fn allows_attenuation_to(self, child: Self) -> bool {
+        mneme_kernel::capability::authority_attenuates(self.to_kernel(), child.to_kernel())
     }
 
-    const fn rank(self) -> u8 {
-        match self {
-            CapabilityAuthority::ReadOnly => 1,
-            CapabilityAuthority::SyncPull => 2,
-            CapabilityAuthority::SyncPush => 3,
-        }
+    fn rank(self) -> u8 {
+        mneme_kernel::capability::authority_rank(self.to_kernel())
     }
 }
 
@@ -355,18 +370,39 @@ impl CapabilityScope {
         }
     }
 
+    fn to_kernel(
+        &self,
+    ) -> (
+        mneme_kernel::capability::ScopeMode,
+        Vec<mneme_kernel::hashing::Digest>,
+    ) {
+        match self {
+            CapabilityScope::Wildcard => {
+                (mneme_kernel::capability::ScopeMode::Wildcard, Vec::new())
+            }
+            CapabilityScope::Scopes(scopes) => {
+                let digests = scopes
+                    .iter()
+                    .map(|scope| kernel_text_digest(scope))
+                    .collect();
+                (mneme_kernel::capability::ScopeMode::Explicit, digests)
+            }
+        }
+    }
+
     /// Whether `self` is a valid non-escalating attenuation of `parent`.
     pub fn is_attenuation_of(&self, parent: &Self) -> bool {
         if self.validate().is_err() {
             return false;
         }
-        match (self, parent) {
-            (_, CapabilityScope::Wildcard) => true,
-            (CapabilityScope::Wildcard, CapabilityScope::Scopes(_)) => false,
-            (CapabilityScope::Scopes(child), CapabilityScope::Scopes(allowed)) => {
-                child.is_subset(allowed)
-            }
-        }
+        let (child_mode, child_scopes) = self.to_kernel();
+        let (parent_mode, parent_scopes) = parent.to_kernel();
+        mneme_kernel::capability::scope_subset(
+            child_mode,
+            &child_scopes,
+            parent_mode,
+            &parent_scopes,
+        )
     }
 }
 
@@ -590,6 +626,20 @@ impl RevocationSet {
         }
         self.tombstones.insert(tombstone.tombstone_id, tombstone);
         Ok(())
+    }
+
+    fn authorized_revoked_ids(
+        &self,
+        vault_id: &str,
+        authorized_revokers: &std::collections::BTreeSet<iroh::EndpointId>,
+    ) -> Vec<u128> {
+        self.tombstones
+            .values()
+            .filter(|tombstone| {
+                tombstone.vault_id == vault_id && authorized_revokers.contains(&tombstone.revoker)
+            })
+            .map(|tombstone| tombstone.target_token_id.to_kernel())
+            .collect()
     }
 
     fn find_valid_revocation(
@@ -830,10 +880,12 @@ fn verify_federation_capability(
         return Err(format!("untrusted root capability issuer {}", root.issuer));
     }
     let mut previous: Option<&CapabilityLink> = None;
-    for link in &token.links {
+    for (index, link) in token.links.iter().enumerate() {
         verify_link(link, check.vault_id, check.now_secs)?;
         if let Some(parent) = previous {
-            verify_attenuation(parent, link)?;
+            let depth = u8::try_from(index.saturating_add(1))
+                .map_err(|_| "capability chain depth overflow".to_owned())?;
+            verify_attenuation(parent, link, depth)?;
         }
         previous = Some(link);
     }
@@ -858,12 +910,15 @@ fn verify_federation_capability(
     for link in &token.links {
         revokers.insert(link.issuer);
         issuers.push(link.issuer);
-        if let Some(tombstone) =
-            check
+        let revoked_ids = check
+            .revocations
+            .authorized_revoked_ids(check.vault_id, &revokers);
+        if mneme_kernel::capability::is_revoked(&[link.token_id.to_kernel()], &revoked_ids) {
+            let reason = check
                 .revocations
                 .find_valid_revocation(check.vault_id, link.token_id, &revokers)
-        {
-            let reason = tombstone.reason.as_deref().unwrap_or("revoked");
+                .and_then(|tombstone| tombstone.reason.as_deref())
+                .unwrap_or("revoked");
             return Err(format!("capability {} revoked: {reason}", link.token_id));
         }
     }
@@ -915,7 +970,34 @@ fn verify_link(
         .map_err(|_| format!("invalid Ed25519 signature on link {}", link.token_id))
 }
 
-fn verify_attenuation(parent: &CapabilityLink, child: &CapabilityLink) -> Result<(), String> {
+fn kernel_text_digest(text: &str) -> mneme_kernel::hashing::Digest {
+    mneme_core::kernel_digest(&mneme_core::HashAlgorithm::Blake3.hash_bytes(text.as_bytes()))
+}
+
+fn link_to_kernel_policy(
+    link: &CapabilityLink,
+) -> (
+    mneme_kernel::capability::LinkPolicy,
+    Vec<mneme_kernel::hashing::Digest>,
+) {
+    let (scope_mode, scopes) = link.scope.to_kernel();
+    (
+        mneme_kernel::capability::LinkPolicy {
+            vault_id: kernel_text_digest(&link.vault_id),
+            authority: link.authority.to_kernel(),
+            scope_mode,
+            expires_at: link.expires_at_secs,
+            remaining_depth: link.remaining_depth,
+        },
+        scopes,
+    )
+}
+
+fn verify_attenuation(
+    parent: &CapabilityLink,
+    child: &CapabilityLink,
+    depth: u8,
+) -> Result<(), String> {
     if child.parent_id != Some(parent.token_id) {
         return Err("delegation parent_id mismatch".to_owned());
     }
@@ -933,6 +1015,18 @@ fn verify_attenuation(parent: &CapabilityLink, child: &CapabilityLink) -> Result
     }
     if child.remaining_depth >= parent.remaining_depth {
         return Err("delegation failed to decrement remaining_depth".to_owned());
+    }
+    let (parent_policy, parent_scopes) = link_to_kernel_policy(parent);
+    let (child_policy, child_scopes) = link_to_kernel_policy(child);
+    if !mneme_kernel::capability::attenuation_valid(
+        &parent_policy,
+        &parent_scopes,
+        &child_policy,
+        &child_scopes,
+        depth,
+        MAX_DELEGATION_DEPTH,
+    ) {
+        return Err("delegation failed kernel attenuation check".to_owned());
     }
     Ok(())
 }

@@ -183,4 +183,72 @@ theorem decide_replay_replay_iff (stored : Option StoredCommand) (fp : hashing.D
         refine ⟨ReplayDecision.Replay, by simp [hr], ?_⟩
         simpa using hiff
 
+/-! ## `assertion_admissible` -/
+
+/-- `assertion_admissible` never fails or diverges. -/
+theorem assertion_admissible_total (input : AssertionAdmissionInput) :
+    ∃ admitted, assertion_admissible input = ok admitted := by
+  obtain ⟨dec, basis, supp, live⟩ := input
+  cases dec <;> cases basis <;> cases supp <;> cases live <;>
+    simp [assertion_admissible]
+
+/-- An assertion is admitted exactly when it has an accepted decision, has a
+    current supporting basis, is not suppressed, and refers to a live subject. -/
+theorem assertion_admissible_iff (input : AssertionAdmissionInput) :
+    assertion_admissible input = ok true ↔
+      input.has_accepted_decision = true ∧
+        input.has_current_basis = true ∧
+        input.suppressed = false ∧
+        input.subject_live = true := by
+  obtain ⟨dec, basis, supp, live⟩ := input
+  cases dec <;> cases basis <;> cases supp <;> cases live <;>
+    simp [assertion_admissible]
+
+/-- A suppressed assertion is never admitted. -/
+theorem suppressed_assertion_never_admitted (input : AssertionAdmissionInput)
+    (h : input.suppressed = true) :
+    assertion_admissible input = ok false := by
+  obtain ⟨dec, basis, supp, live⟩ := input
+  cases dec <;> cases basis <;> simp_all [assertion_admissible]
+
+/-- An unbacked assertion is never admitted. -/
+theorem unbacked_assertion_never_admitted (input : AssertionAdmissionInput)
+    (h : input.has_current_basis = false) :
+    assertion_admissible input = ok false := by
+  obtain ⟨dec, basis, supp, live⟩ := input
+  cases dec <;> simp_all [assertion_admissible]
+
+/-- An assertion without an accepted decision is never admitted. -/
+theorem unaccepted_assertion_never_admitted (input : AssertionAdmissionInput)
+    (h : input.has_accepted_decision = false) :
+    assertion_admissible input = ok false := by
+  obtain ⟨dec, basis, supp, live⟩ := input
+  simp_all [assertion_admissible]
+
+/-- An assertion whose subject record is not live is never admitted. -/
+theorem dangling_subject_assertion_never_admitted (input : AssertionAdmissionInput)
+    (h : input.subject_live = false) :
+    assertion_admissible input = ok false := by
+  obtain ⟨dec, basis, supp, live⟩ := input
+  cases dec <;> cases basis <;> cases supp <;> simp_all [assertion_admissible]
+
+/-! ## `non_monotonic_rule_admissible` -/
+
+/-- `non_monotonic_rule_admissible` never fails or diverges. -/
+theorem non_monotonic_rule_admissible_total (coverage : completeness.Coverage) :
+    ∃ admitted, non_monotonic_rule_admissible coverage = ok admitted := by
+  cases coverage <;> simp [non_monotonic_rule_admissible]
+
+/-- A non-monotonic rule is admitted exactly when coverage is `Complete`. -/
+theorem non_monotonic_rule_admissible_iff (coverage : completeness.Coverage) :
+    non_monotonic_rule_admissible coverage = ok true ↔
+      coverage = completeness.Coverage.Complete := by
+  cases coverage <;> simp [non_monotonic_rule_admissible]
+
+/-- Incomplete or unknown coverage never admits negation or aggregates. -/
+theorem incomplete_coverage_never_admits_non_monotonic (coverage : completeness.Coverage)
+    (h : coverage ≠ completeness.Coverage.Complete) :
+    non_monotonic_rule_admissible coverage = ok false := by
+  cases coverage <;> simp_all [non_monotonic_rule_admissible]
+
 end mneme_kernel.admission

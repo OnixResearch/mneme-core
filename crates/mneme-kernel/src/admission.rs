@@ -118,3 +118,36 @@ pub fn decide_replay(
         },
     }
 }
+
+/// Facts about one canonical assertion considered for logic-engine admission.
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "debug", derive(Debug))]
+pub struct AssertionAdmissionInput {
+    /// The assertion has `Accepted` lifecycle and an accepted decision backing it.
+    pub has_accepted_decision: bool,
+    /// The assertion still has a current supporting basis (evidence or eligible derivation).
+    pub has_current_basis: bool,
+    /// The assertion record is suppressed (`withdrawn` or `forgotten`).
+    pub suppressed: bool,
+    /// The assertion's subject record exists in the visible snapshot views.
+    pub subject_live: bool,
+}
+
+/// Whether a canonical assertion may be admitted as an active logic-engine fact.
+///
+/// An assertion is admitted only when it has an accepted decision, a current
+/// supporting basis, is not suppressed, and refers to a live subject record.
+pub fn assertion_admissible(input: &AssertionAdmissionInput) -> bool {
+    input.has_accepted_decision
+        && input.has_current_basis
+        && !input.suppressed
+        && input.subject_live
+}
+
+/// Whether a non-monotonic rule (negation or aggregate) may be evaluated under
+/// the combined coverage of its body relations.
+///
+/// Incomplete or unknown coverage never admits negation or aggregation.
+pub fn non_monotonic_rule_admissible(coverage: crate::completeness::Coverage) -> bool {
+    matches!(coverage, crate::completeness::Coverage::Complete)
+}
