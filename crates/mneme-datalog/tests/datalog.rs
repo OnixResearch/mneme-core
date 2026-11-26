@@ -3460,3 +3460,835 @@ fn cyclic_triangle_and_four_clique_complete_under_default_limits_with_provenance
     assert!(tri_res.rows.iter().all(|row| !row.supports.is_empty()));
     assert!(k4_res.rows.iter().all(|row| !row.supports.is_empty()));
 }
+
+struct EntityPayloadSpec<'a> {
+    entity_type: &'a str,
+    label: &'a str,
+    status: mneme_datalog::EpistemicStatus,
+}
+
+fn status_entity_payload(spec: EntityPayloadSpec<'_>) -> mneme_core::Payload {
+    mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("entity-type"),
+            mneme_core::Value::symbol(spec.entity_type),
+        ),
+        (
+            mneme_core::Symbol::from("label"),
+            mneme_core::Value::string(spec.label.to_owned()),
+        ),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::symbol_dictionary([(
+                mneme_core::Symbol::from("status"),
+                mneme_core::Value::symbol(spec.status.name()),
+            )]),
+        ),
+    ])
+}
+
+fn status_relation_payload(
+    relation_type: &str,
+    from: mneme_core::RecordId,
+    to: mneme_core::RecordId,
+    status: mneme_datalog::EpistemicStatus,
+) -> mneme_core::Payload {
+    mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("relation-type"),
+            mneme_core::Value::symbol(relation_type),
+        ),
+        (
+            mneme_core::Symbol::from("from"),
+            mneme_core::Reference::local(from, mneme_core::RecordKind::Entity).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("to"),
+            mneme_core::Reference::local(to, mneme_core::RecordKind::Entity).to_value(),
+        ),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::symbol_dictionary([(
+                mneme_core::Symbol::from("status"),
+                mneme_core::Value::symbol(status.name()),
+            )]),
+        ),
+    ])
+}
+
+#[test]
+fn epistemic_semiring_laws_and_non_promotion_hold_algebraically() {
+    assert!(mneme_datalog::EpistemicStatus::Accepted > mneme_datalog::EpistemicStatus::Proposed);
+    assert!(mneme_datalog::EpistemicStatus::Proposed > mneme_datalog::EpistemicStatus::Rejected);
+
+    // Core non-promotion and union equations.
+    assert_eq!(
+        mneme_datalog::EpistemicStatus::Accepted * mneme_datalog::EpistemicStatus::Proposed,
+        mneme_datalog::EpistemicStatus::Proposed
+    );
+    assert_eq!(
+        mneme_datalog::EpistemicStatus::Proposed + mneme_datalog::EpistemicStatus::Accepted,
+        mneme_datalog::EpistemicStatus::Accepted
+    );
+    assert_eq!(
+        mneme_datalog::EpistemicStatus::Rejected * mneme_datalog::EpistemicStatus::Accepted,
+        mneme_datalog::EpistemicStatus::Rejected
+    );
+
+    let all = [
+        mneme_datalog::EpistemicStatus::Rejected,
+        mneme_datalog::EpistemicStatus::Proposed,
+        mneme_datalog::EpistemicStatus::Accepted,
+    ];
+    for &a in &all {
+        assert_eq!(a + mneme_datalog::EpistemicStatus::ZERO, a);
+        assert_eq!(a * mneme_datalog::EpistemicStatus::ONE, a);
+        assert_eq!(
+            a * mneme_datalog::EpistemicStatus::ZERO,
+            mneme_datalog::EpistemicStatus::ZERO
+        );
+        assert_eq!(a + a, a);
+        assert_eq!(a * a, a);
+        for &b in &all {
+            assert_eq!(a + b, b + a);
+            assert_eq!(a * b, b * a);
+            assert!(a * b <= a);
+            assert!(a * b <= b);
+            assert!(a + b >= a);
+            assert!(a + b >= b);
+            for &c in &all {
+                assert_eq!((a + b) + c, a + (b + c));
+                assert_eq!((a * b) * c, a * (b * c));
+                assert_eq!(a * (b + c), (a * b) + (a * c));
+                assert_eq!((a + b) * c, (a * c) + (b * c));
+            }
+        }
+    }
+}
+
+#[test]
+fn epistemic_semiring_tracks_non_promotion_and_strongest_support_in_datalog() {
+    let mut harness = Harness::new();
+    let e_acc = indexed_rid(1);
+    let e_prop = indexed_rid(2);
+    let e_rej = indexed_rid(3);
+    let e_tgt = indexed_rid(4);
+
+    let records = vec![
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: e_acc,
+            revision_id: indexed_rev(1),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "AcceptedNode",
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
+        },
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: e_prop,
+            revision_id: indexed_rev(2),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "ProposedNode",
+                status: mneme_datalog::EpistemicStatus::Proposed,
+            }),
+        },
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: e_rej,
+            revision_id: indexed_rev(3),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "RejectedNode",
+                status: mneme_datalog::EpistemicStatus::Rejected,
+            }),
+        },
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: e_tgt,
+            revision_id: indexed_rev(4),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "TargetNode",
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
+        },
+        // Accepted edge + Proposed edge joining to e_tgt -> Proposed
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(10),
+            revision_id: indexed_rev(10),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(
+                "step_a",
+                e_acc,
+                e_prop,
+                mneme_datalog::EpistemicStatus::Accepted,
+            ),
+        },
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(11),
+            revision_id: indexed_rev(11),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(
+                "step_b",
+                e_prop,
+                e_tgt,
+                mneme_datalog::EpistemicStatus::Proposed,
+            ),
+        },
+        // Independent Accepted path from e_acc to e_tgt via step_direct
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(12),
+            revision_id: indexed_rev(12),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(
+                "step_direct",
+                e_acc,
+                e_tgt,
+                mneme_datalog::EpistemicStatus::Accepted,
+            ),
+        },
+        // Rejected + Accepted -> Rejected
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(13),
+            revision_id: indexed_rev(13),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(
+                "step_a",
+                e_rej,
+                e_tgt,
+                mneme_datalog::EpistemicStatus::Rejected,
+            ),
+        },
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(14),
+            revision_id: indexed_rev(14),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(
+                "step_b",
+                e_tgt,
+                e_acc,
+                mneme_datalog::EpistemicStatus::Accepted,
+            ),
+        },
+    ];
+    harness.commit("epistemic-seed", records, Vec::new());
+
+    let sym = |name: &str| constant(mneme_core::Value::symbol(name));
+    let rules = bundle(
+        vec![
+            // Join Accepted × Proposed = Proposed
+            mneme_datalog::Rule::new(
+                "chain_ab",
+                atom("chain_ab", vec![var("x"), var("z")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("step_a"), var("x"), var("y")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("step_b"), var("y"), var("z")],
+                    )),
+                ],
+            ),
+            // Union path: Proposed from chain_ab + Accepted from step_direct = Accepted
+            mneme_datalog::Rule::new(
+                "reach_from_chain",
+                atom("reach_pair", vec![var("x"), var("z")]),
+                vec![mneme_datalog::Literal::Positive(atom(
+                    "chain_ab",
+                    vec![var("x"), var("z")],
+                ))],
+            ),
+            mneme_datalog::Rule::new(
+                "reach_from_direct",
+                atom("reach_pair", vec![var("x"), var("z")]),
+                vec![mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("step_direct"), var("x"), var("z")],
+                ))],
+            ),
+            // Dependent rule evaluated before/after union: must converge to Accepted for (e_acc, e_tgt)
+            mneme_datalog::Rule::new(
+                "mirrored_pair",
+                atom("mirrored_pair", vec![var("x"), var("z")]),
+                vec![mneme_datalog::Literal::Positive(atom(
+                    "reach_pair",
+                    vec![var("x"), var("z")],
+                ))],
+            ),
+        ],
+        &["relation"],
+    );
+
+    // Even with max_supports_per_fact = 1 (truncating support list), semiring union still holds.
+    let tight_supports = mneme_datalog::Limits {
+        max_supports_per_fact: 1,
+        ..limits()
+    };
+    let build = harness.build_with_limits(rules, tight_supports);
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+
+    let chain = service
+        .query_build(&build, mneme_datalog::Query::all("chain_ab", 10))
+        .expect("chain_ab");
+    let row_acc_tgt = chain
+        .rows
+        .iter()
+        .find(|row| row.values == vec![e_acc.to_value(), e_tgt.to_value()])
+        .expect("acc->tgt row");
+    assert_eq!(
+        row_acc_tgt.epistemic,
+        mneme_datalog::EpistemicStatus::Proposed
+    );
+    assert_eq!(
+        row_acc_tgt.supports[0].epistemic,
+        mneme_datalog::EpistemicStatus::Proposed
+    );
+
+    let row_rej_acc = chain
+        .rows
+        .iter()
+        .find(|row| row.values == vec![e_rej.to_value(), e_acc.to_value()])
+        .expect("rej->acc row");
+    assert_eq!(
+        row_rej_acc.epistemic,
+        mneme_datalog::EpistemicStatus::Rejected
+    );
+
+    let reach = service
+        .query_build(&build, mneme_datalog::Query::all("reach_pair", 10))
+        .expect("reach_pair");
+    let reach_acc_tgt = reach
+        .rows
+        .iter()
+        .find(|row| row.values == vec![e_acc.to_value(), e_tgt.to_value()])
+        .expect("reach acc->tgt");
+    assert!(reach_acc_tgt.support_truncated);
+    assert_eq!(
+        reach_acc_tgt.epistemic,
+        mneme_datalog::EpistemicStatus::Accepted
+    );
+
+    let mirrored = service
+        .query_build(&build, mneme_datalog::Query::all("mirrored_pair", 10))
+        .expect("mirrored_pair");
+    let mirrored_acc_tgt = mirrored
+        .rows
+        .iter()
+        .find(|row| row.values == vec![e_acc.to_value(), e_tgt.to_value()])
+        .expect("mirrored acc->tgt");
+    assert_eq!(
+        mirrored_acc_tgt.epistemic,
+        mneme_datalog::EpistemicStatus::Accepted
+    );
+}
+
+#[test]
+fn explain_missing_on_atms_verdict_fixture_covers_missing_blocker_constraint_and_cutoff() {
+    let mut harness = Harness::new();
+    let h1 = indexed_rid(1);
+    let h2 = indexed_rid(2);
+    let b1 = indexed_rid(10);
+    let b2 = indexed_rid(11);
+    let x1 = indexed_rid(20);
+    let x2 = indexed_rid(21);
+    let x3 = indexed_rid(22);
+    let v1 = indexed_rid(30);
+    let c1 = indexed_rid(40);
+    let c_missing = indexed_rid(41);
+
+    let entities = [
+        (h1, "hypothesis", "Sparse attention beats dense"),
+        (h2, "hypothesis", "Rotary scaling holds"),
+        (b1, "blocker", "KV-cache memory OOM"),
+        (b2, "blocker", "Tokenizer mismatch"),
+        (x1, "unblocker", "PagedAttention paper"),
+        (x2, "unblocker", "RingAttention commit"),
+        (x3, "unblocker", "Byte-fallback adapter"),
+        (v1, "oracle_verdict", "ChaosControl OOM receipt"),
+        (c1, "context", "1M context length"),
+        (c_missing, "context", "4K context length"),
+    ];
+    let rels = [
+        ("denied_because", h1, b1),
+        ("mitigates", x1, b1),
+        ("mitigates", x2, b1),
+        ("mitigates", x3, b2),
+        ("retested_with", h1, x2),
+        ("falsifies", v1, h1),
+        ("boundary_condition", v1, c1),
+    ];
+    let mut records = Vec::with_capacity(entities.len() + rels.len());
+    let mut next_tag = 100_u16;
+    for (id, etype, label) in entities {
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: id,
+            revision_id: indexed_rev(next_tag),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: etype,
+                label,
+                status: mneme_datalog::EpistemicStatus::Proposed,
+            }),
+        });
+        next_tag = next_tag.saturating_add(1);
+    }
+
+    for (rtype, from, to) in rels {
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(next_tag),
+            revision_id: indexed_rev(next_tag),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(
+                rtype,
+                from,
+                to,
+                mneme_datalog::EpistemicStatus::Proposed,
+            ),
+        });
+        next_tag = next_tag.saturating_add(1);
+    }
+    harness.commit("atms-verdict-fixture", records, Vec::new());
+
+    let sym = |name: &str| constant(mneme_core::Value::symbol(name));
+    let atms_bundle = bundle(
+        vec![
+            mneme_datalog::Rule::new(
+                "retested",
+                atom("retested", vec![var("H"), var("X")]),
+                vec![mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("retested_with"), var("H"), var("X")],
+                ))],
+            ),
+            mneme_datalog::Rule::new(
+                "unblocked-retest-candidate",
+                atom(
+                    "unblocked_retest_candidate",
+                    vec![var("H"), var("B"), var("X")],
+                ),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("denied_because"), var("H"), var("B")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("mitigates"), var("X"), var("B")],
+                    )),
+                    mneme_datalog::Literal::Negative(atom("retested", vec![var("H"), var("X")])),
+                ],
+            ),
+            mneme_datalog::Rule::new(
+                "falsified-under",
+                atom("falsified_under", vec![var("M"), var("C")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("falsifies"), var("V"), var("M")],
+                    )),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("boundary_condition"), var("V"), var("C")],
+                    )),
+                ],
+            ),
+            mneme_datalog::Rule::new(
+                "distinct-retest",
+                atom("distinct_retest", vec![var("H"), var("X")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("retested_with"), var("H"), var("X")],
+                    )),
+                    mneme_datalog::Literal::Compare {
+                        op: mneme_datalog::CompareOp::Eq,
+                        left: var("H"),
+                        right: var("X"),
+                    },
+                ],
+            ),
+        ],
+        &["relation", "retested"],
+    );
+
+    let full_build = harness.build_with_limits(atms_bundle.clone(), limits());
+    assert_eq!(
+        full_build.status(),
+        mneme_datalog::ExecutionStatus::Complete
+    );
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+
+    // 1. Present candidate (H1, B1, X1) carries Proposed epistemic status.
+    let present = service
+        .explain_missing_build(
+            &full_build,
+            mneme_datalog::ExplainMissingRequest::ground(
+                "unblocked_retest_candidate",
+                vec![h1.to_value(), b1.to_value(), x1.to_value()],
+            ),
+        )
+        .expect("present explain");
+    assert_eq!(present.status, mneme_datalog::MissingStatus::Present);
+    assert_eq!(
+        present.present_epistemic,
+        Some(mneme_datalog::EpistemicStatus::Proposed)
+    );
+    assert!(present.reasons.is_empty());
+
+    // 2. Missing premise: X3 does not mitigate B1 -> MissingBaseFact.
+    let missing_premise = service
+        .explain_missing_build(
+            &full_build,
+            mneme_datalog::ExplainMissingRequest::ground(
+                "unblocked_retest_candidate",
+                vec![h1.to_value(), b1.to_value(), x3.to_value()],
+            ),
+        )
+        .expect("missing premise explain");
+    assert_eq!(
+        missing_premise.status,
+        mneme_datalog::MissingStatus::Missing
+    );
+    assert!(missing_premise.exhaustive);
+    assert!(missing_premise.reasons.iter().any(|reason| {
+        reason.kind == mneme_datalog::MissingReasonKind::MissingBaseFact
+            && reason.predicate.as_deref() == Some("relation")
+            && reason.terms.first() == Some(&sym("mitigates"))
+            && reason.terms.get(1) == Some(&constant(x3.to_value()))
+            && reason.terms.get(2) == Some(&constant(b1.to_value()))
+    }));
+
+    // 3. Active negation blocker: H1 was already retested_with X2 -> BlockingNegation.
+    let blocked = service
+        .explain_missing_build(
+            &full_build,
+            mneme_datalog::ExplainMissingRequest::ground(
+                "unblocked_retest_candidate",
+                vec![h1.to_value(), b1.to_value(), x2.to_value()],
+            ),
+        )
+        .expect("blocked explain");
+    assert_eq!(blocked.status, mneme_datalog::MissingStatus::Missing);
+    assert!(blocked.exhaustive);
+    let blocker = blocked
+        .reasons
+        .iter()
+        .find(|reason| reason.kind == mneme_datalog::MissingReasonKind::BlockingNegation)
+        .expect("blocking negation reason");
+    assert_eq!(blocker.predicate.as_deref(), Some("retested"));
+    assert_eq!(
+        blocker.blocker_epistemic,
+        Some(mneme_datalog::EpistemicStatus::Proposed)
+    );
+    assert!(!blocker.blocker_supports.is_empty());
+
+    // 4. Existential / body-only variable V in falsified_under(h1, c_missing).
+    let missing_bc = service
+        .explain_missing_build(
+            &full_build,
+            mneme_datalog::ExplainMissingRequest::ground(
+                "falsified_under",
+                vec![h1.to_value(), c_missing.to_value()],
+            ),
+        )
+        .expect("missing boundary condition");
+    assert_eq!(missing_bc.status, mneme_datalog::MissingStatus::Missing);
+    assert!(missing_bc.reasons.iter().any(|reason| {
+        reason.kind == mneme_datalog::MissingReasonKind::MissingBaseFact
+            && reason.predicate.as_deref() == Some("relation")
+            && reason.terms.first() == Some(&sym("boundary_condition"))
+    }));
+
+    // 5. Unmet rule body constraint (Compare: H == X fails for H1 != X2).
+    let unmet_cmp = service
+        .explain_missing_build(
+            &full_build,
+            mneme_datalog::ExplainMissingRequest::ground(
+                "distinct_retest",
+                vec![h1.to_value(), x2.to_value()],
+            ),
+        )
+        .expect("unmet constraint");
+    assert_eq!(unmet_cmp.status, mneme_datalog::MissingStatus::Missing);
+    assert!(
+        unmet_cmp
+            .reasons
+            .iter()
+            .any(|reason| { reason.kind == mneme_datalog::MissingReasonKind::UnmetConstraint })
+    );
+
+    // 6. Work budget cutoff on build -> BudgetCutoff.
+    let work_cutoff_build = harness.build_with_limits(
+        atms_bundle.clone(),
+        mneme_datalog::Limits {
+            max_work: 5,
+            ..limits()
+        },
+    );
+    assert_eq!(
+        work_cutoff_build.status(),
+        mneme_datalog::ExecutionStatus::Timeout
+    );
+    let mut service_work = mneme_datalog::Service::new(&mut harness.workspace);
+    let work_cutoff = service_work
+        .explain_missing_build(
+            &work_cutoff_build,
+            mneme_datalog::ExplainMissingRequest::ground(
+                "unblocked_retest_candidate",
+                vec![h1.to_value(), b1.to_value(), x1.to_value()],
+            ),
+        )
+        .expect("work cutoff explain");
+    assert_eq!(
+        work_cutoff.status,
+        mneme_datalog::MissingStatus::BudgetCutoff
+    );
+    assert!(work_cutoff.truncated);
+    assert!(!work_cutoff.exhaustive);
+    assert_eq!(
+        work_cutoff.reasons[0].kind,
+        mneme_datalog::MissingReasonKind::BudgetCutoff
+    );
+
+    // 7. Row budget cutoff on build -> BudgetCutoff.
+    let row_cutoff_build = harness.build_with_limits(
+        atms_bundle,
+        mneme_datalog::Limits {
+            max_result_rows: 10,
+            ..limits()
+        },
+    );
+    assert!(row_cutoff_build.limit_reached());
+    let mut service_rows = mneme_datalog::Service::new(&mut harness.workspace);
+    let row_cutoff = service_rows
+        .explain_missing_build(
+            &row_cutoff_build,
+            mneme_datalog::ExplainMissingRequest::ground(
+                "unblocked_retest_candidate",
+                vec![h1.to_value(), b1.to_value(), x1.to_value()],
+            ),
+        )
+        .expect("row cutoff explain");
+    assert_eq!(
+        row_cutoff.status,
+        mneme_datalog::MissingStatus::BudgetCutoff
+    );
+    assert!(row_cutoff.truncated);
+
+    // 8. Explanation-level budget cutoff on complete build -> BudgetCutoff.
+    let explain_cutoff = full_build
+        .explain_missing(
+            "unblocked_retest_candidate",
+            vec![h1.to_value(), b1.to_value(), x3.to_value()],
+            mneme_datalog::ExplainLimits {
+                max_work: 1,
+                max_depth: 16,
+                max_reasons: 64,
+            },
+        )
+        .expect("explain work cutoff");
+    assert_eq!(
+        explain_cutoff.status,
+        mneme_datalog::MissingStatus::BudgetCutoff
+    );
+    assert!(explain_cutoff.truncated);
+    assert!(!explain_cutoff.exhaustive);
+}
+
+#[test]
+fn explain_missing_handles_cycles_derived_subgoals_and_aggregate_non_promotion() {
+    let mut harness = Harness::new();
+    let a = indexed_rid(1);
+    let b = indexed_rid(2);
+    let c = indexed_rid(3);
+    let records = vec![
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: a,
+            revision_id: indexed_rev(1),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "A",
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
+        },
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: b,
+            revision_id: indexed_rev(2),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "B",
+                status: mneme_datalog::EpistemicStatus::Proposed,
+            }),
+        },
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: c,
+            revision_id: indexed_rev(3),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "node",
+                label: "C",
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
+        },
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(10),
+            revision_id: indexed_rev(10),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(
+                "link",
+                a,
+                b,
+                mneme_datalog::EpistemicStatus::Accepted,
+            ),
+        },
+        mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(11),
+            revision_id: indexed_rev(11),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(
+                "link",
+                b,
+                a,
+                mneme_datalog::EpistemicStatus::Proposed,
+            ),
+        },
+    ];
+    harness.commit("cycle-agg", records, Vec::new());
+
+    let sym = |name: &str| constant(mneme_core::Value::symbol(name));
+    let rules = bundle(
+        vec![
+            mneme_datalog::Rule::new(
+                "reach-base",
+                atom("reach", vec![var("x"), var("y")]),
+                vec![mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("link"), var("x"), var("y")],
+                ))],
+            ),
+            mneme_datalog::Rule::new(
+                "reach-step",
+                atom("reach", vec![var("x"), var("z")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom("reach", vec![var("x"), var("y")])),
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("y"), var("z")],
+                    )),
+                ],
+            ),
+            mneme_datalog::Rule::new(
+                "out-degree",
+                atom("out_degree", vec![var("x"), var("cnt")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "relation",
+                        vec![sym("link"), var("x"), var("y")],
+                    )),
+                    mneme_datalog::Literal::Aggregate {
+                        function: mneme_datalog::AggregateFunction::Count,
+                        input: var("y"),
+                        output: "cnt".to_owned(),
+                    },
+                ],
+            ),
+        ],
+        &["relation"],
+    );
+    let build = harness.build_with_limits(rules, limits());
+    assert_eq!(build.status(), mneme_datalog::ExecutionStatus::Complete);
+
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+    let deg = service
+        .query_build(&build, mneme_datalog::Query::all("out_degree", 10))
+        .expect("out_degree");
+    let b_deg = deg
+        .rows
+        .iter()
+        .find(|row| row.values[0] == b.to_value())
+        .expect("b degree");
+    assert_eq!(b_deg.epistemic, mneme_datalog::EpistemicStatus::Proposed);
+
+    // Explain missing reach(a, c) over cyclic graph: terminates cleanly with Missing.
+    let missing_reach = service
+        .explain_missing_build(
+            &build,
+            mneme_datalog::ExplainMissingRequest::ground("reach", vec![a.to_value(), c.to_value()]),
+        )
+        .expect("missing reach");
+    assert_eq!(missing_reach.status, mneme_datalog::MissingStatus::Missing);
+    assert!(missing_reach.exhaustive);
+
+    // Explain wrong aggregate count out_degree(a, 99): reports UnmetConstraint.
+    let wrong_deg = service
+        .explain_missing_build(
+            &build,
+            mneme_datalog::ExplainMissingRequest::ground(
+                "out_degree",
+                vec![a.to_value(), mneme_core::Value::integer(99)],
+            ),
+        )
+        .expect("wrong out_degree");
+    assert_eq!(wrong_deg.status, mneme_datalog::MissingStatus::Missing);
+    assert!(
+        wrong_deg
+            .reasons
+            .iter()
+            .any(|reason| { reason.kind == mneme_datalog::MissingReasonKind::UnmetConstraint })
+    );
+}

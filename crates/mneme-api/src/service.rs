@@ -3142,6 +3142,10 @@ fn derivation_value(derivation: &mneme_datalog::Derivation) -> mneme_core::Value
             mneme_core::Value::Boolean(derivation.truncated),
         ),
         (
+            mneme_core::Symbol::from("epistemic"),
+            mneme_core::Value::symbol(derivation.epistemic.name()),
+        ),
+        (
             mneme_core::Symbol::from("premises"),
             mneme_core::Value::sequence(
                 derivation
