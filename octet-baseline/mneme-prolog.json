@@ -10,7 +10,7 @@
     "profile_hash": "b3:2c28999e174354907cd8aea392a5d419ba69fdeaf1198a5c0697e97d4dea5eae",
     "config_hash": "b3:d1d8b60d0ad34df373f403d8fd94a4295c8349b4e9aecab846ad4b72a5635440"
   },
-  "baseline_hash": "b3:92d11fff667e6a06ea5f0429cc33fd7508413105ad097aed0181d3fe50fbfa09",
+  "baseline_hash": "b3:098de63328d8ab16774866142d15a456bf38c149e5289b1da41e83d3d4efb6c9",
   "findings": [
     {
       "stable_id": "b3:0f2a4f62cca76616",
@@ -20,35 +20,9 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/process.rs",
-      "line": 977,
+      "line": 984,
       "column": 13,
       "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:11b2a81ebd073608",
-      "semantic_id": "b3:11b2a81ebd073608",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2350,
-      "column": 31,
-      "message": "unprotected unsigned addition may overflow",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:124a54f769d02f41",
-      "semantic_id": "b3:124a54f769d02f41",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2482,
-      "column": 40,
-      "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_prolog"
     },
     {
@@ -65,19 +39,6 @@
       "crate_name": "mneme_prolog"
     },
     {
-      "stable_id": "b3:19261135dee73554",
-      "semantic_id": "b3:19261135dee73554",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 480,
-      "column": 13,
-      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_prolog"
-    },
-    {
       "stable_id": "b3:1cd54b5ff05da0d9",
       "semantic_id": "b3:1cd54b5ff05da0d9",
       "identity_status": "computed",
@@ -91,6 +52,19 @@
       "crate_name": "mneme_prolog"
     },
     {
+      "stable_id": "b3:2138d0d6356f842e",
+      "semantic_id": "b3:2138d0d6356f842e",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/src/lib.rs",
+      "line": 483,
+      "column": 13,
+      "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_prolog"
+    },
+    {
       "stable_id": "b3:23c62e3dffa9868a",
       "semantic_id": "b3:23c62e3dffa9868a",
       "identity_status": "computed",
@@ -98,9 +72,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/process.rs",
-      "line": 523,
+      "line": 524,
       "column": 40,
       "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_prolog"
+    },
+    {
+      "stable_id": "b3:2a25bb87a2185a03",
+      "semantic_id": "b3:2a25bb87a2185a03",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/src/lib.rs",
+      "line": 2010,
+      "column": 5,
+      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
     },
     {
@@ -111,7 +98,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2362,
+      "line": 2453,
       "column": 13,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_prolog"
@@ -124,7 +111,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1856,
+      "line": 1941,
       "column": 17,
       "message": "same-crate enum `process::WorkerStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -137,7 +124,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2812,
+      "line": 2905,
       "column": 9,
       "message": "same-crate enum `Certification` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -150,7 +137,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 279,
+      "line": 281,
       "column": 9,
       "message": "same-crate enum `CapabilityState` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -163,7 +150,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1887,
+      "line": 1972,
       "column": 5,
       "message": "same-crate enum `process::WorkerStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -176,7 +163,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 448,
+      "line": 451,
       "column": 12,
       "message": "condition has 5 boolean operators",
       "crate_name": "mneme_prolog"
@@ -189,22 +176,9 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 855,
+      "line": 897,
       "column": 9,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:3a0277bce7d7b324",
-      "semantic_id": "b3:3a0277bce7d7b324",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 59 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_prolog"
     },
     {
@@ -215,7 +189,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 733,
+      "line": 775,
       "column": 41,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_prolog"
@@ -228,35 +202,9 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 908,
+      "line": 950,
       "column": 9,
       "message": "unprotected unsigned addition may overflow",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:41f06a20f7ca060a",
-      "semantic_id": "b3:41f06a20f7ca060a",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/process.rs",
-      "line": 243,
-      "column": 5,
-      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:42bd96074ad43e3a",
-      "semantic_id": "b3:42bd96074ad43e3a",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2447,
-      "column": 63,
-      "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_prolog"
     },
     {
@@ -273,19 +221,6 @@
       "crate_name": "mneme_prolog"
     },
     {
-      "stable_id": "b3:4b59c302c4392165",
-      "semantic_id": "b3:4b59c302c4392165",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1944,
-      "column": 5,
-      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_prolog"
-    },
-    {
       "stable_id": "b3:4b7e65d4269b7026",
       "semantic_id": "b3:4b7e65d4269b7026",
       "identity_status": "computed",
@@ -293,7 +228,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1798,
+      "line": 1883,
       "column": 18,
       "message": "same-crate enum `OutputClassification` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -306,7 +241,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 3077,
+      "line": 3183,
       "column": 9,
       "message": "same-crate enum `QueryResult` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -319,9 +254,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/process.rs",
-      "line": 955,
+      "line": 962,
       "column": 9,
       "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_prolog"
+    },
+    {
+      "stable_id": "b3:64394200b54d6d7d",
+      "semantic_id": "b3:64394200b54d6d7d",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/src/lib.rs",
+      "line": 1029,
+      "column": 9,
+      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
     },
     {
@@ -332,7 +280,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2852,
+      "line": 2945,
       "column": 12,
       "message": "condition has 5 boolean operators",
       "crate_name": "mneme_prolog"
@@ -345,7 +293,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2685,
+      "line": 2778,
       "column": 54,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_prolog"
@@ -358,7 +306,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/process.rs",
-      "line": 525,
+      "line": 526,
       "column": 9,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_prolog"
@@ -371,10 +319,23 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2074,
+      "line": 2162,
       "column": 59,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_prolog"
+    },
+    {
+      "stable_id": "b3:728c066af005c5c4",
+      "semantic_id": "b3:728c066af005c5c4",
+      "identity_status": "computed",
+      "lint": "catch_all_on_enum",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/tests/prolog.rs",
+      "line": 2676,
+      "column": 9,
+      "message": "catch-all `_` on enum match returns deny value — new variants will be silently handled",
+      "crate_name": "prolog"
     },
     {
       "stable_id": "b3:7372db7bae69a7aa",
@@ -384,22 +345,9 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1444,
+      "line": 1519,
       "column": 51,
       "message": "same-crate enum `VariableRole` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:741e57e3a080c21b",
-      "semantic_id": "b3:741e57e3a080c21b",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2447,
-      "column": 63,
-      "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_prolog"
     },
     {
@@ -423,7 +371,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 712,
+      "line": 754,
       "column": 9,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -442,28 +390,15 @@
       "crate_name": "admission_parity"
     },
     {
-      "stable_id": "b3:7e9cc854c037d4dc",
-      "semantic_id": "b3:7e9cc854c037d4dc",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2464,
-      "column": 21,
-      "message": "unprotected unsigned multiplication may overflow",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:80b1df700d9f6ceb",
-      "semantic_id": "b3:80b1df700d9f6ceb",
+      "stable_id": "b3:7e74aedae03dd6c5",
+      "semantic_id": "b3:7e74aedae03dd6c5",
       "identity_status": "computed",
       "lint": "fragile_exhaustive_enum_match",
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 980,
-      "column": 9,
+      "line": 2224,
+      "column": 24,
       "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
     },
@@ -488,9 +423,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2874,
+      "line": 2975,
       "column": 25,
       "message": "same-crate enum `QueryResult` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_prolog"
+    },
+    {
+      "stable_id": "b3:87b02d325e2ac968",
+      "semantic_id": "b3:87b02d325e2ac968",
+      "identity_status": "computed",
+      "lint": "sentinel_fallback",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/src/slg.rs",
+      "line": 150,
+      "column": 5,
+      "message": "extreme sentinel fallback masks absence or failure",
       "crate_name": "mneme_prolog"
     },
     {
@@ -501,7 +449,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 694,
+      "line": 736,
       "column": 9,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_prolog"
@@ -514,7 +462,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 114,
+      "line": 116,
       "column": 9,
       "message": "same-crate enum `Feature` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -533,6 +481,19 @@
       "crate_name": "prolog"
     },
     {
+      "stable_id": "b3:8eeb8356b23b52a7",
+      "semantic_id": "b3:8eeb8356b23b52a7",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/src/lib.rs",
+      "line": 2029,
+      "column": 5,
+      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_prolog"
+    },
+    {
       "stable_id": "b3:8fc0eef11d245afc",
       "semantic_id": "b3:8fc0eef11d245afc",
       "identity_status": "computed",
@@ -540,7 +501,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2383,
+      "line": 2474,
       "column": 13,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_prolog"
@@ -553,7 +514,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1265,
+      "line": 1360,
       "column": 53,
       "message": "same-crate enum `QueryTruth` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -566,22 +527,9 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2684,
+      "line": 2777,
       "column": 9,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:ada875ab803110b0",
-      "semantic_id": "b3:ada875ab803110b0",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2133,
-      "column": 24,
-      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
     },
     {
@@ -592,7 +540,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1637,
+      "line": 1712,
       "column": 36,
       "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -605,7 +553,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1899,
+      "line": 1984,
       "column": 5,
       "message": "same-crate enum `process::WorkerStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
@@ -618,9 +566,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 744,
+      "line": 786,
       "column": 40,
       "message": "unprotected unsigned addition may overflow",
+      "crate_name": "mneme_prolog"
+    },
+    {
+      "stable_id": "b3:bab36db466128f75",
+      "semantic_id": "b3:bab36db466128f75",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-prolog/src/process.rs",
+      "line": 1057,
+      "column": 16,
+      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
     },
     {
@@ -631,35 +592,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 891,
+      "line": 933,
       "column": 9,
       "message": "same-crate enum `Literal` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
     },
     {
-      "stable_id": "b3:c0670c79f5a0ac67",
-      "semantic_id": "b3:c0670c79f5a0ac67",
+      "stable_id": "b3:ce20cfa86a2ad42c",
+      "semantic_id": "b3:ce20cfa86a2ad42c",
       "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
+      "lint": "sentinel_fallback",
       "group": "tigerstyle::safety",
       "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2446,
-      "column": 55,
-      "message": "unprotected unsigned subtraction may overflow",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:c539d70e4ae8de71",
-      "semantic_id": "b3:c539d70e4ae8de71",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2464,
-      "column": 21,
-      "message": "unprotected unsigned addition may overflow",
+      "file": "crates/mneme-prolog/src/slg.rs",
+      "line": 144,
+      "column": 5,
+      "message": "extreme sentinel fallback masks absence or failure",
       "crate_name": "mneme_prolog"
     },
     {
@@ -670,22 +618,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1910,
+      "line": 1995,
       "column": 5,
       "message": "same-crate enum `process::WorkerStatus` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
     },
     {
-      "stable_id": "b3:d06c1145fe82100b",
-      "semantic_id": "b3:d06c1145fe82100b",
+      "stable_id": "b3:d5442c737775fcad",
+      "semantic_id": "b3:d5442c737775fcad",
       "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1925,
-      "column": 5,
-      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 61 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_prolog"
     },
     {
@@ -696,7 +644,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/process.rs",
-      "line": 1542,
+      "line": 1549,
       "column": 5,
       "message": "`#[allow(...)]` without justification comment",
       "crate_name": "mneme_prolog"
@@ -722,22 +670,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2677,
+      "line": 2770,
       "column": 20,
       "message": "same-crate enum `RenderStep` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
     },
     {
-      "stable_id": "b3:ecc554c8df73b8c8",
-      "semantic_id": "b3:ecc554c8df73b8c8",
+      "stable_id": "b3:f09ff372e40654d8",
+      "semantic_id": "b3:f09ff372e40654d8",
       "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
+      "lint": "fragile_exhaustive_enum_match",
       "group": "tigerstyle::safety",
       "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2366,
-      "column": 17,
-      "message": "unprotected unsigned addition may overflow",
+      "file": "crates/mneme-prolog/src/process.rs",
+      "line": 243,
+      "column": 5,
+      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"
     },
     {
@@ -754,43 +702,17 @@
       "crate_name": "mneme_prolog"
     },
     {
-      "stable_id": "b3:f3c3fc6ce28e0958",
-      "semantic_id": "b3:f3c3fc6ce28e0958",
+      "stable_id": "b3:f23c1ea3e8f08f6e",
+      "semantic_id": "b3:f23c1ea3e8f08f6e",
       "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
+      "lint": "foreign_enum_catch_all",
       "group": "tigerstyle::safety",
       "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2465,
-      "column": 13,
-      "message": "unprotected unsigned addition may overflow",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:f5095e133107a155",
-      "semantic_id": "b3:f5095e133107a155",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/process.rs",
-      "line": 1050,
-      "column": 16,
-      "message": "same-crate enum `QueryMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_prolog"
-    },
-    {
-      "stable_id": "b3:f561052ac8b47c10",
-      "semantic_id": "b3:f561052ac8b47c10",
-      "identity_status": "computed",
-      "lint": "raw_arithmetic_overflow",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 2512,
-      "column": 39,
-      "message": "unprotected unsigned addition may overflow",
-      "crate_name": "mneme_prolog"
+      "file": "crates/mneme-prolog/tests/prolog.rs",
+      "line": 2676,
+      "column": 9,
+      "message": "foreign enum `mneme_prolog::Proposal` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
+      "crate_name": "prolog"
     },
     {
       "stable_id": "b3:f870f3b4863d1c82",
@@ -800,7 +722,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/process.rs",
-      "line": 679,
+      "line": 686,
       "column": 24,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_prolog"
@@ -813,7 +735,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-prolog/src/lib.rs",
-      "line": 1664,
+      "line": 1739,
       "column": 5,
       "message": "same-crate enum `Term` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_prolog"

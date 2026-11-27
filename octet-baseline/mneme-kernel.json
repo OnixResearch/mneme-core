@@ -10,7 +10,7 @@
     "profile_hash": "b3:a6bcf2f3a7565ef4016fdfeb8d758f5806d6678a3206b8357f46404eafe3df41",
     "config_hash": "b3:fb92952d4b5deb1436fb2332f5ffd83e1bc34aa0e1376dbe17a874fa755d9102"
   },
-  "baseline_hash": "b3:c25bf3d86172efa79da666e144626e2457f4fb4d228bd6df71af91c9bb6e2029",
+  "baseline_hash": "b3:cf8de7280da2325598616e01f195929dd2d8b7c71fff3d2c0430a2a6aa28d9d3",
   "findings": [
     {
       "stable_id": "b3:039e2a51f9321a27",
@@ -111,7 +111,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-kernel/src/lib.rs",
-      "line": 48,
+      "line": 49,
       "column": 1,
       "message": "module exposes 13 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_kernel"
@@ -306,7 +306,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-kernel/src/lib.rs",
-      "line": 52,
+      "line": 53,
       "column": 1,
       "message": "module exposes 26 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_kernel"
@@ -819,19 +819,6 @@
       "crate_name": "kernel"
     },
     {
-      "stable_id": "b3:f910178be79e2f63",
-      "semantic_id": "b3:f910178be79e2f63",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-kernel/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 18 public items (limit: 12) — split unrelated public surface into focused modules",
-      "crate_name": "mneme_kernel"
-    },
-    {
       "stable_id": "b3:fa36d83aa302895c",
       "semantic_id": "b3:fa36d83aa302895c",
       "identity_status": "computed",
@@ -856,6 +843,19 @@
       "column": 92,
       "message": "non-trait import `union` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:fb43c7aa613f0b2f",
+      "semantic_id": "b3:fb43c7aa613f0b2f",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 19 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_kernel"
     },
     {
       "stable_id": "b3:fe09599463ab2b52",

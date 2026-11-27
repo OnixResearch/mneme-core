@@ -138,20 +138,16 @@ pub(crate) fn atom_key(atom: &crate::Atom) -> PredKey {
     (atom.predicate.clone(), arity)
 }
 
+// Saturating conversion for bounded SLG arity/index counters.
+#[allow(unknown_lints, fallible_int_fallback)]
 pub(crate) fn saturating_u32(value: usize) -> u32 {
-    if let Ok(narrow) = u32::try_from(value) {
-        narrow
-    } else {
-        u32::MAX
-    }
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
+// Saturating millisecond telemetry conversion (u64::MAX ms is >584M years).
+#[allow(unknown_lints, fallible_int_fallback)]
 pub(crate) fn elapsed_millis_u64(duration: std::time::Duration) -> u64 {
-    if let Ok(millis) = u64::try_from(duration.as_millis()) {
-        millis
-    } else {
-        u64::MAX
-    }
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 pub(crate) fn literal_atom(literal: &crate::Literal) -> &crate::Atom {

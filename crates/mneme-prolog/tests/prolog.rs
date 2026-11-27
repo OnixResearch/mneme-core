@@ -2205,10 +2205,12 @@ fn cyclic_left_recursive_reach_50_nodes_matches_datalog_blast_radius_under_50ms(
             ),
         ],
     });
-    let mut datalog_limits = mneme_datalog::Limits::default();
-    datalog_limits.max_work = 500_000;
-    datalog_limits.max_recursion_depth = 128;
-    datalog_limits.max_result_rows = 5_000;
+    let datalog_limits = mneme_datalog::Limits {
+        max_work: 500_000,
+        max_recursion_depth: 128,
+        max_result_rows: 5_000,
+        ..mneme_datalog::Limits::default()
+    };
     let build = {
         let mut service = mneme_datalog::Service::new(&mut workspace);
         service
@@ -2669,9 +2671,11 @@ fn abduce_returns_unique_minimal_consistent_proposed_plan_and_commits_zero_recor
         ])
     );
     assert_eq!(outcome.proposals.len(), 1);
-    let mneme_prolog::Proposal::Plan(plan) = &outcome.proposals[0] else {
-        panic!("abduction must emit a PlanProposal");
-    };
+    let plan = match &outcome.proposals[0] {
+        mneme_prolog::Proposal::Plan(plan) => Some(plan),
+        _ => None,
+    }
+    .expect("abduction must emit a PlanProposal");
     assert_eq!(plan.preconditions.len(), 2);
     assert_eq!(plan.assumptions, sols[0].assumptions);
 
