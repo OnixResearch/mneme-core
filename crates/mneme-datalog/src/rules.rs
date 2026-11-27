@@ -18,23 +18,31 @@ pub(crate) enum CanonicalKind {
 impl CanonicalKind {
     /// Whether a value can appear in this column.
     pub(crate) fn accepts(self, value: &mneme_core::Value) -> bool {
-        match self {
-            CanonicalKind::RecordId => identity_record(value, "record-id"),
-            CanonicalKind::RevisionId => identity_record(value, "revision-id"),
-            CanonicalKind::Symbol => value.as_symbol().is_some(),
-            CanonicalKind::String => value.as_string().is_some(),
-            CanonicalKind::Any => true,
+        if self == CanonicalKind::RecordId {
+            identity_record(value, "record-id")
+        } else if self == CanonicalKind::RevisionId {
+            identity_record(value, "revision-id")
+        } else if self == CanonicalKind::Symbol {
+            value.as_symbol().is_some()
+        } else if self == CanonicalKind::String {
+            value.as_string().is_some()
+        } else {
+            true
         }
     }
 
     /// Stable name for diagnostics.
     const fn name(self) -> &'static str {
-        match self {
-            CanonicalKind::RecordId => "record-id",
-            CanonicalKind::RevisionId => "revision-id",
-            CanonicalKind::Symbol => "symbol",
-            CanonicalKind::String => "string",
-            CanonicalKind::Any => "any",
+        if matches!(self, CanonicalKind::RecordId) {
+            "record-id"
+        } else if matches!(self, CanonicalKind::RevisionId) {
+            "revision-id"
+        } else if matches!(self, CanonicalKind::Symbol) {
+            "symbol"
+        } else if matches!(self, CanonicalKind::String) {
+            "string"
+        } else {
+            "any"
         }
     }
 }
@@ -150,6 +158,21 @@ pub(crate) fn canonical_arity(predicate: &str) -> Option<usize> {
 pub fn validate(
     bundle: &crate::RuleBundle,
 ) -> Result<crate::RuleProgram, Vec<crate::RuleDiagnostic>> {
+    validate_with_mode(bundle, crate::EvaluationMode::Stratified)
+}
+
+/// Validate a rule bundle under bounded Well-Founded Semantics (WFS), permitting
+/// negative cycles while enforcing all safety, arity, schema, and coverage rules.
+pub fn validate_well_founded(
+    bundle: &crate::RuleBundle,
+) -> Result<crate::RuleProgram, Vec<crate::RuleDiagnostic>> {
+    validate_with_mode(bundle, crate::EvaluationMode::WellFounded)
+}
+
+fn validate_with_mode(
+    bundle: &crate::RuleBundle,
+    mode: crate::EvaluationMode,
+) -> Result<crate::RuleProgram, Vec<crate::RuleDiagnostic>> {
     let body_literals = bundle
         .rules
         .iter()
@@ -195,7 +218,7 @@ pub fn validate(
         }
     }
     validate_complete_predicates(bundle, &arities, &heads, &mut diagnostics);
-    finish_validation(bundle, arities, heads, diagnostics)
+    finish_validation(bundle, arities, heads, diagnostics, mode)
 }
 
 fn validate_bundle_header(
@@ -642,6 +665,7 @@ fn finish_validation(
     mut arities: std::collections::BTreeMap<String, usize>,
     heads: std::collections::BTreeMap<String, usize>,
     mut diagnostics: Vec<crate::RuleDiagnostic>,
+    mode: crate::EvaluationMode,
 ) -> Result<crate::RuleProgram, Vec<crate::RuleDiagnostic>> {
     if diagnostics.is_empty() {
         for (predicate, arity) in &heads {
@@ -653,6 +677,17 @@ fn finish_validation(
                 arities,
                 strata,
             }),
+            Err(_) if mode == crate::EvaluationMode::WellFounded => {
+                let flat_strata = arities
+                    .keys()
+                    .map(|predicate| (predicate.clone(), 0_usize))
+                    .collect();
+                Ok(crate::RuleProgram {
+                    bundle: bundle.clone(),
+                    arities,
+                    strata: flat_strata,
+                })
+            }
             Err(mut errors) => {
                 diagnostics.append(&mut errors);
                 Err(diagnostics)
@@ -834,9 +869,10 @@ fn head_vars(atom: &crate::Atom) -> Vec<String> {
 }
 
 fn term_var(term: &crate::Term) -> Option<String> {
-    match term {
-        crate::Term::Variable(name) => Some(name.clone()),
-        crate::Term::Constant(_) => None,
+    if let crate::Term::Variable(name) = term {
+        Some(name.clone())
+    } else {
+        None
     }
 }
 
@@ -1006,14 +1042,15 @@ fn atom_value(atom: &crate::Atom) -> mneme_core::Value {
 }
 
 fn term_value(term: &crate::Term) -> mneme_core::Value {
-    match term {
-        crate::Term::Variable(name) => mneme_core::Value::record_named(
+    if let crate::Term::Variable(name) = term {
+        mneme_core::Value::record_named(
             "datalog-var",
             vec![mneme_core::Value::string(name.clone())],
-        ),
-        crate::Term::Constant(value) => {
-            mneme_core::Value::record_named("datalog-const", vec![value.clone()])
-        }
+        )
+    } else if let crate::Term::Constant(value) = term {
+        mneme_core::Value::record_named("datalog-const", vec![value.clone()])
+    } else {
+        mneme_core::Value::symbol("unknown")
     }
 }
 
@@ -1040,11 +1077,14 @@ fn literal_value(literal: &crate::Literal) -> mneme_core::Value {
         } => mneme_core::Value::record_named(
             "aggregate",
             vec![
-                mneme_core::Value::symbol(match function {
-                    crate::AggregateFunction::Count => "count".to_owned(),
-                    crate::AggregateFunction::Sum => "sum".to_owned(),
-                    crate::AggregateFunction::Min => "min".to_owned(),
-                    crate::AggregateFunction::Max => "max".to_owned(),
+                mneme_core::Value::symbol(if *function == crate::AggregateFunction::Count {
+                    "count".to_owned()
+                } else if *function == crate::AggregateFunction::Sum {
+                    "sum".to_owned()
+                } else if *function == crate::AggregateFunction::Min {
+                    "min".to_owned()
+                } else {
+                    "max".to_owned()
                 }),
                 term_value(input),
                 mneme_core::Value::string(output.clone()),

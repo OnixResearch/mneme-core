@@ -632,6 +632,13 @@ fn write_program(
         text.push_str(&clause);
         text.push('\n');
     }
+    let is_certified = request.features.contains(&crate::Feature::CertifiedProofs);
+    if is_certified {
+        for clause in proof_clauses(source, request, metadata)? {
+            text.push_str(&clause);
+            text.push('\n');
+        }
+    }
     let output_variables = request
         .variables
         .iter()
@@ -640,6 +647,13 @@ fn write_program(
         .collect::<Vec<_>>();
     text.push_str(&emit_solution_clause(&output_variables, &identity));
     text.push('\n');
+    if is_certified {
+        text.push_str(&emit_certified_solution_clause(
+            &output_variables,
+            &identity,
+        ));
+        text.push('\n');
+    }
     text.push_str(&goal_directive(request, metadata, &identity)?);
     assert!(!text.is_empty());
     let mut file = std::fs::File::create(path).map_err(|error| {
@@ -989,17 +1003,39 @@ fn goal_directive(
     metadata: &crate::CapabilityMetadata,
     identity: &crate::ProtocolIdentity,
 ) -> Result<String, crate::CapabilityError> {
-    let goal = crate::encode_query_goal(request, metadata)?;
+    let raw_goal = crate::encode_query_goal(request, metadata)?;
+    let is_certified = request.features.contains(&crate::Feature::CertifiedProofs);
     let variables = request
         .variables
         .iter()
         .filter(|variable| variable.role == crate::VariableRole::Output)
         .map(|variable| variable.name.clone())
         .collect::<Vec<_>>();
-    let emit = if variables.is_empty() {
-        "mneme_emit_solution".to_owned()
+    let used_vars: std::collections::BTreeSet<&str> =
+        request.variables.iter().map(|v| v.name.as_str()).collect();
+    let proof_var = fresh_proof_var(&used_vars, "MnemeProofRoot");
+    let (goal, emit) = if is_certified {
+        let prove_goal = if request.mode == crate::QueryMode::GroundTest {
+            format!("mneme_prove({raw_goal}, _{proof_var})")
+        } else {
+            format!("mneme_prove({raw_goal}, {proof_var})")
+        };
+        let emit_call = if variables.is_empty() {
+            format!("mneme_emit_certified_solution({proof_var})")
+        } else {
+            format!(
+                "mneme_emit_certified_solution({proof_var},{})",
+                variables.join(",")
+            )
+        };
+        (prove_goal, emit_call)
     } else {
-        format!("mneme_emit_solution({})", variables.join(","))
+        let emit_call = if variables.is_empty() {
+            "mneme_emit_solution".to_owned()
+        } else {
+            format!("mneme_emit_solution({})", variables.join(","))
+        };
+        (raw_goal, emit_call)
     };
     let header = emit_frame(&[
         crate::RESPONSE_HEADER_PREFIX,
@@ -1034,6 +1070,191 @@ fn goal_directive(
     Ok(format!(
         ":- initialization(mneme_main).\nmneme_main :- catch(({header}, {body}), _, halt(2))."
     ))
+}
+
+fn fresh_proof_var(used: &std::collections::BTreeSet<&str>, base: &str) -> String {
+    if !used.contains(base) {
+        return base.to_owned();
+    }
+    let mut suffix = 0_u64;
+    loop {
+        let candidate = format!("{base}_{suffix}");
+        if !used.contains(candidate.as_str()) {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
+}
+
+/// Emit `mneme_prove/2` proof-tree instrumentation clauses for `Feature::CertifiedProofs`.
+fn proof_clauses(
+    source: ImageSource<'_>,
+    request: &crate::Request,
+    metadata: &crate::CapabilityMetadata,
+) -> Result<Vec<String>, crate::CapabilityError> {
+    let image = source.base();
+    let budget = metadata.limits.max_output_bytes;
+    let rel_rows: usize = image.relations.iter().map(|r| r.rows.len()).sum();
+    let cap = image
+        .canonical
+        .len()
+        .saturating_add(rel_rows.saturating_mul(2))
+        .saturating_add(request.assumptions.len())
+        .saturating_add(request.rules.len())
+        .saturating_add(1);
+    let mut clauses = Vec::with_capacity(cap);
+    let assertion_pred = crate::ASSERTION_RELATION.to_owned();
+    for (idx, fact) in image.canonical.iter().enumerate() {
+        let atom = crate::Atom {
+            predicate: assertion_pred.clone(),
+            terms: vec![
+                crate::Term::String(fact.predicate.clone()),
+                crate::Term::String(fact.subject.to_hex()),
+                crate::snapshot::value_term(&fact.value).map_err(|_| unrepresentable_image())?,
+            ],
+        };
+        let encoded = crate::encode_atom(&atom, metadata.terms, budget)?;
+        clauses.push(format!(
+            "mneme_prove({encoded}, mneme_leaf(canonical, {idx}))."
+        ));
+    }
+    clauses.extend(relation_proof_clauses(image, metadata, budget)?);
+    for (idx, assumption) in request.assumptions.iter().enumerate() {
+        let encoded = crate::encode_atom(&assumption.atom, metadata.terms, budget)?;
+        clauses.push(format!(
+            "mneme_prove({encoded}, mneme_leaf(assumption, {idx}))."
+        ));
+    }
+    for (rule_idx, rule) in request.rules.iter().enumerate() {
+        clauses.push(proof_rule_clause(rule_idx, rule, metadata.terms, budget)?);
+    }
+    if clauses.is_empty() {
+        clauses.push("mneme_prove(_, _) :- fail.".to_owned());
+    }
+    Ok(clauses)
+}
+
+fn relation_proof_clauses(
+    image: &crate::snapshot::InputImage,
+    metadata: &crate::CapabilityMetadata,
+    budget: usize,
+) -> Result<Vec<String>, crate::CapabilityError> {
+    let rel_rows: usize = image.relations.iter().map(|r| r.rows.len()).sum();
+    let mut clauses = Vec::with_capacity(rel_rows.saturating_mul(2));
+    let rel_pred = crate::RELATION_RELATION.to_owned();
+    let tagged_pred = crate::snapshot::SelectedRow::EPISTEMIC_RELATION.to_owned();
+    let accepted_tag = mneme_datalog::EpistemicStatus::Accepted.name().to_owned();
+    let proposed_tag = mneme_datalog::EpistemicStatus::Proposed.name().to_owned();
+    for (rel_idx, relation) in image.relations.iter().enumerate() {
+        for (row_idx, row) in relation.rows.iter().enumerate() {
+            if !row.epistemic.is_active() {
+                continue;
+            }
+            let value_terms = row
+                .values
+                .iter()
+                .map(crate::snapshot::value_term)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| unrepresentable_image())?;
+            if row.epistemic == mneme_datalog::EpistemicStatus::Accepted {
+                let rel_atom = crate::Atom {
+                    predicate: rel_pred.clone(),
+                    terms: vec![
+                        crate::Term::String(relation.predicate.clone()),
+                        crate::Term::List(value_terms.clone()),
+                    ],
+                };
+                let encoded = crate::encode_atom(&rel_atom, metadata.terms, budget)?;
+                clauses.push(format!(
+                    "mneme_prove({encoded}, mneme_leaf(relation, {rel_idx}, {row_idx}))."
+                ));
+            }
+            let status_tag = if row.epistemic == mneme_datalog::EpistemicStatus::Accepted {
+                &accepted_tag
+            } else {
+                &proposed_tag
+            };
+            let tagged_atom = crate::Atom {
+                predicate: tagged_pred.clone(),
+                terms: vec![
+                    crate::Term::String(relation.predicate.clone()),
+                    crate::Term::List(value_terms),
+                    crate::Term::String(status_tag.clone()),
+                ],
+            };
+            let encoded = crate::encode_atom(&tagged_atom, metadata.terms, budget)?;
+            clauses.push(format!(
+                "mneme_prove({encoded}, mneme_leaf(relation_epistemic, {rel_idx}, {row_idx}))."
+            ));
+        }
+    }
+    Ok(clauses)
+}
+
+fn proof_rule_clause(
+    rule_idx: usize,
+    rule: &crate::Rule,
+    profile: crate::TermProfile,
+    budget: usize,
+) -> Result<String, crate::CapabilityError> {
+    let head = crate::encode_atom(&rule.head, profile, budget)?;
+    if rule.body.is_empty() {
+        return Ok(format!("mneme_prove({head}, mneme_step({rule_idx}, []))."));
+    }
+    let mut rule_vars: std::collections::BTreeSet<String> =
+        crate::goal_variables(&rule.head).into_iter().collect();
+    for lit in &rule.body {
+        let (crate::Literal::Positive(atom) | crate::Literal::Negative(atom)) = lit;
+        rule_vars.extend(crate::goal_variables(atom));
+    }
+    let used_refs: std::collections::BTreeSet<&str> =
+        rule_vars.iter().map(String::as_str).collect();
+    let mut child_vars = Vec::with_capacity(rule.body.len());
+    let mut body_calls = Vec::with_capacity(rule.body.len());
+    for (idx, literal) in rule.body.iter().enumerate() {
+        let crate::Literal::Positive(atom) = literal else {
+            return Err(crate::CapabilityError::UnsupportedFeature(
+                crate::Feature::GuardedNegation,
+            ));
+        };
+        let pvar = fresh_proof_var(&used_refs, &format!("MnemeP{idx}"));
+        let encoded_atom = crate::encode_atom(atom, profile, budget)?;
+        body_calls.push(format!("mneme_prove({encoded_atom}, {pvar})"));
+        child_vars.push(pvar);
+    }
+    Ok(format!(
+        "mneme_prove({head}, mneme_step({rule_idx}, [{}])) :- {}.",
+        child_vars.join(","),
+        body_calls.join(", ")
+    ))
+}
+
+fn emit_certified_solution_clause(
+    variables: &[String],
+    identity: &crate::ProtocolIdentity,
+) -> String {
+    let used: std::collections::BTreeSet<&str> = variables.iter().map(String::as_str).collect();
+    let pvar = fresh_proof_var(&used, "MnemeProof");
+    let (head, emit_row) = if variables.is_empty() {
+        (
+            format!("mneme_emit_certified_solution({pvar})"),
+            "mneme_emit_solution".to_owned(),
+        )
+    } else {
+        (
+            format!(
+                "mneme_emit_certified_solution({pvar},{})",
+                variables.join(",")
+            ),
+            format!("mneme_emit_solution({})", variables.join(",")),
+        )
+    };
+    format!(
+        "{head} :- {emit_row}, ( ground({pvar}) -> write('{prefix}'), put_code(9), write('{digest}'), put_code(9), mneme_emit_term({pvar}), nl ; write('{unbound}'), put_code(9), write('{digest}'), nl, halt(2) ).",
+        prefix = crate::RESPONSE_PROOF_PREFIX,
+        digest = identity.request_digest,
+        unbound = crate::UNBOUND_MARKER
+    )
 }
 
 /// Render the clause that prints one solution line.

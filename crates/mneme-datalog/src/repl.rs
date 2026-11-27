@@ -114,7 +114,8 @@ impl ReplSession {
                 "session row limit exceeded while loading base extents".to_owned(),
             ));
         }
-        let ivm = crate::ivm::ViewState::from_base_facts(&base.facts)?;
+        let negation_semantics = crate::NegationSemantics::default();
+        let ivm = crate::ivm::ViewState::from_base_facts(&base.facts, negation_semantics)?;
         let build = crate::Build {
             context,
             status: base.status,
@@ -125,6 +126,8 @@ impl ReplSession {
             limit_reached: base.limit_reached,
             declaration_valid: true,
             facts: unwrap_fact_stores(&base.facts),
+            justifications: ivm.justifications.clone(),
+            negation_semantics,
             arities: program.arities.clone(),
             bundle: program.bundle.clone(),
             vault_barriers: Vec::new(),
@@ -268,6 +271,22 @@ impl ReplSession {
         ))
     }
 
+    /// Epistemic negation semantics configured for this session.
+    pub const fn negation_semantics(&self) -> crate::NegationSemantics {
+        self.ivm.negation_semantics
+    }
+
+    /// Configure epistemic negation semantics for subsequent rule evaluations in this session.
+    pub fn set_negation_semantics(&mut self, semantics: crate::NegationSemantics) {
+        self.ivm.negation_semantics = semantics;
+        self.build.negation_semantics = semantics;
+    }
+
+    /// Bounded content-addressed justification hypergraph for the current session state.
+    pub fn justifications(&self) -> &crate::JustificationGraph {
+        &self.build.justifications
+    }
+
     /// Pinned evaluation context for this session.
     pub fn context(&self) -> &crate::BuildContext {
         &self.build.context
@@ -361,6 +380,110 @@ impl ReplSession {
         step_limits.max_work = step_limits.max_work.min(remaining_work);
         debug_assert!(step_limits.max_work > 0);
         debug_assert!(step_limits.max_work <= remaining_work);
+
+        if has_temporal_rules(&candidate_program.bundle) {
+            return self.apply_incremental_temporal_fallback(
+                candidate_program,
+                affected,
+                IncrementalStepContext { step_limits, start },
+            );
+        }
+
+        let next_build_id = crate::rules::build_id(crate::rules::BuildIdContext {
+            revision: self.build.context.requested_revision,
+            scope: &self.build.context.scope,
+            generation: self.build.context.eligibility_generation,
+            bundle: &candidate_program.bundle,
+            limits: &self.repl_limits.per_step,
+            incomplete_extents: &self.incomplete_extents,
+            at: self.at,
+        });
+        let mut next_context = self.build.context.clone();
+        next_context.projection_build_id = next_build_id;
+
+        let ivm_result = crate::ivm::apply_rule_change(
+            &self.ivm,
+            crate::ivm::ApplyRuleChangeRequest {
+                program: &candidate_program,
+                affected: &affected,
+                base: &self.base,
+                context: &next_context,
+                current_facts: &self.build.facts,
+                limits: &step_limits,
+                at: self.at,
+                start,
+            },
+        )?;
+        self.commit_unified_rule_change(candidate_program, ivm_result, next_context)
+    }
+
+    fn commit_unified_rule_change(
+        &mut self,
+        candidate_program: crate::RuleProgram,
+        ivm_result: crate::ivm::AdvanceViewResult,
+        next_context: crate::BuildContext,
+    ) -> Result<ReplStepSummary, crate::Error> {
+        self.total_work = self.total_work.saturating_add(ivm_result.work);
+        if ivm_result.limit_reached {
+            return Err(crate::Error::LimitExceeded(format!(
+                "step limit reached ({})",
+                ivm_result.status.name()
+            )));
+        }
+        let next_total_rows = count_fact_rows(&ivm_result.next_facts)?;
+        if next_total_rows > self.repl_limits.max_total_rows {
+            return Err(crate::Error::LimitExceeded(format!(
+                "session total row limit ({}) exceeded",
+                self.repl_limits.max_total_rows
+            )));
+        }
+        let negation_semantics = ivm_result.next_view.negation_semantics;
+        let justifications = ivm_result.next_view.justifications.clone();
+        self.ivm = ivm_result.next_view;
+        self.build = crate::Build {
+            context: next_context.clone(),
+            status: ivm_result.status,
+            coverage: ivm_result.coverage,
+            limits: self.repl_limits.per_step.clone(),
+            work: ivm_result.work,
+            support_truncated: ivm_result.support_truncated,
+            limit_reached: false,
+            declaration_valid: true,
+            facts: ivm_result.next_facts,
+            justifications,
+            negation_semantics,
+            arities: candidate_program.arities.clone(),
+            bundle: candidate_program.bundle.clone(),
+            vault_barriers: Vec::new(),
+        };
+        self.program = candidate_program;
+
+        let rule_count = u32::try_from(self.build.bundle.rules.len())
+            .map_err(|_| crate::Error::LimitExceeded("session rule count overflow".to_owned()))?;
+        Ok(ReplStepSummary {
+            context: next_context,
+            status: self.build.status,
+            step_work: ivm_result.work,
+            total_work: self.total_work,
+            remaining_work: self
+                .repl_limits
+                .max_total_work
+                .saturating_sub(self.total_work),
+            total_rows: next_total_rows,
+            rule_count,
+            limit_reached: false,
+            support_truncated: self.build.support_truncated,
+            affected_predicates: ivm_result.affected_predicates,
+            reused_predicates: ivm_result.reused_predicates,
+        })
+    }
+
+    fn apply_incremental_temporal_fallback(
+        &mut self,
+        candidate_program: crate::RuleProgram,
+        affected: std::collections::BTreeSet<String>,
+        step_ctx: IncrementalStepContext,
+    ) -> Result<ReplStepSummary, crate::Error> {
         let kept_facts = self.kept_facts(&candidate_program, &affected);
         let reused_predicates: Vec<String> = kept_facts
             .keys()
@@ -379,11 +502,11 @@ impl ReplSession {
                 bundle: &candidate_program.bundle,
                 program: &candidate_program,
                 context: &self.build.context,
-                limits: &step_limits,
+                limits: &step_ctx.step_limits,
                 kept_facts,
                 affected_predicates: &affected,
                 at: self.at,
-                start,
+                start: step_ctx.start,
             },
         );
         self.commit_incremental(
@@ -391,7 +514,7 @@ impl ReplSession {
             affected,
             reused_predicates,
             evaluated,
-            IncrementalStepContext { step_limits, start },
+            step_ctx,
         )
     }
 
@@ -464,8 +587,8 @@ impl ReplSession {
         let sync_work = self.sync_ivm_after_rule_change(
             &candidate_program,
             &next_facts,
+            &evaluated,
             &affected,
-            evaluated.work,
             &step_ctx,
         )?;
         let step_work = evaluated.work.saturating_add(sync_work);
@@ -480,18 +603,36 @@ impl ReplSession {
             limit_reached: evaluated.limit_reached,
             declaration_valid: evaluated.declaration_valid,
             facts: next_facts,
+            justifications: evaluated.justifications,
+            negation_semantics: evaluated.negation_semantics,
             arities: candidate_program.arities.clone(),
             bundle: candidate_program.bundle.clone(),
             vault_barriers: Vec::new(),
         };
         self.program = candidate_program;
+        self.build_step_summary(
+            next_context,
+            step_work,
+            next_total_rows,
+            affected.into_iter().collect(),
+            reused_predicates,
+        )
+    }
 
+    fn build_step_summary(
+        &self,
+        context: crate::BuildContext,
+        step_work: u64,
+        total_rows: u64,
+        affected_predicates: Vec<String>,
+        reused_predicates: Vec<String>,
+    ) -> Result<ReplStepSummary, crate::Error> {
         let rule_count = u32::try_from(self.build.bundle.rules.len())
             .map_err(|_| crate::Error::LimitExceeded("session rule count overflow".to_owned()))?;
         debug_assert!(self.total_work <= self.repl_limits.max_total_work);
-        debug_assert!(next_total_rows <= self.repl_limits.max_total_rows);
+        debug_assert!(total_rows <= self.repl_limits.max_total_rows);
         Ok(ReplStepSummary {
-            context: next_context,
+            context,
             status: self.build.status,
             step_work,
             total_work: self.total_work,
@@ -499,11 +640,11 @@ impl ReplSession {
                 .repl_limits
                 .max_total_work
                 .saturating_sub(self.total_work),
-            total_rows: next_total_rows,
+            total_rows,
             rule_count,
             limit_reached: false,
             support_truncated: self.build.support_truncated,
-            affected_predicates: affected.into_iter().collect(),
+            affected_predicates,
             reused_predicates,
         })
     }
@@ -515,8 +656,8 @@ impl ReplSession {
             String,
             std::collections::BTreeMap<Vec<mneme_core::Value>, crate::FactData>,
         >,
+        evaluated: &crate::engine::BuildFacts,
         affected: &std::collections::BTreeSet<String>,
-        evaluated_work: u64,
         step_ctx: &IncrementalStepContext,
     ) -> Result<u64, crate::Error> {
         debug_assert!(step_ctx.step_limits.max_work > 0);
@@ -525,11 +666,12 @@ impl ReplSession {
             crate::ivm::SyncRuleChangeRequest {
                 program: candidate_program,
                 build_facts: next_facts,
+                justifications: &evaluated.justifications,
                 affected,
                 base_coverage: &self.base.base_coverage,
                 coverage_reasons: &self.base.coverage_reasons,
                 limits: &step_ctx.step_limits,
-                initial_work: evaluated_work,
+                initial_work: evaluated.work,
                 start: step_ctx.start,
             },
             &mut sync_work,
@@ -697,6 +839,8 @@ impl ReplSession {
             )));
         }
 
+        let negation_semantics = ivm_result.next_view.negation_semantics;
+        let justifications = ivm_result.next_view.justifications.clone();
         self.base = next_base;
         self.ivm = ivm_result.next_view;
         self.build = crate::Build {
@@ -709,6 +853,8 @@ impl ReplSession {
             limit_reached: false,
             declaration_valid: true,
             facts: ivm_result.next_facts,
+            justifications,
+            negation_semantics,
             arities: self.program.arities.clone(),
             bundle: self.program.bundle.clone(),
             vault_barriers: Vec::new(),
@@ -926,6 +1072,20 @@ fn count_store_rows(
         total = total.saturating_add(count);
     }
     Ok(total)
+}
+
+fn has_temporal_rules(bundle: &crate::RuleBundle) -> bool {
+    bundle.rules.iter().any(|rule| {
+        rule.body.iter().any(|literal| {
+            matches!(
+                literal,
+                crate::Literal::DiamondMinus { .. }
+                    | crate::Literal::BoxMinus { .. }
+                    | crate::Literal::Since { .. }
+                    | crate::Literal::Allen { .. }
+            )
+        })
+    })
 }
 
 fn unwrap_fact_stores(

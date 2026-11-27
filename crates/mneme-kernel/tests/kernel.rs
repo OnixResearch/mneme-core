@@ -612,6 +612,69 @@ fn epistemic_semiring_laws_and_annihilator_exclusion() {
 }
 
 #[test]
+fn epistemic_kleene_and_strict_negation_laws() {
+    let all = [
+        mneme_kernel::epistemic::EpistemicStatus::Rejected,
+        mneme_kernel::epistemic::EpistemicStatus::Proposed,
+        mneme_kernel::epistemic::EpistemicStatus::Accepted,
+    ];
+    assert_eq!(
+        mneme_kernel::epistemic::negate(mneme_kernel::epistemic::EpistemicStatus::Accepted),
+        mneme_kernel::epistemic::EpistemicStatus::Rejected
+    );
+    assert_eq!(
+        mneme_kernel::epistemic::negate(mneme_kernel::epistemic::EpistemicStatus::Proposed),
+        mneme_kernel::epistemic::EpistemicStatus::Proposed
+    );
+    assert_eq!(
+        mneme_kernel::epistemic::negate(mneme_kernel::epistemic::EpistemicStatus::Rejected),
+        mneme_kernel::epistemic::EpistemicStatus::Accepted
+    );
+    assert_eq!(
+        mneme_kernel::epistemic::strict_negate(mneme_kernel::epistemic::EpistemicStatus::Accepted),
+        mneme_kernel::epistemic::EpistemicStatus::Rejected
+    );
+    assert_eq!(
+        mneme_kernel::epistemic::strict_negate(mneme_kernel::epistemic::EpistemicStatus::Proposed),
+        mneme_kernel::epistemic::EpistemicStatus::Rejected
+    );
+    assert_eq!(
+        mneme_kernel::epistemic::strict_negate(mneme_kernel::epistemic::EpistemicStatus::Rejected),
+        mneme_kernel::epistemic::EpistemicStatus::Accepted
+    );
+    for a in all {
+        assert_eq!(
+            mneme_kernel::epistemic::negate(mneme_kernel::epistemic::negate(a)),
+            a
+        );
+        assert_eq!(
+            mneme_kernel::epistemic::kleene_negation_blocks(a),
+            a == mneme_kernel::epistemic::EpistemicStatus::Accepted
+        );
+        assert!(
+            mneme_kernel::epistemic::rank(mneme_kernel::epistemic::strict_negate(a))
+                <= mneme_kernel::epistemic::rank(mneme_kernel::epistemic::negate(a))
+        );
+        for b in all {
+            assert_eq!(
+                mneme_kernel::epistemic::negate(mneme_kernel::epistemic::join(a, b)),
+                mneme_kernel::epistemic::union(
+                    mneme_kernel::epistemic::negate(a),
+                    mneme_kernel::epistemic::negate(b)
+                )
+            );
+            assert_eq!(
+                mneme_kernel::epistemic::negate(mneme_kernel::epistemic::union(a, b)),
+                mneme_kernel::epistemic::join(
+                    mneme_kernel::epistemic::negate(a),
+                    mneme_kernel::epistemic::negate(b)
+                )
+            );
+        }
+    }
+}
+
+#[test]
 fn assertion_and_non_monotonic_admission_gates() {
     for has_accepted_decision in [false, true] {
         for has_current_basis in [false, true] {

@@ -28,10 +28,12 @@ impl EpistemicStatus {
 
     /// Convert to the formally verified kernel epistemic status.
     pub const fn to_kernel(self) -> mneme_kernel::epistemic::EpistemicStatus {
-        match self {
-            Self::Rejected => mneme_kernel::epistemic::EpistemicStatus::Rejected,
-            Self::Proposed => mneme_kernel::epistemic::EpistemicStatus::Proposed,
-            Self::Accepted => mneme_kernel::epistemic::EpistemicStatus::Accepted,
+        if matches!(self, Self::Accepted) {
+            mneme_kernel::epistemic::EpistemicStatus::Accepted
+        } else if matches!(self, Self::Proposed) {
+            mneme_kernel::epistemic::EpistemicStatus::Proposed
+        } else {
+            mneme_kernel::epistemic::EpistemicStatus::Rejected
         }
     }
 
@@ -65,9 +67,26 @@ impl EpistemicStatus {
         mneme_kernel::epistemic::is_active(self.to_kernel())
     }
 
-    /// Whether a fact with this epistemic status blocks a negated literal (`not p(...)`).
+    /// Whether a fact with this epistemic status blocks a strict negated literal (`strict_not p(...)`).
     pub fn negation_blocks(self) -> bool {
         mneme_kernel::epistemic::negation_blocks(self.to_kernel())
+    }
+
+    /// Kleene three-valued epistemic negation:
+    /// `¬Accepted = Rejected`, `¬Proposed = Proposed`, `¬Rejected = Accepted`.
+    pub fn negate(self) -> Self {
+        Self::from_kernel(mneme_kernel::epistemic::negate(self.to_kernel()))
+    }
+
+    /// Strict classical epistemic negation:
+    /// `¬Accepted = Rejected`, `¬Proposed = Rejected`, `¬Rejected = Accepted`.
+    pub fn strict_negate(self) -> Self {
+        Self::from_kernel(mneme_kernel::epistemic::strict_negate(self.to_kernel()))
+    }
+
+    /// Whether a fact with this epistemic status blocks a Kleene three-valued negated literal.
+    pub fn kleene_negation_blocks(self) -> bool {
+        mneme_kernel::epistemic::kleene_negation_blocks(self.to_kernel())
     }
 
     /// Stable lower-case symbol name.
@@ -404,6 +423,18 @@ fn check_present(
     let is_deps_complete = coverage
         .iter()
         .all(|item| item.status == crate::CoverageStatus::Complete);
+    let fact_ref = (predicate.to_owned(), terms.to_vec());
+    let (projected, _) = build.justifications.project_derivations_bounded(
+        &fact_ref,
+        build.context.served_revision,
+        &build.context.scope,
+        build.limits.max_supports_per_fact,
+    );
+    let present_supports = if projected.is_empty() {
+        data.supports.clone()
+    } else {
+        projected
+    };
     Some(MissingExplanation {
         predicate: predicate.to_owned(),
         terms: terms.to_vec(),
@@ -412,7 +443,7 @@ fn check_present(
         build_status: build.status,
         coverage: coverage.to_vec(),
         present_epistemic: Some(data.epistemic),
-        present_supports: data.supports.clone(),
+        present_supports,
         reasons: Vec::new(),
         truncated: false,
         exhaustive: is_deps_complete && !build.limit_reached,
@@ -1075,20 +1106,41 @@ fn check_ground_negative(
     binding: &Binding,
 ) -> GroundCheck {
     let terms = resolved_terms(atom, binding);
+    let is_strict = state.build.negation_semantics == crate::NegationSemantics::Strict;
     let Some(data) = state
         .build
         .facts
         .get(&atom.predicate)
         .and_then(|rows| rows.get(&terms))
-        .filter(|data| data.is_active() && data.epistemic.negation_blocks())
+        .filter(|data| {
+            data.is_active()
+                && if is_strict {
+                    data.epistemic.negation_blocks()
+                } else {
+                    data.epistemic.kleene_negation_blocks()
+                }
+        })
     else {
         return GroundCheck::Satisfied;
+    };
+    let fact_ref = (atom.predicate.clone(), terms.clone());
+    let (projected, _) = state.build.justifications.project_derivations_bounded(
+        &fact_ref,
+        state.build.context.served_revision,
+        &state.build.context.scope,
+        state.build.limits.max_supports_per_fact,
+    );
+    let blocker_supports = if projected.is_empty() {
+        data.supports.clone()
+    } else {
+        projected
     };
     GroundCheck::Failed(blocking_negation_reason(
         rule,
         &atom.predicate,
         &terms,
-        data,
+        data.epistemic,
+        blocker_supports,
     ))
 }
 
@@ -1096,7 +1148,8 @@ fn blocking_negation_reason(
     rule: &crate::Rule,
     predicate: &str,
     terms: &[mneme_core::Value],
-    data: &crate::FactData,
+    blocker_epistemic: EpistemicStatus,
+    blocker_supports: Vec<crate::Derivation>,
 ) -> MissingReason {
     MissingReason {
         kind: MissingReasonKind::BlockingNegation,
@@ -1107,8 +1160,8 @@ fn blocking_negation_reason(
             "negated literal not {} is blocked by existing fact",
             format_atom(predicate, terms)
         ),
-        blocker_epistemic: Some(data.epistemic),
-        blocker_supports: data.supports.clone(),
+        blocker_epistemic: Some(blocker_epistemic),
+        blocker_supports,
         causes: Vec::new(),
     }
 }

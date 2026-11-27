@@ -2,6 +2,7 @@
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 mod derivation;
+mod wfs;
 
 pub(crate) type FactKey = Vec<mneme_core::Value>;
 pub(crate) type Binding = std::collections::BTreeMap<String, mneme_core::Value>;
@@ -38,6 +39,8 @@ impl FactStore {
 
 pub(crate) struct BuildFacts {
     pub facts: std::collections::BTreeMap<String, FactStore>,
+    pub justifications: crate::JustificationGraph,
+    pub negation_semantics: crate::NegationSemantics,
     pub coverage: Vec<crate::Coverage>,
     pub status: crate::ExecutionStatus,
     pub work: u64,
@@ -156,6 +159,10 @@ pub(super) struct Evaluation<'a> {
     context: &'a crate::BuildContext,
     pub(super) budget: Budget<'a>,
     pub(super) facts: std::collections::BTreeMap<String, FactStore>,
+    pub(super) negation_oracle: Option<&'a std::collections::BTreeMap<String, FactStore>>,
+    pub(super) negation_semantics: crate::NegationSemantics,
+    pub(super) justifications: crate::JustificationGraph,
+    pub(super) round_deltas: Option<std::collections::BTreeMap<String, FactStore>>,
     coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
     base_coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
     coverage_reasons: std::collections::BTreeMap<String, String>,
@@ -207,7 +214,7 @@ pub(crate) fn canonical_extents() -> &'static [&'static str] {
 pub(crate) struct BuildEnvironment<'a> {
     pub start: std::time::Instant,
     pub current_sources: &'a AvailabilityMap,
-    pub temporal_config: crate::TemporalConfig,
+    pub config: crate::EvaluationConfig,
 }
 
 /// One participating vault's pinned view and byte availability.
@@ -223,7 +230,7 @@ struct FederatedBuildParams<'a> {
     context: &'a crate::BuildContext,
     program: &'a crate::RuleProgram,
     start: std::time::Instant,
-    temporal_config: crate::TemporalConfig,
+    config: crate::EvaluationConfig,
 }
 
 pub(crate) fn build(
@@ -246,7 +253,7 @@ pub(crate) fn build(
             context,
             program,
             start: environment.start,
-            temporal_config: environment.temporal_config,
+            config: environment.config,
         },
     )
 }
@@ -265,7 +272,7 @@ pub(crate) fn build_federated(
             context,
             program,
             start,
-            temporal_config: crate::TemporalConfig::default(),
+            config: crate::EvaluationConfig::default(),
         },
     )
 }
@@ -279,7 +286,7 @@ fn build_federated_with_config(
         context,
         program,
         start,
-        temporal_config,
+        config,
     } = params;
     assert!(!sources.is_empty());
     let participating_vaults = sources
@@ -299,9 +306,13 @@ fn build_federated_with_config(
             status: crate::ExecutionStatus::Complete,
             limit_reached: false,
             support_truncated: false,
-            max_intervals_per_fact: temporal_config.max_intervals_per_fact,
+            max_intervals_per_fact: config.temporal.max_intervals_per_fact,
         },
         facts: std::collections::BTreeMap::new(),
+        negation_oracle: None,
+        negation_semantics: config.negation,
+        justifications: crate::JustificationGraph::default(),
+        round_deltas: None,
         coverage: std::collections::BTreeMap::new(),
         base_coverage: std::collections::BTreeMap::new(),
         coverage_reasons: std::collections::BTreeMap::new(),
@@ -312,7 +323,11 @@ fn build_federated_with_config(
     };
     initialize_base_coverage(&mut evaluation, &request.incomplete_extents);
     load_base_facts(sources, &mut evaluation);
-    evaluate_rules(&mut evaluation, &program.strata);
+    if config.mode == crate::EvaluationMode::WellFounded {
+        wfs::evaluate_well_founded(&mut evaluation);
+    } else {
+        evaluate_rules(&mut evaluation, &program.strata);
+    }
     if let Some(at) = evaluation.at
         && bundle_has_temporal_literals(evaluation.bundle)
     {
@@ -322,6 +337,8 @@ fn build_federated_with_config(
     let status = overall_status(evaluation.budget.status, &coverage);
     BuildFacts {
         facts: evaluation.facts,
+        justifications: evaluation.justifications,
+        negation_semantics: config.negation,
         coverage,
         status,
         work: evaluation.budget.work,
@@ -429,6 +446,10 @@ pub(crate) fn load_base_snapshot(
         context: request.context,
         budget: new_budget(request.limits, request.start, false),
         facts: std::collections::BTreeMap::new(),
+        negation_oracle: None,
+        negation_semantics: crate::NegationSemantics::default(),
+        justifications: crate::JustificationGraph::default(),
+        round_deltas: None,
         coverage: std::collections::BTreeMap::new(),
         base_coverage: std::collections::BTreeMap::new(),
         coverage_reasons: std::collections::BTreeMap::new(),
@@ -576,6 +597,10 @@ pub(crate) fn evaluate_incremental(
             max_intervals_per_fact: crate::DEFAULT_MAX_INTERVALS_PER_FACT,
         },
         facts: kept_facts,
+        negation_oracle: None,
+        negation_semantics: crate::NegationSemantics::default(),
+        justifications: crate::JustificationGraph::default(),
+        round_deltas: None,
         coverage: base.base_coverage.clone(),
         base_coverage: base.base_coverage.clone(),
         coverage_reasons: base.coverage_reasons.clone(),
@@ -605,6 +630,8 @@ pub(crate) fn evaluate_incremental(
     let status = overall_status(evaluation.budget.status, &coverage);
     BuildFacts {
         facts: evaluation.facts,
+        justifications: evaluation.justifications,
+        negation_semantics: evaluation.negation_semantics,
         coverage,
         status,
         work: evaluation.budget.work,
@@ -1181,7 +1208,7 @@ fn source_availability(
         {
             Some(availability.name().to_owned())
         }
-        _ => pinned,
+        Some(_) | None => pinned,
     }
 }
 
@@ -1342,13 +1369,44 @@ fn add_fact(evaluation: &mut Evaluation<'_>, predicate: &str, contents: FactCont
     if is_new && !evaluation.budget.charge_row() {
         return false;
     }
+    if contents.epistemic.is_active() {
+        let _ = evaluation.justifications.intern_derivation(
+            (predicate.to_owned(), contents.terms.clone()),
+            &contents.support,
+        );
+    }
+    let terms_for_delta = contents.terms.clone();
     let max_supports = evaluation.budget.limits.max_supports_per_fact;
     let store = evaluation.facts.entry(predicate.to_owned()).or_default();
-    if store.rows.contains_key(&contents.terms) {
-        return merge_existing_fact(store, contents, max_supports, &mut evaluation.budget);
+    let outcome = if store.rows.contains_key(&contents.terms) {
+        merge_existing_fact(store, contents, max_supports, &mut evaluation.budget)
+    } else {
+        insert_new_fact(store, contents);
+        MergeFactOutcome {
+            is_semantic_changed: true,
+            is_delta_dirty: true,
+        }
+    };
+    if outcome.is_delta_dirty
+        && let Some(round_deltas) = evaluation.round_deltas.as_mut()
+        && let Some(updated) = evaluation
+            .facts
+            .get(predicate)
+            .and_then(|s| s.rows.get(&terms_for_delta))
+            .filter(|data| data.is_active())
+    {
+        round_deltas
+            .entry(predicate.to_owned())
+            .or_default()
+            .rows
+            .insert(terms_for_delta, updated.clone());
     }
-    insert_new_fact(store, contents);
-    true
+    outcome.is_semantic_changed
+}
+
+struct MergeFactOutcome {
+    is_semantic_changed: bool,
+    is_delta_dirty: bool,
 }
 
 fn merge_existing_fact(
@@ -1356,7 +1414,7 @@ fn merge_existing_fact(
     contents: FactContents,
     max_supports: usize,
     budget: &mut Budget<'_>,
-) -> bool {
+) -> MergeFactOutcome {
     let FactContents {
         terms,
         support,
@@ -1370,31 +1428,98 @@ fn merge_existing_fact(
     assert!(!support.rule_id.is_empty());
     assert_eq!(support.epistemic, epistemic);
     let Some(data) = store.rows.get_mut(&terms) else {
-        return false;
+        return MergeFactOutcome {
+            is_semantic_changed: false,
+            is_delta_dirty: false,
+        };
     };
     let prev_epistemic = data.epistemic;
     let was_active = data.is_active();
     data.epistemic = data.epistemic.union(epistemic);
     let is_now_active = data.is_active();
     let is_upgraded = data.epistemic > prev_epistemic;
+    let Some((is_validity_changed, is_validity_truncated)) =
+        merge_bounded_validity(data, &validity, budget)
+    else {
+        return MergeFactOutcome {
+            is_semantic_changed: false,
+            is_delta_dirty: false,
+        };
+    };
+    if is_validity_truncated {
+        store.truncated = true;
+    }
+    let is_semantic_changed = is_upgraded || is_validity_changed;
+    let (is_provenance_grew, is_support_truncated) = merge_fact_support(
+        data,
+        FactSupportUpdate {
+            support,
+            sources,
+            canonical_roots,
+            vaults,
+        },
+        max_supports,
+    );
+    if is_support_truncated {
+        store.truncated = true;
+        budget.support_truncated = true;
+    }
+    if !was_active && is_now_active {
+        index_active_terms(store, &terms);
+    }
+    MergeFactOutcome {
+        is_semantic_changed,
+        is_delta_dirty: is_semantic_changed || is_provenance_grew,
+    }
+}
+
+fn merge_bounded_validity(
+    data: &mut crate::FactData,
+    validity: &crate::FactValidity,
+    budget: &mut Budget<'_>,
+) -> Option<(bool, bool)> {
     let max_intervals = budget.max_intervals_per_fact;
     let Some(bounded) =
         data.validity
-            .union_bounded(&validity, max_intervals, budget.remaining_steps())
+            .union_bounded(validity, max_intervals, budget.remaining_steps())
     else {
         budget.stop(crate::ExecutionStatus::Timeout);
-        return false;
+        return None;
     };
     if bounded.steps > 0 && !budget.charge(bounded.steps) {
-        return false;
+        return None;
     }
     let is_validity_changed = bounded.validity != data.validity;
     data.validity = bounded.validity;
     if bounded.is_truncated {
         data.truncated = true;
-        store.truncated = true;
         budget.support_truncated = true;
     }
+    Some((is_validity_changed, bounded.is_truncated))
+}
+
+struct FactSupportUpdate {
+    support: crate::Derivation,
+    sources: std::collections::BTreeSet<crate::SourceKey>,
+    canonical_roots: std::collections::BTreeSet<mneme_core::RecordId>,
+    vaults: std::collections::BTreeSet<String>,
+}
+
+fn merge_fact_support(
+    data: &mut crate::FactData,
+    update: FactSupportUpdate,
+    max_supports: usize,
+) -> (bool, bool) {
+    let FactSupportUpdate {
+        support,
+        sources,
+        canonical_roots,
+        vaults,
+    } = update;
+    let prev_roots_len = data.canonical_roots.len();
+    let prev_sources_len = data.sources.len();
+    let prev_vaults_len = data.vaults.len();
+    let prev_supports_len = data.supports.len();
     if let Some(existing) = data
         .supports
         .iter_mut()
@@ -1404,28 +1529,24 @@ fn merge_existing_fact(
         data.sources.extend(sources);
         data.canonical_roots.extend(canonical_roots);
         data.vaults.extend(vaults);
-        if !was_active && is_now_active {
-            index_active_terms(store, &terms);
-        }
-        return is_upgraded || is_validity_changed;
+        let is_grew = data.canonical_roots.len() != prev_roots_len
+            || data.sources.len() != prev_sources_len
+            || data.vaults.len() != prev_vaults_len;
+        return (is_grew, false);
     }
     if data.supports.len() >= max_supports {
         data.truncated = true;
-        store.truncated = true;
-        budget.support_truncated = true;
-        if !was_active && is_now_active {
-            index_active_terms(store, &terms);
-        }
-        return is_upgraded || is_validity_changed;
+        return (false, true);
     }
     data.supports.push(support);
     data.sources.extend(sources);
     data.canonical_roots.extend(canonical_roots);
     data.vaults.extend(vaults);
-    if !was_active && is_now_active {
-        index_active_terms(store, &terms);
-    }
-    is_upgraded || is_validity_changed
+    let is_grew = data.canonical_roots.len() != prev_roots_len
+        || data.sources.len() != prev_sources_len
+        || data.vaults.len() != prev_vaults_len
+        || data.supports.len() != prev_supports_len;
+    (is_grew, false)
 }
 
 fn index_active_terms(store: &mut FactStore, terms: &FactKey) {
@@ -1572,21 +1693,30 @@ fn evaluate_strata(
 ) {
     for rules in strata.values() {
         let mut rounds = 0_usize;
+        let mut prev_delta: std::collections::BTreeMap<String, FactStore> =
+            std::collections::BTreeMap::new();
         loop {
             if !evaluation.budget.is_active() {
                 break;
             }
+            evaluation.round_deltas = Some(std::collections::BTreeMap::new());
             let mut is_changed = false;
             for rule in rules {
-                if evaluate_rule(evaluation, rule) == RuleOutcome::Changed {
+                let outcome = if rounds == 0 {
+                    evaluate_rule(evaluation, rule)
+                } else {
+                    evaluate_rule_semi_naive(evaluation, rule, &prev_delta)
+                };
+                if outcome == RuleOutcome::Changed {
                     is_changed = true;
                 }
                 if !evaluation.budget.is_active() {
                     break;
                 }
             }
+            prev_delta = evaluation.round_deltas.take().unwrap_or_default();
             rounds = rounds.saturating_add(1);
-            if !is_changed || !evaluation.budget.is_active() {
+            if !is_changed || prev_delta.is_empty() || !evaluation.budget.is_active() {
                 break;
             }
             if rounds > evaluation.budget.limits.max_recursion_depth {
@@ -1594,8 +1724,170 @@ fn evaluate_strata(
                 break;
             }
         }
+        evaluation.round_deltas = None;
         update_derived_coverage(evaluation);
     }
+}
+
+fn evaluate_rule_semi_naive(
+    evaluation: &mut Evaluation<'_>,
+    rule: &crate::Rule,
+    prev_delta: &std::collections::BTreeMap<String, FactStore>,
+) -> RuleOutcome {
+    let has_aggregate = rule
+        .body
+        .iter()
+        .any(|literal| matches!(literal, crate::Literal::Aggregate { .. }));
+    if has_aggregate || rule_has_temporal_literals(rule) {
+        return if rule_touches_delta(rule, prev_delta) {
+            evaluate_rule(evaluation, rule)
+        } else {
+            RuleOutcome::Stable
+        };
+    }
+    let delta_positions = positive_delta_positions(rule, prev_delta);
+    if delta_positions.is_empty() {
+        return RuleOutcome::Stable;
+    }
+    let Some(body_coverage) = rule_body_coverage(evaluation, rule) else {
+        return RuleOutcome::Skipped;
+    };
+    let has_negative = rule
+        .body
+        .iter()
+        .any(|literal| matches!(literal, crate::Literal::Negative(_)));
+    if has_negative && !mneme_kernel::admission::non_monotonic_rule_admissible(body_coverage) {
+        return RuleOutcome::Skipped;
+    }
+    let positive_count = rule
+        .body
+        .iter()
+        .filter(|literal| matches!(literal, crate::Literal::Positive(_)))
+        .count();
+    let mut all_bindings: RuleBindings = Vec::new();
+    for &delta_body_index in &delta_positions {
+        let res = if positive_count >= 2 {
+            crate::freejoin::evaluate_free_join_semi_naive(
+                evaluation,
+                rule,
+                prev_delta,
+                delta_body_index,
+            )
+        } else {
+            evaluate_single_positive_semi_naive(evaluation, rule, prev_delta, delta_body_index)
+        };
+        match res {
+            Ok(mut bindings) => all_bindings.append(&mut bindings),
+            Err(RuleOutcome::Stable) => {}
+            Err(outcome) => return outcome,
+        }
+    }
+    if all_bindings.is_empty() {
+        return RuleOutcome::Stable;
+    }
+    if delta_positions.len() > 1 && all_bindings.len() > 1 {
+        sort_bindings_by_written_order(rule, &mut all_bindings);
+        all_bindings.dedup();
+    }
+    evaluate_ordinary_rule(evaluation, rule, &all_bindings)
+}
+
+fn positive_delta_positions(
+    rule: &crate::Rule,
+    prev_delta: &std::collections::BTreeMap<String, FactStore>,
+) -> Vec<usize> {
+    rule.body
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, literal)| {
+            if let crate::Literal::Positive(atom) = literal
+                && prev_delta
+                    .get(&atom.predicate)
+                    .is_some_and(|store| !store.rows.is_empty())
+            {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn rule_touches_delta(
+    rule: &crate::Rule,
+    prev_delta: &std::collections::BTreeMap<String, FactStore>,
+) -> bool {
+    let has_rows = |pred: &str| prev_delta.get(pred).is_some_and(|s| !s.rows.is_empty());
+    rule.body.iter().any(|literal| {
+        if let crate::Literal::Positive(atom)
+        | crate::Literal::DiamondMinus { atom, .. }
+        | crate::Literal::BoxMinus { atom, .. } = literal
+        {
+            has_rows(&atom.predicate)
+        } else if let crate::Literal::Since {
+            maintained,
+            trigger,
+            ..
+        } = literal
+        {
+            has_rows(&maintained.predicate) || has_rows(&trigger.predicate)
+        } else if let crate::Literal::Allen { left, right, .. } = literal {
+            has_rows(&left.predicate) || has_rows(&right.predicate)
+        } else {
+            false
+        }
+    })
+}
+
+fn evaluate_single_positive_semi_naive(
+    evaluation: &mut Evaluation<'_>,
+    rule: &crate::Rule,
+    prev_delta: &std::collections::BTreeMap<String, FactStore>,
+    delta_body_index: usize,
+) -> Result<RuleBindings, RuleOutcome> {
+    let crate::Literal::Positive(atom) = &rule.body[delta_body_index] else {
+        return Err(RuleOutcome::Stable);
+    };
+    let Some(delta_store) = prev_delta.get(&atom.predicate) else {
+        return Err(RuleOutcome::Stable);
+    };
+    let binding_limit = evaluation.budget.limits.max_result_rows;
+    let empty = Binding::new();
+    let mut bindings = Vec::with_capacity(delta_store.rows.len().min(binding_limit));
+    for (terms, data) in &delta_store.rows {
+        if terms.len() != atom.terms.len() {
+            continue;
+        }
+        if !evaluation.budget.charge(1) {
+            return Err(RuleOutcome::Skipped);
+        }
+        if let Some(extended) = unify(atom, terms, &empty, data) {
+            push_extended_binding(
+                &mut bindings,
+                extended,
+                binding_limit,
+                &mut evaluation.budget,
+            )?;
+        }
+    }
+    if bindings.is_empty() {
+        return Err(RuleOutcome::Stable);
+    }
+    for literal in &rule.body {
+        match literal {
+            crate::Literal::Compare { op, left, right } => {
+                bindings = filter_compare_bindings(evaluation, bindings, *op, left, right)?;
+            }
+            crate::Literal::Negative(neg_atom) => {
+                bindings = filter_negative_bindings(evaluation, bindings, neg_atom)?;
+            }
+            _ => {}
+        }
+        if bindings.is_empty() {
+            return Err(RuleOutcome::Stable);
+        }
+    }
+    Ok(bindings)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1612,10 +1904,12 @@ struct AggregateSpec {
 }
 
 fn kernel_coverage(status: crate::CoverageStatus) -> mneme_kernel::completeness::Coverage {
-    match status {
-        crate::CoverageStatus::Complete => mneme_kernel::completeness::Coverage::Complete,
-        crate::CoverageStatus::Incomplete => mneme_kernel::completeness::Coverage::Incomplete,
-        crate::CoverageStatus::Unknown => mneme_kernel::completeness::Coverage::Unknown,
+    if status == crate::CoverageStatus::Complete {
+        mneme_kernel::completeness::Coverage::Complete
+    } else if status == crate::CoverageStatus::Incomplete {
+        mneme_kernel::completeness::Coverage::Incomplete
+    } else {
+        mneme_kernel::completeness::Coverage::Unknown
     }
 }
 
@@ -2231,6 +2525,8 @@ fn evaluate_aggregate_rule(
         let support_ctx = derivation::SupportContext {
             context: evaluation.context,
             facts: &evaluation.facts,
+            negation_oracle: evaluation.negation_oracle,
+            negation_semantics: evaluation.negation_semantics,
             coverage: &evaluation.coverage,
             participating_vaults: &evaluation.participating_vaults,
         };
@@ -2255,6 +2551,8 @@ fn evaluate_aggregate_rule(
         let support_ctx = derivation::SupportContext {
             context: evaluation.context,
             facts: &evaluation.facts,
+            negation_oracle: evaluation.negation_oracle,
+            negation_semantics: evaluation.negation_semantics,
             coverage: &evaluation.coverage,
             participating_vaults: &evaluation.participating_vaults,
         };
@@ -2308,6 +2606,8 @@ fn evaluate_ordinary_rule(
         let support_ctx = derivation::SupportContext {
             context: evaluation.context,
             facts: &evaluation.facts,
+            negation_oracle: evaluation.negation_oracle,
+            negation_semantics: evaluation.negation_semantics,
             coverage: &evaluation.coverage,
             participating_vaults: &evaluation.participating_vaults,
         };
@@ -2578,6 +2878,20 @@ fn join_by_column_index(
     Ok(output)
 }
 
+pub(super) fn fact_blocks_negation(
+    data: &crate::FactData,
+    semantics: crate::NegationSemantics,
+) -> bool {
+    if !data.is_active() {
+        return false;
+    }
+    if semantics == crate::NegationSemantics::Kleene {
+        data.epistemic.kleene_negation_blocks()
+    } else {
+        data.epistemic.negation_blocks()
+    }
+}
+
 pub(super) fn matches_atom(
     evaluation: &mut Evaluation<'_>,
     atom: &crate::Atom,
@@ -2586,8 +2900,10 @@ pub(super) fn matches_atom(
     assert!(!atom.predicate.is_empty());
     debug_assert!(binding.len() < usize::MAX);
     let arity = atom.terms.len();
+    let negation_semantics = evaluation.negation_semantics;
     let has_rows = evaluation
-        .facts
+        .negation_oracle
+        .unwrap_or(&evaluation.facts)
         .get(&atom.predicate)
         .is_some_and(|store| !store.rows.is_empty());
     if !has_rows {
@@ -2609,10 +2925,11 @@ pub(super) fn matches_atom(
             return Err(RuleOutcome::Skipped);
         }
         let is_matched = evaluation
-            .facts
+            .negation_oracle
+            .unwrap_or(&evaluation.facts)
             .get(&atom.predicate)
             .and_then(|store| store.rows.get(&ground_key))
-            .is_some_and(crate::FactData::is_active);
+            .is_some_and(|data| fact_blocks_negation(data, negation_semantics));
         return Ok(is_matched);
     }
 
@@ -2622,19 +2939,22 @@ pub(super) fn matches_atom(
         .enumerate()
         .filter_map(|(index, term)| term_value_ref(term, binding).map(|_| index))
         .collect::<Vec<_>>();
-    if !bound_cols.is_empty() {
+    if evaluation.negation_oracle.is_none() && !bound_cols.is_empty() {
         return matches_atom_indexed(evaluation, atom, binding, &bound_cols);
     }
 
-    let Some(store) = evaluation.facts.get(&atom.predicate) else {
+    let Some(store) = evaluation
+        .negation_oracle
+        .unwrap_or(&evaluation.facts)
+        .get(&atom.predicate)
+    else {
         return Ok(false);
     };
     for (terms, data) in &store.rows {
         if !evaluation.budget.charge(1) {
             return Err(RuleOutcome::Skipped);
         }
-        if data.is_active()
-            && data.epistemic.negation_blocks()
+        if fact_blocks_negation(data, negation_semantics)
             && terms.len() == arity
             && atom_matches_row(atom, terms, binding)
         {
@@ -2653,6 +2973,7 @@ fn matches_atom_indexed(
     assert!(!atom.predicate.is_empty());
     assert!(!bound_cols.is_empty());
     let arity = atom.terms.len();
+    let negation_semantics = evaluation.negation_semantics;
     if ensure_column_index(evaluation, &atom.predicate, arity, bound_cols)? == IndexState::Empty {
         return Ok(false);
     }
@@ -2680,7 +3001,7 @@ fn matches_atom_indexed(
         if store
             .rows
             .get(terms)
-            .is_some_and(crate::FactData::is_active)
+            .is_some_and(|data| fact_blocks_negation(data, negation_semantics))
             && atom_matches_row(atom, terms, binding)
         {
             return Ok(true);
@@ -2691,14 +3012,15 @@ fn matches_atom_indexed(
 
 fn atom_matches_row(atom: &crate::Atom, terms: &[mneme_core::Value], binding: &Binding) -> bool {
     terms.len() == atom.terms.len()
-        && atom
-            .terms
-            .iter()
-            .zip(terms)
-            .all(|(term, value)| match term {
-                crate::Term::Constant(expected) => expected == value,
-                crate::Term::Variable(name) => binding.get(name).is_none_or(|bound| bound == value),
-            })
+        && atom.terms.iter().zip(terms).all(|(term, value)| {
+            if let crate::Term::Constant(expected) = term {
+                expected == value
+            } else if let crate::Term::Variable(name) = term {
+                binding.get(name).is_none_or(|bound| bound == value)
+            } else {
+                false
+            }
+        })
 }
 
 fn unify(
@@ -2714,20 +3036,17 @@ fn unify(
     }
     let mut extended = binding.clone();
     for (term, value) in atom.terms.iter().zip(terms) {
-        match term {
-            crate::Term::Constant(expected) => {
-                if expected != value {
+        if let crate::Term::Constant(expected) = term {
+            if expected != value {
+                return None;
+            }
+        } else if let crate::Term::Variable(name) = term {
+            if let Some(existing) = extended.get(name) {
+                if existing != value {
                     return None;
                 }
-            }
-            crate::Term::Variable(name) => {
-                if let Some(existing) = extended.get(name) {
-                    if existing != value {
-                        return None;
-                    }
-                } else {
-                    extended.insert(name.clone(), value.clone());
-                }
+            } else {
+                extended.insert(name.clone(), value.clone());
             }
         }
     }
@@ -2735,9 +3054,12 @@ fn unify(
 }
 
 pub(super) fn term_value(term: &crate::Term, binding: &Binding) -> Option<mneme_core::Value> {
-    match term {
-        crate::Term::Constant(value) => Some(value.clone()),
-        crate::Term::Variable(name) => binding.get(name).cloned(),
+    if let crate::Term::Constant(value) = term {
+        Some(value.clone())
+    } else if let crate::Term::Variable(name) = term {
+        binding.get(name).cloned()
+    } else {
+        None
     }
 }
 
@@ -2745,9 +3067,12 @@ fn term_value_ref<'a>(
     term: &'a crate::Term,
     binding: &'a Binding,
 ) -> Option<&'a mneme_core::Value> {
-    match term {
-        crate::Term::Constant(value) => Some(value),
-        crate::Term::Variable(name) => binding.get(name),
+    if let crate::Term::Constant(value) = term {
+        Some(value)
+    } else if let crate::Term::Variable(name) = term {
+        binding.get(name)
+    } else {
+        None
     }
 }
 
@@ -2771,13 +3096,18 @@ pub(super) fn compare_values(
     left: &mneme_core::Value,
     right: &mneme_core::Value,
 ) -> bool {
-    match op {
-        crate::CompareOp::Eq => left == right,
-        crate::CompareOp::Ne => left != right,
-        crate::CompareOp::Lt => order_values(left, right) == std::cmp::Ordering::Less,
-        crate::CompareOp::Le => order_values(left, right) != std::cmp::Ordering::Greater,
-        crate::CompareOp::Gt => order_values(left, right) == std::cmp::Ordering::Greater,
-        crate::CompareOp::Ge => order_values(left, right) != std::cmp::Ordering::Less,
+    if op == crate::CompareOp::Eq {
+        left == right
+    } else if op == crate::CompareOp::Ne {
+        left != right
+    } else if op == crate::CompareOp::Lt {
+        order_values(left, right) == std::cmp::Ordering::Less
+    } else if op == crate::CompareOp::Le {
+        order_values(left, right) != std::cmp::Ordering::Greater
+    } else if op == crate::CompareOp::Gt {
+        order_values(left, right) == std::cmp::Ordering::Greater
+    } else {
+        order_values(left, right) != std::cmp::Ordering::Less
     }
 }
 
@@ -2981,20 +3311,21 @@ fn aggregate_value(
     function: crate::AggregateFunction,
     values: Vec<mneme_core::Value>,
 ) -> Result<mneme_core::Value, &'static str> {
-    match function {
-        crate::AggregateFunction::Count => {
-            let count = i64::try_from(values.len()).map_err(|_| "aggregate count exceeds i64")?;
-            Ok(mneme_core::Value::integer(count))
-        }
-        crate::AggregateFunction::Sum => aggregate_sum(&values),
-        crate::AggregateFunction::Min => values
+    if function == crate::AggregateFunction::Count {
+        let count = i64::try_from(values.len()).map_err(|_| "aggregate count exceeds i64")?;
+        Ok(mneme_core::Value::integer(count))
+    } else if function == crate::AggregateFunction::Sum {
+        aggregate_sum(&values)
+    } else if function == crate::AggregateFunction::Min {
+        values
             .into_iter()
             .min_by(order_values)
-            .ok_or("aggregate group is empty"),
-        crate::AggregateFunction::Max => values
+            .ok_or("aggregate group is empty")
+    } else {
+        values
             .into_iter()
             .max_by(order_values)
-            .ok_or("aggregate group is empty"),
+            .ok_or("aggregate group is empty")
     }
 }
 
@@ -3030,10 +3361,18 @@ fn aggregate_head_row(
     let head_terms = head
         .terms
         .iter()
-        .map(|term| match term {
-            crate::Term::Constant(value) => Some(value.clone()),
-            crate::Term::Variable(name) if name == output => Some(value.clone()),
-            crate::Term::Variable(name) => first.get(name).cloned(),
+        .map(|term| {
+            if let crate::Term::Constant(value) = term {
+                Some(value.clone())
+            } else if let crate::Term::Variable(name) = term {
+                if name == output {
+                    Some(value.clone())
+                } else {
+                    first.get(name).cloned()
+                }
+            } else {
+                None
+            }
         })
         .collect::<Option<Vec<_>>>()
         .ok_or("aggregate head variable is unbound")?;
@@ -3187,16 +3526,16 @@ fn final_coverage(evaluation: &Evaluation<'_>) -> Vec<crate::Coverage> {
         .into_iter()
         .map(|predicate| {
             let status = evaluation.coverage_status(&predicate);
-            let reason = match status {
-                crate::CoverageStatus::Complete => None,
-                crate::CoverageStatus::Incomplete => {
-                    let reason = match evaluation.coverage_reasons.get(&predicate) {
-                        Some(reason) => reason.clone(),
-                        None => "declared extent or dependency is incomplete".to_owned(),
-                    };
-                    Some(reason)
-                }
-                crate::CoverageStatus::Unknown => Some("predicate coverage is unknown".to_owned()),
+            let reason = if status == crate::CoverageStatus::Complete {
+                None
+            } else if status == crate::CoverageStatus::Incomplete {
+                let reason = match evaluation.coverage_reasons.get(&predicate) {
+                    Some(reason) => reason.clone(),
+                    None => "declared extent or dependency is incomplete".to_owned(),
+                };
+                Some(reason)
+            } else {
+                Some("predicate coverage is unknown".to_owned())
             };
             crate::Coverage {
                 predicate,
@@ -3435,7 +3774,7 @@ pub(crate) struct BaseAdvanceRequest<'a> {
 pub(crate) struct BaseAdvanceResult {
     pub next_base: BaseSnapshot,
     pub eligibility_generation: u64,
-    pub base_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    pub base_deltas: std::collections::BTreeMap<String, crate::zset::EpistemicZSet<FactKey>>,
     pub dirty_provenance: std::collections::BTreeSet<(String, FactKey)>,
     pub work: u64,
     pub limit_reached: bool,
@@ -3558,6 +3897,10 @@ fn evaluate_delta_parts(
         context: request.next_context,
         budget: new_budget(request.limits, request.start, base.support_truncated),
         facts: std::collections::BTreeMap::new(),
+        negation_oracle: None,
+        negation_semantics: crate::NegationSemantics::default(),
+        justifications: crate::JustificationGraph::default(),
+        round_deltas: None,
         coverage: std::collections::BTreeMap::new(),
         base_coverage: std::collections::BTreeMap::new(),
         coverage_reasons: std::collections::BTreeMap::new(),
@@ -3620,7 +3963,7 @@ struct DeltaEvalParts {
         mneme_core::RecordId,
         std::collections::BTreeSet<mneme_core::RecordId>,
     >,
-    base_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    base_deltas: std::collections::BTreeMap<String, crate::zset::EpistemicZSet<FactKey>>,
     dirty_provenance: std::collections::BTreeSet<(String, FactKey)>,
 }
 
@@ -4062,7 +4405,7 @@ fn evaluate_impacted_records(
 }
 
 type ReconciledDeltaOutput = (
-    std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    std::collections::BTreeMap<String, crate::zset::EpistemicZSet<FactKey>>,
     std::collections::BTreeSet<(String, FactKey)>,
 );
 
@@ -4082,8 +4425,36 @@ struct ExistingRowTransition<'a> {
 }
 
 struct ReconcileAccum {
-    base_deltas: std::collections::BTreeMap<String, crate::zset::ZSet<FactKey>>,
+    base_deltas: std::collections::BTreeMap<String, crate::zset::EpistemicZSet<FactKey>>,
     dirty_provenance: std::collections::BTreeSet<(String, FactKey)>,
+}
+
+fn active_epistemic(data: &crate::FactData) -> crate::EpistemicStatus {
+    if data.is_active() {
+        data.epistemic
+    } else {
+        crate::EpistemicStatus::Rejected
+    }
+}
+
+fn emit_epistemic_transition(
+    base_deltas: &mut std::collections::BTreeMap<String, crate::zset::EpistemicZSet<FactKey>>,
+    pred: &str,
+    key: &FactKey,
+    old_status: crate::EpistemicStatus,
+    new_status: crate::EpistemicStatus,
+) -> Result<(), crate::Error> {
+    if old_status == new_status {
+        return Ok(());
+    }
+    let delta = base_deltas.entry(pred.to_owned()).or_default();
+    if old_status.is_active() {
+        delta.insert_status(key.clone(), old_status, -1)?;
+    }
+    if new_status.is_active() {
+        delta.insert_status(key.clone(), new_status, 1)?;
+    }
+    Ok(())
 }
 
 fn reconcile_existing_row(
@@ -4092,17 +4463,23 @@ fn reconcile_existing_row(
     accum: &mut ReconcileAccum,
 ) -> Result<(), crate::Error> {
     assert!(!row.pred.is_empty());
-    let was_active = row.old_data.is_active();
+    let old_status = active_epistemic(row.old_data);
     if let Some(new_data) = row.new_data {
-        let is_now_active = new_data.is_active();
-        if was_active != is_now_active {
-            let weight = if is_now_active { 1 } else { -1 };
-            accum
-                .base_deltas
-                .entry(row.pred.to_owned())
-                .or_default()
-                .insert_weighted(row.key.clone(), weight)?;
-        } else if was_active && !same_semantic_fact_data(row.old_data, new_data) {
+        let new_status = active_epistemic(new_data);
+        if old_status != new_status {
+            emit_epistemic_transition(
+                &mut accum.base_deltas,
+                row.pred,
+                row.key,
+                old_status,
+                new_status,
+            )?;
+            if old_status.is_active() && new_status.is_active() {
+                accum
+                    .dirty_provenance
+                    .insert((row.pred.to_owned(), row.key.clone()));
+            }
+        } else if old_status.is_active() && !same_semantic_fact_data(row.old_data, new_data) {
             accum
                 .dirty_provenance
                 .insert((row.pred.to_owned(), row.key.clone()));
@@ -4113,12 +4490,14 @@ fn reconcile_existing_row(
             .or_default()
             .rows
             .insert(row.key.clone(), new_data.clone());
-    } else if was_active {
-        accum
-            .base_deltas
-            .entry(row.pred.to_owned())
-            .or_default()
-            .insert_weighted(row.key.clone(), -1)?;
+    } else if old_status.is_active() {
+        emit_epistemic_transition(
+            &mut accum.base_deltas,
+            row.pred,
+            row.key,
+            old_status,
+            crate::EpistemicStatus::Rejected,
+        )?;
     }
     debug_assert!(accum.dirty_provenance.len() < usize::MAX);
     Ok(())
@@ -4128,8 +4507,12 @@ fn merged_fact_data(
     existing: &crate::FactData,
     incoming: &crate::FactData,
     max_supports: usize,
-) -> (crate::FactData, Option<i64>, bool) {
-    let was_active = existing.is_active();
+) -> (
+    crate::FactData,
+    Option<(crate::EpistemicStatus, crate::EpistemicStatus)>,
+    bool,
+) {
+    let old_status = active_epistemic(existing);
     let mut merged = existing.clone();
     merged.epistemic = merged.epistemic.union(incoming.epistemic);
     for support in &incoming.supports {
@@ -4163,10 +4546,12 @@ fn merged_fact_data(
         (Some(left), Some(right)) => Some(left.min(right)),
         (left, right) => left.or(right),
     };
-    let is_now_active = merged.is_active();
-    let delta_weight = (!was_active && is_now_active).then_some(1);
-    let is_dirty = was_active && is_now_active && !same_semantic_fact_data(existing, &merged);
-    (merged, delta_weight, is_dirty)
+    let new_status = active_epistemic(&merged);
+    let transition = (old_status != new_status).then_some((old_status, new_status));
+    let is_dirty = old_status.is_active()
+        && new_status.is_active()
+        && !same_semantic_fact_data(existing, &merged);
+    (merged, transition, is_dirty)
 }
 
 fn reconcile_delta_facts(
@@ -4199,30 +4584,7 @@ fn reconcile_delta_facts(
             &mut accum,
         )?;
     }
-    let mut merged_existing_count: usize = 0;
-    for (pred, store) in input.temp_facts {
-        for (key, new_data) in &store.rows {
-            if input.old_rows.contains_key(&(pred.clone(), key.clone())) {
-                continue;
-            }
-            let target_rows = &mut reconciled.next_facts.entry(pred.clone()).or_default().rows;
-            let (final_data, delta_weight, is_dirty) = match target_rows.get(key) {
-                Some(existing) => merged_fact_data(existing, new_data, input.max_supports),
-                None => (new_data.clone(), new_data.is_active().then_some(1), false),
-            };
-            target_rows.insert(key.clone(), final_data);
-            if let Some(weight) = delta_weight {
-                accum
-                    .base_deltas
-                    .entry(pred.clone())
-                    .or_default()
-                    .insert_weighted(key.clone(), weight)?;
-            } else if is_dirty {
-                accum.dirty_provenance.insert((pred.clone(), key.clone()));
-                merged_existing_count = merged_existing_count.saturating_add(1);
-            }
-        }
-    }
+    let merged_existing_count = reconcile_new_temp_facts(&input, reconciled, &mut accum)?;
     for (record_id, entries) in input.temp_contribs {
         for (pred, key) in entries {
             reconciled
@@ -4237,6 +4599,47 @@ fn reconcile_delta_facts(
         accum.dirty_provenance.len() <= input.old_rows.len().saturating_add(merged_existing_count)
     );
     Ok((accum.base_deltas, accum.dirty_provenance))
+}
+
+fn reconcile_new_temp_facts(
+    input: &ReconcileDeltaInput<'_>,
+    reconciled: &mut ReconciledFacts,
+    accum: &mut ReconcileAccum,
+) -> Result<usize, crate::Error> {
+    let mut merged_existing_count: usize = 0;
+    for (pred, store) in input.temp_facts {
+        for (key, new_data) in &store.rows {
+            if input.old_rows.contains_key(&(pred.clone(), key.clone())) {
+                continue;
+            }
+            let target_rows = &mut reconciled.next_facts.entry(pred.clone()).or_default().rows;
+            let (final_data, transition, is_dirty) = match target_rows.get(key) {
+                Some(existing) => merged_fact_data(existing, new_data, input.max_supports),
+                None => {
+                    let status = active_epistemic(new_data);
+                    let transition = status
+                        .is_active()
+                        .then_some((crate::EpistemicStatus::Rejected, status));
+                    (new_data.clone(), transition, false)
+                }
+            };
+            target_rows.insert(key.clone(), final_data);
+            if let Some((old_status, new_status)) = transition {
+                emit_epistemic_transition(
+                    &mut accum.base_deltas,
+                    pred,
+                    key,
+                    old_status,
+                    new_status,
+                )?;
+            }
+            if is_dirty {
+                accum.dirty_provenance.insert((pred.clone(), key.clone()));
+                merged_existing_count = merged_existing_count.saturating_add(1);
+            }
+        }
+    }
+    Ok(merged_existing_count)
 }
 
 fn same_semantic_fact_data(left: &crate::FactData, right: &crate::FactData) -> bool {
@@ -4266,6 +4669,7 @@ pub(crate) struct FactDataBuildRequest<'a> {
     pub coverage_map: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
     pub bindings: &'a [Binding],
     pub target_terms: &'a FactKey,
+    pub negation_semantics: crate::NegationSemantics,
 }
 
 pub(crate) fn build_ordinary_fact_data_from_bindings(
@@ -4359,6 +4763,8 @@ where
         facts: request.facts,
         coverage: request.coverage_map,
         participating_vaults: &participating_vaults,
+        negation_oracle: None,
+        negation_semantics: request.negation_semantics,
     };
     let mut temp = std::collections::BTreeMap::new();
     if let Some(existing) = target_store.rows.get(request.target_terms) {
@@ -4467,6 +4873,10 @@ pub(crate) fn compute_coverage_for_facts(
         context: request.context,
         budget: new_budget(request.limits, request.start, false),
         facts: stub_facts,
+        negation_oracle: None,
+        negation_semantics: crate::NegationSemantics::default(),
+        justifications: crate::JustificationGraph::default(),
+        round_deltas: None,
         coverage: request.base.base_coverage.clone(),
         base_coverage: request.base.base_coverage.clone(),
         coverage_reasons: request.coverage_reasons.clone(),
@@ -4485,493 +4895,8 @@ pub(crate) fn compute_coverage_for_facts(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_scope() -> mneme_core::ScopeId {
-        mneme_core::ScopeId::new(mneme_core::ScopeClass::Project, "datalog-unit")
-            .expect("valid scope")
-    }
-
-    pub(super) fn rid(tag: u16) -> mneme_core::RecordId {
-        let mut bytes = [0_u8; 16];
-        let [hi, lo] = tag.to_be_bytes();
-        bytes[0] = 0x42;
-        bytes[14] = hi;
-        bytes[15] = lo;
-        mneme_core::RecordId::from_bytes(bytes)
-    }
-
-    pub(super) fn test_context(bundle: &crate::RuleBundle) -> crate::BuildContext {
-        crate::BuildContext {
-            requested_revision: mneme_core::WorkspaceRevisionId::from_bytes([0x11; 16]),
-            served_revision: mneme_core::WorkspaceRevisionId::from_bytes([0x11; 16]),
-            scope: test_scope(),
-            schema_version: bundle.schema_version,
-            rule_bundle_id: bundle.id.clone(),
-            rule_bundle_version: bundle.version.clone(),
-            projection_build_id: "unit-build".to_owned(),
-            eligibility_generation: 1,
-            requested_was_head: true,
-            vaults: Vec::new(),
-        }
-    }
-
-    pub(super) fn base_fact_contents(
-        predicate: &str,
-        terms: FactKey,
-        record_id: mneme_core::RecordId,
-        context: &crate::BuildContext,
-    ) -> FactContents {
-        let support = crate::Derivation {
-            rule_id: "canonical".to_owned(),
-            rule_version: "1".to_owned(),
-            premises: vec![crate::Premise {
-                predicate: predicate.to_owned(),
-                terms: Vec::new(),
-                canonical: Some(record_id),
-                canonical_roots: std::collections::BTreeSet::from([record_id]),
-                sources: std::collections::BTreeSet::new(),
-                source_availability: None,
-                vault: Some(crate::PRIMARY_VAULT_ALIAS.to_owned()),
-                vaults: std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()]),
-                absent: false,
-                coverage: None,
-                epistemic: crate::EpistemicStatus::Accepted,
-            }],
-            sources: std::collections::BTreeSet::new(),
-            vaults: std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()]),
-            temporal_parameters: Vec::new(),
-            revision: context.served_revision,
-            scope: context.scope.clone(),
-            truncated: false,
-            epistemic: crate::EpistemicStatus::Accepted,
-        };
-        FactContents {
-            terms,
-            support,
-            sources: std::collections::BTreeSet::new(),
-            canonical: Some(record_id),
-            canonical_roots: std::collections::BTreeSet::from([record_id]),
-            vaults: std::collections::BTreeSet::from([crate::PRIMARY_VAULT_ALIAS.to_owned()]),
-            validity: crate::FactValidity::always(),
-            epistemic: crate::EpistemicStatus::Accepted,
-        }
-    }
-
-    pub(super) struct EvaluationFixture<'a> {
-        pub(super) bundle: &'a crate::RuleBundle,
-        pub(super) context: &'a crate::BuildContext,
-        pub(super) limits: &'a crate::Limits,
-        pub(super) current_sources: &'a AvailabilityMap,
-        pub(super) base_facts: &'a [(String, FactKey, mneme_core::RecordId)],
-    }
-
-    pub(super) fn make_evaluation<'a>(fixture: &'a EvaluationFixture<'a>) -> Evaluation<'a> {
-        assert!(!fixture.bundle.id.is_empty());
-        assert!(fixture.limits.max_supports_per_fact > 0);
-        let _ = fixture.current_sources;
-        let mut evaluation = Evaluation {
-            bundle: fixture.bundle,
-            context: fixture.context,
-            budget: Budget {
-                limits: fixture.limits,
-                work: 0,
-                stored_rows: 0,
-                start: evaluation_start(),
-                cancellation: None,
-                status: crate::ExecutionStatus::Complete,
-                limit_reached: false,
-                support_truncated: false,
-                max_intervals_per_fact: crate::DEFAULT_MAX_INTERVALS_PER_FACT,
-            },
-            facts: std::collections::BTreeMap::new(),
-            coverage: std::collections::BTreeMap::new(),
-            base_coverage: std::collections::BTreeMap::new(),
-            coverage_reasons: std::collections::BTreeMap::new(),
-            participating_vaults: std::collections::BTreeSet::from([
-                crate::PRIMARY_VAULT_ALIAS.to_owned()
-            ]),
-            at: None,
-            derivation_eligibility: std::collections::BTreeMap::new(),
-            record_contributions: std::collections::BTreeMap::new(),
-        };
-        for predicate in fixture.bundle.base_predicates.keys() {
-            evaluation
-                .coverage
-                .insert(predicate.clone(), crate::CoverageStatus::Complete);
-            evaluation
-                .base_coverage
-                .insert(predicate.clone(), crate::CoverageStatus::Complete);
-        }
-        for (predicate, terms, record_id) in fixture.base_facts {
-            add_fact(
-                &mut evaluation,
-                predicate,
-                base_fact_contents(predicate, terms.clone(), *record_id, fixture.context),
-            );
-        }
-        evaluation
-    }
-
-    // --- Reference binary indexed evaluator (#98 greedy + column indexes) ---
-
-    pub(super) fn evaluate_rules_binary(
-        evaluation: &mut Evaluation<'_>,
-        rule_strata: &std::collections::BTreeMap<String, usize>,
-    ) {
-        debug_assert!(!evaluation.bundle.rules.is_empty());
-        let mut strata: std::collections::BTreeMap<usize, Vec<&crate::Rule>> =
-            std::collections::BTreeMap::new();
-        for rule in &evaluation.bundle.rules {
-            let stratum = rule_strata.get(&rule.head.predicate).copied().unwrap_or(0);
-            strata.entry(stratum).or_default().push(rule);
-        }
-        for rules in strata.values() {
-            let mut rounds = 0_usize;
-            loop {
-                if !evaluation.budget.is_active() {
-                    break;
-                }
-                let mut is_changed = false;
-                for rule in rules {
-                    if evaluate_rule_binary(evaluation, rule) == RuleOutcome::Changed {
-                        is_changed = true;
-                    }
-                    if !evaluation.budget.is_active() {
-                        break;
-                    }
-                }
-                rounds = rounds.saturating_add(1);
-                if !is_changed || !evaluation.budget.is_active() {
-                    break;
-                }
-                if rounds > evaluation.budget.limits.max_recursion_depth {
-                    evaluation.budget.stop(crate::ExecutionStatus::Partial);
-                    break;
-                }
-            }
-            update_derived_coverage(evaluation);
-        }
-        debug_assert!(!strata.is_empty());
-    }
-
-    fn evaluate_rule_binary(evaluation: &mut Evaluation<'_>, rule: &crate::Rule) -> RuleOutcome {
-        debug_assert!(!rule.head.predicate.is_empty());
-        let Some(body_coverage) = rule_body_coverage(evaluation, rule) else {
-            return RuleOutcome::Skipped;
-        };
-        let aggregate = rule.body.iter().find_map(|literal| {
-            if let crate::Literal::Aggregate {
-                function,
-                input,
-                output,
-            } = literal
-            {
-                Some(AggregateSpec {
-                    function: *function,
-                    input: input.clone(),
-                    output: output.clone(),
-                })
-            } else {
-                None
-            }
-        });
-        let has_negative = rule
-            .body
-            .iter()
-            .any(|literal| matches!(literal, crate::Literal::Negative(_)));
-        if (aggregate.is_some() || has_negative)
-            && !mneme_kernel::admission::non_monotonic_rule_admissible(body_coverage)
-        {
-            return RuleOutcome::Skipped;
-        }
-        let bindings = match evaluate_planned_body(evaluation, rule) {
-            Ok(bindings) => bindings,
-            Err(outcome) => return outcome,
-        };
-        debug_assert!(!bindings.is_empty());
-        if let Some(aggregate) = aggregate {
-            return evaluate_aggregate_rule(evaluation, rule, &aggregate, &bindings);
-        }
-        evaluate_ordinary_rule(evaluation, rule, &bindings)
-    }
-
-    // --- Reference naive evaluator (pre-optimization written-order scan) ---
-
-    pub(super) fn evaluate_rules_naive(
-        evaluation: &mut Evaluation<'_>,
-        rule_strata: &std::collections::BTreeMap<String, usize>,
-    ) {
-        let mut strata: std::collections::BTreeMap<usize, Vec<&crate::Rule>> =
-            std::collections::BTreeMap::new();
-        for rule in &evaluation.bundle.rules {
-            let stratum = rule_strata.get(&rule.head.predicate).copied().unwrap_or(0);
-            strata.entry(stratum).or_default().push(rule);
-        }
-        for rules in strata.values() {
-            let mut rounds = 0_usize;
-            loop {
-                if !evaluation.budget.is_active() {
-                    break;
-                }
-                let mut is_changed = false;
-                for rule in rules {
-                    if evaluate_rule_naive(evaluation, rule) == RuleOutcome::Changed {
-                        is_changed = true;
-                    }
-                    if !evaluation.budget.is_active() {
-                        break;
-                    }
-                }
-                rounds = rounds.saturating_add(1);
-                if !is_changed || !evaluation.budget.is_active() {
-                    break;
-                }
-                if rounds > evaluation.budget.limits.max_recursion_depth {
-                    evaluation.budget.stop(crate::ExecutionStatus::Partial);
-                    break;
-                }
-            }
-            update_derived_coverage(evaluation);
-        }
-    }
-
-    fn evaluate_rule_naive(evaluation: &mut Evaluation<'_>, rule: &crate::Rule) -> RuleOutcome {
-        let Some(body_coverage) = rule_body_coverage(evaluation, rule) else {
-            return RuleOutcome::Skipped;
-        };
-        let aggregate = rule.body.iter().find_map(|literal| {
-            if let crate::Literal::Aggregate {
-                function,
-                input,
-                output,
-            } = literal
-            {
-                Some(AggregateSpec {
-                    function: *function,
-                    input: input.clone(),
-                    output: output.clone(),
-                })
-            } else {
-                None
-            }
-        });
-        let has_negative = rule
-            .body
-            .iter()
-            .any(|literal| matches!(literal, crate::Literal::Negative(_)));
-        if (aggregate.is_some() || has_negative)
-            && !mneme_kernel::admission::non_monotonic_rule_admissible(body_coverage)
-        {
-            return RuleOutcome::Skipped;
-        }
-        let mut bindings = match positive_bindings_naive(evaluation, rule) {
-            Ok(bindings) => bindings,
-            Err(outcome) => return outcome,
-        };
-        if let Err(outcome) = filter_nonpositive_literals_naive(evaluation, rule, &mut bindings) {
-            return outcome;
-        }
-        if let Some(aggregate) = aggregate {
-            return evaluate_aggregate_rule(evaluation, rule, &aggregate, &bindings);
-        }
-        evaluate_ordinary_rule(evaluation, rule, &bindings)
-    }
-
-    fn positive_bindings_naive(
-        evaluation: &mut Evaluation<'_>,
-        rule: &crate::Rule,
-    ) -> Result<RuleBindings, RuleOutcome> {
-        let mut bindings = vec![Binding::new()];
-        for literal in &rule.body {
-            if let crate::Literal::Positive(atom) = literal {
-                let Ok(cost) = u64::try_from(bindings.len()) else {
-                    return Err(RuleOutcome::Skipped);
-                };
-                if !evaluation.budget.charge(cost) {
-                    return Err(RuleOutcome::Skipped);
-                }
-                bindings = join_naive(evaluation, &bindings, atom)?;
-                if bindings.is_empty() {
-                    return Err(RuleOutcome::Stable);
-                }
-            }
-        }
-        Ok(bindings)
-    }
-
-    fn filter_nonpositive_literals_naive(
-        evaluation: &mut Evaluation<'_>,
-        rule: &crate::Rule,
-        bindings: &mut RuleBindings,
-    ) -> Result<(), RuleOutcome> {
-        for literal in &rule.body {
-            match literal {
-                crate::Literal::Negative(atom) => {
-                    if evaluation.coverage_status(&atom.predicate)
-                        != crate::CoverageStatus::Complete
-                    {
-                        return Err(RuleOutcome::Skipped);
-                    }
-                    let mut kept = Vec::with_capacity(bindings.len());
-                    for binding in bindings.drain(..) {
-                        if !evaluation.budget.charge(1) {
-                            return Err(RuleOutcome::Skipped);
-                        }
-                        if !matches_atom_naive(evaluation, atom, &binding)? {
-                            kept.push(binding);
-                        }
-                    }
-                    *bindings = kept;
-                    if bindings.is_empty() {
-                        return Err(RuleOutcome::Stable);
-                    }
-                }
-                crate::Literal::Compare { op, left, right } => {
-                    let mut kept = Vec::with_capacity(bindings.len());
-                    for binding in bindings.drain(..) {
-                        if !evaluation.budget.charge(1) {
-                            return Err(RuleOutcome::Skipped);
-                        }
-                        let is_kept =
-                            match (term_value(left, &binding), term_value(right, &binding)) {
-                                (Some(left), Some(right)) => compare_values(*op, &left, &right),
-                                _ => false,
-                            };
-                        if is_kept {
-                            kept.push(binding);
-                        }
-                    }
-                    *bindings = kept;
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    fn join_naive(
-        evaluation: &mut Evaluation<'_>,
-        bindings: &[Binding],
-        atom: &crate::Atom,
-    ) -> Result<RuleBindings, RuleOutcome> {
-        let Some(store) = evaluation.facts.get(&atom.predicate) else {
-            return Ok(Vec::new());
-        };
-        let binding_limit = evaluation.budget.limits.max_result_rows;
-        let mut output = Vec::with_capacity(bindings.len().min(binding_limit));
-        for binding in bindings {
-            for (terms, data) in &store.rows {
-                if terms.len() != atom.terms.len() {
-                    continue;
-                }
-                if !evaluation.budget.charge(1) {
-                    return Err(RuleOutcome::Skipped);
-                }
-                if let Some(extended) = unify(atom, terms, binding, data) {
-                    push_extended_binding(
-                        &mut output,
-                        extended,
-                        binding_limit,
-                        &mut evaluation.budget,
-                    )?;
-                }
-            }
-        }
-        Ok(output)
-    }
-
-    fn matches_atom_naive(
-        evaluation: &mut Evaluation<'_>,
-        atom: &crate::Atom,
-        binding: &Binding,
-    ) -> Result<bool, RuleOutcome> {
-        let Some(store) = evaluation.facts.get(&atom.predicate) else {
-            return Ok(false);
-        };
-        let mut is_matched = false;
-        for (terms, data) in &store.rows {
-            if !evaluation.budget.charge(1) {
-                return Err(RuleOutcome::Skipped);
-            }
-            if data.is_active() && atom_matches_row(atom, terms, binding) {
-                is_matched = true;
-                break;
-            }
-        }
-        Ok(is_matched)
-    }
-
-    pub(super) fn assert_equivalent_to_naive(
-        bundle: &crate::RuleBundle,
-        base_facts: &[(String, FactKey, mneme_core::RecordId)],
-        limits: &crate::Limits,
-    ) -> (u64, u64) {
-        let program = bundle.validate().expect("valid bundle");
-        let context = test_context(bundle);
-        let current_sources = AvailabilityMap::new();
-        let fixture = EvaluationFixture {
-            bundle,
-            context: &context,
-            limits,
-            current_sources: &current_sources,
-            base_facts,
-        };
-        let mut naive = make_evaluation(&fixture);
-        evaluate_rules_naive(&mut naive, &program.strata);
-
-        let mut planned = make_evaluation(&fixture);
-        evaluate_rules(&mut planned, &program.strata);
-
-        assert_eq!(planned.budget.status, naive.budget.status);
-        assert_eq!(planned.budget.limit_reached, naive.budget.limit_reached);
-        assert_eq!(
-            planned.budget.support_truncated,
-            naive.budget.support_truncated
-        );
-        assert_eq!(final_coverage(&planned), final_coverage(&naive));
-        assert_eq!(
-            planned.facts.keys().collect::<Vec<_>>(),
-            naive.facts.keys().collect::<Vec<_>>()
-        );
-        for (predicate, naive_store) in &naive.facts {
-            let planned_store = planned.facts.get(predicate).expect("matching predicate");
-            assert_eq!(planned_store.truncated, naive_store.truncated);
-            assert_eq!(
-                planned_store.rows.keys().collect::<Vec<_>>(),
-                naive_store.rows.keys().collect::<Vec<_>>()
-            );
-            for (key, naive_data) in &naive_store.rows {
-                let planned_data = planned_store.rows.get(key).expect("matching row");
-                assert_eq!(planned_data.supports, naive_data.supports);
-                assert_eq!(planned_data.sources, naive_data.sources);
-                assert_eq!(planned_data.truncated, naive_data.truncated);
-                assert_eq!(planned_data.canonical, naive_data.canonical);
-                assert_eq!(planned_data.canonical_roots, naive_data.canonical_roots);
-                assert_eq!(planned_data.validity, naive_data.validity);
-                assert_eq!(planned_data.epistemic, naive_data.epistemic);
-            }
-        }
-        (naive.budget.work, planned.budget.work)
-    }
-
-    pub(super) fn atom(predicate: &str, terms: Vec<crate::Term>) -> crate::Atom {
-        crate::Atom::new(predicate, terms)
-    }
-
-    pub(super) fn var(name: &str) -> crate::Term {
-        crate::Term::var(name)
-    }
-
-    pub(super) fn sym(name: &str) -> crate::Term {
-        crate::Term::constant(mneme_core::Value::symbol(name))
-    }
-
-    pub(super) fn int_const(value: i64) -> crate::Term {
-        crate::Term::constant(mneme_core::Value::integer(value))
-    }
-}
+#[path = "engine/harness.rs"]
+mod tests;
 
 #[cfg(test)]
 #[path = "engine/tests.rs"]
