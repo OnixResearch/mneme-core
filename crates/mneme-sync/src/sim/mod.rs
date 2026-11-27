@@ -1306,6 +1306,7 @@ impl Cluster {
         });
         let head_req = crate::protocol::SyncControlRequest::GetVaultHead {
             scope: self.scope_ids[sc_i].to_string(),
+            known_tree_size: None,
             hlc: self.nodes[c_i].hlc.tick().ok(),
             capability: self.nodes[c_i].token.clone(),
         };
@@ -1543,6 +1544,7 @@ impl Cluster {
         let forbidden_scope = &self.scope_ids[f_i];
         let req = crate::protocol::SyncControlRequest::GetVaultHead {
             scope: forbidden_scope.to_string(),
+            known_tree_size: None,
             hlc: self.nodes[c_i].hlc.tick().ok(),
             capability: self.nodes[c_i].token.clone(),
         };
@@ -1659,6 +1661,7 @@ impl Cluster {
         if is_revoked {
             let req = crate::protocol::SyncControlRequest::GetVaultHead {
                 scope: self.scope_ids[sc_i].to_string(),
+                known_tree_size: None,
                 hlc: None,
                 capability: peer.token.clone(),
             };
@@ -2092,6 +2095,8 @@ fn republish_node_scope(
         bundle_bytes: 64,
         blobs: blobs_by_digest.values().cloned().collect(),
         hlc: node.hlc.tick().ok(),
+        signed_tree_head: None,
+        consistency_proof: None,
     };
     let entry = std::sync::Arc::new(crate::protocol::PublishedScopeEntry {
         info: info.clone(),
@@ -2104,6 +2109,7 @@ fn republish_node_scope(
             prunings: Vec::new(),
         },
         authorized_hashes,
+        workspace_root: None,
     });
     if let Ok(mut guard) = node.scopes.write() {
         guard.configured_vaults.insert(vault_id.to_owned());
@@ -2329,6 +2335,7 @@ async fn fetch_head_via_transport(
 ) -> std::result::Result<crate::protocol::VaultSnapshotInfo, Violation> {
     let head_req = crate::protocol::SyncControlRequest::GetVaultHead {
         scope: scope.to_string(),
+        known_tree_size: None,
         hlc: None,
         capability: None,
     };
@@ -2492,6 +2499,7 @@ fn build_wired_transport(
                 blobs_by_digest: exported.blobs_by_digest,
                 retention: exported.retention,
                 authorized_hashes,
+                workspace_root: None,
             }),
         );
     }

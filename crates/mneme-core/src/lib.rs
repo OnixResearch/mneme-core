@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod attestation;
 pub mod base64;
 pub mod binary;
 pub mod clock;
@@ -37,6 +38,11 @@ pub mod typed;
 pub mod upgrade;
 pub mod wire;
 
+pub use attestation::{
+    ERASURE_COMPLIANCE_RECEIPT_FORMAT, ErasureComplianceReceipt, KERNEL_PROOF_RECEIPT_V2_FORMAT,
+    OracleVerdict, ReproducibilityReceipt, SignedReceiptEnvelope, compute_source_tree_merkle_root,
+    decode_hex_32, encode_hex_bytes,
+};
 pub use binary::MAX_INTEGER_BYTES;
 pub use binary::{decode, decode_canonical, encode};
 pub use clock::{RecordedTime, Timestamp, ValidTime};

@@ -96,6 +96,14 @@ pub(crate) fn canonical_schema(predicate: &str) -> Option<&'static [CanonicalKin
             CanonicalKind::RevisionId,
             CanonicalKind::String,
         ]),
+        "verdict" => Some(&[
+            CanonicalKind::RecordId,
+            CanonicalKind::Any,
+            CanonicalKind::Symbol,
+            CanonicalKind::String,
+            CanonicalKind::String,
+            CanonicalKind::String,
+        ]),
         _ => vault_canonical_schema(predicate),
     }
 }
@@ -141,6 +149,15 @@ fn vault_canonical_schema(predicate: &str) -> Option<&'static [CanonicalKind]> {
             CanonicalKind::String,
             CanonicalKind::RecordId,
             CanonicalKind::RevisionId,
+            CanonicalKind::String,
+        ]),
+        "vault_verdict" => Some(&[
+            CanonicalKind::String,
+            CanonicalKind::RecordId,
+            CanonicalKind::Any,
+            CanonicalKind::Symbol,
+            CanonicalKind::String,
+            CanonicalKind::String,
             CanonicalKind::String,
         ]),
         "vault_record" => Some(&[CanonicalKind::String, CanonicalKind::RecordId]),

@@ -86,6 +86,7 @@ pub struct VaultGossipTopic {
     leases: crate::capability::SharedCapabilityLeases,
     clock: std::sync::Arc<dyn mneme_store::Clock>,
     hlc: crate::protocol::SharedSyncHlc,
+    tree_heads: crate::transparency::SharedTreeHeadTracker,
     high_water: std::collections::BTreeMap<(mneme_core::ScopeId, iroh::EndpointId), u64>,
     topic: iroh_gossip::GossipTopic,
 }
@@ -137,6 +138,22 @@ impl VaultGossipTopic {
             })
     }
 
+    /// Broadcast a compact self-verifying [`crate::transparency::EquivocationProof`] over gossip.
+    pub async fn broadcast_equivocation(
+        &mut self,
+        proof: &crate::transparency::EquivocationProof,
+    ) -> crate::error::Result<()> {
+        if !proof.verify()? {
+            return Err(crate::error::Failure::Protocol(
+                "refusing to gossip unverified equivocation proof".to_owned(),
+            ));
+        }
+        let encoded = proof.encode()?;
+        self.topic.broadcast(encoded).await.map_err(|error| {
+            crate::error::Failure::Protocol(format!("gossip equivocation broadcast: {error}"))
+        })
+    }
+
     /// Receive the next authorized, Ed25519-signed, monotonic [`crate::protocol::HeadAnnouncement`].
     ///
     /// Signed revocation tombstones from authorized revokers received on the
@@ -154,6 +171,20 @@ impl VaultGossipTopic {
             let iroh_gossip::Event::Received(message) = event else {
                 continue;
             };
+            if message.content.len() <= crate::protocol::MAX_GOSSIP_MESSAGE_BYTES
+                && let Ok(eq_proof) =
+                    crate::transparency::EquivocationProof::decode_verified(&message.content)
+                && eq_proof.sth_first.vault_id == self.vault_id
+            {
+                if self
+                    .tree_heads
+                    .record_verified_equivocation(eq_proof)
+                    .is_err()
+                {
+                    // Already validated by `decode_verified`; ignore duplicate/lock error.
+                }
+                continue;
+            }
             if message.content.len() <= crate::protocol::MAX_GOSSIP_MESSAGE_BYTES
                 && let Ok(tombstone) = serde_json::from_slice::<
                     crate::capability::RevocationTombstone,
@@ -235,6 +266,7 @@ pub struct SyncNode {
     leases: crate::capability::SharedCapabilityLeases,
     clock: std::sync::Arc<dyn mneme_store::Clock>,
     hlc: crate::protocol::SharedSyncHlc,
+    tree_heads: crate::transparency::SharedTreeHeadTracker,
     scopes: crate::protocol::SharedScopeTable,
 }
 
@@ -306,8 +338,14 @@ impl SyncNode {
             leases,
             clock: config.clock,
             hlc,
+            tree_heads: crate::transparency::SharedTreeHeadTracker::new(),
             scopes,
         })
+    }
+
+    /// Access the live peer history-tree head tracker and verified equivocation proofs.
+    pub const fn tree_heads(&self) -> &crate::transparency::SharedTreeHeadTracker {
+        &self.tree_heads
     }
 
     /// Return this node's current Hybrid Logical Clock watermark.
@@ -402,13 +440,21 @@ impl SyncNode {
         vault_id: &str,
         scope: &mneme_core::ScopeId,
     ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
-        let exported = crate::bundle::export_scope_to_store(
+        let mut exported = crate::bundle::export_scope_to_store(
             workspace,
             vault_id,
             scope,
             self.transport.blob_store(),
         )
         .await?;
+        let tree_head = workspace.history_tree_head()?;
+        let sth = crate::transparency::SignedTreeHead::sign(
+            vault_id,
+            &scope.to_string(),
+            tree_head,
+            &self.secret_key,
+        )?;
+        exported.info.signed_tree_head = Some(sth);
         let mut authorized_hashes = std::collections::BTreeSet::new();
         authorized_hashes.insert(exported.archive_hash);
         for blob_ref in &exported.info.blobs {
@@ -424,6 +470,7 @@ impl SyncNode {
             blobs_by_digest: exported.blobs_by_digest,
             retention: exported.retention,
             authorized_hashes,
+            workspace_root: Some(workspace.root().to_path_buf()),
         });
         let mut guard = self.scopes.write().map_err(|_| {
             crate::error::Failure::InvalidConfig("published scopes lock poisoned".to_owned())
@@ -466,6 +513,7 @@ impl SyncNode {
             leases: self.leases.clone(),
             clock: std::sync::Arc::clone(&self.clock),
             hlc: self.hlc.clone(),
+            tree_heads: self.tree_heads.clone(),
             high_water: std::collections::BTreeMap::new(),
             topic,
         })
@@ -479,8 +527,17 @@ impl SyncNode {
     ) -> crate::error::Result<crate::protocol::VaultSnapshotInfo> {
         self.require_peer_scope(peer, scope)?;
         let conn = self.connect_control(peer).await?;
-        let (info, _sent, _recv) =
-            fetch_vault_head_on_conn(&conn, peer, scope, None, &self.hlc).await?;
+        let (info, _sent, _recv) = fetch_vault_head_on_conn(
+            &conn,
+            HeadQueryContext {
+                peer,
+                scope,
+                capability: None,
+                hlc: &self.hlc,
+                tree_heads: &self.tree_heads,
+            },
+        )
+        .await?;
         conn.close(0_u32.into(), b"done");
         Ok(info)
     }
@@ -525,11 +582,13 @@ impl SyncNode {
             scope,
             crate::capability::CapabilityAuthority::ReadOnly,
         )?;
+        let known_tree_size = self.tree_heads.known_tree_size(peer, &scope.to_string());
         let response = self
             .send_control_request(
                 peer,
                 &crate::protocol::SyncControlRequest::GetVaultHead {
                     scope: scope.to_string(),
+                    known_tree_size,
                     hlc: Some(self.hlc.tick()?),
                     capability: Some(capability.clone()),
                 },
@@ -543,6 +602,7 @@ impl SyncNode {
                         info.vault_id, vault_id
                     )));
                 }
+                verify_received_tree_head(&self.tree_heads, peer, scope, &info)?;
                 Ok(*info)
             }
             other => Err(unexpected_control_response(peer, other)),
@@ -553,8 +613,17 @@ impl SyncNode {
     pub async fn pull_scope(&self, request: PullRequest) -> crate::error::Result<PullOutcome> {
         self.require_peer_scope(request.peer, &request.scope)?;
         let conn = self.connect_control(request.peer).await?;
-        let (snapshot, head_sent, head_recv) =
-            fetch_vault_head_on_conn(&conn, request.peer, &request.scope, None, &self.hlc).await?;
+        let (snapshot, head_sent, head_recv) = fetch_vault_head_on_conn(
+            &conn,
+            HeadQueryContext {
+                peer: request.peer,
+                scope: &request.scope,
+                capability: None,
+                hlc: &self.hlc,
+                tree_heads: &self.tree_heads,
+            },
+        )
+        .await?;
         self.finish_pull_with_snapshot(
             conn,
             request,
@@ -585,10 +654,13 @@ impl SyncNode {
         let conn = self.connect_control(request.peer).await?;
         let (snapshot, head_sent, head_recv) = fetch_vault_head_on_conn(
             &conn,
-            request.peer,
-            &request.scope,
-            Some(capability),
-            &self.hlc,
+            HeadQueryContext {
+                peer: request.peer,
+                scope: &request.scope,
+                capability: Some(capability),
+                hlc: &self.hlc,
+                tree_heads: &self.tree_heads,
+            },
         )
         .await?;
         if snapshot.vault_id != vault_id {
@@ -1304,25 +1376,55 @@ async fn send_control_on_conn(
     Ok((response, bytes_sent, bytes_received))
 }
 
-async fn fetch_vault_head_on_conn(
-    conn: &iroh::endpoint::Connection,
+struct HeadQueryContext<'a> {
+    peer: iroh::EndpointId,
+    scope: &'a mneme_core::ScopeId,
+    capability: Option<&'a crate::capability::CapabilityToken>,
+    hlc: &'a crate::protocol::SharedSyncHlc,
+    tree_heads: &'a crate::transparency::SharedTreeHeadTracker,
+}
+
+fn verify_received_tree_head(
+    tracker: &crate::transparency::SharedTreeHeadTracker,
     peer: iroh::EndpointId,
     scope: &mneme_core::ScopeId,
-    capability: Option<&crate::capability::CapabilityToken>,
-    hlc: &crate::protocol::SharedSyncHlc,
+    info: &crate::protocol::VaultSnapshotInfo,
+) -> crate::error::Result<()> {
+    let Some(sth) = info.signed_tree_head.as_ref() else {
+        return Ok(());
+    };
+    if let Some(proof) = tracker.observe(peer, sth, info.consistency_proof.as_ref())? {
+        return Err(crate::error::Failure::EquivocationDetected {
+            peer: peer.to_string(),
+            scope: scope.to_string(),
+            proof: Box::new(proof),
+        });
+    }
+    Ok(())
+}
+
+async fn fetch_vault_head_on_conn(
+    conn: &iroh::endpoint::Connection,
+    ctx: HeadQueryContext<'_>,
 ) -> crate::error::Result<(crate::protocol::VaultSnapshotInfo, u64, u64)> {
+    let scope_text = ctx.scope.to_string();
+    let known_tree_size = ctx.tree_heads.known_tree_size(ctx.peer, &scope_text);
     let req = crate::protocol::SyncControlRequest::GetVaultHead {
-        scope: scope.to_string(),
-        hlc: Some(hlc.tick()?),
-        capability: capability.cloned(),
+        scope: scope_text,
+        known_tree_size,
+        hlc: Some(ctx.hlc.tick()?),
+        capability: ctx.capability.cloned(),
     };
     let (response, sent, recv) = send_control_on_conn(conn, &req).await?;
     if let Some(remote_hlc) = response.sender_hlc() {
-        let _ = hlc.observe(remote_hlc)?;
+        let _ = ctx.hlc.observe(remote_hlc)?;
     }
     match response {
-        crate::protocol::SyncControlResponse::VaultHead(info) => Ok((*info, sent, recv)),
-        other => Err(unexpected_control_response(peer, other)),
+        crate::protocol::SyncControlResponse::VaultHead(info) => {
+            verify_received_tree_head(ctx.tree_heads, ctx.peer, ctx.scope, &info)?;
+            Ok((*info, sent, recv))
+        }
+        other => Err(unexpected_control_response(ctx.peer, other)),
     }
 }
 

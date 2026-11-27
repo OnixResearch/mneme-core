@@ -21,6 +21,7 @@ pub mod protocol;
 pub mod rbsr;
 pub mod sim;
 pub mod state;
+pub mod transparency;
 pub mod transport;
 pub mod trust;
 
@@ -61,6 +62,10 @@ pub use rbsr::{
     RbsrResolution, RbsrResponse, RbsrSession, RbsrSet, RbsrSubrange, reconcile_in_memory,
 };
 pub use state::{SyncPaths, SyncReceipt, SyncState, resolve_vault_id, topic_id_for_vault};
+pub use transparency::{
+    EQUIVOCATION_PROOF_SCHEMA, EquivocationProof, SharedTreeHeadTracker, SignedTreeHead,
+    WireConsistencyProof, WireInclusionProof,
+};
 pub use transport::{BlobFetchRequest, BoxTransportFuture, IrohTransport, SyncTransport};
 pub use trust::{
     AllowedPeer, PeerAllowlist, ScopeAllowance, SharedAllowlist, generate_secret_key,

@@ -6,6 +6,7 @@ pub mod client;
 pub mod protocol;
 pub mod quinn;
 pub mod server;
+pub mod transparency;
 
 pub use auth::{
     CAPABILITY_SCHEMA, CapabilityAuthority, CapabilityLink, CapabilityScope, CapabilitySignature,
@@ -29,3 +30,7 @@ pub use quinn::{
     make_authenticated_server_endpoint_with_authorizer,
 };
 pub use server::{IrohFederationHandler, ServerConfig, VaultFederationServer};
+pub use transparency::{
+    ClientTreeHeadPins, WireConsistencyProof, WireEquivocationProof, WireInclusionProof,
+    WireSignedTreeHead,
+};

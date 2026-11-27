@@ -23,6 +23,8 @@ pub enum FederationError {
     ProtocolError(String),
     #[error("clock skew exceeded: {0}")]
     ClockSkewExceeded(String),
+    #[error("equivocation detected: {0}")]
+    EquivocationDetected(String),
     #[error("federation transport error: {0}")]
     Transport(String),
 }
@@ -50,6 +52,9 @@ impl From<super::protocol::RpcError> for FederationError {
             }
             super::protocol::RpcErrorCode::ClockSkewExceeded => {
                 FederationError::ClockSkewExceeded(error.message)
+            }
+            super::protocol::RpcErrorCode::EquivocationDetected => {
+                FederationError::EquivocationDetected(error.message)
             }
         }
     }
@@ -220,6 +225,7 @@ pub struct VaultFederationClient {
     clock: std::sync::Arc<dyn mneme_store::Clock>,
     hlc: std::sync::Arc<std::sync::Mutex<mneme_kernel::hlc::HybridTimestamp>>,
     max_skew_ns: i64,
+    tree_heads: super::transparency::ClientTreeHeadPins,
 }
 
 impl std::fmt::Debug for VaultFederationClient {
@@ -246,6 +252,7 @@ impl VaultFederationClient {
                 logical: 0,
             })),
             max_skew_ns: mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS,
+            tree_heads: super::transparency::ClientTreeHeadPins::default(),
         }
     }
 
@@ -347,21 +354,28 @@ impl VaultFederationClient {
         &self,
         scope: &mneme_core::ScopeId,
     ) -> Result<super::protocol::HeadState, FederationError> {
+        let scope_text = scope.to_string();
+        let known_tree_size = self.tree_heads.known_size(&scope_text);
         let sender_hlc = Some(super::protocol::WireHybridTimestamp::from_kernel(
             self.tick_hlc()?,
         ));
         let reply = self
             .inner
             .rpc(super::protocol::QueryHeadRequest {
-                scope: scope.to_string(),
+                scope: scope_text.clone(),
                 sender_hlc,
                 capability_document: self.capability_document.clone(),
+                known_tree_size,
             })
             .await
             .map_err(transport_error)?
             .map_err(FederationError::from)?;
         check_protocol_version(reply.protocol_version)?;
         self.observe_reply_hlc(reply.sender_hlc)?;
+        if let Some(sth) = reply.signed_tree_head.as_ref() {
+            self.tree_heads
+                .observe(&scope_text, sth, reply.consistency_proof.as_ref())?;
+        }
         Ok(reply)
     }
 
@@ -445,6 +459,21 @@ impl VaultFederationClient {
             return Err(FederationError::ProtocolError(
                 "remote snapshot served revision does not match requested pin".to_owned(),
             ));
+        }
+        if let (Some(sth), Some(inclusion)) = (
+            reply.signed_tree_head.as_ref(),
+            reply.inclusion_proof.as_ref(),
+        ) {
+            let _ = sth.verify_signature().map_err(FederationError::from)?;
+            if inclusion.leaf_index != reply.sequence
+                || inclusion.tree_size != sth.tree_size
+                || !inclusion.verify(sth.root)
+            {
+                return Err(FederationError::EquivocationDetected(format!(
+                    "inclusion proof failed for snapshot seq={} tree_size={}",
+                    reply.sequence, sth.tree_size
+                )));
+            }
         }
         assert_eq!(reply.protocol_version, super::protocol::PROTOCOL_VERSION);
         assert!(revision.is_none_or(|rev| reply.served_revision == *rev.as_bytes()));

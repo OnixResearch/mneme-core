@@ -209,6 +209,18 @@ const fn no_hlc() -> Option<WireHlc> {
     None
 }
 
+const fn no_sth() -> Option<crate::transparency::SignedTreeHead> {
+    None
+}
+
+const fn no_consistency_proof() -> Option<crate::transparency::WireConsistencyProof> {
+    None
+}
+
+const fn no_tree_size() -> Option<u64> {
+    None
+}
+
 const fn default_generation() -> u64 {
     1
 }
@@ -370,6 +382,13 @@ pub struct VaultSnapshotInfo {
     pub blobs: Vec<BlobDigestRef>,
     #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
     pub hlc: Option<WireHlc>,
+    #[serde(default = "no_sth", skip_serializing_if = "Option::is_none")]
+    pub signed_tree_head: Option<crate::transparency::SignedTreeHead>,
+    #[serde(
+        default = "no_consistency_proof",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub consistency_proof: Option<crate::transparency::WireConsistencyProof>,
 }
 
 impl VaultSnapshotInfo {
@@ -396,6 +415,7 @@ impl VaultSnapshotInfo {
             bundle_hash: self.bundle_hash.clone(),
             bundle_bytes: self.bundle_bytes,
             hlc: self.hlc,
+            signed_tree_head: self.signed_tree_head.clone(),
             origin: None,
             signature: None,
         }
@@ -435,6 +455,8 @@ pub struct HeadAnnouncement {
     pub bundle_bytes: u64,
     #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
     pub hlc: Option<WireHlc>,
+    #[serde(default = "no_sth", skip_serializing_if = "Option::is_none")]
+    pub signed_tree_head: Option<crate::transparency::SignedTreeHead>,
     #[serde(default = "no_origin", skip_serializing_if = "Option::is_none")]
     pub origin: Option<iroh::EndpointId>,
     #[serde(default = "no_signature", skip_serializing_if = "Option::is_none")]
@@ -538,6 +560,11 @@ fn canonical_announcement_bytes(
         out.push(1);
         out.extend_from_slice(&ts.physical_ns.to_le_bytes());
         out.extend_from_slice(&ts.logical.to_le_bytes());
+    }
+    if let Some(sth) = &announcement.signed_tree_head {
+        out.push(2);
+        out.extend_from_slice(&sth.tree_size.to_le_bytes());
+        push_len_prefixed(&mut out, sth.root_hex.as_bytes())?;
     }
     out.extend_from_slice(origin.as_bytes());
     Ok(out)
@@ -687,6 +714,8 @@ const fn no_retention() -> Option<Box<WirePortableRetentionState>> {
 pub(crate) enum SyncControlRequest {
     GetVaultHead {
         scope: String,
+        #[serde(default = "no_tree_size", skip_serializing_if = "Option::is_none")]
+        known_tree_size: Option<u64>,
         #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
         hlc: Option<WireHlc>,
         #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
@@ -868,6 +897,7 @@ pub(crate) struct PublishedScopeEntry {
     pub blobs_by_digest: std::collections::BTreeMap<[u8; 32], BlobDigestRef>,
     pub retention: mneme_store::portability::PortableRetentionState,
     pub authorized_hashes: std::collections::BTreeSet<iroh_blobs::Hash>,
+    pub workspace_root: Option<std::path::PathBuf>,
 }
 
 /// Shared authorization bundle for capability-enforced ALPN handlers.
@@ -1309,8 +1339,11 @@ impl SyncControlHandler {
         }
         match request {
             SyncControlRequest::GetVaultHead {
-                scope, capability, ..
-            } => self.handle_get_vault_head(remote, scope, capability.as_ref()),
+                scope,
+                known_tree_size,
+                capability,
+                ..
+            } => self.handle_get_vault_head(remote, scope, *known_tree_size, capability.as_ref()),
             SyncControlRequest::RbsrReconcile {
                 scope,
                 snapshot_revision,
@@ -1364,6 +1397,7 @@ impl SyncControlHandler {
         &self,
         remote: iroh::EndpointId,
         scope: &str,
+        known_tree_size: Option<u64>,
         capability: Option<&crate::capability::CapabilityToken>,
     ) -> SyncControlResponse {
         let entry = match self.lookup_authorized_scope(
@@ -1375,10 +1409,31 @@ impl SyncControlHandler {
             Ok(entry) => entry,
             Err(refused) => return refused,
         };
-        // Keep GetVaultHead O(1): omit full N-blob lists on the wire;
-        // peers discover missing blobs via RBSR on /mneme/sync/1.
+        // Keep GetVaultHead O(1) for blobs and O(log N) for the consistency proof:
+        // omit full N-blob lists on the wire; peers discover missing blobs via RBSR.
         let mut summary = entry.info.clone();
         summary.blobs.clear();
+        if let (Some(old_size), Some(root), Some(sth)) = (
+            known_tree_size,
+            entry.workspace_root.as_deref(),
+            summary.signed_tree_head.as_ref(),
+        ) {
+            let is_valid_range = old_size > 0 && old_size <= sth.tree_size;
+            if is_valid_range
+                && let Ok(workspace) = mneme_store::Workspace::open_read_only(
+                    root,
+                    mneme_store::WorkspaceConfig::new(
+                        Box::new(mneme_store::SystemClock),
+                        Box::new(mneme_store::NoFaults),
+                    ),
+                )
+                && let Ok(proof) = workspace.history_consistency_proof(old_size, sth.tree_size)
+            {
+                summary.consistency_proof = Some(
+                    crate::transparency::WireConsistencyProof::from_store(&proof),
+                );
+            }
+        }
         if let Ok(ts) = self.hlc.tick() {
             summary.hlc = Some(ts);
         }

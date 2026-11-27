@@ -24,6 +24,7 @@ pub struct ServerConfig {
     pub max_limits: super::protocol::FederationLimits,
     pub channel_capacity: u32,
     pub max_hlc_skew_ns: i64,
+    pub signing_key: Option<iroh::SecretKey>,
 }
 
 impl ServerConfig {
@@ -35,7 +36,14 @@ impl ServerConfig {
             max_limits: super::protocol::FederationLimits::standard(),
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
             max_hlc_skew_ns: mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS,
+            signing_key: None,
         }
+    }
+
+    /// Attach an Ed25519 signing key for signing Crosby-Wallach `WireSignedTreeHead`s.
+    pub fn with_signing_key(mut self, signing_key: iroh::SecretKey) -> Self {
+        self.signing_key = Some(signing_key);
+        self
     }
 }
 
@@ -756,12 +764,30 @@ fn handle_query_head(
             debug_assert_eq!(head_before, head_after);
             debug_assert_eq!(generation_before, generation_after);
             let sender_hlc = Some(tick_server_hlc(ctx)?);
+            let tree_head = workspace.history_tree_head().ok();
+            let signed_tree_head = tree_head.and_then(|head| {
+                ctx.config.signing_key.as_ref().map(|key| {
+                    super::transparency::WireSignedTreeHead::sign(&request.scope, head, key)
+                })
+            });
+            let consistency_proof = tree_head.and_then(|head| {
+                let old_size = request.known_tree_size?;
+                if old_size == 0 || old_size > head.tree_size {
+                    return None;
+                }
+                workspace
+                    .history_consistency_proof(old_size, head.tree_size)
+                    .ok()
+                    .map(|proof| super::transparency::WireConsistencyProof::from_store(&proof))
+            });
             return Ok(super::protocol::HeadState {
                 protocol_version: super::protocol::PROTOCOL_VERSION,
                 head_revision: *head_before.as_bytes(),
                 head_sequence: sequence,
                 eligibility_generation: generation_before,
                 sender_hlc,
+                signed_tree_head,
+                consistency_proof,
             });
         }
     }
@@ -861,6 +887,19 @@ fn handle_fetch_pinned_snapshot(
     verify_generation_unchanged(&workspace, generation, "pinned snapshot fetch")?;
     let served = filtered.revision;
     let sender_hlc = Some(tick_server_hlc(ctx)?);
+    let tree_head = workspace.history_tree_head().ok();
+    let signed_tree_head = tree_head.and_then(|head| {
+        ctx.config
+            .signing_key
+            .as_ref()
+            .map(|key| super::transparency::WireSignedTreeHead::sign(&request.scope, head, key))
+    });
+    let inclusion_proof = tree_head.and_then(|head| {
+        workspace
+            .history_inclusion_proof(filtered.sequence, head.tree_size)
+            .ok()
+            .map(|proof| super::transparency::WireInclusionProof::from_store(&proof))
+    });
     let payload = build_snapshot_payload_bounded(
         SnapshotPayloadInput {
             requested,
@@ -870,6 +909,8 @@ fn handle_fetch_pinned_snapshot(
             suppressions,
             current_sources,
             sender_hlc,
+            signed_tree_head,
+            inclusion_proof,
         },
         request.limits.max_bytes,
     )?;
@@ -932,6 +973,8 @@ struct SnapshotPayloadInput {
     suppressions: Vec<super::protocol::EncodedSuppression>,
     current_sources: Vec<([u8; 16], super::protocol::EncodedSourceAvailability)>,
     sender_hlc: Option<super::protocol::WireHybridTimestamp>,
+    signed_tree_head: Option<super::transparency::WireSignedTreeHead>,
+    inclusion_proof: Option<super::transparency::WireInclusionProof>,
 }
 
 fn encode_bounded_record_docs<'a>(
@@ -965,6 +1008,8 @@ fn build_snapshot_payload_bounded(
         suppressions,
         current_sources,
         sender_hlc,
+        signed_tree_head,
+        inclusion_proof,
     } = input;
     assert_eq!(filtered.revision, requested);
     assert_eq!(filtered.eligibility_generation, generation);
@@ -1017,6 +1062,8 @@ fn build_snapshot_payload_bounded(
         suppressions,
         current_sources,
         sender_hlc,
+        signed_tree_head,
+        inclusion_proof,
     })
 }
 
