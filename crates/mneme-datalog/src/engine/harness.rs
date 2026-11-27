@@ -100,6 +100,8 @@ pub(super) fn make_evaluation<'a>(fixture: &'a EvaluationFixture<'a>) -> Evaluat
         negation_oracle: None,
         negation_semantics: crate::NegationSemantics::default(),
         justifications: crate::JustificationGraph::default(),
+        eclasses: crate::egraph::EClassTable::new(),
+        egraph_config: crate::EGraphConfig::default(),
         round_deltas: None,
         coverage: std::collections::BTreeMap::new(),
         base_coverage: std::collections::BTreeMap::new(),

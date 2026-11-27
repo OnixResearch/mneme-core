@@ -16,7 +16,7 @@ pub(crate) fn evaluation_start() -> std::time::Instant {
 }
 
 #[derive(Clone, Debug, Default)]
-struct FactColumnIndex {
+pub(crate) struct FactColumnIndex {
     buckets: std::collections::BTreeMap<Vec<mneme_core::Value>, Vec<FactKey>>,
 }
 
@@ -24,7 +24,7 @@ struct FactColumnIndex {
 pub(crate) struct FactStore {
     pub rows: std::collections::BTreeMap<FactKey, crate::FactData>,
     pub truncated: bool,
-    indexes: std::collections::BTreeMap<(usize, Vec<usize>), FactColumnIndex>,
+    pub(crate) indexes: std::collections::BTreeMap<(usize, Vec<usize>), FactColumnIndex>,
     pub(super) tries: std::collections::BTreeMap<(usize, Vec<usize>), crate::freejoin::FactTrie>,
 }
 
@@ -41,6 +41,7 @@ pub(crate) struct BuildFacts {
     pub facts: std::collections::BTreeMap<String, FactStore>,
     pub justifications: crate::JustificationGraph,
     pub negation_semantics: crate::NegationSemantics,
+    pub eclasses: crate::egraph::EClassTable,
     pub coverage: Vec<crate::Coverage>,
     pub status: crate::ExecutionStatus,
     pub work: u64,
@@ -162,6 +163,8 @@ pub(super) struct Evaluation<'a> {
     pub(super) negation_oracle: Option<&'a std::collections::BTreeMap<String, FactStore>>,
     pub(super) negation_semantics: crate::NegationSemantics,
     pub(super) justifications: crate::JustificationGraph,
+    pub(super) eclasses: crate::egraph::EClassTable,
+    pub(super) egraph_config: crate::EGraphConfig,
     pub(super) round_deltas: Option<std::collections::BTreeMap<String, FactStore>>,
     coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
     base_coverage: std::collections::BTreeMap<String, crate::CoverageStatus>,
@@ -312,6 +315,8 @@ fn build_federated_with_config(
         negation_oracle: None,
         negation_semantics: config.negation,
         justifications: crate::JustificationGraph::default(),
+        eclasses: crate::egraph::EClassTable::new(),
+        egraph_config: config.egraph,
         round_deltas: None,
         coverage: std::collections::BTreeMap::new(),
         base_coverage: std::collections::BTreeMap::new(),
@@ -339,6 +344,7 @@ fn build_federated_with_config(
         facts: evaluation.facts,
         justifications: evaluation.justifications,
         negation_semantics: config.negation,
+        eclasses: evaluation.eclasses,
         coverage,
         status,
         work: evaluation.budget.work,
@@ -449,6 +455,8 @@ pub(crate) fn load_base_snapshot(
         negation_oracle: None,
         negation_semantics: crate::NegationSemantics::default(),
         justifications: crate::JustificationGraph::default(),
+        eclasses: crate::egraph::EClassTable::new(),
+        egraph_config: crate::EGraphConfig::default(),
         round_deltas: None,
         coverage: std::collections::BTreeMap::new(),
         base_coverage: std::collections::BTreeMap::new(),
@@ -600,6 +608,8 @@ pub(crate) fn evaluate_incremental(
         negation_oracle: None,
         negation_semantics: crate::NegationSemantics::default(),
         justifications: crate::JustificationGraph::default(),
+        eclasses: crate::egraph::EClassTable::new(),
+        egraph_config: crate::EGraphConfig::default(),
         round_deltas: None,
         coverage: base.base_coverage.clone(),
         base_coverage: base.base_coverage.clone(),
@@ -632,6 +642,7 @@ pub(crate) fn evaluate_incremental(
         facts: evaluation.facts,
         justifications: evaluation.justifications,
         negation_semantics: evaluation.negation_semantics,
+        eclasses: evaluation.eclasses,
         coverage,
         status,
         work: evaluation.budget.work,
@@ -1691,14 +1702,16 @@ fn evaluate_strata(
     evaluation: &mut Evaluation<'_>,
     strata: &std::collections::BTreeMap<usize, Vec<&crate::Rule>>,
 ) {
+    let is_egraph_enabled = crate::egraph::bundle_has_rules(evaluation.bundle);
+    let lattice_specs = if is_egraph_enabled {
+        crate::egraph::collect_lattice_specs(evaluation.bundle)
+    } else {
+        std::collections::BTreeMap::new()
+    };
     for rules in strata.values() {
-        let mut rounds = 0_usize;
-        let mut prev_delta: std::collections::BTreeMap<String, FactStore> =
-            std::collections::BTreeMap::new();
-        loop {
-            if !evaluation.budget.is_active() {
-                break;
-            }
+        let (mut rounds, mut rebuild_rounds) = (0_usize, 0_u64);
+        let mut prev_delta = std::collections::BTreeMap::new();
+        while evaluation.budget.is_active() {
             evaluation.round_deltas = Some(std::collections::BTreeMap::new());
             let mut is_changed = false;
             for rule in rules {
@@ -1707,14 +1720,41 @@ fn evaluate_strata(
                 } else {
                     evaluate_rule_semi_naive(evaluation, rule, &prev_delta)
                 };
-                if outcome == RuleOutcome::Changed {
-                    is_changed = true;
-                }
+                is_changed |= outcome == RuleOutcome::Changed;
                 if !evaluation.budget.is_active() {
                     break;
                 }
             }
             prev_delta = evaluation.round_deltas.take().unwrap_or_default();
+            if is_egraph_enabled && evaluation.budget.is_active() {
+                let r = crate::egraph::rebuild_step(crate::egraph::RebuildInput {
+                    eclasses: std::mem::take(&mut evaluation.eclasses),
+                    facts: std::mem::take(&mut evaluation.facts),
+                    round_deltas: prev_delta,
+                    lattice_specs: &lattice_specs,
+                    stratum_rebuild_rounds: rebuild_rounds,
+                    max_rebuild_rounds: evaluation.egraph_config.max_rebuild_rounds,
+                    max_supports: evaluation.budget.limits.max_supports_per_fact,
+                    max_intervals: evaluation.budget.max_intervals_per_fact,
+                    remaining_steps: evaluation.budget.remaining_steps(),
+                });
+                evaluation.eclasses = r.eclasses;
+                evaluation.facts = r.facts;
+                prev_delta = r.round_deltas;
+                rebuild_rounds = r.stratum_rebuild_rounds;
+                evaluation.budget.stored_rows = r.stored_rows;
+                evaluation.budget.support_truncated |= r.is_support_truncated;
+                if r.steps > 0 && !evaluation.budget.charge(r.steps) {
+                    break;
+                }
+                if r.is_timeout {
+                    evaluation.budget.stop(crate::ExecutionStatus::Timeout);
+                } else if r.is_round_limit_hit {
+                    evaluation.budget.stop(crate::ExecutionStatus::Partial);
+                } else {
+                    is_changed |= r.outcome == crate::egraph::RebuildOutcome::Changed;
+                }
+            }
             rounds = rounds.saturating_add(1);
             if !is_changed || prev_delta.is_empty() || !evaluation.budget.is_active() {
                 break;
@@ -2623,11 +2663,33 @@ fn evaluate_ordinary_rule(
             }
             continue;
         };
-        if !contents.epistemic.is_active() {
+        let epistemic = contents.epistemic;
+        if !epistemic.is_active() {
             continue;
         }
-        if add_fact(evaluation, &rule.head.predicate, contents) {
-            is_changed = true;
+        is_changed |= !rule.is_union_only() && add_fact(evaluation, &rule.head.predicate, contents);
+        if !rule.actions.is_empty() {
+            let step = crate::egraph::apply_rule_actions_step(crate::egraph::ActionStepInput {
+                eclasses: std::mem::take(&mut evaluation.eclasses),
+                rule,
+                binding,
+                epistemic,
+                max_unions: evaluation.egraph_config.max_unions,
+                remaining_steps: evaluation.budget.remaining_steps(),
+            });
+            evaluation.eclasses = step.eclasses;
+            if step.steps > 0 && !evaluation.budget.charge(step.steps) {
+                break;
+            }
+            if step.is_budget_exhausted {
+                evaluation.budget.stop(crate::ExecutionStatus::Timeout);
+                break;
+            }
+            if step.is_union_limit_hit {
+                evaluation.budget.stop(crate::ExecutionStatus::Partial);
+                break;
+            }
+            is_changed |= step.is_merged;
         }
     }
     if is_changed {
@@ -3900,6 +3962,8 @@ fn evaluate_delta_parts(
         negation_oracle: None,
         negation_semantics: crate::NegationSemantics::default(),
         justifications: crate::JustificationGraph::default(),
+        eclasses: crate::egraph::EClassTable::new(),
+        egraph_config: crate::EGraphConfig::default(),
         round_deltas: None,
         coverage: std::collections::BTreeMap::new(),
         base_coverage: std::collections::BTreeMap::new(),
@@ -4876,6 +4940,8 @@ pub(crate) fn compute_coverage_for_facts(
         negation_oracle: None,
         negation_semantics: crate::NegationSemantics::default(),
         justifications: crate::JustificationGraph::default(),
+        eclasses: crate::egraph::EClassTable::new(),
+        egraph_config: crate::EGraphConfig::default(),
         round_deltas: None,
         coverage: request.base.base_coverage.clone(),
         base_coverage: request.base.base_coverage.clone(),

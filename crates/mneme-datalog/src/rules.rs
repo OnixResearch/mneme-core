@@ -207,7 +207,7 @@ fn validate_with_mode(
         .saturating_add(rule_terms)
         .saturating_add(bundle.complete_predicates.len());
     let mut diagnostics = Vec::with_capacity(max_diagnostics);
-    validate_bundle_header(bundle, &mut diagnostics);
+    diagnostics.extend(validate_bundle_header(bundle));
     let arities = validate_base_predicates(bundle, &mut diagnostics);
     let heads = predeclare_rule_heads(bundle, &mut diagnostics);
     for rule in &bundle.rules {
@@ -215,16 +215,16 @@ fn validate_with_mode(
         if !analysis.is_seen_forbidden {
             validate_aggregate_coverage(bundle, rule, &analysis, &mut diagnostics);
             validate_rule_variables(rule, &analysis, &mut diagnostics);
+            diagnostics.extend(validate_rule_egraph(rule, &analysis));
         }
     }
+    diagnostics.extend(validate_lattice_merge_consistency(bundle));
     validate_complete_predicates(bundle, &arities, &heads, &mut diagnostics);
     finish_validation(bundle, arities, heads, diagnostics, mode)
 }
 
-fn validate_bundle_header(
-    bundle: &crate::RuleBundle,
-    diagnostics: &mut Vec<crate::RuleDiagnostic>,
-) {
+fn validate_bundle_header(bundle: &crate::RuleBundle) -> Vec<crate::RuleDiagnostic> {
+    let mut diagnostics = Vec::with_capacity(3);
     if bundle.id.trim().is_empty() {
         diagnostics.push(diag("bundle-id", None, "rule bundle id is empty"));
     }
@@ -238,6 +238,7 @@ fn validate_bundle_header(
             "rule bundle schema version is zero",
         ));
     }
+    diagnostics
 }
 
 fn validate_base_predicates(
@@ -251,6 +252,13 @@ fn validate_base_predicates(
                 "predicate-name",
                 None,
                 format!("invalid base predicate {predicate:?}"),
+            ));
+        }
+        if predicate == crate::UNION_HEAD_PREDICATE {
+            diagnostics.push(diag(
+                "reserved-predicate",
+                None,
+                format!("base predicate {predicate:?} is reserved for e-graph unions"),
             ));
         }
         if *arity == 0 {
@@ -330,6 +338,13 @@ fn predeclare_rule_heads(
                     "head predicate {:?} has conflicting arities",
                     rule.head.predicate
                 ),
+            ));
+        }
+        if rule.head.predicate == crate::UNION_HEAD_PREDICATE && rule.actions.is_empty() {
+            diagnostics.push(diag(
+                "invalid-union-head",
+                Some(rule.id.clone()),
+                "union head predicate requires at least one Action::Union",
             ));
         }
     }
@@ -643,6 +658,91 @@ fn validate_rule_variables(
     }
 }
 
+fn validate_rule_egraph(
+    rule: &crate::Rule,
+    analysis: &RuleBodyAnalysis,
+) -> Vec<crate::RuleDiagnostic> {
+    let max_diags = rule.actions.len().saturating_mul(2).saturating_add(4);
+    let mut diagnostics = Vec::with_capacity(max_diags);
+    if !rule.actions.is_empty() && analysis.aggregate.is_some() {
+        diagnostics.push(diag(
+            "action-with-aggregate",
+            Some(rule.id.clone()),
+            "e-graph actions cannot be combined with an aggregate literal",
+        ));
+    }
+    for action in &rule.actions {
+        let crate::Action::Union { left, right } = action;
+        for term in [left, right] {
+            if let Some(variable) = term_var(term)
+                && !analysis.positive_vars.contains(&variable)
+            {
+                diagnostics.push(diag(
+                    "unsafe-action-variable",
+                    Some(rule.id.clone()),
+                    format!("union action variable {variable:?} is not positively bound"),
+                ));
+            }
+        }
+    }
+    if let Some(merge) = rule.lattice_merge {
+        if rule.is_union_only() {
+            diagnostics.push(diag(
+                "invalid-lattice-merge",
+                Some(rule.id.clone()),
+                "lattice merge cannot be attached to a union-only rule",
+            ));
+        }
+        if analysis.aggregate.is_some() {
+            diagnostics.push(diag(
+                "lattice-with-aggregate",
+                Some(rule.id.clone()),
+                "lattice merge cannot be combined with an aggregate literal",
+            ));
+        }
+        let is_col_valid = usize::try_from(merge.column).is_ok_and(|col| col < rule.head.arity());
+        if !is_col_valid {
+            diagnostics.push(diag(
+                "lattice-column-out-of-bounds",
+                Some(rule.id.clone()),
+                format!(
+                    "lattice merge column {} is out of bounds for head {:?} of arity {}",
+                    merge.column,
+                    rule.head.predicate,
+                    rule.head.arity()
+                ),
+            ));
+        }
+    }
+    diagnostics
+}
+
+fn validate_lattice_merge_consistency(bundle: &crate::RuleBundle) -> Vec<crate::RuleDiagnostic> {
+    let mut diagnostics = Vec::with_capacity(bundle.rules.len());
+    let mut seen: std::collections::BTreeMap<&str, Option<crate::LatticeMerge>> =
+        std::collections::BTreeMap::new();
+    for rule in &bundle.rules {
+        if rule.is_union_only() {
+            continue;
+        }
+        if let Some(&previous) = seen.get(rule.head.predicate.as_str()) {
+            if previous != rule.lattice_merge {
+                diagnostics.push(diag(
+                    "conflicting-lattice-merge",
+                    Some(rule.id.clone()),
+                    format!(
+                        "head predicate {:?} has conflicting lattice merge specifications",
+                        rule.head.predicate
+                    ),
+                ));
+            }
+        } else if seen.len() < bundle.rules.len() {
+            seen.insert(rule.head.predicate.as_str(), rule.lattice_merge);
+        }
+    }
+    diagnostics
+}
+
 fn validate_complete_predicates(
     bundle: &crate::RuleBundle,
     arities: &std::collections::BTreeMap<String, usize>,
@@ -727,6 +827,17 @@ fn validate_atom(
     rule: &str,
     diagnostics: &mut Vec<crate::RuleDiagnostic>,
 ) {
+    if atom.predicate == crate::UNION_HEAD_PREDICATE {
+        diagnostics.push(diag(
+            "reserved-predicate",
+            Some(rule.to_owned()),
+            format!(
+                "body predicate {:?} is reserved for e-graph unions",
+                atom.predicate
+            ),
+        ));
+        return;
+    }
     let Some(expected) = arities
         .get(&atom.predicate)
         .or_else(|| heads.get(&atom.predicate))
@@ -752,6 +863,7 @@ fn validate_atom(
     let Some(schema) = canonical_schema(&atom.predicate) else {
         return;
     };
+    let rule_name = rule.to_owned();
     for (column, term) in atom.terms.iter().enumerate() {
         let crate::Term::Constant(value) = term else {
             continue;
@@ -762,7 +874,7 @@ fn validate_atom(
         if !kind.accepts(value) {
             diagnostics.push(diag(
                 "predicate-kind",
-                Some(rule.to_owned()),
+                Some(rule_name.clone()),
                 format!(
                     "predicate {:?} column {} holds {}, but the rule compares it with a {} constant",
                     atom.predicate,
@@ -1007,16 +1119,7 @@ fn bundle_value(bundle: &crate::RuleBundle) -> mneme_core::Value {
     let rules = bundle
         .rules
         .iter()
-        .map(|rule| {
-            mneme_core::Value::record_named(
-                "datalog-rule",
-                vec![
-                    mneme_core::Value::string(rule.id.clone()),
-                    atom_value(&rule.head),
-                    mneme_core::Value::sequence(rule.body.iter().map(literal_value).collect()),
-                ],
-            )
-        })
+        .map(rule_value)
         .collect::<std::collections::BTreeSet<_>>();
     mneme_core::Value::record_named(
         "datalog-bundle",
@@ -1029,6 +1132,37 @@ fn bundle_value(bundle: &crate::RuleBundle) -> mneme_core::Value {
             mneme_core::Value::set(rules),
         ],
     )
+}
+
+fn rule_value(rule: &crate::Rule) -> mneme_core::Value {
+    let mut fields = vec![
+        mneme_core::Value::string(rule.id.clone()),
+        atom_value(&rule.head),
+        mneme_core::Value::sequence(rule.body.iter().map(literal_value).collect()),
+    ];
+    if !rule.actions.is_empty() || rule.lattice_merge.is_some() {
+        let actions = rule
+            .actions
+            .iter()
+            .map(|action| {
+                let crate::Action::Union { left, right } = action;
+                mneme_core::Value::record_named("union", vec![term_value(left), term_value(right)])
+            })
+            .collect();
+        fields.push(mneme_core::Value::sequence(actions));
+        let merge_val = match rule.lattice_merge {
+            Some(merge) => mneme_core::Value::record_named(
+                "lattice-merge",
+                vec![
+                    mneme_core::Value::integer(i64::from(merge.column)),
+                    mneme_core::Value::symbol(merge.op.name()),
+                ],
+            ),
+            None => mneme_core::Value::symbol("none"),
+        };
+        fields.push(merge_val);
+    }
+    mneme_core::Value::record_named("datalog-rule", fields)
 }
 
 fn atom_value(atom: &crate::Atom) -> mneme_core::Value {

@@ -86,10 +86,15 @@ pub fn validate_vault_alias(alias: &str) -> Result<(), Error> {
     Ok(())
 }
 
+pub mod egraph;
 pub mod justification;
 pub mod repl;
 pub mod temporal;
 pub mod zset;
+pub use egraph::{
+    Action, DEFAULT_MAX_EGRAPH_REBUILD_ROUNDS, DEFAULT_MAX_EGRAPH_UNIONS, EClassTable,
+    EGraphConfig, LatticeMerge, LatticeOp, UNION_HEAD_PREDICATE, UnionFind, UnionStatus,
+};
 pub use justification::{
     DEFAULT_MAX_JUSTIFICATION_NODES, FactRef, Hypergraph, Node, NodeId, PremiseEdge,
 };
@@ -141,12 +146,13 @@ pub enum EvaluationMode {
     WellFounded,
 }
 
-/// Evaluation configuration combining temporal bounds, negation semantics, and WFS mode.
+/// Evaluation configuration combining temporal bounds, negation semantics, WFS mode, and e-graph bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct EvaluationConfig {
     pub temporal: TemporalConfig,
     pub negation: NegationSemantics,
     pub mode: EvaluationMode,
+    pub egraph: EGraphConfig,
 }
 
 /// A Datalog term.
@@ -262,6 +268,11 @@ pub struct Rule {
     pub id: String,
     pub head: Atom,
     pub body: Vec<Literal>,
+    /// Optional equality-saturation actions (such as [`Action::Union`]) executed
+    /// for each matched body binding.
+    pub actions: Vec<Action>,
+    /// Optional functional lattice merge on one head column during congruence closure.
+    pub lattice_merge: Option<LatticeMerge>,
 }
 
 impl Rule {
@@ -271,7 +282,44 @@ impl Rule {
             id: id.into(),
             head,
             body,
+            actions: Vec::new(),
+            lattice_merge: None,
         }
+    }
+
+    /// Construct a pure e-graph equivalence union rule (`Action::Union { left, right }`)
+    /// that merges equivalence classes without materializing quadratic `same_as` rows.
+    pub fn union(id: impl Into<String>, left: Term, right: Term, body: Vec<Literal>) -> Self {
+        Rule {
+            id: id.into(),
+            head: Atom::new(UNION_HEAD_PREDICATE, vec![left.clone(), right.clone()]),
+            body,
+            actions: vec![Action::Union { left, right }],
+            lattice_merge: None,
+        }
+    }
+
+    /// Attach an equality-saturation action to this rule.
+    pub fn with_action(mut self, action: Action) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    /// Attach multiple equality-saturation actions to this rule.
+    pub fn with_actions(mut self, actions: Vec<Action>) -> Self {
+        self.actions.extend(actions);
+        self
+    }
+
+    /// Attach a functional lattice merge column specification to this rule's head.
+    pub const fn with_lattice_merge(mut self, merge: LatticeMerge) -> Self {
+        self.lattice_merge = Some(merge);
+        self
+    }
+
+    /// Whether this rule executes only e-graph union actions without materializing a derived head relation.
+    pub fn is_union_only(&self) -> bool {
+        self.head.predicate == UNION_HEAD_PREDICATE && !self.actions.is_empty()
     }
 }
 
@@ -566,6 +614,7 @@ pub struct Build {
     >,
     pub(crate) justifications: JustificationGraph,
     pub(crate) negation_semantics: NegationSemantics,
+    pub(crate) eclasses: egraph::EClassTable,
     pub(crate) arities: std::collections::BTreeMap<String, usize>,
     pub(crate) bundle: RuleBundle,
     pub(crate) vault_barriers: Vec<VaultBarrier>,
@@ -620,6 +669,11 @@ impl Build {
     /// Epistemic negation semantics used to construct this build.
     pub const fn negation_semantics(&self) -> NegationSemantics {
         self.negation_semantics
+    }
+
+    /// Projection-local, epistemic-stratified equivalence class table built for this projection.
+    pub const fn eclasses(&self) -> &EClassTable {
+        &self.eclasses
     }
 
     /// Number of materialized rows in one predicate.
@@ -981,6 +1035,25 @@ impl RuleBundle {
     }
 }
 
+fn config_build_id(mut build_id: String, config: EvaluationConfig) -> String {
+    if config.temporal != TemporalConfig::default() {
+        build_id.push_str(&format!(":ti{}", config.temporal.max_intervals_per_fact));
+    }
+    if config.negation == NegationSemantics::Strict {
+        build_id.push_str(":neg-strict");
+    }
+    if config.mode == EvaluationMode::WellFounded {
+        build_id.push_str(":wfs");
+    }
+    if config.egraph != EGraphConfig::default() {
+        build_id.push_str(&format!(
+            ":eg{}:{}",
+            config.egraph.max_rebuild_rounds, config.egraph.max_unions
+        ));
+    }
+    build_id
+}
+
 /// The public build assembled from one evaluation's facts.
 fn assembled_build(
     request: &BuildRequest,
@@ -1005,6 +1078,7 @@ fn assembled_build(
             .collect(),
         justifications: evaluated.justifications,
         negation_semantics: evaluated.negation_semantics,
+        eclasses: evaluated.eclasses,
         arities: program.arities,
         bundle: program.bundle,
         vault_barriers,
@@ -1044,6 +1118,22 @@ impl<'w> Service<'w> {
         )
     }
 
+    /// Build a projection with an explicit [`EGraphConfig`] bounding e-graph
+    /// rebuild rounds and total union operations.
+    pub fn build_with_egraph_config(
+        &mut self,
+        request: BuildRequest,
+        egraph_config: EGraphConfig,
+    ) -> Result<Build, Error> {
+        self.build_with_config(
+            request,
+            EvaluationConfig {
+                egraph: egraph_config,
+                ..EvaluationConfig::default()
+            },
+        )
+    }
+
     /// Build a projection with an explicit [`EvaluationConfig`] selecting
     /// temporal interval bounds, epistemic negation semantics, and WFS mode.
     #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
@@ -1063,24 +1153,18 @@ impl<'w> Service<'w> {
         .map_err(Error::InvalidBundle)?;
         let generation = self.workspace.eligibility_generation()?;
         let head_revision = self.workspace.current_revision()?;
-        let mut build_id = rules::build_id(rules::BuildIdContext {
-            revision: request.revision,
-            scope: &request.scope,
-            generation,
-            bundle: &program.bundle,
-            limits: &request.limits,
-            incomplete_extents: &request.incomplete_extents,
-            at: request.at,
-        });
-        if config.temporal != TemporalConfig::default() {
-            build_id.push_str(&format!(":ti{}", config.temporal.max_intervals_per_fact));
-        }
-        if config.negation == NegationSemantics::Strict {
-            build_id.push_str(":neg-strict");
-        }
-        if config.mode == EvaluationMode::WellFounded {
-            build_id.push_str(":wfs");
-        }
+        let build_id = config_build_id(
+            rules::build_id(rules::BuildIdContext {
+                revision: request.revision,
+                scope: &request.scope,
+                generation,
+                bundle: &program.bundle,
+                limits: &request.limits,
+                incomplete_extents: &request.incomplete_extents,
+                at: request.at,
+            }),
+            config,
+        );
         let is_cancellation_requested = request
             .cancellation
             .as_ref()
