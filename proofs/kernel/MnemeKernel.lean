@@ -2322,6 +2322,759 @@ def completeness.combine_coverage
     | completeness.Coverage.Unknown => ok completeness.Coverage.Unknown
   | completeness.Coverage.Unknown => ok completeness.Coverage.Unknown
 
+/-- [mneme_kernel::contraction::RANK_MODEL_EXTRACTION]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 18:0-18:36 -/
+@[global_simps, irreducible]
+def contraction.RANK_MODEL_EXTRACTION : Std.U8 := 0#u8
+
+/-- [mneme_kernel::contraction::RANK_IMPORTED]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 19:0-19:28 -/
+@[global_simps, irreducible] def contraction.RANK_IMPORTED : Std.U8 := 1#u8
+
+/-- [mneme_kernel::contraction::RANK_AUTHORED]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 20:0-20:28 -/
+@[global_simps, irreducible] def contraction.RANK_AUTHORED : Std.U8 := 2#u8
+
+/-- [mneme_kernel::contraction::OriginTier]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 25:0-32:1
+    Visibility: public -/
+@[discriminant isize]
+inductive contraction.OriginTier where
+| ModelExtraction : contraction.OriginTier
+| Imported : contraction.OriginTier
+| Authored : contraction.OriginTier
+
+/-- [mneme_kernel::contraction::{impl core::clone::Clone for mneme_kernel::contraction::OriginTier}::clone]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 23:9-23:14
+    Visibility: public -/
+def contraction.OriginTier.Insts.CoreCloneClone.clone
+  (self : contraction.OriginTier) : Result contraction.OriginTier := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::clone::Clone for mneme_kernel::contraction::OriginTier}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 23:9-23:14 -/
+@[reducible]
+def contraction.OriginTier.Insts.CoreCloneClone : core.clone.Clone
+  contraction.OriginTier := {
+  clone := contraction.OriginTier.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::marker::Copy for mneme_kernel::contraction::OriginTier}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 23:16-23:20 -/
+@[reducible]
+def contraction.OriginTier.Insts.CoreMarkerCopy : core.marker.Copy
+  contraction.OriginTier := {
+  cloneInst := contraction.OriginTier.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::marker::StructuralPartialEq for mneme_kernel::contraction::OriginTier}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 23:22-23:31 -/
+@[reducible]
+def contraction.OriginTier.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq contraction.OriginTier := {
+}
+
+/-- [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::OriginTier> for mneme_kernel::contraction::OriginTier}::eq]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 23:22-23:31
+    Visibility: public -/
+def contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier.eq
+  (self : contraction.OriginTier) (other : contraction.OriginTier) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::OriginTier> for mneme_kernel::contraction::OriginTier}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 23:22-23:31 -/
+@[reducible]
+def contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier :
+  core.cmp.PartialEq contraction.OriginTier contraction.OriginTier := {
+  eq := contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier.eq
+}
+
+/-- [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::OriginTier}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 23:33-23:35
+    Visibility: public -/
+def contraction.OriginTier.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : contraction.OriginTier) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::OriginTier}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 23:33-23:35 -/
+@[reducible]
+def contraction.OriginTier.Insts.CoreCmpEq : core.cmp.Eq contraction.OriginTier
+  := {
+  partialEqInst := contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier
+  assert_fields_are_eq :=
+    contraction.OriginTier.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::contraction::EntrenchmentKey]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 37:0-44:1
+    Visibility: public -/
+structure contraction.EntrenchmentKey where
+  origin : contraction.OriginTier
+  root_count : Std.U64
+  record_id : Std.U128
+
+/-- [mneme_kernel::contraction::{impl core::clone::Clone for mneme_kernel::contraction::EntrenchmentKey}::clone]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 35:9-35:14
+    Visibility: public -/
+def contraction.EntrenchmentKey.Insts.CoreCloneClone.clone
+  (self : contraction.EntrenchmentKey) :
+  Result contraction.EntrenchmentKey
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::clone::Clone for mneme_kernel::contraction::EntrenchmentKey}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 35:9-35:14 -/
+@[reducible]
+def contraction.EntrenchmentKey.Insts.CoreCloneClone : core.clone.Clone
+  contraction.EntrenchmentKey := {
+  clone := contraction.EntrenchmentKey.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::marker::Copy for mneme_kernel::contraction::EntrenchmentKey}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 35:16-35:20 -/
+@[reducible]
+def contraction.EntrenchmentKey.Insts.CoreMarkerCopy : core.marker.Copy
+  contraction.EntrenchmentKey := {
+  cloneInst := contraction.EntrenchmentKey.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::marker::StructuralPartialEq for mneme_kernel::contraction::EntrenchmentKey}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 35:22-35:31 -/
+@[reducible]
+def contraction.EntrenchmentKey.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq contraction.EntrenchmentKey := {
+}
+
+/-- [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::EntrenchmentKey> for mneme_kernel::contraction::EntrenchmentKey}::eq]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 35:22-35:31
+    Visibility: public -/
+def contraction.EntrenchmentKey.Insts.CoreCmpPartialEqEntrenchmentKey.eq
+  (self : contraction.EntrenchmentKey) (other : contraction.EntrenchmentKey) :
+  Result Bool
+  := do
+  if self.root_count = other.root_count
+  then
+    if self.record_id = other.record_id
+    then
+      contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier.eq self.origin
+        other.origin
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::EntrenchmentKey> for mneme_kernel::contraction::EntrenchmentKey}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 35:22-35:31 -/
+@[reducible]
+def contraction.EntrenchmentKey.Insts.CoreCmpPartialEqEntrenchmentKey :
+  core.cmp.PartialEq contraction.EntrenchmentKey contraction.EntrenchmentKey
+  := {
+  eq := contraction.EntrenchmentKey.Insts.CoreCmpPartialEqEntrenchmentKey.eq
+}
+
+/-- [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::EntrenchmentKey}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 35:33-35:35
+    Visibility: public -/
+def contraction.EntrenchmentKey.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : contraction.EntrenchmentKey) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::EntrenchmentKey}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 35:33-35:35 -/
+@[reducible]
+def contraction.EntrenchmentKey.Insts.CoreCmpEq : core.cmp.Eq
+  contraction.EntrenchmentKey := {
+  partialEqInst :=
+    contraction.EntrenchmentKey.Insts.CoreCmpPartialEqEntrenchmentKey
+  assert_fields_are_eq :=
+    contraction.EntrenchmentKey.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::contraction::RangeSpan]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 50:0-55:1
+    Visibility: public -/
+structure contraction.RangeSpan where
+  start : Std.Usize
+  len : Std.Usize
+
+/-- [mneme_kernel::contraction::{impl core::clone::Clone for mneme_kernel::contraction::RangeSpan}::clone]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 47:9-47:14
+    Visibility: public -/
+def contraction.RangeSpan.Insts.CoreCloneClone.clone
+  (self : contraction.RangeSpan) : Result contraction.RangeSpan := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::clone::Clone for mneme_kernel::contraction::RangeSpan}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 47:9-47:14 -/
+@[reducible]
+def contraction.RangeSpan.Insts.CoreCloneClone : core.clone.Clone
+  contraction.RangeSpan := {
+  clone := contraction.RangeSpan.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::marker::Copy for mneme_kernel::contraction::RangeSpan}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 47:16-47:20 -/
+@[reducible]
+def contraction.RangeSpan.Insts.CoreMarkerCopy : core.marker.Copy
+  contraction.RangeSpan := {
+  cloneInst := contraction.RangeSpan.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::marker::StructuralPartialEq for mneme_kernel::contraction::RangeSpan}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 47:22-47:31 -/
+@[reducible]
+def contraction.RangeSpan.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq contraction.RangeSpan := {
+}
+
+/-- [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::RangeSpan> for mneme_kernel::contraction::RangeSpan}::eq]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 47:22-47:31
+    Visibility: public -/
+def contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan.eq
+  (self : contraction.RangeSpan) (other : contraction.RangeSpan) :
+  Result Bool
+  := do
+  if self.start = other.start
+  then ok (self.len = other.len)
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::RangeSpan> for mneme_kernel::contraction::RangeSpan}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 47:22-47:31 -/
+@[reducible]
+def contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan : core.cmp.PartialEq
+  contraction.RangeSpan contraction.RangeSpan := {
+  eq := contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan.eq
+}
+
+/-- [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::RangeSpan}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 47:33-47:35
+    Visibility: public -/
+def contraction.RangeSpan.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : contraction.RangeSpan) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::RangeSpan}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 47:33-47:35 -/
+@[reducible]
+def contraction.RangeSpan.Insts.CoreCmpEq : core.cmp.Eq contraction.RangeSpan
+  := {
+  partialEqInst := contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan
+  assert_fields_are_eq :=
+    contraction.RangeSpan.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::contraction::SupportEdge]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 64:0-69:1
+    Visibility: public -/
+structure contraction.SupportEdge where
+  target : Std.Usize
+  premises : contraction.RangeSpan
+
+/-- [mneme_kernel::contraction::{impl core::clone::Clone for mneme_kernel::contraction::SupportEdge}::clone]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 61:9-61:14
+    Visibility: public -/
+def contraction.SupportEdge.Insts.CoreCloneClone.clone
+  (self : contraction.SupportEdge) : Result contraction.SupportEdge := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::clone::Clone for mneme_kernel::contraction::SupportEdge}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 61:9-61:14 -/
+@[reducible]
+def contraction.SupportEdge.Insts.CoreCloneClone : core.clone.Clone
+  contraction.SupportEdge := {
+  clone := contraction.SupportEdge.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::marker::Copy for mneme_kernel::contraction::SupportEdge}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 61:16-61:20 -/
+@[reducible]
+def contraction.SupportEdge.Insts.CoreMarkerCopy : core.marker.Copy
+  contraction.SupportEdge := {
+  cloneInst := contraction.SupportEdge.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::marker::StructuralPartialEq for mneme_kernel::contraction::SupportEdge}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 61:22-61:31 -/
+@[reducible]
+def contraction.SupportEdge.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq contraction.SupportEdge := {
+}
+
+/-- [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::SupportEdge> for mneme_kernel::contraction::SupportEdge}::eq]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 61:22-61:31
+    Visibility: public -/
+def contraction.SupportEdge.Insts.CoreCmpPartialEqSupportEdge.eq
+  (self : contraction.SupportEdge) (other : contraction.SupportEdge) :
+  Result Bool
+  := do
+  if self.target = other.target
+  then
+    contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan.eq self.premises
+      other.premises
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::SupportEdge> for mneme_kernel::contraction::SupportEdge}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 61:22-61:31 -/
+@[reducible]
+def contraction.SupportEdge.Insts.CoreCmpPartialEqSupportEdge :
+  core.cmp.PartialEq contraction.SupportEdge contraction.SupportEdge := {
+  eq := contraction.SupportEdge.Insts.CoreCmpPartialEqSupportEdge.eq
+}
+
+/-- [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::SupportEdge}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 61:33-61:35
+    Visibility: public -/
+def contraction.SupportEdge.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : contraction.SupportEdge) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::SupportEdge}]
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 61:33-61:35 -/
+@[reducible]
+def contraction.SupportEdge.Insts.CoreCmpEq : core.cmp.Eq
+  contraction.SupportEdge := {
+  partialEqInst := contraction.SupportEdge.Insts.CoreCmpPartialEqSupportEdge
+  assert_fields_are_eq :=
+    contraction.SupportEdge.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::contraction::origin_rank]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 72:0-80:1
+    Visibility: public -/
+def contraction.origin_rank
+  (tier : contraction.OriginTier) : Result Std.U8 := do
+  let b ←
+    match tier with
+    | contraction.OriginTier.ModelExtraction => ok true
+    | contraction.OriginTier.Imported => ok false
+    | contraction.OriginTier.Authored => ok false
+  if b
+  then ok contraction.RANK_MODEL_EXTRACTION
+  else
+    let b1 ←
+      match tier with
+      | contraction.OriginTier.ModelExtraction => ok false
+      | contraction.OriginTier.Imported => ok true
+      | contraction.OriginTier.Authored => ok false
+    if b1
+    then ok contraction.RANK_IMPORTED
+    else ok contraction.RANK_AUTHORED
+
+/-- [mneme_kernel::contraction::less_entrenched]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 84:0-94:1
+    Visibility: public -/
+def contraction.less_entrenched
+  (left : contraction.EntrenchmentKey) (right : contraction.EntrenchmentKey) :
+  Result Bool
+  := do
+  let left_rank ← contraction.origin_rank left.origin
+  let right_rank ← contraction.origin_rank right.origin
+  if left_rank != right_rank
+  then ok (left_rank < right_rank)
+  else
+    if left.root_count != right.root_count
+    then ok (left.root_count < right.root_count)
+    else ok (left.record_id < right.record_id)
+
+/-- [mneme_kernel::contraction::span_stop]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 98:0-113:1 -/
+def contraction.span_stop
+  (span : contraction.RangeSpan) (limit : Std.Usize) :
+  Result (Option Std.Usize)
+  := do
+  if span.len = 0#usize
+  then ok none
+  else
+    let o ← lift (Usize.checked_add span.start span.len)
+    match o with
+    | none => ok none
+    | some stop => if stop <= limit
+                   then ok o
+                   else ok none
+
+/-- [mneme_kernel::contraction::select_incision]: loop body 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 125:12-131:13
+    Visibility: public -/
+@[rust_loop_body]
+def contraction.select_incision_loop.body
+  (members : Slice contraction.EntrenchmentKey) (stop : Std.Usize)
+  (chosen : contraction.EntrenchmentKey) (cursor : Std.Usize) :
+  Result (ControlFlow (contraction.EntrenchmentKey × Std.Usize)
+    contraction.EntrenchmentKey)
+  := do
+  if cursor < stop
+  then
+    let candidate ← Slice.index_usize members cursor
+    let b ← contraction.less_entrenched candidate chosen
+    let chosen1 ← if b
+                    then ok candidate
+                    else ok chosen
+    let cursor1 ← lift (core.num.Usize.saturating_add cursor 1#usize)
+    ok (cont (chosen1, cursor1))
+  else ok (done chosen)
+
+/-- [mneme_kernel::contraction::select_incision]: loop 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 125:12-131:13
+    Visibility: public -/
+@[rust_loop]
+def contraction.select_incision_loop
+  (members : Slice contraction.EntrenchmentKey) (stop : Std.Usize)
+  (chosen : contraction.EntrenchmentKey) (cursor : Std.Usize) :
+  Result contraction.EntrenchmentKey
+  := do
+  loop
+    (fun (chosen1, cursor1) => contraction.select_incision_loop.body members
+      stop chosen1 cursor1)
+    (chosen, cursor)
+
+/-- [mneme_kernel::contraction::select_incision]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 119:0-135:1
+    Visibility: public -/
+def contraction.select_incision
+  (members : Slice contraction.EntrenchmentKey) (span : contraction.RangeSpan)
+  :
+  Result (Option contraction.EntrenchmentKey)
+  := do
+  let i := Slice.len members
+  let o ← contraction.span_stop span i
+  match o with
+  | none => ok none
+  | some stop =>
+    let chosen ← Slice.index_usize members span.start
+    let cursor ← lift (core.num.Usize.saturating_add span.start 1#usize)
+    let chosen1 ← contraction.select_incision_loop members stop chosen cursor
+    ok (some chosen1)
+
+/-- [mneme_kernel::contraction::is_incised]: loop body 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 142:4-147:5
+    Visibility: public -/
+@[rust_loop_body]
+def contraction.is_incised_loop.body
+  (record_id : Std.U128) (members : Slice contraction.EntrenchmentKey)
+  (spans : Slice contraction.RangeSpan) (is_cut : Bool) (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len spans
+  if index < i
+  then
+    if is_cut
+    then ok (done true)
+    else
+      let rs ← Slice.index_usize spans index
+      let o ← contraction.select_incision members rs
+      let is_cut1 ←
+        match o with
+        | none => ok false
+        | some chosen => ok (chosen.record_id = record_id)
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (is_cut1, index1))
+  else ok (done is_cut)
+
+/-- [mneme_kernel::contraction::is_incised]: loop 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 142:4-147:5
+    Visibility: public -/
+@[rust_loop]
+def contraction.is_incised_loop
+  (record_id : Std.U128) (members : Slice contraction.EntrenchmentKey)
+  (spans : Slice contraction.RangeSpan) (is_cut : Bool) (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (is_cut1, index1) => contraction.is_incised_loop.body record_id
+      members spans is_cut1 index1)
+    (is_cut, index)
+
+/-- [mneme_kernel::contraction::is_incised]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 139:0-149:1
+    Visibility: public -/
+@[reducible]
+def contraction.is_incised
+  (record_id : Std.U128) (members : Slice contraction.EntrenchmentKey)
+  (spans : Slice contraction.RangeSpan) :
+  Result Bool
+  := do
+  contraction.is_incised_loop record_id members spans false 0#usize
+
+/-- [mneme_kernel::contraction::in_base]: loop body 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 155:4-160:5 -/
+@[rust_loop_body]
+def contraction.in_base_loop.body
+  (record_id : Std.U128) (base : Slice Std.U128) (is_member : Bool)
+  (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len base
+  if index < i
+  then
+    if is_member
+    then ok (done true)
+    else
+      let i1 ← Slice.index_usize base index
+      let is_member1 ← if i1 = record_id
+                         then ok true
+                         else ok false
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (is_member1, index1))
+  else ok (done is_member)
+
+/-- [mneme_kernel::contraction::in_base]: loop 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 155:4-160:5 -/
+@[rust_loop]
+def contraction.in_base_loop
+  (record_id : Std.U128) (base : Slice Std.U128) (is_member : Bool)
+  (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (is_member1, index1) => contraction.in_base_loop.body record_id base
+      is_member1 index1)
+    (is_member, index)
+
+/-- [mneme_kernel::contraction::in_base]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 152:0-162:1 -/
+@[reducible]
+def contraction.in_base
+  (record_id : Std.U128) (base : Slice Std.U128) : Result Bool := do
+  contraction.in_base_loop record_id base false 0#usize
+
+/-- [mneme_kernel::contraction::survives_incision]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 165:0-172:1
+    Visibility: public -/
+def contraction.survives_incision
+  (record_id : Std.U128) (base : Slice Std.U128)
+  (members : Slice contraction.EntrenchmentKey)
+  (spans : Slice contraction.RangeSpan) :
+  Result Bool
+  := do
+  let b ← contraction.in_base record_id base
+  if b
+  then let b1 ← contraction.is_incised record_id members spans
+       ok (¬ b1)
+  else ok false
+
+/-- [mneme_kernel::contraction::span_all_survive]: loop body 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 187:12-191:13 -/
+@[rust_loop_body]
+def contraction.span_all_survive_loop.body
+  (base : Slice Std.U128) (members : Slice contraction.EntrenchmentKey)
+  (all_spans : Slice contraction.RangeSpan) (stop : Std.Usize)
+  (is_all_surviving : Bool) (cursor : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  if cursor < stop
+  then
+    if is_all_surviving
+    then
+      let ek ← Slice.index_usize members cursor
+      let is_all_surviving1 ←
+        contraction.survives_incision ek.record_id base members all_spans
+      let cursor1 ← lift (core.num.Usize.saturating_add cursor 1#usize)
+      ok (cont (is_all_surviving1, cursor1))
+    else ok (done false)
+  else ok (done is_all_surviving)
+
+/-- [mneme_kernel::contraction::span_all_survive]: loop 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 187:12-191:13 -/
+@[rust_loop]
+def contraction.span_all_survive_loop
+  (base : Slice Std.U128) (members : Slice contraction.EntrenchmentKey)
+  (all_spans : Slice contraction.RangeSpan) (stop : Std.Usize)
+  (is_all_surviving : Bool) (cursor : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (is_all_surviving1, cursor1) => contraction.span_all_survive_loop.body
+      base members all_spans stop is_all_surviving1 cursor1)
+    (is_all_surviving, cursor)
+
+/-- [mneme_kernel::contraction::span_all_survive]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 176:0-195:1 -/
+def contraction.span_all_survive
+  (base : Slice Std.U128) (members : Slice contraction.EntrenchmentKey)
+  (span : contraction.RangeSpan) (all_spans : Slice contraction.RangeSpan) :
+  Result Bool
+  := do
+  let i := Slice.len members
+  let o ← contraction.span_stop span i
+  match o with
+  | none => ok false
+  | some stop =>
+    contraction.span_all_survive_loop base members all_spans stop true
+      span.start
+
+/-- [mneme_kernel::contraction::any_proof_survives]: loop body 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 205:4-208:5
+    Visibility: public -/
+@[rust_loop_body]
+def contraction.any_proof_survives_loop.body
+  (base : Slice Std.U128) (members : Slice contraction.EntrenchmentKey)
+  (spans : Slice contraction.RangeSpan) (has_surviving : Bool)
+  (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len spans
+  if index < i
+  then
+    if has_surviving
+    then ok (done true)
+    else
+      let rs ← Slice.index_usize spans index
+      let has_surviving1 ← contraction.span_all_survive base members rs spans
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (has_surviving1, index1))
+  else ok (done has_surviving)
+
+/-- [mneme_kernel::contraction::any_proof_survives]: loop 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 205:4-208:5
+    Visibility: public -/
+@[rust_loop]
+def contraction.any_proof_survives_loop
+  (base : Slice Std.U128) (members : Slice contraction.EntrenchmentKey)
+  (spans : Slice contraction.RangeSpan) (has_surviving : Bool)
+  (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (has_surviving1, index1) => contraction.any_proof_survives_loop.body
+      base members spans has_surviving1 index1)
+    (has_surviving, index)
+
+/-- [mneme_kernel::contraction::any_proof_survives]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 202:0-210:1
+    Visibility: public -/
+@[reducible]
+def contraction.any_proof_survives
+  (base : Slice Std.U128) (members : Slice contraction.EntrenchmentKey)
+  (spans : Slice contraction.RangeSpan) :
+  Result Bool
+  := do
+  contraction.any_proof_survives_loop base members spans false 0#usize
+
+/-- [mneme_kernel::contraction::edge_is_grounded]: loop body 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 224:16-228:17
+    Visibility: public -/
+@[rust_loop_body]
+def contraction.edge_is_grounded_loop.body
+  (premises : Slice Std.Usize) (grounded : Slice Bool) (stop : Std.Usize)
+  (is_all_grounded : Bool) (cursor : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  if cursor < stop
+  then
+    if is_all_grounded
+    then
+      let premise ← Slice.index_usize premises cursor
+      let i := Slice.len grounded
+      let is_all_grounded1 ←
+        if premise < i
+        then Slice.index_usize grounded premise
+        else ok false
+      let cursor1 ← lift (core.num.Usize.saturating_add cursor 1#usize)
+      ok (cont (is_all_grounded1, cursor1))
+    else ok (done false)
+  else ok (done is_all_grounded)
+
+/-- [mneme_kernel::contraction::edge_is_grounded]: loop 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 224:16-228:17
+    Visibility: public -/
+@[rust_loop]
+def contraction.edge_is_grounded_loop
+  (premises : Slice Std.Usize) (grounded : Slice Bool) (stop : Std.Usize)
+  (is_all_grounded : Bool) (cursor : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (is_all_grounded1, cursor1) => contraction.edge_is_grounded_loop.body
+      premises grounded stop is_all_grounded1 cursor1)
+    (is_all_grounded, cursor)
+
+/-- [mneme_kernel::contraction::edge_is_grounded]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 215:0-233:1
+    Visibility: public -/
+def contraction.edge_is_grounded
+  (edge : contraction.SupportEdge) (premises : Slice Std.Usize)
+  (grounded : Slice Bool) :
+  Result Bool
+  := do
+  let i := Slice.len grounded
+  if edge.target >= i
+  then ok false
+  else
+    let i1 := Slice.len premises
+    let o ← contraction.span_stop edge.premises i1
+    match o with
+    | none => ok false
+    | some stop =>
+      contraction.edge_is_grounded_loop premises grounded stop true
+        edge.premises.start
+
+/-- [mneme_kernel::contraction::node_next_grounded]: loop body 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 255:8-261:9
+    Visibility: public -/
+@[rust_loop_body]
+def contraction.node_next_grounded_loop.body
+  (node : Std.Usize) (edges : Slice contraction.SupportEdge)
+  (premises : Slice Std.Usize) (grounded : Slice Bool) (is_grounded : Bool)
+  (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len edges
+  if index < i
+  then
+    if is_grounded
+    then ok (done true)
+    else
+      let edge ← Slice.index_usize edges index
+      let is_grounded1 ←
+        if edge.target = node
+        then
+          do
+          let b ← contraction.edge_is_grounded edge premises grounded
+          if b
+          then ok true
+          else ok false
+        else ok false
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (is_grounded1, index1))
+  else ok (done is_grounded)
+
+/-- [mneme_kernel::contraction::node_next_grounded]: loop 0:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 255:8-261:9
+    Visibility: public -/
+@[rust_loop]
+def contraction.node_next_grounded_loop
+  (node : Std.Usize) (edges : Slice contraction.SupportEdge)
+  (premises : Slice Std.Usize) (grounded : Slice Bool) (is_grounded : Bool)
+  (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (is_grounded1, index1) => contraction.node_next_grounded_loop.body
+      node edges premises grounded is_grounded1 index1)
+    (is_grounded, index)
+
+/-- [mneme_kernel::contraction::node_next_grounded]:
+    Source: 'crates/mneme-kernel/src/contraction.rs', lines 242:0-264:1
+    Visibility: public -/
+def contraction.node_next_grounded
+  (node : Std.Usize) (edges : Slice contraction.SupportEdge)
+  (premises : Slice Std.Usize) (grounded : Slice Bool) :
+  Result Bool
+  := do
+  let i := Slice.len grounded
+  if node >= i
+  then ok false
+  else
+    let b ← Slice.index_usize grounded node
+    if b
+    then ok true
+    else
+      contraction.node_next_grounded_loop node edges premises grounded false
+        0#usize
+
 /-- [mneme_kernel::epistemic::EpistemicStatus]
     Source: 'crates/mneme-kernel/src/epistemic.rs', lines 16:0-23:1
     Visibility: public -/

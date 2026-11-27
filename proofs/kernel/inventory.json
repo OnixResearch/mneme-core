@@ -2238,6 +2238,206 @@
         "temporal::since"
       ],
       "statement": "(maintained : Validity) (window : MetricWindow) : since maintained Validity.Unknown window = ok none"
+    },
+    {
+      "name": "mneme_kernel.contraction.origin_rank_total",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::origin_rank"
+      ],
+      "statement": "(tier : OriginTier) : ∃ r, origin_rank tier = ok r"
+    },
+    {
+      "name": "mneme_kernel.contraction.origin_rank_order",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::origin_rank"
+      ],
+      "statement": ": origin_rank OriginTier.ModelExtraction = ok 0#u8 ∧ origin_rank OriginTier.Imported = ok 1#u8 ∧ origin_rank OriginTier.Authored = ok 2#u8"
+    },
+    {
+      "name": "mneme_kernel.contraction.less_entrenched_total",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::less_entrenched"
+      ],
+      "statement": "(a b : EntrenchmentKey) : ∃ r, less_entrenched a b = ok r"
+    },
+    {
+      "name": "mneme_kernel.contraction.less_entrenched_irrefl",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::less_entrenched"
+      ],
+      "statement": "(a : EntrenchmentKey) : less_entrenched a a = ok false"
+    },
+    {
+      "name": "mneme_kernel.contraction.less_entrenched_asym",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::less_entrenched"
+      ],
+      "statement": "(a b : EntrenchmentKey) (h : less_entrenched a b = ok true) : less_entrenched b a = ok false"
+    },
+    {
+      "name": "mneme_kernel.contraction.less_entrenched_trans",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::less_entrenched"
+      ],
+      "statement": "(a b c : EntrenchmentKey) (hab : less_entrenched a b = ok true) (hbc : less_entrenched b c = ok true) : less_entrenched a c = ok true"
+    },
+    {
+      "name": "mneme_kernel.contraction.less_entrenched_trichotomy",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::less_entrenched"
+      ],
+      "statement": "(a b : EntrenchmentKey) (hne : a ≠ b) : less_entrenched a b = ok true ∨ less_entrenched b a = ok true"
+    },
+    {
+      "name": "mneme_kernel.contraction.select_incision_total",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::select_incision"
+      ],
+      "statement": "(members : Slice EntrenchmentKey) (span : RangeSpan) : ∃ r, select_incision members span = ok r"
+    },
+    {
+      "name": "mneme_kernel.contraction.select_incision_none_of_invalid",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::select_incision"
+      ],
+      "statement": "(members : Slice EntrenchmentKey) (span : RangeSpan) (hbad : span.len.val = 0 ∨ members.length < span.start.val + span.len.val) : select_incision members span = ok none"
+    },
+    {
+      "name": "mneme_kernel.contraction.select_incision_mem_and_min",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::select_incision"
+      ],
+      "statement": "(members : Slice EntrenchmentKey) (span : RangeSpan) (hpos : 0 < span.len.val) (hle : span.start.val + span.len.val ≤ members.length) : ∃ chosen, select_incision members span = ok (some chosen) ∧ (∃ j, span.start.val ≤ j ∧ j < span.start.val + span.len.val ∧ members.val[j]? = some chosen) ∧ (∀ j, span.start.val ≤ j → j < span.start.val + span.len.val → ∀ x, members.val[j]? = some x → less_entrenched x chosen = ok false)"
+    },
+    {
+      "name": "mneme_kernel.contraction.select_incision_uniform",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::select_incision"
+      ],
+      "statement": "(members1 members2 : Slice EntrenchmentKey) (span1 span2 : RangeSpan) (hpos1 : 0 < span1.len.val) (hle1 : span1.start.val + span1.len.val ≤ members1.length) (hpos2 : 0 < span2.len.val) (hle2 : span2.start.val + span2.len.val ≤ members2.length) (hsame : ∀ x, (∃ j, span1.start.val ≤ j ∧ j < span1.start.val + span1.len.val ∧ members1.val[j]? = some x) ↔ (∃ j, span2.start.val ≤ j ∧ j < span2.start.val + span2.len.val ∧ members2.val[j]? = some x)) : select_incision members1 span1 = select_incision members2 span2"
+    },
+    {
+      "name": "mneme_kernel.contraction.is_incised_total",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::is_incised"
+      ],
+      "statement": "(record_id : U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : ∃ r, is_incised record_id members spans = ok r"
+    },
+    {
+      "name": "mneme_kernel.contraction.is_incised_iff",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::is_incised"
+      ],
+      "statement": "(record_id : U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : is_incised record_id members spans = ok true ↔ ∃ s ∈ spans.val, ∃ chosen, select_incision members s = ok (some chosen) ∧ chosen.record_id = record_id"
+    },
+    {
+      "name": "mneme_kernel.contraction.survives_incision_total",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::survives_incision"
+      ],
+      "statement": "(record_id : U128) (base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : ∃ r, survives_incision record_id base members spans = ok r"
+    },
+    {
+      "name": "mneme_kernel.contraction.survives_incision_inclusion",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::survives_incision"
+      ],
+      "statement": "(record_id : U128) (base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) (h : survives_incision record_id base members spans = ok true) : record_id ∈ base.val"
+    },
+    {
+      "name": "mneme_kernel.contraction.survives_incision_core_retainment",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::survives_incision"
+      ],
+      "statement": "(record_id : U128) (base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) (hin : record_id ∈ base.val) (hremoved : survives_incision record_id base members spans = ok false) : ∃ s ∈ spans.val, 0 < s.len.val ∧ s.start.val + s.len.val ≤ members.length ∧ ∃ j, s.start.val ≤ j ∧ j < s.start.val + s.len.val ∧ ∃ k, members.val[j]? = some k ∧ k.record_id = record_id"
+    },
+    {
+      "name": "mneme_kernel.contraction.survives_incision_uniformity",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::survives_incision"
+      ],
+      "statement": "(record_id : U128) (base : Slice U128) (members1 members2 : Slice EntrenchmentKey) (spans1 spans2 : Slice RangeSpan) (h12 : ∀ s1 ∈ spans1.val, 0 < s1.len.val → s1.start.val + s1.len.val ≤ members1.length → ∃ s2 ∈ spans2.val, 0 < s2.len.val ∧ s2.start.val + s2.len.val ≤ members2.length ∧ ∀ x, (∃ j, s1.start.val ≤ j ∧ j < s1.start.val + s1.len.val ∧ members1.val[j]? = some x) ↔ (∃ j, s2.start.val ≤ j ∧ j < s2.start.val + s2.len.val ∧ members2.val[j]? = some x)) (h21 : ∀ s2 ∈ spans2.val, 0 < s2.len.val → s2.start.val + s2.len.val ≤ members2.length → ∃ s1 ∈ spans1.val, 0 < s1.len.val ∧ s1.start.val + s1.len.val ≤ members1.length ∧ ∀ x, (∃ j, s1.start.val ≤ j ∧ j < s1.start.val + s1.len.val ∧ members1.val[j]? = some x) ↔ (∃ j, s2.start.val ≤ j ∧ j < s2.start.val + s2.len.val ∧ members2.val[j]? = some x)) : survives_incision record_id base members1 spans1 = survives_incision record_id base members2 spans2"
+    },
+    {
+      "name": "mneme_kernel.contraction.any_proof_survives_total",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::any_proof_survives"
+      ],
+      "statement": "(base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : ∃ r, any_proof_survives base members spans = ok r"
+    },
+    {
+      "name": "mneme_kernel.contraction.any_proof_survives_false",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::any_proof_survives"
+      ],
+      "statement": "(base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : any_proof_survives base members spans = ok false"
+    },
+    {
+      "name": "mneme_kernel.contraction.edge_is_grounded_total",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::edge_is_grounded"
+      ],
+      "statement": "(edge : SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) : ∃ r, edge_is_grounded edge premises grounded = ok r"
+    },
+    {
+      "name": "mneme_kernel.contraction.edge_is_grounded_iff",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::edge_is_grounded"
+      ],
+      "statement": "(edge : SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) : edge_is_grounded edge premises grounded = ok true ↔ edge.target.val < grounded.length ∧ 0 < edge.premises.len.val ∧ edge.premises.start.val + edge.premises.len.val ≤ premises.length ∧ ∀ j, edge.premises.start.val ≤ j → j < edge.premises.start.val + edge.premises.len.val → ∀ p, premises.val[j]? = some p → p.val < grounded.length ∧ grounded.val[p.val]? = some true"
+    },
+    {
+      "name": "mneme_kernel.contraction.node_next_grounded_total",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::node_next_grounded"
+      ],
+      "statement": "(node : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) : ∃ r, node_next_grounded node edges premises grounded = ok r"
+    },
+    {
+      "name": "mneme_kernel.contraction.node_next_grounded_monotone",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::node_next_grounded"
+      ],
+      "statement": "(node : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) (hlt : node.val < grounded.length) (hg : grounded.val[node.val]? = some true) : node_next_grounded node edges premises grounded = ok true"
+    },
+    {
+      "name": "mneme_kernel.contraction.node_next_grounded_unfounded_preserved",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::node_next_grounded"
+      ],
+      "statement": "(U : Nat → Prop) (node : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) (hnode : U node.val) (hinit : ∀ i, i < grounded.length → U i → grounded.val[i]? = some false) (hedges : ∀ e ∈ edges.val, U e.target.val → e.premises.len.val = 0 ∨ premises.length < e.premises.start.val + e.premises.len.val ∨ ∃ j, e.premises.start.val ≤ j ∧ j < e.premises.start.val + e.premises.len.val ∧ ∀ p, premises.val[j]? = some p → grounded.length ≤ p.val ∨ U p.val) : node_next_grounded node edges premises grounded = ok false"
+    },
+    {
+      "name": "mneme_kernel.contraction.node_next_grounded_mutual_cycle_ungrounded",
+      "file": "MnemeKernelProofs/Contraction.lean",
+      "subjects": [
+        "contraction::node_next_grounded"
+      ],
+      "statement": "(a b : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) (ha0 : a.val < grounded.length → grounded.val[a.val]? = some false) (hb0 : b.val < grounded.length → grounded.val[b.val]? = some false) (hedges : ∀ e ∈ edges.val, e.target.val = a.val ∨ e.target.val = b.val → e.premises.len.val = 0 ∨ premises.length < e.premises.start.val + e.premises.len.val ∨ ∃ j, e.premises.start.val ≤ j ∧ j < e.premises.start.val + e.premises.len.val ∧ ∀ p, premises.val[j]? = some p → grounded.length ≤ p.val ∨ p.val = a.val ∨ p.val = b.val) : node_next_grounded a edges premises grounded = ok false ∧ node_next_grounded b edges premises grounded = ok false"
     }
   ]
 }

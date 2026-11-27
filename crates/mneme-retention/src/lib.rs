@@ -9,6 +9,8 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod contraction;
+
 /// The policy version implemented by this build.
 pub const POLICY_VERSION: &str = "retention-policy/v1";
 
@@ -35,6 +37,7 @@ pub enum OperationKind {
     AssertionRetraction,
     SourcePruning,
     Forget,
+    KernelContract,
 }
 
 impl OperationKind {
@@ -45,6 +48,7 @@ impl OperationKind {
             OperationKind::AssertionRetraction => "assertion-retraction",
             OperationKind::SourcePruning => "source-pruning",
             OperationKind::Forget => "forget",
+            OperationKind::KernelContract => "kernel-contract",
         }
     }
 }
@@ -161,6 +165,8 @@ pub struct Plan {
     pub records: Vec<mneme_store::RecordDraft>,
     /// The barrier, suppression entries, and cleanup inventory.
     pub commit: mneme_store::RetentionCommit,
+    /// Hansson kernel-contraction analysis when `operation == KernelContract`.
+    pub contraction: Option<contraction::KernelReport>,
 }
 
 /// Counts of terminal managed-location outcomes.
@@ -273,6 +279,16 @@ impl<'w> Engine<'w> {
         }
         let view = self.view()?;
         build_plan(self.workspace, &view, &request)
+    }
+
+    /// Review a Levi-identity belief-revision plan (`B * φ = (B ÷_σ ¬φ) + φ`)
+    /// without mutating workspace state.
+    pub fn plan_revision(
+        &mut self,
+        request: contraction::RevisionRequest,
+    ) -> Result<contraction::RevisionPlan> {
+        let view = self.view()?;
+        contraction::build_revision_plan(self.workspace, &view, &request)
     }
 
     /// Execute or resume a retention request. The operation identity is bound
@@ -946,6 +962,13 @@ fn validate_request(request: &Request) -> Result<()> {
                 ));
             }
         }
+        OperationKind::KernelContract => {
+            if !matches!(request.selector, Selector::Assertion(_)) {
+                return Err(PolicyError::Invalid(
+                    "kernel contraction requires an assertion selector",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -1006,15 +1029,17 @@ impl ContentReplay {
 }
 
 /// The pinned snapshot and indexes one plan derives its decisions from.
-struct PlanContext<'a> {
-    view: &'a mneme_memory::View,
-    records: &'a [mneme_core::RecordEnvelope],
-    by_id: std::collections::BTreeMap<mneme_core::RecordId, &'a mneme_core::RecordEnvelope>,
-    derivations: std::collections::BTreeMap<mneme_core::RecordId, Vec<mneme_core::RecordId>>,
+pub(crate) struct PlanContext<'a> {
+    pub(crate) view: &'a mneme_memory::View,
+    pub(crate) records: &'a [mneme_core::RecordEnvelope],
+    pub(crate) by_id:
+        std::collections::BTreeMap<mneme_core::RecordId, &'a mneme_core::RecordEnvelope>,
+    pub(crate) derivations:
+        std::collections::BTreeMap<mneme_core::RecordId, Vec<mneme_core::RecordId>>,
 }
 
 impl<'a> PlanContext<'a> {
-    fn new(view: &'a mneme_memory::View) -> Result<Self> {
+    pub(crate) fn new(view: &'a mneme_memory::View) -> Result<Self> {
         let records = view.snapshot().records.as_slice();
         if records.len() > MAX_PLAN_RECORDS {
             return Err(PolicyError::Policy(
@@ -1048,16 +1073,8 @@ impl<'a> PlanContext<'a> {
     }
 }
 
-fn build_plan(
-    workspace: &mneme_store::Workspace,
-    view: &mneme_memory::View,
-    request: &Request,
-) -> Result<Plan> {
-    validate_request(request)?;
-    let context = PlanContext::new(view)?;
-    let operation_id = format!("retention-{}", mneme_store::payload::random_hex(16)?);
-    let generation = workspace.eligibility_generation()?.saturating_add(1);
-    let mut plan = Plan {
+pub(crate) fn empty_plan(operation_id: String, request: &Request, generation: u64) -> Plan {
+    Plan {
         operation_id: operation_id.clone(),
         request: request.clone(),
         generation,
@@ -1083,21 +1100,14 @@ fn build_plan(
             locations: Vec::new(),
             retained_metadata: Vec::new(),
         },
-    };
-    match request.operation {
-        OperationKind::ValidTimeExpiry => plan_expiry(&context, request, &mut plan)?,
-        OperationKind::AssertionRetraction => plan_retraction(&context, request, &mut plan)?,
-        OperationKind::SourcePruning => plan_pruning(workspace, &context, request, &mut plan)?,
-        OperationKind::Forget => plan_forget(workspace, &context, request, &mut plan)?,
+        contraction: None,
     }
+}
+
+pub(crate) fn finalize_plan(workspace: &mneme_store::Workspace, plan: &mut Plan) -> Result<()> {
     // Every operation records the managed inventory, even one that removes no
     // payload: a receipt may claim complete cleanup only after inspecting it.
-    add_inventory_locations(
-        workspace,
-        &std::collections::BTreeSet::new(),
-        &[],
-        &mut plan,
-    )?;
+    add_inventory_locations(workspace, &std::collections::BTreeSet::new(), &[], plan)?;
     plan.retained_metadata.sort();
     plan.retained_metadata.dedup();
     plan.commit.retained_metadata = plan.retained_metadata.clone();
@@ -1115,6 +1125,29 @@ fn build_plan(
         })
         .collect();
     plan.commit.locations = plan.locations.clone();
+    Ok(())
+}
+
+fn build_plan(
+    workspace: &mneme_store::Workspace,
+    view: &mneme_memory::View,
+    request: &Request,
+) -> Result<Plan> {
+    validate_request(request)?;
+    let context = PlanContext::new(view)?;
+    let operation_id = format!("retention-{}", mneme_store::payload::random_hex(16)?);
+    let generation = workspace.eligibility_generation()?.saturating_add(1);
+    let mut plan = empty_plan(operation_id, request, generation);
+    match request.operation {
+        OperationKind::ValidTimeExpiry => plan_expiry(&context, request, &mut plan)?,
+        OperationKind::AssertionRetraction => plan_retraction(&context, request, &mut plan)?,
+        OperationKind::SourcePruning => plan_pruning(workspace, &context, request, &mut plan)?,
+        OperationKind::Forget => plan_forget(workspace, &context, request, &mut plan)?,
+        OperationKind::KernelContract => {
+            contraction::plan_kernel_incision(&context, request, &mut plan)?;
+        }
+    }
+    finalize_plan(workspace, &mut plan)?;
     Ok(plan)
 }
 
@@ -1285,7 +1318,11 @@ fn plan_retraction(context: &PlanContext<'_>, request: &Request, plan: &mut Plan
     plan.records.push(decision);
     plan.records.push(retracted);
     plan.retracted_assertions.push(assertion_id);
-    plan.invalidated_derivations = dependent_derivations(context, assertion_id, &request.scope)?;
+    let retracted_set = std::collections::BTreeSet::from([assertion_id]);
+    let impact =
+        contraction::downstream_impact_after_retraction(context, &retracted_set, &request.scope)?;
+    plan.invalidated_derivations = impact.invalidated_derivations;
+    plan.surviving_assertions = impact.surviving_assertions;
     plan.retained_metadata
         .push("withdrawn-assertion-history".to_owned());
     plan.limitations
@@ -1972,7 +2009,7 @@ fn collect_session_artifacts(
     let mut artifacts = Vec::new();
     let mut visited = 0_usize;
     for session in sessions {
-        visited += 1;
+        visited = visited.saturating_add(1);
         if visited > MAX_SESSION_INVENTORY_ENTRIES {
             break;
         }
@@ -1993,7 +2030,7 @@ fn collect_session_artifacts(
             continue;
         };
         for file in files {
-            visited += 1;
+            visited = visited.saturating_add(1);
             if visited > MAX_SESSION_INVENTORY_ENTRIES {
                 break;
             }
@@ -2149,7 +2186,7 @@ fn resolve_sources(
     }
 }
 
-fn require_in_scope(
+pub(crate) fn require_in_scope(
     record: &mneme_core::RecordEnvelope,
     scope: &mneme_core::ScopeId,
 ) -> Result<()> {
@@ -2163,14 +2200,14 @@ fn require_in_scope(
 
 /// The records one source selection depends on, transitively.
 #[derive(Clone, Debug, Default)]
-struct Dependencies {
-    episodes: std::collections::BTreeSet<mneme_core::RecordId>,
-    evidence: std::collections::BTreeSet<mneme_core::RecordId>,
-    assertions: std::collections::BTreeSet<mneme_core::RecordId>,
-    derivations: std::collections::BTreeSet<mneme_core::RecordId>,
-    derived_sources: std::collections::BTreeSet<mneme_core::RecordId>,
-    recognition_runs: std::collections::BTreeSet<mneme_core::RecordId>,
-    recognition_segments: std::collections::BTreeSet<mneme_core::RecordId>,
+pub(crate) struct Dependencies {
+    pub(crate) episodes: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub(crate) evidence: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub(crate) assertions: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub(crate) derivations: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub(crate) derived_sources: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub(crate) recognition_runs: std::collections::BTreeSet<mneme_core::RecordId>,
+    pub(crate) recognition_segments: std::collections::BTreeSet<mneme_core::RecordId>,
 }
 
 fn dependencies_for_sources(
@@ -2238,7 +2275,7 @@ fn add_derived_source(
 /// The first parent of `source` outside its own record. A correction derives
 /// from an earlier revision of the same record, so its chain is followed back
 /// to the revision that derived from another source.
-fn foreign_parent(
+pub(crate) fn foreign_parent(
     context: &PlanContext<'_>,
     record: mneme_core::RecordId,
     mut source: mneme_memory::SourceView,
@@ -2398,195 +2435,32 @@ fn dependency_is_known(
 
 /// The records whose support no longer survives the selection.
 ///
-/// The fixpoint is monotone: withdrawing a record can only withdraw more, so
-/// a conclusion with an independent surviving derivation stays, and a
-/// derivation with any withdrawn premise goes.
+/// Computed via well-founded groundedness reachability from surviving
+/// non-withdrawn `RootIdentity` leaves (`mneme_kernel::contraction`): any
+/// self-supporting derivation cycle with no surviving grounded root is
+/// withdrawn in full.
 fn compute_withdrawal(
     context: &PlanContext<'_>,
     sources: &[mneme_core::RecordId],
     deps: &Dependencies,
     scope: &mneme_core::ScopeId,
 ) -> Result<std::collections::BTreeSet<mneme_core::RecordId>> {
-    let mut withdrawn: std::collections::BTreeSet<mneme_core::RecordId> =
-        sources.iter().copied().collect();
-    loop {
-        let mut is_changed = withdraw_episodes(context, deps, &mut withdrawn)?;
-        is_changed |= withdraw_evidence(context, deps, &mut withdrawn)?;
-        is_changed |= withdraw_derivations(context, deps, &mut withdrawn)?;
-        is_changed |= withdraw_assertions(context, deps, &mut withdrawn, scope)?;
-        if !is_changed {
-            return Ok(withdrawn);
-        }
-    }
+    contraction::compute_well_founded_withdrawal(context, sources, deps, scope)
 }
 
-/// Withdraw the episodes whose source or relation is already withdrawn.
-fn withdraw_episodes(
-    context: &PlanContext<'_>,
-    deps: &Dependencies,
-    withdrawn: &mut std::collections::BTreeSet<mneme_core::RecordId>,
-) -> Result<bool> {
-    let mut is_changed = false;
-    for record_id in &deps.episodes {
-        if withdrawn.contains(record_id) {
-            continue;
-        }
-        let episode = context.view.episode(*record_id)?;
-        let is_linked = episode
-            .source
-            .is_some_and(|source| withdrawn.contains(&source))
-            || episode
-                .related
-                .iter()
-                .any(|related| withdrawn.contains(related));
-        if is_linked {
-            withdrawn.insert(*record_id);
-            is_changed = true;
-        }
-    }
-    Ok(is_changed)
-}
-
-/// Withdraw the evidence whose source or ancestry is already withdrawn.
-fn withdraw_evidence(
-    context: &PlanContext<'_>,
-    deps: &Dependencies,
-    withdrawn: &mut std::collections::BTreeSet<mneme_core::RecordId>,
-) -> Result<bool> {
-    let mut is_changed = false;
-    for record_id in &deps.evidence {
-        if withdrawn.contains(record_id) {
-            continue;
-        }
-        let evidence = context.view.evidence(*record_id)?;
-        let is_linked = withdrawn.contains(&evidence.source)
-            || evidence
-                .ancestry
-                .iter()
-                .any(|ancestor| withdrawn.contains(ancestor));
-        if is_linked {
-            withdrawn.insert(*record_id);
-            is_changed = true;
-        }
-    }
-    Ok(is_changed)
-}
-
-/// Withdraw the derivations with at least one withdrawn premise.
-fn withdraw_derivations(
-    context: &PlanContext<'_>,
-    deps: &Dependencies,
-    withdrawn: &mut std::collections::BTreeSet<mneme_core::RecordId>,
-) -> Result<bool> {
-    let mut is_changed = false;
-    for record_id in &deps.derivations {
-        if withdrawn.contains(record_id) {
-            continue;
-        }
-        let derivation = context.view.derivation(*record_id)?;
-        let is_linked = derivation
-            .premises
-            .iter()
-            .any(|premise| withdrawn.contains(premise));
-        if is_linked {
-            withdrawn.insert(*record_id);
-            is_changed = true;
-        }
-    }
-    Ok(is_changed)
-}
-
-/// Withdraw the in-scope assertions with neither surviving support nor a
-/// surviving derivation.
-fn withdraw_assertions(
-    context: &PlanContext<'_>,
-    deps: &Dependencies,
-    withdrawn: &mut std::collections::BTreeSet<mneme_core::RecordId>,
-    scope: &mneme_core::ScopeId,
-) -> Result<bool> {
-    let mut is_changed = false;
-    for record_id in &deps.assertions {
-        if withdrawn.contains(record_id) {
-            continue;
-        }
-        let Some(record) = context.by_id.get(record_id) else {
-            continue;
-        };
-        if record.kind != mneme_core::RecordKind::Assertion || &record.scope != scope {
-            continue;
-        }
-        let assertion = context.view.assertion(*record_id)?;
-        let has_evidence = assertion.evidence.iter().any(|evidence| {
-            if withdrawn.contains(evidence) {
-                return false;
-            }
-            context.view.evidence(*evidence).is_ok_and(|view| {
-                view.relation == mneme_memory::SupportRelation::Supports
-                    && view.assertion == *record_id
-            })
-        });
-        let has_derivation = context
-            .derivations
-            .get(record_id)
-            .is_some_and(|derivations| {
-                derivations
-                    .iter()
-                    .any(|derivation| !withdrawn.contains(derivation))
-            });
-        if !has_evidence && !has_derivation {
-            withdrawn.insert(*record_id);
-            is_changed = true;
-        }
-    }
-    Ok(is_changed)
-}
-
-fn dependent_derivations(
-    context: &PlanContext<'_>,
-    assertion: mneme_core::RecordId,
-    scope: &mneme_core::ScopeId,
-) -> Result<Vec<mneme_core::RecordId>> {
-    let mut affected_assertions = std::collections::BTreeSet::from([assertion]);
-    let mut derivations = std::collections::BTreeSet::new();
-    loop {
-        let mut is_changed = false;
-        for record in context.records {
-            if record.kind != mneme_core::RecordKind::Derivation
-                || &record.scope != scope
-                || derivations.contains(&record.record_id)
-            {
-                continue;
-            }
-            let derivation = context.view.derivation(record.record_id)?;
-            if derivation
-                .premises
-                .iter()
-                .any(|premise| affected_assertions.contains(premise))
-            {
-                let is_inserted = derivations.insert(record.record_id);
-                let is_conclusion_added = affected_assertions.insert(derivation.conclusion);
-                is_changed |= is_inserted || is_conclusion_added;
-            }
-        }
-        if !is_changed {
-            return Ok(derivations.into_iter().collect());
-        }
-    }
-}
-
-fn fresh_id() -> Result<mneme_core::RecordId> {
+pub(crate) fn fresh_id() -> Result<mneme_core::RecordId> {
     Ok(mneme_core::RecordId::from_bytes(
         mneme_store::payload::random_bytes()?,
     ))
 }
 
-fn fresh_revision() -> Result<mneme_core::RevisionId> {
+pub(crate) fn fresh_revision() -> Result<mneme_core::RevisionId> {
     Ok(mneme_core::RevisionId::from_bytes(
         mneme_store::payload::random_bytes()?,
     ))
 }
 
-fn map_missing(error: mneme_memory::EvidenceError) -> PolicyError {
+pub(crate) fn map_missing(error: mneme_memory::EvidenceError) -> PolicyError {
     match error {
         mneme_memory::EvidenceError::Missing { .. } => PolicyError::NotFound,
         other => PolicyError::Engine(other),

@@ -4,6 +4,7 @@ import MnemeKernelProofs.Capability
 import MnemeKernelProofs.Cleanup
 import MnemeKernelProofs.Admission
 import MnemeKernelProofs.Completeness
+import MnemeKernelProofs.Contraction
 import MnemeKernelProofs.Epistemic
 import MnemeKernelProofs.Hashing
 import MnemeKernelProofs.Hlc
