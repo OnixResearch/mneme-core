@@ -10,7 +10,7 @@
     "profile_hash": "b3:336465a8c086b10254b383cba91b15f3a863ec4bff1fee49045c28e254482410",
     "config_hash": "b3:e22f3ff8bb637daedeb1884b27f7b67af214e3fe5259fd183df226db894a7233"
   },
-  "baseline_hash": "b3:4efc520e8f34c03501adab946bb19d99c982a7def54322e50f46b78f424f7f93",
+  "baseline_hash": "b3:3d3585265cdb7aaee494083e7bbd950206205f9c665aca50ea7c0cfeb3e18ed4",
   "findings": [
     {
       "stable_id": "b3:077f0999f0ef0992",
@@ -20,7 +20,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 1158,
+      "line": 1205,
       "column": 21,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_api"
@@ -85,7 +85,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 1240,
+      "line": 1287,
       "column": 78,
       "message": "function `handle_evaluate_datalog` is 81 lines (limit: 70)",
       "crate_name": "mneme_api"
@@ -111,7 +111,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 458,
+      "line": 466,
       "column": 1,
       "message": "item name `map_server_hlc_error` repeats `server` from ancestor path segment `server`",
       "crate_name": "mneme_api"
@@ -260,6 +260,19 @@
       "crate_name": "mneme_api"
     },
     {
+      "stable_id": "b3:53b4386ad482ee74",
+      "semantic_id": "b3:53b4386ad482ee74",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/server.rs",
+      "line": 21,
+      "column": 1,
+      "message": "item name `ServerConfig` repeats `server` from ancestor path segment `server`",
+      "crate_name": "mneme_api"
+    },
+    {
       "stable_id": "b3:57009cfad0f0818b",
       "semantic_id": "b3:57009cfad0f0818b",
       "identity_status": "computed",
@@ -267,7 +280,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 1289,
+      "line": 1336,
       "column": 9,
       "message": "boolean binding `absence_established` should have a predicate prefix",
       "crate_name": "mneme_api"
@@ -345,7 +358,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 1264,
+      "line": 1311,
       "column": 9,
       "message": "boolean binding `allow_hlc_cut` should have a predicate prefix",
       "crate_name": "mneme_api"
@@ -358,7 +371,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/client.rs",
-      "line": 877,
+      "line": 906,
       "column": 5,
       "message": "same-crate enum `federation::protocol::EncodedSourceAvailability` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_api"
@@ -397,7 +410,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 1347,
+      "line": 1394,
       "column": 9,
       "message": "boolean binding `allow_stale` should have a predicate prefix",
       "crate_name": "mneme_api"
@@ -410,7 +423,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/client.rs",
-      "line": 155,
+      "line": 160,
       "column": 9,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_api"
@@ -475,7 +488,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 1634,
+      "line": 1681,
       "column": 9,
       "message": "foreign enum `mneme_store::Failure` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_api"
@@ -488,7 +501,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/protocol.rs",
-      "line": 615,
+      "line": 621,
       "column": 1,
       "message": "item name `VaultFederationProtocol` repeats `federation` from ancestor path segment `federation`",
       "crate_name": "mneme_api"
@@ -520,19 +533,6 @@
       "crate_name": "mneme_api"
     },
     {
-      "stable_id": "b3:b90f92fade301f6b",
-      "semantic_id": "b3:b90f92fade301f6b",
-      "identity_status": "computed",
-      "lint": "fragile_exhaustive_enum_match",
-      "group": "tigerstyle::safety",
-      "severity": "warning",
-      "file": "crates/mneme-api/src/federation/client.rs",
-      "line": 32,
-      "column": 9,
-      "message": "same-crate enum `federation::protocol::RpcErrorCode` is matched exhaustively without a fallback; adding a variant will force this site to change",
-      "crate_name": "mneme_api"
-    },
-    {
       "stable_id": "b3:baba4576baea2a2c",
       "semantic_id": "b3:baba4576baea2a2c",
       "identity_status": "computed",
@@ -553,9 +553,22 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 441,
+      "line": 449,
       "column": 1,
       "message": "item name `tick_server_hlc` repeats `server` from ancestor path segment `server`",
+      "crate_name": "mneme_api"
+    },
+    {
+      "stable_id": "b3:bba4395fc642145e",
+      "semantic_id": "b3:bba4395fc642145e",
+      "identity_status": "computed",
+      "lint": "fragile_exhaustive_enum_match",
+      "group": "tigerstyle::safety",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/client.rs",
+      "line": 34,
+      "column": 9,
+      "message": "same-crate enum `federation::protocol::RpcErrorCode` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_api"
     },
     {
@@ -595,32 +608,6 @@
       "line": 900,
       "column": 30,
       "message": "String allocation constructor runs inside a loop",
-      "crate_name": "mneme_api"
-    },
-    {
-      "stable_id": "b3:c4935d45b7ce481a",
-      "semantic_id": "b3:c4935d45b7ce481a",
-      "identity_status": "computed",
-      "lint": "path_segment_repetition",
-      "group": "tigerstyle::naming",
-      "severity": "warning",
-      "file": "crates/mneme-api/src/federation/client.rs",
-      "line": 7,
-      "column": 1,
-      "message": "item name `FederationError` repeats `federation` from ancestor path segment `federation`",
-      "crate_name": "mneme_api"
-    },
-    {
-      "stable_id": "b3:c4b537ea32ffe907",
-      "semantic_id": "b3:c4b537ea32ffe907",
-      "identity_status": "computed",
-      "lint": "path_segment_repetition",
-      "group": "tigerstyle::naming",
-      "severity": "warning",
-      "file": "crates/mneme-api/src/federation/server.rs",
-      "line": 21,
-      "column": 1,
-      "message": "item name `ServerConfig` repeats `server` from ancestor path segment `server`",
       "crate_name": "mneme_api"
     },
     {
@@ -670,7 +657,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-api/src/federation/client.rs",
-      "line": 589,
+      "line": 618,
       "column": 1,
       "message": "item name `map_client_hlc_error` repeats `client` from ancestor path segment `client`",
       "crate_name": "mneme_api"
@@ -700,6 +687,19 @@
       "column": 21,
       "message": "boolean binding `saw_a1` should have a predicate prefix",
       "crate_name": "federation"
+    },
+    {
+      "stable_id": "b3:e63717521d305e85",
+      "semantic_id": "b3:e63717521d305e85",
+      "identity_status": "computed",
+      "lint": "path_segment_repetition",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-api/src/federation/client.rs",
+      "line": 7,
+      "column": 1,
+      "message": "item name `FederationError` repeats `federation` from ancestor path segment `federation`",
+      "crate_name": "mneme_api"
     }
   ]
 }

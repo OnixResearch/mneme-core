@@ -85,7 +85,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1091,
+      "line": 1098,
       "column": 50,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -137,7 +137,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 569,
+      "line": 574,
       "column": 9,
       "message": "same-crate enum `coordinator::FactAccess` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -176,7 +176,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 587,
+      "line": 592,
       "column": 24,
       "message": "same-crate enum `coordinator::FactAccess` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -215,7 +215,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 655,
+      "line": 660,
       "column": 9,
       "message": "same-crate enum `coordinator::FactAccess` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -267,7 +267,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 1081,
+      "line": 1086,
       "column": 9,
       "message": "same-crate enum `coordinator::PublicationState` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -397,7 +397,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 2838,
+      "line": 2847,
       "column": 12,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_store"
@@ -410,7 +410,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 3086,
+      "line": 3095,
       "column": 13,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -436,7 +436,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 1059,
+      "line": 1064,
       "column": 9,
       "message": "same-crate enum `coordinator::PublicationState` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -449,7 +449,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 667,
+      "line": 672,
       "column": 9,
       "message": "same-crate enum `coordinator::FactAccess` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -514,7 +514,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1112,
+      "line": 1119,
       "column": 41,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -527,7 +527,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 867,
+      "line": 874,
       "column": 21,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -566,7 +566,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 423,
+      "line": 428,
       "column": 13,
       "message": "same-crate enum `coordinator::FactKey` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -579,7 +579,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 707,
+      "line": 712,
       "column": 8,
       "message": "condition has 5 boolean operators",
       "crate_name": "mneme_store"
@@ -644,7 +644,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 621,
+      "line": 626,
       "column": 9,
       "message": "same-crate enum `coordinator::FactAccess` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -722,7 +722,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1087,
+      "line": 1094,
       "column": 50,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -761,7 +761,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 2865,
+      "line": 2874,
       "column": 20,
       "message": "same-crate enum `coordinator::PayloadCheck` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -774,7 +774,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 639,
+      "line": 644,
       "column": 24,
       "message": "same-crate enum `coordinator::FactAccess` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -904,7 +904,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 987,
+      "line": 994,
       "column": 39,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -943,7 +943,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1090,
+      "line": 1097,
       "column": 41,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -982,7 +982,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 607,
+      "line": 612,
       "column": 9,
       "message": "same-crate enum `coordinator::FactAccess` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
