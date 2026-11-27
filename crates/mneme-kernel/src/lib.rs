@@ -35,6 +35,7 @@
 )]
 
 pub mod admission;
+pub mod argumentation;
 pub mod budget;
 pub mod calm;
 pub mod capability;
@@ -49,6 +50,7 @@ pub mod hashing;
 pub mod history_tree;
 pub mod hlc;
 pub mod isolation;
+pub mod opinion;
 pub mod publish;
 pub mod purge;
 pub mod restore;

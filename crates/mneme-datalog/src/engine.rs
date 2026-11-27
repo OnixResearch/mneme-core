@@ -207,6 +207,7 @@ pub(crate) fn canonical_extents() -> &'static [&'static str] {
         "denial",
         "hypothesis",
         "evidence",
+        "challenge",
         "document",
         "derivation",
         "source",
@@ -1022,11 +1023,16 @@ fn load_evidence_fact(
     let Ok(evidence) = mneme_memory::EvidenceView::parse(record.clone()) else {
         return;
     };
-    // Challenging evidence argues against a claim; counting it as support would
-    // make a contradicting source look like corroboration.
-    if evidence.relation != mneme_memory::SupportRelation::Supports {
-        return;
-    }
+    let pair = match evidence.relation {
+        mneme_memory::SupportRelation::Supports => PredicatePair {
+            base: "evidence",
+            vault: "vault_evidence",
+        },
+        mneme_memory::SupportRelation::Challenges => PredicatePair {
+            base: "challenge",
+            vault: "vault_challenge",
+        },
+    };
     if is_suppressed(ctx.view, record)
         || !ctx.has_record(evidence.assertion)
         || !ctx.has_record(evidence.source)
@@ -1056,10 +1062,7 @@ fn load_evidence_fact(
     add_canonical_pair(
         ctx,
         evaluation,
-        PredicatePair {
-            base: "evidence",
-            vault: "vault_evidence",
-        },
+        pair,
         terms,
         CanonicalRow {
             record,

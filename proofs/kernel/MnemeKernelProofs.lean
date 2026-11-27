@@ -1,3 +1,4 @@
+import MnemeKernelProofs.Argumentation
 import MnemeKernelProofs.Budget
 import MnemeKernelProofs.Calm
 import MnemeKernelProofs.Capability
@@ -10,6 +11,7 @@ import MnemeKernelProofs.Hashing
 import MnemeKernelProofs.HistoryTree
 import MnemeKernelProofs.Hlc
 import MnemeKernelProofs.Claim
+import MnemeKernelProofs.Opinion
 import MnemeKernelProofs.Publish
 import MnemeKernelProofs.Purge
 import MnemeKernelProofs.Restore

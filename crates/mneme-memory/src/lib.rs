@@ -21,6 +21,9 @@ pub mod model;
 pub mod service;
 
 pub use authorization::Access;
+pub use beliefs::aspic::{
+    ArgumentationStatus, ArgumentationVerdict, DefeatKind, DefeatReason, Opinion,
+};
 pub use beliefs::{
     BeliefView, BitemporalChange, BitemporalChangeKind, BitemporalDiff, ConflictGroup,
     Corroboration, DerivationAlternative, EXPLICIT_AUTHORED_PREDICATE, EvidenceExplanation,
