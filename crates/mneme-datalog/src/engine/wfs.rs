@@ -139,6 +139,8 @@ fn run_positive_pass(
         negation_oracle: Some(oracle),
         negation_semantics,
         justifications: crate::JustificationGraph::default(),
+        eclasses: crate::egraph::EClassTable::new(),
+        egraph_config: evaluation.egraph_config,
         round_deltas: None,
         coverage: evaluation.coverage.clone(),
         base_coverage: evaluation.base_coverage.clone(),

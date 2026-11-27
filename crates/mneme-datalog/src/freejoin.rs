@@ -1,12 +1,12 @@
 //! Worst-case optimal Free Join planning and sorted-trie evaluation.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TrieNode {
     pub(crate) children: std::collections::BTreeMap<mneme_core::Value, TrieNode>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FactTrie {
     pub(crate) root: TrieNode,
 }
@@ -22,6 +22,59 @@ impl FactTrie {
             };
             node = node.children.entry(value.clone()).or_default();
         }
+    }
+
+    /// Recanonicalize every key stored in this trie using `canonicalize`,
+    /// merging subtrees whose keys collide in the same equivalence class.
+    ///
+    /// Traverses the trie iteratively (zero recursion), bounding work by
+    /// `remaining_steps`, and returns `(rebuilt_trie, steps_spent, is_complete)`.
+    pub(crate) fn into_recanonicalized<F>(
+        self,
+        remaining_steps: u64,
+        canonicalize: &F,
+    ) -> (Self, u64, bool)
+    where
+        F: Fn(&mneme_core::Value) -> mneme_core::Value,
+    {
+        if self.root.children.is_empty() {
+            return (self, 0, true);
+        }
+        let mut rebuilt = FactTrie::default();
+        let max_depth = 64_usize;
+        let mut stack: Vec<std::collections::btree_map::IntoIter<mneme_core::Value, TrieNode>> =
+            Vec::with_capacity(max_depth);
+        stack.push(self.root.children.into_iter());
+        let mut path: Vec<mneme_core::Value> = Vec::with_capacity(max_depth);
+        let mut steps = 0_u64;
+        let max_iterations = remaining_steps.saturating_mul(2).saturating_add(4);
+        for _ in 0..max_iterations {
+            let Some(top) = stack.last_mut() else {
+                break;
+            };
+            let Some((value, child)) = top.next() else {
+                stack.pop();
+                path.pop();
+                continue;
+            };
+            if steps >= remaining_steps {
+                return (rebuilt, steps, false);
+            }
+            steps = steps.saturating_add(1);
+            if path.len() < max_depth {
+                path.push(canonicalize(&value));
+            }
+            if child.children.is_empty() {
+                let mut node = &mut rebuilt.root;
+                for item in &path {
+                    node = node.children.entry(item.clone()).or_default();
+                }
+                path.pop();
+            } else if stack.len() < max_depth {
+                stack.push(child.children.into_iter());
+            }
+        }
+        (rebuilt, steps, stack.is_empty())
     }
 }
 

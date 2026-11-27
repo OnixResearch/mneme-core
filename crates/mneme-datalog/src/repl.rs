@@ -128,6 +128,7 @@ impl ReplSession {
             facts: unwrap_fact_stores(&base.facts),
             justifications: ivm.justifications.clone(),
             negation_semantics,
+            eclasses: crate::egraph::EClassTable::new(),
             arities: program.arities.clone(),
             bundle: program.bundle.clone(),
             vault_barriers: Vec::new(),
@@ -381,7 +382,9 @@ impl ReplSession {
         debug_assert!(step_limits.max_work > 0);
         debug_assert!(step_limits.max_work <= remaining_work);
 
-        if has_temporal_rules(&candidate_program.bundle) {
+        if has_temporal_rules(&candidate_program.bundle)
+            || crate::egraph::bundle_has_rules(&candidate_program.bundle)
+        {
             return self.apply_incremental_temporal_fallback(
                 candidate_program,
                 affected,
@@ -452,6 +455,7 @@ impl ReplSession {
             facts: ivm_result.next_facts,
             justifications,
             negation_semantics,
+            eclasses: crate::egraph::EClassTable::new(),
             arities: candidate_program.arities.clone(),
             bundle: candidate_program.bundle.clone(),
             vault_barriers: Vec::new(),
@@ -605,6 +609,7 @@ impl ReplSession {
             facts: next_facts,
             justifications: evaluated.justifications,
             negation_semantics: evaluated.negation_semantics,
+            eclasses: evaluated.eclasses,
             arities: candidate_program.arities.clone(),
             bundle: candidate_program.bundle.clone(),
             vault_barriers: Vec::new(),
@@ -855,6 +860,7 @@ impl ReplSession {
             facts: ivm_result.next_facts,
             justifications,
             negation_semantics,
+            eclasses: crate::egraph::EClassTable::new(),
             arities: self.program.arities.clone(),
             bundle: self.program.bundle.clone(),
             vault_barriers: Vec::new(),
