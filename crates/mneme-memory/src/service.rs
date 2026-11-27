@@ -3116,3 +3116,68 @@ pub fn build_checkpoint(
         payload: mneme_core::Payload::new(entries),
     }
 }
+
+/// Content for a canonical `mneme:predicate_trait` schema assertion.
+#[derive(Clone, Copy)]
+pub struct PredicateTraitOptions<'a> {
+    pub subject: mneme_core::RecordId,
+    pub predicate: &'a str,
+    pub kind: crate::beliefs::traits::PredicateTrait,
+    pub asserted_by: &'a str,
+    pub valid_time: mneme_core::ValidTime,
+    pub evidence: &'a [mneme_core::Reference],
+}
+
+/// Build a proposed `mneme:predicate_trait` schema assertion declaring a
+/// predicate as `Functional` or `Inertial`.
+///
+/// Preserves `#71` non-promotion: emits `Lifecycle::Proposed` and requires an
+/// explicit acceptance decision to promote into `Certain`.
+pub fn build_predicate_trait(
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    options: PredicateTraitOptions<'_>,
+) -> mneme_store::RecordDraft {
+    build_proposed_assertion(
+        record_id,
+        revision_id,
+        scope,
+        ProposedAssertionOptions {
+            subject: options.subject,
+            predicate: crate::beliefs::traits::PREDICATE_TRAIT_PREDICATE,
+            value: crate::beliefs::traits::predicate_trait_value(options.predicate, options.kind),
+            stance: crate::model::Stance::Affirm,
+            origin: mneme_core::Origin::AuthoredStatement,
+            asserted_by: options.asserted_by,
+            valid_time: options.valid_time,
+            evidence: options.evidence,
+            extraction: None,
+            superseded_by: None,
+        },
+    )
+}
+
+/// Build an explicit ASPIC+ undercut `Evidence` record (`SupportRelation::Challenges`
+/// marked with `explicit-defeat: true`) wired onto `mneme_kernel::argumentation`.
+pub fn build_explicit_defeat(
+    record_id: mneme_core::RecordId,
+    revision_id: mneme_core::RevisionId,
+    scope: &mneme_core::ScopeId,
+    options: EvidenceOptions<'_>,
+) -> mneme_store::RecordDraft {
+    let mut draft = build_evidence(
+        record_id,
+        revision_id,
+        scope,
+        EvidenceOptions {
+            relation: crate::model::SupportRelation::Challenges,
+            ..options
+        },
+    );
+    draft.payload.insert(
+        mneme_core::Symbol::from(crate::beliefs::aspic::EXPLICIT_DEFEAT_KEY),
+        mneme_core::Value::Boolean(true),
+    );
+    draft
+}
