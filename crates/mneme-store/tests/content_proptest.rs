@@ -314,12 +314,32 @@ proptest! {
             .expect("verify compressed span");
         prop_assert_eq!(span.as_slice(), &payload[half as usize..]);
 
-        // 1-byte bitflip in stored blob file must fail closed.
+        // 1-byte bitflip in the MNZSTD header/prefix always fails closed.
         let blob_path = mneme_store::payload::blob_path(dir.path(), digest);
-        let (b_idx, b_mask) = flip_one_bit(&blob_path, flip_pos, flip_bit);
+        let (h_idx, h_mask) = flip_one_bit(&blob_path, flip_pos % 8, flip_bit);
         prop_assert!(mneme_store::payload::read(dir.path(), digest).is_err());
         prop_assert!(mneme_store::payload::verify(dir.path(), digest, size as u64).is_err());
         prop_assert!(mneme_store::verify_span_range(dir.path(), digest, 0..size as u64).is_err());
+        restore_bit(&blob_path, h_idx, h_mask);
+
+        // 1-byte bitflip anywhere in the stored blob must never return corrupted
+        // bytes: either it fails closed, or (when the flip hits a benign Zstd
+        // framing bit such as Window_Descriptor enlargement or Unused_bit) it
+        // still verifies and returns the exact original plaintext.
+        let (b_idx, b_mask) = flip_one_bit(&blob_path, flip_pos, flip_bit);
+        match mneme_store::payload::read(dir.path(), digest) {
+            Err(_) => {
+                prop_assert!(mneme_store::payload::verify(dir.path(), digest, size as u64).is_err());
+                prop_assert!(mneme_store::verify_span_range(dir.path(), digest, 0..size as u64).is_err());
+            }
+            Ok(recovered) => {
+                prop_assert_eq!(recovered, payload.clone());
+                prop_assert!(mneme_store::payload::verify(dir.path(), digest, size as u64).is_ok());
+                let full = mneme_store::verify_span_range(dir.path(), digest, 0..size as u64)
+                    .expect("benign zstd framing flip verifies exact span");
+                prop_assert_eq!(full, payload.clone());
+            }
+        }
         restore_bit(&blob_path, b_idx, b_mask);
 
         // If using a dictionary, 1-byte bitflip in the dictionary file must also fail closed.
@@ -410,10 +430,30 @@ proptest! {
         let chunk_digest = mneme_core::ContentDigest::of_source_bytes(chunk_slice);
         let chunk_file = mneme_store::dedup::chunk_path(dir.path(), chunk_digest);
         prop_assert!(chunk_file.exists());
-        let (c_idx, c_mask) = flip_one_bit(&chunk_file, flip_pos, flip_bit);
+        // 1-byte bitflip in the chunk prefix always fails closed.
+        let (ch_idx, ch_mask) = flip_one_bit(&chunk_file, flip_pos % 8, flip_bit);
         prop_assert!(mneme_store::payload::read(dir.path(), digest).is_err());
         prop_assert!(mneme_store::payload::verify(dir.path(), digest, size as u64).is_err());
         prop_assert!(mneme_store::verify_span_range(dir.path(), digest, 0..size as u64).is_err());
+        restore_bit(&chunk_file, ch_idx, ch_mask);
+
+        // 1-byte bitflip anywhere in the chunk file must never return corrupted
+        // bytes (fails closed, or verifies exact original plaintext on benign
+        // Zstd framing bits).
+        let (c_idx, c_mask) = flip_one_bit(&chunk_file, flip_pos, flip_bit);
+        match mneme_store::payload::read(dir.path(), digest) {
+            Err(_) => {
+                prop_assert!(mneme_store::payload::verify(dir.path(), digest, size as u64).is_err());
+                prop_assert!(mneme_store::verify_span_range(dir.path(), digest, 0..size as u64).is_err());
+            }
+            Ok(recovered) => {
+                prop_assert_eq!(recovered, payload.clone());
+                prop_assert!(mneme_store::payload::verify(dir.path(), digest, size as u64).is_ok());
+                let full = mneme_store::verify_span_range(dir.path(), digest, 0..size as u64)
+                    .expect("benign zstd framing flip verifies exact span");
+                prop_assert_eq!(full, payload.clone());
+            }
+        }
         restore_bit(&chunk_file, c_idx, c_mask);
     }
 }
