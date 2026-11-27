@@ -10,7 +10,7 @@
     "profile_hash": "b3:c2dde83cf9d9a07e31e137df6db33ed749739d41f8079a9c37a0fbfe40855576",
     "config_hash": "b3:4fcf56f78265e5e468520293d94da306281cb534c2d708c9d0bd710e7770eb84"
   },
-  "baseline_hash": "b3:9db9d218f697624b50a87a5a53dd437c9cd9965ec2125827d5e9e80d14f295c1",
+  "baseline_hash": "b3:3389a90aee38284718042b4399fde5ee1f9c536693d5df11a071cd23f14396ff",
   "findings": [
     {
       "stable_id": "b3:0180858cc4e2017d",
@@ -644,7 +644,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3747,
+      "line": 3749,
       "column": 18,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_doc"
@@ -657,7 +657,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 980,
+      "line": 982,
       "column": 49,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_doc"
@@ -722,7 +722,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 14,
+      "line": 15,
       "column": 1,
       "message": "module exposes 15 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_doc"
@@ -761,9 +761,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 927,
+      "line": 929,
       "column": 13,
       "message": "foreign enum `mneme_core::Reference` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
+      "crate_name": "mneme_doc"
+    },
+    {
+      "stable_id": "b3:83cc7cb40fb61e4d",
+      "semantic_id": "b3:83cc7cb40fb61e4d",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-doc/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 44 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_doc"
     },
     {
@@ -852,7 +865,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 703,
+      "line": 705,
       "column": 13,
       "message": "foreign enum `mneme_memory::SourceStatus` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_doc"
@@ -904,7 +917,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 995,
+      "line": 997,
       "column": 13,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_doc"
@@ -1079,19 +1092,6 @@
       "crate_name": "mneme_doc"
     },
     {
-      "stable_id": "b3:cbf867343a3d75c4",
-      "semantic_id": "b3:cbf867343a3d75c4",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 40 public items (limit: 12) — split unrelated public surface into focused modules",
-      "crate_name": "mneme_doc"
-    },
-    {
       "stable_id": "b3:d0d5d1b27e75a2fc",
       "semantic_id": "b3:d0d5d1b27e75a2fc",
       "identity_status": "computed",
@@ -1164,7 +1164,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 1374,
+      "line": 1376,
       "column": 46,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -1177,7 +1177,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3655,
+      "line": 3657,
       "column": 17,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_doc"
@@ -1216,7 +1216,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-doc/src/lib.rs",
-      "line": 3394,
+      "line": 3396,
       "column": 30,
       "message": "function `render_preview_artifact` is 85 lines (limit: 70)",
       "crate_name": "mneme_doc"

@@ -10,7 +10,7 @@
     "profile_hash": "b3:991eda0bf12d56851d286d70f1884993720dedd07f1a837e0b5797ec34f654ad",
     "config_hash": "b3:eef5094cf852eec37d5eee972747fd449b6046757444002140914cac7838f6af"
   },
-  "baseline_hash": "b3:ac78b7abf9e082277381d5430d736882de07265b26b6d83768492bfbcd126f96",
+  "baseline_hash": "b3:a0b7a544e7afab5d1b1bddcb9e67006d609d9f11e49ff11bef4c4a79f93b1bbb",
   "findings": [
     {
       "stable_id": "b3:006d011b3eea0b32",
@@ -39,19 +39,6 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:04b2d3aeeda89558",
-      "semantic_id": "b3:04b2d3aeeda89558",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-store/src/coordinator/custody.rs",
-      "line": 129,
-      "column": 37,
-      "message": "function `merge_portable_retention` is 130 lines (limit: 70)",
-      "crate_name": "mneme_store"
-    },
-    {
       "stable_id": "b3:04c5c3d3f0a1f3f0",
       "semantic_id": "b3:04c5c3d3f0a1f3f0",
       "identity_status": "computed",
@@ -59,7 +46,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 2841,
+      "line": 3237,
       "column": 29,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_store"
@@ -72,7 +59,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 283,
+      "line": 292,
       "column": 44,
       "message": "unprotected unsigned multiplication may overflow",
       "crate_name": "mneme_store"
@@ -85,7 +72,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1098,
+      "line": 1283,
       "column": 50,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -228,7 +215,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/file.rs",
-      "line": 373,
+      "line": 446,
       "column": 15,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_store"
@@ -241,7 +228,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 2586,
+      "line": 2982,
       "column": 17,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -267,7 +254,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 1086,
+      "line": 1113,
       "column": 9,
       "message": "same-crate enum `coordinator::PublicationState` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -280,7 +267,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/mod.rs",
-      "line": 422,
+      "line": 537,
       "column": 16,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_store"
@@ -293,7 +280,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/file.rs",
-      "line": 297,
+      "line": 334,
       "column": 12,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -322,32 +309,6 @@
       "line": 608,
       "column": 21,
       "message": "String allocation constructor runs inside a loop",
-      "crate_name": "mneme_store"
-    },
-    {
-      "stable_id": "b3:40abaed15d0cb1be",
-      "semantic_id": "b3:40abaed15d0cb1be",
-      "identity_status": "computed",
-      "lint": "too_many_parameters",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-store/src/portability/ingest.rs",
-      "line": 483,
-      "column": 1,
-      "message": "function has 6 parameters (limit: 5) — consider an options struct",
-      "crate_name": "mneme_store"
-    },
-    {
-      "stable_id": "b3:4b7d5608b2e6100c",
-      "semantic_id": "b3:4b7d5608b2e6100c",
-      "identity_status": "computed",
-      "lint": "function_length",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-store/src/portability/ingest.rs",
-      "line": 196,
-      "column": 49,
-      "message": "function `ingest_delta` is 73 lines (limit: 70)",
       "crate_name": "mneme_store"
     },
     {
@@ -384,7 +345,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 71,
+      "line": 97,
       "column": 9,
       "message": "same-crate enum `coordinator::CommitWrite` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -397,7 +358,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 2847,
+      "line": 2874,
       "column": 12,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_store"
@@ -410,7 +371,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 3095,
+      "line": 3122,
       "column": 13,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -423,7 +384,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/rebuild.rs",
-      "line": 231,
+      "line": 232,
       "column": 32,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -436,7 +397,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 1064,
+      "line": 1091,
       "column": 9,
       "message": "same-crate enum `coordinator::PublicationState` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -462,9 +423,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 2842,
+      "line": 3238,
       "column": 29,
       "message": "unprotected unsigned subtraction may overflow",
+      "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:712d799765395eb5",
+      "semantic_id": "b3:712d799765395eb5",
+      "identity_status": "computed",
+      "lint": "allocation_in_loop",
+      "group": "tigerstyle::performance",
+      "severity": "warning",
+      "file": "crates/mneme-store/src/catalog.rs",
+      "line": 144,
+      "column": 43,
+      "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
     },
     {
@@ -501,7 +475,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 144,
+      "line": 153,
       "column": 9,
       "message": "same-crate enum `payload::WorkingTree` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -514,7 +488,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1119,
+      "line": 1304,
       "column": 41,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -527,7 +501,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 874,
+      "line": 1043,
       "column": 21,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -540,7 +514,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/rebuild.rs",
-      "line": 332,
+      "line": 333,
       "column": 16,
       "message": "condition has 5 boolean operators",
       "crate_name": "mneme_store"
@@ -585,19 +559,6 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:8b5c8dae6989b103",
-      "semantic_id": "b3:8b5c8dae6989b103",
-      "identity_status": "computed",
-      "lint": "bool_naming",
-      "group": "tigerstyle::naming",
-      "severity": "warning",
-      "file": "crates/mneme-store/src/coordinator/custody.rs",
-      "line": 253,
-      "column": 13,
-      "message": "boolean binding `generation_advanced` should have a predicate prefix",
-      "crate_name": "mneme_store"
-    },
-    {
       "stable_id": "b3:8bab5f83f5408108",
       "semantic_id": "b3:8bab5f83f5408108",
       "identity_status": "computed",
@@ -605,22 +566,9 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/file.rs",
-      "line": 387,
+      "line": 460,
       "column": 23,
       "message": "unprotected unsigned subtraction may overflow",
-      "crate_name": "mneme_store"
-    },
-    {
-      "stable_id": "b3:8f5620d778b68f80",
-      "semantic_id": "b3:8f5620d778b68f80",
-      "identity_status": "computed",
-      "lint": "bool_naming",
-      "group": "tigerstyle::naming",
-      "severity": "warning",
-      "file": "crates/mneme-store/src/coordinator/custody.rs",
-      "line": 185,
-      "column": 17,
-      "message": "boolean binding `strengthened` should have a predicate prefix",
       "crate_name": "mneme_store"
     },
     {
@@ -631,7 +579,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 194,
+      "line": 220,
       "column": 13,
       "message": "foreign enum `std::result::Result` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_store"
@@ -676,16 +624,16 @@
       "crate_name": "mneme_store"
     },
     {
-      "stable_id": "b3:a1d53658be012d78",
-      "semantic_id": "b3:a1d53658be012d78",
+      "stable_id": "b3:9d500fa0511d2f06",
+      "semantic_id": "b3:9d500fa0511d2f06",
       "identity_status": "computed",
-      "lint": "bool_naming",
-      "group": "tigerstyle::naming",
+      "lint": "function_length",
+      "group": "tigerstyle::structure",
       "severity": "warning",
-      "file": "crates/mneme-store/src/coordinator/custody.rs",
-      "line": 259,
-      "column": 13,
-      "message": "boolean binding `changed` should have a predicate prefix",
+      "file": "crates/mneme-store/src/portability/file.rs",
+      "line": 378,
+      "column": 36,
+      "message": "function `read_offsets` is 71 lines (limit: 70)",
       "crate_name": "mneme_store"
     },
     {
@@ -696,7 +644,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 1737,
+      "line": 2133,
       "column": 5,
       "message": "same-crate enum `payload::WorkingEntry` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -709,7 +657,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 2520,
+      "line": 2916,
       "column": 9,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -722,7 +670,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1094,
+      "line": 1279,
       "column": 50,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -735,7 +683,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/file.rs",
-      "line": 297,
+      "line": 334,
       "column": 12,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -754,6 +702,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:ad698bbc8cbe65fa",
+      "semantic_id": "b3:ad698bbc8cbe65fa",
+      "identity_status": "computed",
+      "lint": "allocation_in_loop",
+      "group": "tigerstyle::performance",
+      "severity": "warning",
+      "file": "crates/mneme-store/src/portability/mod.rs",
+      "line": 166,
+      "column": 20,
+      "message": "String allocation constructor runs inside a loop",
+      "crate_name": "mneme_store"
+    },
+    {
       "stable_id": "b3:ada0b176d6417eef",
       "semantic_id": "b3:ada0b176d6417eef",
       "identity_status": "computed",
@@ -761,7 +722,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 2874,
+      "line": 2901,
       "column": 20,
       "message": "same-crate enum `coordinator::PayloadCheck` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -787,7 +748,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/validation.rs",
-      "line": 354,
+      "line": 360,
       "column": 9,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_store"
@@ -800,9 +761,22 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/custody.rs",
-      "line": 323,
+      "line": 245,
       "column": 5,
       "message": "same-crate enum `lifecycle::SuppressionMode` is matched exhaustively without a fallback; adding a variant will force this site to change",
+      "crate_name": "mneme_store"
+    },
+    {
+      "stable_id": "b3:b30e6b46b83c1405",
+      "semantic_id": "b3:b30e6b46b83c1405",
+      "identity_status": "computed",
+      "lint": "too_many_parameters",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-store/src/portability/ingest.rs",
+      "line": 533,
+      "column": 1,
+      "message": "function has 6 parameters (limit: 5) — consider an options struct",
       "crate_name": "mneme_store"
     },
     {
@@ -813,7 +787,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/mod.rs",
-      "line": 488,
+      "line": 603,
       "column": 21,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -826,7 +800,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 53,
+      "line": 79,
       "column": 17,
       "message": "foreign enum `mneme_kernel::admission::CommitDecision` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_store"
@@ -839,8 +813,8 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/custody.rs",
-      "line": 230,
-      "column": 31,
+      "line": 691,
+      "column": 27,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
     },
@@ -852,7 +826,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 2519,
+      "line": 2915,
       "column": 9,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -878,7 +852,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/custody.rs",
-      "line": 546,
+      "line": 468,
       "column": 26,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -904,7 +878,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 994,
+      "line": 1171,
       "column": 39,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -943,7 +917,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1097,
+      "line": 1282,
       "column": 41,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -956,7 +930,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/catalog.rs",
-      "line": 117,
+      "line": 123,
       "column": 26,
       "message": "implicit default on external type — construct with explicit values",
       "crate_name": "mneme_store"
@@ -988,6 +962,19 @@
       "crate_name": "mneme_store"
     },
     {
+      "stable_id": "b3:dad7b15fae686896",
+      "semantic_id": "b3:dad7b15fae686896",
+      "identity_status": "computed",
+      "lint": "bool_naming",
+      "group": "tigerstyle::naming",
+      "severity": "warning",
+      "file": "crates/mneme-store/src/portability/ingest.rs",
+      "line": 322,
+      "column": 17,
+      "message": "boolean binding `are_parents_ready` should have a predicate prefix",
+      "crate_name": "mneme_store"
+    },
+    {
       "stable_id": "b3:dbfd39f2f9b8f988",
       "semantic_id": "b3:dbfd39f2f9b8f988",
       "identity_status": "computed",
@@ -995,7 +982,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/file.rs",
-      "line": 330,
+      "line": 367,
       "column": 19,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -1008,7 +995,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 2496,
+      "line": 2892,
       "column": 9,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -1021,7 +1008,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 2842,
+      "line": 3238,
       "column": 29,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -1034,7 +1021,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/ingest.rs",
-      "line": 206,
+      "line": 207,
       "column": 9,
       "message": "boolean binding `retention_changed` should have a predicate prefix",
       "crate_name": "mneme_store"
@@ -1073,7 +1060,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/rebuild.rs",
-      "line": 125,
+      "line": 126,
       "column": 20,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -1086,7 +1073,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 164,
+      "line": 173,
       "column": 9,
       "message": "same-crate enum `payload::WorkingTree` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -1112,7 +1099,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/portability/file.rs",
-      "line": 399,
+      "line": 472,
       "column": 9,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_store"
@@ -1125,7 +1112,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/catalog.rs",
-      "line": 99,
+      "line": 105,
       "column": 39,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -1151,7 +1138,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-store/src/payload.rs",
-      "line": 2102,
+      "line": 2498,
       "column": 5,
       "message": "`#[allow(...)]` without justification comment",
       "crate_name": "mneme_store"

@@ -10,7 +10,7 @@
     "profile_hash": "b3:a6bcf2f3a7565ef4016fdfeb8d758f5806d6678a3206b8357f46404eafe3df41",
     "config_hash": "b3:fb92952d4b5deb1436fb2332f5ffd83e1bc34aa0e1376dbe17a874fa755d9102"
   },
-  "baseline_hash": "b3:e836ddda2c3e72b3ceea0024292cfda0a1a91eb07eb31ca7c5cd144559771f60",
+  "baseline_hash": "b3:b63f56ba97d5d84f71f1024d1da4a0244e104a863d1f53f2e37654505c18e2e8",
   "findings": [
     {
       "stable_id": "b3:039e2a51f9321a27",
@@ -306,7 +306,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-kernel/src/lib.rs",
-      "line": 57,
+      "line": 58,
       "column": 1,
       "message": "module exposes 26 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_kernel"
@@ -465,19 +465,6 @@
       "line": 314,
       "column": 33,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
-      "crate_name": "mneme_kernel"
-    },
-    {
-      "stable_id": "b3:7ef1523ffc3673b9",
-      "semantic_id": "b3:7ef1523ffc3673b9",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-kernel/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 22 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_kernel"
     },
     {
@@ -817,6 +804,19 @@
       "column": 79,
       "message": "non-trait import `authority_attenuates` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
+    },
+    {
+      "stable_id": "b3:e49a813d68801dac",
+      "semantic_id": "b3:e49a813d68801dac",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-kernel/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 23 public items (limit: 12) — split unrelated public surface into focused modules",
+      "crate_name": "mneme_kernel"
     },
     {
       "stable_id": "b3:f6c9a8a3e9fe7ae0",

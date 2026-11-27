@@ -10,7 +10,7 @@
     "profile_hash": "b3:61f5a79c3dd62740eae613c173c1fdf6c8ffe8ebbfb1c6dfbd83c366e86633d9",
     "config_hash": "b3:e41e7a6e5a5917e06953bbf1c007046a26221a4feab892de6e7163053e1c6b4a"
   },
-  "baseline_hash": "b3:f807d91f04b647436618dc1854f4300ef612e4314d0808575163f1f401c3a0fb",
+  "baseline_hash": "b3:ed4450ed92112658809c4ec061fa23690c4efc91a793b3bce5669a509cebda3d",
   "findings": [
     {
       "stable_id": "b3:03100d06eb3e3fcc",
@@ -33,7 +33,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 928,
+      "line": 946,
       "column": 5,
       "message": "same-crate enum `OperationKind` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_retention"
@@ -59,7 +59,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 1141,
+      "line": 1159,
       "column": 5,
       "message": "same-crate enum `OperationKind` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_retention"
@@ -72,7 +72,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 910,
+      "line": 928,
       "column": 68,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_retention"
@@ -85,7 +85,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 912,
+      "line": 930,
       "column": 60,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_retention"
@@ -124,22 +124,9 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 905,
+      "line": 923,
       "column": 60,
       "message": "unprotected unsigned addition may overflow",
-      "crate_name": "mneme_retention"
-    },
-    {
-      "stable_id": "b3:88c7985759ccfad7",
-      "semantic_id": "b3:88c7985759ccfad7",
-      "identity_status": "computed",
-      "lint": "type_accumulation",
-      "group": "tigerstyle::structure",
-      "severity": "warning",
-      "file": "crates/mneme-retention/src/lib.rs",
-      "line": 1,
-      "column": 1,
-      "message": "module exposes 15 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_retention"
     },
     {
@@ -150,7 +137,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 2132,
+      "line": 2150,
       "column": 5,
       "message": "same-crate enum `Selector` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_retention"
@@ -163,7 +150,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 2256,
+      "line": 2274,
       "column": 9,
       "message": "foreign enum `mneme_core::RecordKind` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_retention"
@@ -176,7 +163,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 904,
+      "line": 922,
       "column": 61,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_retention"
@@ -215,9 +202,22 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 1904,
+      "line": 1922,
       "column": 64,
       "message": "String allocation constructor runs inside a loop",
+      "crate_name": "mneme_retention"
+    },
+    {
+      "stable_id": "b3:c8377927308209dd",
+      "semantic_id": "b3:c8377927308209dd",
+      "identity_status": "computed",
+      "lint": "type_accumulation",
+      "group": "tigerstyle::structure",
+      "severity": "warning",
+      "file": "crates/mneme-retention/src/lib.rs",
+      "line": 1,
+      "column": 1,
+      "message": "module exposes 15 public items (limit: 12) — split unrelated public surface into focused modules",
       "crate_name": "mneme_retention"
     },
     {
@@ -267,7 +267,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 908,
+      "line": 926,
       "column": 17,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_retention"
@@ -280,7 +280,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-retention/src/lib.rs",
-      "line": 911,
+      "line": 929,
       "column": 65,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_retention"

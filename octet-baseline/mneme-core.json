@@ -410,7 +410,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/pointer.rs",
-      "line": 218,
+      "line": 276,
       "column": 9,
       "message": "same-crate enum `pointer::Reference` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
@@ -683,7 +683,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/pointer.rs",
-      "line": 198,
+      "line": 256,
       "column": 9,
       "message": "same-crate enum `pointer::Reference` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
@@ -1190,7 +1190,7 @@
       "group": "tigerstyle::purity",
       "severity": "warning",
       "file": "crates/mneme-core/src/wire.rs",
-      "line": 51,
+      "line": 76,
       "column": 19,
       "message": "pure context accepts mutating input capability `&mut `; return an explicit state transition instead",
       "crate_name": "mneme_core"
@@ -1996,7 +1996,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/pointer.rs",
-      "line": 188,
+      "line": 246,
       "column": 9,
       "message": "same-crate enum `pointer::Reference` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
@@ -2035,7 +2035,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/pointer.rs",
-      "line": 322,
+      "line": 380,
       "column": 9,
       "message": "same-crate enum `pointer::Reference` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
@@ -2074,7 +2074,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-core/src/wire.rs",
-      "line": 641,
+      "line": 770,
       "column": 9,
       "message": "same-crate enum `fields::ExtensionPolicy` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_core"
