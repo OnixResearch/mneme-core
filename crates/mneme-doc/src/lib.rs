@@ -11,10 +11,12 @@
 
 pub mod asciidoc;
 pub mod datalog;
+pub mod fenced;
 pub mod images;
 pub mod markdown;
 
 pub use asciidoc::{AnchorSpec, Diagnostic, Header, IncludeDirective};
+pub use fenced::{DslSection, extract_dsl_sections, is_dsl_attribute};
 
 /// The document schema version emitted by this build.
 pub const DOCUMENT_SCHEMA_VERSION: u32 = 3;

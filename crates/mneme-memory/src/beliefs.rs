@@ -5,8 +5,11 @@
 //! canonical state or promotes a proposed assertion.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
+pub mod antichain;
 pub mod aspic;
+pub mod calculus;
 pub mod captures;
+pub mod traits;
 
 /// The policy predicate used for action-completion claims.
 pub const ACTION_COMPLETED_PREDICATE: &str = "action-completed";
@@ -78,6 +81,8 @@ pub struct BitemporalChange {
     pub kind: BitemporalChangeKind,
     pub before: Option<crate::model::AssertionView>,
     pub after: Option<crate::model::AssertionView>,
+    pub before_status: traits::SlotStatus,
+    pub after_status: traits::SlotStatus,
     /// Half-open valid-time period affected inside the requested window.
     pub affected_period: mneme_kernel::temporal::Period,
 }
@@ -87,8 +92,20 @@ pub struct BitemporalChange {
 pub struct BitemporalDiff {
     pub rev_a: mneme_core::WorkspaceRevisionId,
     pub rev_b: mneme_core::WorkspaceRevisionId,
+    pub layer: traits::QueryLayer,
     pub valid_window: mneme_kernel::temporal::Period,
     pub changes: Vec<BitemporalChange>,
+    pub slots: Vec<traits::SlotDiffEntry>,
+}
+
+/// Request parameters for comparing explicit `(subject, predicate)` slots across
+/// two committed snapshots at an instant `at` and layer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlotDiffRequest {
+    pub scope: mneme_core::ScopeId,
+    pub at: mneme_core::Timestamp,
+    pub layer: traits::QueryLayer,
+    pub slots: Vec<(mneme_core::RecordId, String)>,
 }
 
 impl BitemporalDiff {
@@ -201,6 +218,9 @@ pub struct Explanation {
     pub decisions: Vec<crate::model::DecisionView>,
     pub evidence: Vec<EvidenceExplanation>,
     pub derivations: Vec<DerivationAlternative>,
+    /// Minimal-support antichain (`PosBool(X)` DNF absorption) over leaf root
+    /// supports of this assertion and its eligible derivations.
+    pub minimal_supports: Vec<std::collections::BTreeSet<mneme_core::RecordId>>,
     pub corroboration: Corroboration,
     pub argumentation: aspic::ArgumentationVerdict,
     pub opinion: aspic::Opinion,
@@ -1036,6 +1056,117 @@ impl View {
         Ok(beliefs)
     }
 
+    /// Current beliefs evaluated in an explicit `certain` or `shadow` layer.
+    ///
+    /// - `Certain`: strictly `Accepted` (and optionally `Disputed`) beliefs.
+    /// - `Shadow`: `Certain` beliefs plus valid, unsuppressed `Proposed`
+    ///   assertions tagged as `QueryLayer::Shadow` (never promoted to `Certain`).
+    pub fn current_beliefs_in_layer(
+        &self,
+        view: &BeliefView,
+        layer: traits::QueryLayer,
+    ) -> crate::failure::Result<Vec<(crate::model::AssertionView, traits::QueryLayer)>> {
+        let certain = self.current_beliefs(view)?;
+        let mut results: Vec<(crate::model::AssertionView, traits::QueryLayer)> = certain
+            .into_iter()
+            .map(|assertion| (assertion, traits::QueryLayer::Certain))
+            .collect();
+        if matches!(layer, traits::QueryLayer::Certain) {
+            return Ok(results);
+        }
+        let mut seen: std::collections::BTreeSet<mneme_core::RecordId> = results
+            .iter()
+            .map(|(assertion, _)| assertion.record.record_id)
+            .collect();
+        for assertion in self.assertions()? {
+            if !self.in_scope(&assertion, view) {
+                continue;
+            }
+            if !Self::valid_time_applies(assertion.valid_time, view.at) {
+                continue;
+            }
+            if !matches!(assertion.lifecycle, mneme_core::Lifecycle::Proposed) {
+                continue;
+            }
+            if is_suppressed_record(self, &assertion.record) {
+                continue;
+            }
+            if seen.insert(assertion.record.record_id) {
+                results.push((assertion, traits::QueryLayer::Shadow));
+            }
+        }
+        results.sort_by_key(|(assertion, _)| (assertion.subject, assertion.predicate.clone()));
+        Ok(results)
+    }
+
+    /// Active predicate traits declared in `scope` under `layer`.
+    pub fn predicate_traits(
+        &self,
+        scope: &mneme_core::ScopeId,
+        layer: traits::QueryLayer,
+    ) -> crate::failure::Result<
+        std::collections::BTreeMap<String, std::collections::BTreeSet<traits::PredicateTrait>>,
+    > {
+        traits::declared_in_view(self, scope, layer)
+    }
+
+    /// Functional-predicate overlap violations in `scope` under `layer`,
+    /// with grounded ASPIC+ verdicts wired via `mneme_kernel::argumentation`.
+    pub fn functional_violations(
+        &self,
+        scope: &mneme_core::ScopeId,
+        layer: traits::QueryLayer,
+    ) -> crate::failure::Result<Vec<traits::FunctionalViolation>> {
+        traits::functional_violations_in_view(self, scope, layer)
+    }
+
+    /// Projected half-open `[start, end)` intervals for `Inertial` fluents in
+    /// `scope` under `layer`, enforcing strict `#71` non-promotion.
+    pub fn inertial_fluents(
+        &self,
+        scope: &mneme_core::ScopeId,
+        layer: traits::QueryLayer,
+    ) -> crate::failure::Result<Vec<calculus::InertialFluent>> {
+        calculus::inertial_in_view(self, scope, layer)
+    }
+
+    /// Classify one `(subject, predicate)` slot at instant `query.at` under
+    /// `query.layer` as `Active`, `Dead { reason, since_rev }`, or `Absent`.
+    pub fn slot_status(
+        &self,
+        query: &traits::SlotQuery,
+    ) -> crate::failure::Result<traits::SlotStatus> {
+        traits::slot_status_in_view(self, query)
+    }
+
+    /// Compare explicit `(subject, predicate)` slots across two committed views
+    /// at `request.at` and `request.layer`.
+    pub fn slot_diff(
+        rev_a: &View,
+        rev_b: &View,
+        request: &SlotDiffRequest,
+    ) -> crate::failure::Result<Vec<traits::SlotDiffEntry>> {
+        let mut entries = Vec::with_capacity(request.slots.len());
+        for (subject, predicate) in &request.slots {
+            let query = traits::SlotQuery {
+                scope: request.scope.clone(),
+                subject: *subject,
+                predicate: predicate.clone(),
+                at: request.at,
+                layer: request.layer,
+            };
+            let before = rev_a.slot_status(&query)?;
+            let after = rev_b.slot_status(&query)?;
+            entries.push(traits::SlotDiffEntry {
+                subject: *subject,
+                predicate: predicate.clone(),
+                before,
+                after,
+            });
+        }
+        Ok(entries)
+    }
+
     fn conflict_candidates(
         &self,
         view: &BeliefView,
@@ -1153,63 +1284,50 @@ impl View {
 
     /// Compare two committed snapshots over a half-open `valid_window`,
     /// classifying each assertion change as [`BitemporalChangeKind::WorldEvolution`]
-    /// or [`BitemporalChangeKind::RetroactiveCorrection`].
+    /// or [`BitemporalChangeKind::RetroactiveCorrection`] along with 3-way
+    /// `Active` / `Dead` / `Absent` slot statuses.
     pub fn bitemporal_diff(
         rev_a: &View,
         rev_b: &View,
         valid_window: mneme_kernel::temporal::Period,
     ) -> crate::failure::Result<BitemporalDiff> {
+        Self::bitemporal_diff_in_layer(rev_a, rev_b, valid_window, traits::QueryLayer::Shadow)
+    }
+
+    /// Layer-aware bitemporal diff (`Certain` or `Shadow`) between two
+    /// committed snapshots over a half-open `valid_window`, including 3-way
+    /// `Active` / `Dead { reason, since_rev }` / `Absent` classification.
+    pub fn bitemporal_diff_in_layer(
+        rev_a: &View,
+        rev_b: &View,
+        valid_window: mneme_kernel::temporal::Period,
+        layer: traits::QueryLayer,
+    ) -> crate::failure::Result<BitemporalDiff> {
         if !mneme_kernel::temporal::is_valid(valid_window) {
             return Ok(BitemporalDiff {
                 rev_a: rev_a.revision(),
                 rev_b: rev_b.revision(),
+                layer,
                 valid_window,
                 changes: Vec::new(),
+                slots: Vec::new(),
             });
         }
-        let before_map = active_window_assertions(rev_a, valid_window)?;
-        let after_map = active_window_assertions(rev_b, valid_window)?;
+        let before_map = active_window_assertions_in_layer(rev_a, valid_window, layer)?;
+        let after_map = active_window_assertions_in_layer(rev_b, valid_window, layer)?;
         let baseline_periods = build_prior_subject_periods(&before_map, &after_map, valid_window);
-        let before_changes =
-            before_map
-                .iter()
-                .filter_map(
-                    |(id, (before_assertion, before_period))| match after_map.get(id) {
-                        Some((after_assertion, after_period)) => diff_existing_assertion(
-                            *id,
-                            before_assertion,
-                            *before_period,
-                            after_assertion,
-                            *after_period,
-                        ),
-                        None => Some(BitemporalChange {
-                            assertion_id: *id,
-                            subject: before_assertion.subject,
-                            predicate: before_assertion.predicate.clone(),
-                            kind: BitemporalChangeKind::RetroactiveCorrection,
-                            before: Some(before_assertion.clone()),
-                            after: None,
-                            affected_period: *before_period,
-                        }),
-                    },
-                );
-        let added_changes = after_map
-            .iter()
-            .filter(|(id, _)| !before_map.contains_key(*id))
-            .map(|(id, (after_assertion, after_period))| {
-                let kind =
-                    classify_added_assertion(after_assertion, *after_period, &baseline_periods);
-                BitemporalChange {
-                    assertion_id: *id,
-                    subject: after_assertion.subject,
-                    predicate: after_assertion.predicate.clone(),
-                    kind,
-                    before: None,
-                    after: Some(after_assertion.clone()),
-                    affected_period: *after_period,
-                }
-            });
-        let mut changes: Vec<BitemporalChange> = before_changes.chain(added_changes).collect();
+        let diff_views = DiffViews {
+            rev_a,
+            rev_b,
+            layer,
+        };
+        let mut changes = collect_before_changes(&diff_views, &before_map, &after_map);
+        changes.extend(collect_added_changes(
+            &diff_views,
+            &before_map,
+            &after_map,
+            &baseline_periods,
+        ));
         changes.sort_by_key(|change| {
             (
                 change.affected_period.start,
@@ -1217,11 +1335,14 @@ impl View {
                 change.assertion_id,
             )
         });
+        let slots = summarize_slot_diff_entries(&changes);
         Ok(BitemporalDiff {
             rev_a: rev_a.revision(),
             rev_b: rev_b.revision(),
+            layer,
             valid_window,
             changes,
+            slots,
         })
     }
 
@@ -1721,6 +1842,12 @@ impl View {
         if ancestry.exhausted {
             is_truncated = true;
         }
+        let (minimal_supports, is_antichain_truncated) = antichain::compute_minimal_supports(
+            self,
+            &assertion,
+            limit,
+            antichain::MAX_ANTICHAIN_SETS,
+        );
         // Corroboration comes from the full support set, as the corroboration
         // query does, so a truncated evidence list never fabricates it.
         let (corroboration, corroboration_complete, over_budget) =
@@ -1734,6 +1861,7 @@ impl View {
             decisions,
             evidence,
             derivations,
+            minimal_supports,
             corroboration,
             argumentation,
             opinion,
@@ -1742,7 +1870,8 @@ impl View {
                 || ancestry.exhausted
                 || !corroboration_complete
                 || over_budget
-                || is_arg_truncated,
+                || is_arg_truncated
+                || is_antichain_truncated,
             visited_nodes: ancestry.used,
             inaccessible_decisions,
         })
@@ -2511,15 +2640,26 @@ fn is_suppressed_record(view: &View, record: &mneme_core::RecordEnvelope) -> boo
     })
 }
 
-fn active_window_assertions(
+struct DiffViews<'a> {
+    rev_a: &'a View,
+    rev_b: &'a View,
+    layer: traits::QueryLayer,
+}
+
+fn active_window_assertions_in_layer(
     view: &View,
     valid_window: mneme_kernel::temporal::Period,
+    layer: traits::QueryLayer,
 ) -> crate::failure::Result<WindowAssertions> {
+    let is_shadow = matches!(layer, traits::QueryLayer::Shadow);
     let map = view
         .assertions()?
         .into_iter()
         .filter(|assertion| {
-            view.access.allows(&assertion.record.scope)
+            let is_layer_visible =
+                is_shadow || !matches!(assertion.lifecycle, mneme_core::Lifecycle::Proposed);
+            is_layer_visible
+                && view.access.allows(&assertion.record.scope)
                 && !is_suppressed_record(view, &assertion.record)
         })
         .filter_map(|assertion| {
@@ -2533,6 +2673,122 @@ fn active_window_assertions(
         })
         .collect();
     Ok(map)
+}
+
+fn collect_before_changes(
+    views: &DiffViews<'_>,
+    before_map: &WindowAssertions,
+    after_map: &WindowAssertions,
+) -> Vec<BitemporalChange> {
+    before_map
+        .iter()
+        .filter_map(|(id, (before_assertion, before_period))| {
+            let before_status =
+                traits::classify_assertion_status(views.rev_a, before_assertion, views.layer);
+            match after_map.get(id) {
+                Some((after_assertion, after_period)) => {
+                    let after_status = traits::classify_assertion_status(
+                        views.rev_b,
+                        after_assertion,
+                        views.layer,
+                    );
+                    diff_existing_assertion(
+                        *id,
+                        DiffExistingInputs {
+                            before: before_assertion,
+                            before_period: *before_period,
+                            before_status,
+                            after: after_assertion,
+                            after_period: *after_period,
+                            after_status,
+                        },
+                    )
+                }
+                None => {
+                    let after_status = views
+                        .rev_b
+                        .assertion(*id)
+                        .map(|after_a| {
+                            traits::classify_assertion_status(views.rev_b, &after_a, views.layer)
+                        })
+                        .unwrap_or(traits::SlotStatus::Absent);
+                    Some(BitemporalChange {
+                        assertion_id: *id,
+                        subject: before_assertion.subject,
+                        predicate: before_assertion.predicate.clone(),
+                        kind: BitemporalChangeKind::RetroactiveCorrection,
+                        before: Some(before_assertion.clone()),
+                        after: None,
+                        before_status,
+                        after_status,
+                        affected_period: *before_period,
+                    })
+                }
+            }
+        })
+        .collect()
+}
+
+fn collect_added_changes(
+    views: &DiffViews<'_>,
+    before_map: &WindowAssertions,
+    after_map: &WindowAssertions,
+    baseline_periods: &PriorSubjectPeriods,
+) -> Vec<BitemporalChange> {
+    after_map
+        .iter()
+        .filter(|(id, _)| !before_map.contains_key(*id))
+        .map(|(id, (after_assertion, after_period))| {
+            let kind = classify_added_assertion(after_assertion, *after_period, baseline_periods);
+            let before_status = views
+                .rev_a
+                .assertion(*id)
+                .map(|before_a| {
+                    traits::classify_assertion_status(views.rev_a, &before_a, views.layer)
+                })
+                .unwrap_or(traits::SlotStatus::Absent);
+            let after_status =
+                traits::classify_assertion_status(views.rev_b, after_assertion, views.layer);
+            BitemporalChange {
+                assertion_id: *id,
+                subject: after_assertion.subject,
+                predicate: after_assertion.predicate.clone(),
+                kind,
+                before: None,
+                after: Some(after_assertion.clone()),
+                before_status,
+                after_status,
+                affected_period: *after_period,
+            }
+        })
+        .collect()
+}
+
+fn summarize_slot_diff_entries(changes: &[BitemporalChange]) -> Vec<traits::SlotDiffEntry> {
+    let mut entries: std::collections::BTreeMap<
+        (mneme_core::RecordId, String),
+        traits::SlotDiffEntry,
+    > = std::collections::BTreeMap::new();
+    for change in changes {
+        let key = (change.subject, change.predicate.clone());
+        entries
+            .entry(key)
+            .and_modify(|existing| {
+                if matches!(existing.before, traits::SlotStatus::Absent) {
+                    existing.before = change.before_status.clone();
+                }
+                if !matches!(change.after_status, traits::SlotStatus::Absent) {
+                    existing.after = change.after_status.clone();
+                }
+            })
+            .or_insert_with(|| traits::SlotDiffEntry {
+                subject: change.subject,
+                predicate: change.predicate.clone(),
+                before: change.before_status.clone(),
+                after: change.after_status.clone(),
+            });
+    }
+    entries.into_values().collect()
 }
 
 fn is_same_assertion_core(
@@ -2589,30 +2845,43 @@ fn build_prior_subject_periods(
     prior
 }
 
+struct DiffExistingInputs<'a> {
+    before: &'a crate::model::AssertionView,
+    before_period: mneme_kernel::temporal::Period,
+    before_status: traits::SlotStatus,
+    after: &'a crate::model::AssertionView,
+    after_period: mneme_kernel::temporal::Period,
+    after_status: traits::SlotStatus,
+}
+
 fn diff_existing_assertion(
     assertion_id: mneme_core::RecordId,
-    before: &crate::model::AssertionView,
-    before_period: mneme_kernel::temporal::Period,
-    after: &crate::model::AssertionView,
-    after_period: mneme_kernel::temporal::Period,
+    inputs: DiffExistingInputs<'_>,
 ) -> Option<BitemporalChange> {
-    if is_same_assertion_core(before, after) && before.valid_time == after.valid_time {
+    let is_same_status_kind = inputs.before_status.kind_name() == inputs.after_status.kind_name();
+    let is_unchanged_claim = is_same_assertion_core(inputs.before, inputs.after)
+        && inputs.before.valid_time == inputs.after.valid_time
+        && is_same_status_kind;
+    if is_unchanged_claim {
         return None;
     }
-    let kind = if is_clean_open_ended_expiry(before, after) {
+    let kind = if is_clean_open_ended_expiry(inputs.before, inputs.after) && is_same_status_kind {
         BitemporalChangeKind::WorldEvolution
     } else {
         BitemporalChangeKind::RetroactiveCorrection
     };
     let affected_period =
-        mneme_kernel::temporal::coalesce_pair(before_period, after_period).unwrap_or(after_period);
+        mneme_kernel::temporal::coalesce_pair(inputs.before_period, inputs.after_period)
+            .unwrap_or(inputs.after_period);
     Some(BitemporalChange {
         assertion_id,
-        subject: after.subject,
-        predicate: after.predicate.clone(),
+        subject: inputs.after.subject,
+        predicate: inputs.after.predicate.clone(),
         kind,
-        before: Some(before.clone()),
-        after: Some(after.clone()),
+        before: Some(inputs.before.clone()),
+        after: Some(inputs.after.clone()),
+        before_status: inputs.before_status,
+        after_status: inputs.after_status,
         affected_period,
     })
 }

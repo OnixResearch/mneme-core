@@ -21,13 +21,22 @@ pub mod model;
 pub mod service;
 
 pub use authorization::Access;
+pub use beliefs::antichain::{MAX_ANTICHAIN_SETS, absorb_support_sets};
 pub use beliefs::aspic::{
-    ArgumentationStatus, ArgumentationVerdict, DefeatKind, DefeatReason, Opinion,
+    ArgumentationStatus, ArgumentationVerdict, DefeatKind, DefeatReason, EXPLICIT_DEFEAT_KEY,
+    Opinion,
+};
+pub use beliefs::calculus::{
+    FluentEvent, FluentTransitionKind, InertialFluent, clip_inertial_fluents,
+};
+pub use beliefs::traits::{
+    DeadReason, FunctionalViolation, PREDICATE_TRAIT_PREDICATE, PredicateTrait, QueryLayer,
+    SlotDiffEntry, SlotQuery, SlotStatus, parse_predicate_trait_value, predicate_trait_value,
 };
 pub use beliefs::{
     BeliefView, BitemporalChange, BitemporalChangeKind, BitemporalDiff, ConflictGroup,
     Corroboration, DerivationAlternative, EXPLICIT_AUTHORED_PREDICATE, EvidenceExplanation,
-    Explanation, Policy, SourceExcerpt, SourceStatus, ValidatedEvidence, View,
+    Explanation, Policy, SlotDiffRequest, SourceExcerpt, SourceStatus, ValidatedEvidence, View,
     valid_time_to_kernel,
 };
 pub use failure::{EvidenceError, Result};
@@ -45,12 +54,13 @@ pub use model::{
 };
 pub use service::{
     Batch, CheckpointOptions, CommentOptions, DecisionOptions, DerivationOptions, Engine,
-    EpisodeOptions, EvidenceOptions, ProposedAssertionOptions, RecognitionRunOptions,
-    RecognitionSegmentOptions, SourceOptions, SourceProvenance, UnavailableSourceOptions,
-    UnavailableSourceWithDigestOptions, ViewContext, build_assertion_revision,
-    build_captured_source, build_checkpoint, build_comment, build_corrected_source, build_decision,
-    build_derivation, build_derived_source, build_episode, build_evidence,
-    build_proposed_assertion, build_recognition_run, build_recognition_segment,
-    build_recognized_source, build_source, build_source_with_provenance, build_unavailable_source,
-    build_unavailable_source_preserving, build_unavailable_source_with_digest, view_context,
+    EpisodeOptions, EvidenceOptions, PredicateTraitOptions, ProposedAssertionOptions,
+    RecognitionRunOptions, RecognitionSegmentOptions, SourceOptions, SourceProvenance,
+    UnavailableSourceOptions, UnavailableSourceWithDigestOptions, ViewContext,
+    build_assertion_revision, build_captured_source, build_checkpoint, build_comment,
+    build_corrected_source, build_decision, build_derivation, build_derived_source, build_episode,
+    build_evidence, build_explicit_defeat, build_predicate_trait, build_proposed_assertion,
+    build_recognition_run, build_recognition_segment, build_recognized_source, build_source,
+    build_source_with_provenance, build_unavailable_source, build_unavailable_source_preserving,
+    build_unavailable_source_with_digest, view_context,
 };

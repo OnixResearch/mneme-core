@@ -415,6 +415,59 @@ pub(crate) fn assertions_incompatible(
     }
 }
 
+/// Whether two assertions conflict under either general incompatibility or an
+/// explicit `Functional` predicate trait declaration.
+fn assertions_incompatible_with_functional(
+    left: &crate::model::AssertionView,
+    right: &crate::model::AssertionView,
+    functional_predicates: &std::collections::BTreeSet<String>,
+) -> bool {
+    if assertions_incompatible(left, right) {
+        return true;
+    }
+    let is_same_slot = left.subject == right.subject && left.predicate == right.predicate;
+    is_same_slot && functional_predicates.contains(&left.predicate) && left.value != right.value
+}
+
+fn functional_predicate_set(view: &crate::beliefs::View) -> std::collections::BTreeSet<String> {
+    let mut predicates = std::collections::BTreeSet::new();
+    for envelope in view.all_envelopes() {
+        if envelope.kind != mneme_core::RecordKind::Assertion {
+            continue;
+        }
+        let Ok(assertion) = crate::model::AssertionView::parse(envelope.clone()) else {
+            continue;
+        };
+        if assertion.predicate != crate::beliefs::traits::PREDICATE_TRAIT_PREDICATE {
+            continue;
+        }
+        if !matches!(assertion.stance, crate::model::Stance::Affirm) {
+            continue;
+        }
+        if !crate::beliefs::traits::is_assertion_in_layer(
+            view,
+            &assertion,
+            crate::beliefs::traits::QueryLayer::Shadow,
+        ) {
+            continue;
+        }
+        if let Some((pred, kind)) =
+            crate::beliefs::traits::parse_predicate_trait_value(&assertion.value)
+            && matches!(kind, crate::beliefs::traits::PredicateTrait::Functional)
+        {
+            predicates.insert(pred);
+        }
+    }
+    predicates
+}
+
+pub(crate) fn assertion_authority_of(
+    view: &crate::beliefs::View,
+    assertion: &crate::model::AssertionView,
+) -> mneme_kernel::argumentation::Authority {
+    assertion_authority(view, assertion)
+}
+
 fn valid_times_overlap(left: mneme_core::ValidTime, right: mneme_core::ValidTime) -> bool {
     let left_v = crate::beliefs::valid_time_to_kernel(left);
     let right_v = crate::beliefs::valid_time_to_kernel(right);
@@ -773,6 +826,23 @@ fn is_assertion_undermined(
     has_supporting_citation && !has_eligible_support && !has_derivations
 }
 
+/// Canonical extension payload key marking an explicit ASPIC+ preference-independent
+/// undercut (`defeat <target> because <reason>`).
+pub const EXPLICIT_DEFEAT_KEY: &str = "explicit-defeat";
+
+fn is_explicit_defeat_evidence(evidence: &crate::model::EvidenceView) -> bool {
+    evidence
+        .record
+        .payload
+        .get(EXPLICIT_DEFEAT_KEY)
+        .is_some_and(|val| {
+            val.as_boolean() == Some(true)
+                || val
+                    .as_symbol()
+                    .is_some_and(|sym| sym.as_str() == "asymmetric" || sym.as_str() == "true")
+        })
+}
+
 fn is_challenge_undermined(
     view: &crate::beliefs::View,
     challenge: &crate::model::EvidenceView,
@@ -781,6 +851,29 @@ fn is_challenge_undermined(
         || view.is_withdrawn(challenge.record.record_id)
     {
         return true;
+    }
+    if is_explicit_defeat_evidence(challenge) {
+        let has_broken_reason = challenge.ancestry.iter().any(|ancestor_id| {
+            if view.is_withdrawn(*ancestor_id) {
+                return true;
+            }
+            let Ok(envelope) = view.record(*ancestor_id) else {
+                return true;
+            };
+            if view.suppression_for(envelope).is_some() {
+                return true;
+            }
+            if envelope.kind == mneme_core::RecordKind::Assertion
+                && let Ok(assertion) = crate::model::AssertionView::parse(envelope.clone())
+            {
+                return matches!(
+                    assertion.lifecycle,
+                    mneme_core::Lifecycle::Retracted | mneme_core::Lifecycle::Superseded
+                );
+            }
+            false
+        });
+        return has_broken_reason;
     }
     let mut ancestry =
         crate::beliefs::Ancestry::new(view, crate::beliefs::MAX_ANCESTRY_NODES, false);
@@ -799,35 +892,96 @@ fn is_rebuttal_eligible(assertion: &crate::model::AssertionView) -> bool {
     }
 }
 
+struct ClosureInputs<'a> {
+    view: &'a crate::beliefs::View,
+    seeds: &'a [crate::model::AssertionView],
+    all_assertions: &'a [crate::model::AssertionView],
+    derivations: &'a DerivationMap,
+    challenges: &'a ChallengeMap,
+    functional_predicates: &'a std::collections::BTreeSet<String>,
+    eval_at: Option<mneme_core::Timestamp>,
+}
+
 fn is_rebuttal_neighbor(
-    view: &crate::beliefs::View,
+    inputs: &ClosureInputs<'_>,
     current: &crate::model::AssertionView,
     other: &crate::model::AssertionView,
-    eval_at: Option<mneme_core::Timestamp>,
 ) -> bool {
     let is_distinct_eligible =
         other.record.record_id != current.record.record_id && is_rebuttal_eligible(other);
     if !is_distinct_eligible
-        || !view.content_readable_in(&other.record.scope, &current.record.scope)
+        || !inputs
+            .view
+            .content_readable_in(&other.record.scope, &current.record.scope)
     {
         return false;
     }
-    let is_time_overlap = match eval_at {
+    let is_time_overlap = match inputs.eval_at {
         Some(at) => {
             crate::beliefs::View::valid_time_applies(current.valid_time, at)
                 && crate::beliefs::View::valid_time_applies(other.valid_time, at)
         }
         None => valid_times_overlap(current.valid_time, other.valid_time),
     };
-    is_time_overlap && assertions_incompatible(current, other)
+    is_time_overlap
+        && assertions_incompatible_with_functional(current, other, inputs.functional_predicates)
+}
+
+fn collect_closure_neighbors(
+    inputs: &ClosureInputs<'_>,
+    current: &crate::model::AssertionView,
+    assertion_map: &std::collections::BTreeMap<mneme_core::RecordId, &crate::model::AssertionView>,
+) -> Vec<crate::model::AssertionView> {
+    let current_id = current.record.record_id;
+    let mut neighbors = Vec::with_capacity(inputs.all_assertions.len());
+    if let Some(deriv_list) = inputs.derivations.get(&current_id) {
+        for deriv in deriv_list {
+            if !inputs
+                .view
+                .content_readable_in(&deriv.record.scope, &current.record.scope)
+            {
+                continue;
+            }
+            for premise_id in &deriv.premises {
+                if let Some(&premise) = assertion_map.get(premise_id)
+                    && inputs
+                        .view
+                        .content_readable_in(&premise.record.scope, &current.record.scope)
+                {
+                    neighbors.push(premise.clone());
+                }
+            }
+        }
+    }
+    if let Some(challenge_list) = inputs.challenges.get(&current_id) {
+        for challenge in challenge_list {
+            if !inputs
+                .view
+                .content_readable_in(&challenge.record.scope, &current.record.scope)
+            {
+                continue;
+            }
+            for ancestor_id in &challenge.ancestry {
+                if let Some(&reason) = assertion_map.get(ancestor_id)
+                    && inputs
+                        .view
+                        .content_readable_in(&reason.record.scope, &current.record.scope)
+                {
+                    neighbors.push(reason.clone());
+                }
+            }
+        }
+    }
+    for other in inputs.all_assertions {
+        if is_rebuttal_neighbor(inputs, current, other) {
+            neighbors.push(other.clone());
+        }
+    }
+    neighbors
 }
 
 fn collect_closure(
-    view: &crate::beliefs::View,
-    seeds: &[crate::model::AssertionView],
-    all_assertions: &[crate::model::AssertionView],
-    derivations: &DerivationMap,
-    eval_at: Option<mneme_core::Timestamp>,
+    inputs: &ClosureInputs<'_>,
 ) -> (
     std::collections::BTreeMap<mneme_core::RecordId, crate::model::AssertionView>,
     bool,
@@ -840,12 +994,13 @@ fn collect_closure(
     let assertion_map: std::collections::BTreeMap<
         mneme_core::RecordId,
         &crate::model::AssertionView,
-    > = all_assertions
+    > = inputs
+        .all_assertions
         .iter()
         .map(|a| (a.record.record_id, a))
         .collect();
 
-    for seed in seeds {
+    for seed in inputs.seeds {
         if closure
             .insert(seed.record.record_id, seed.clone())
             .is_none()
@@ -858,41 +1013,14 @@ fn collect_closure(
         let Some(current) = closure.get(&current_id).cloned() else {
             continue;
         };
-        if let Some(deriv_list) = derivations.get(&current_id) {
-            for deriv in deriv_list {
-                if !view.content_readable_in(&deriv.record.scope, &current.record.scope) {
-                    continue;
-                }
-                for premise_id in &deriv.premises {
-                    let Some(&premise) = assertion_map.get(premise_id) else {
-                        continue;
-                    };
-                    if !view.content_readable_in(&premise.record.scope, &current.record.scope) {
-                        continue;
-                    }
-                    if closure.len() >= MAX_GRAPH_NODES {
-                        is_truncated = true;
-                        break;
-                    }
-                    if closure.insert(*premise_id, premise.clone()).is_none() {
-                        queue.push_back(*premise_id);
-                    }
-                }
-            }
-        }
-        for other in all_assertions {
-            if !is_rebuttal_neighbor(view, &current, other, eval_at) {
-                continue;
-            }
+        for neighbor in collect_closure_neighbors(inputs, &current, &assertion_map) {
             if closure.len() >= MAX_GRAPH_NODES {
                 is_truncated = true;
                 break;
             }
-            if closure
-                .insert(other.record.record_id, other.clone())
-                .is_none()
-            {
-                queue.push_back(other.record.record_id);
+            let neighbor_id = neighbor.record.record_id;
+            if closure.insert(neighbor_id, neighbor).is_none() {
+                queue.push_back(neighbor_id);
             }
         }
     }
@@ -1008,9 +1136,18 @@ fn wire_challenge_defeats(
                     graph = graph.with_defeat(u_idx, ch_idx);
                 }
             }
+            let reason_premises: Vec<mneme_core::RecordId> = challenge
+                .ancestry
+                .iter()
+                .copied()
+                .filter(|ancestor_id| closure.contains_key(ancestor_id))
+                .collect();
+            if !reason_premises.is_empty() && graph.derivation_premises.len() < MAX_GRAPH_NODES {
+                graph.derivation_premises.push((ch_idx, reason_premises));
+            }
             let ch_auth = challenge_authority(view, challenge, assertion);
-            let is_target_defends =
-                mneme_kernel::argumentation::preference_defeats(target_auth, ch_auth);
+            let is_target_defends = !is_explicit_defeat_evidence(challenge)
+                && mneme_kernel::argumentation::preference_defeats(target_auth, ch_auth);
             for &target_idx in &target_args {
                 graph = graph.with_defeat(ch_idx, target_idx);
                 if is_target_defends {
@@ -1025,13 +1162,14 @@ fn wire_challenge_defeats(
 fn wire_rebuttal_defeats(
     closure: &ClosureMap,
     authorities: &AuthorityMap,
+    functional_predicates: &std::collections::BTreeSet<String>,
     eval_at: Option<mneme_core::Timestamp>,
     mut graph: DefeatGraph,
 ) -> DefeatGraph {
     let closure_vec: Vec<&crate::model::AssertionView> = closure.values().collect();
     for (i, left) in closure_vec.iter().enumerate() {
         for right in closure_vec.iter().skip(i.saturating_add(1)) {
-            if !assertions_incompatible(left, right) {
+            if !assertions_incompatible_with_functional(left, right, functional_predicates) {
                 continue;
             }
             let is_time_overlap = match eval_at {
@@ -1087,12 +1225,27 @@ fn compile_defeat_graph(
     eval_at: Option<mneme_core::Timestamp>,
 ) -> DefeatGraph {
     let (derivations, challenges, all_assertions) = index_derivations_and_challenges(view);
-    let (closure, is_closure_truncated) =
-        collect_closure(view, seeds, &all_assertions, &derivations, eval_at);
+    let functional_predicates = functional_predicate_set(view);
+    let closure_inputs = ClosureInputs {
+        view,
+        seeds,
+        all_assertions: &all_assertions,
+        derivations: &derivations,
+        challenges: &challenges,
+        functional_predicates: &functional_predicates,
+        eval_at,
+    };
+    let (closure, is_closure_truncated) = collect_closure(&closure_inputs);
     let (graph, authorities) =
         build_assertion_nodes(view, &closure, &derivations, is_closure_truncated);
     let graph = wire_challenge_defeats(view, &closure, &challenges, &authorities, graph);
-    let graph = wire_rebuttal_defeats(&closure, &authorities, eval_at, graph);
+    let graph = wire_rebuttal_defeats(
+        &closure,
+        &authorities,
+        &functional_predicates,
+        eval_at,
+        graph,
+    );
     graph.with_propagated_derivations()
 }
 
