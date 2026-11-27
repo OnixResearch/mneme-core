@@ -33,7 +33,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-sync/src/node.rs",
-      "line": 797,
+      "line": 806,
       "column": 44,
       "message": "function `pull_delta_over_rbsr` is 96 lines (limit: 70)",
       "crate_name": "mneme_sync"
@@ -124,7 +124,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-sync/src/node.rs",
-      "line": 852,
+      "line": 861,
       "column": 17,
       "message": "boolean binding `retention_barrier_present` should have a predicate prefix",
       "crate_name": "mneme_sync"
@@ -449,7 +449,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-sync/src/node.rs",
-      "line": 1241,
+      "line": 1221,
       "column": 17,
       "message": "boolean binding `extra_matches` should have a predicate prefix",
       "crate_name": "mneme_sync"

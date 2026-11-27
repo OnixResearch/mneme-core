@@ -20,7 +20,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 652,
+      "line": 715,
       "column": 40,
       "message": "non-trait import `is_revoked_in_merge` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -85,7 +85,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 652,
+      "line": 715,
       "column": 9,
       "message": "non-trait import `authority_permits` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -241,7 +241,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 651,
+      "line": 714,
       "column": 32,
       "message": "non-trait import `RevocationState` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -267,7 +267,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 651,
+      "line": 714,
       "column": 49,
       "message": "non-trait import `ScopeMode` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -319,7 +319,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 653,
+      "line": 716,
       "column": 9,
       "message": "non-trait import `revocation_state` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -397,7 +397,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 653,
+      "line": 716,
       "column": 27,
       "message": "non-trait import `scope_subset` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -423,7 +423,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 652,
+      "line": 715,
       "column": 61,
       "message": "non-trait import `merge_revocation_state` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -605,7 +605,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 655,
+      "line": 718,
       "column": 5,
       "message": "non-trait import `Digest` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -644,7 +644,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 626,
+      "line": 689,
       "column": 25,
       "message": "boolean binding `expected` should have a predicate prefix",
       "crate_name": "kernel"
@@ -670,7 +670,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 651,
+      "line": 714,
       "column": 9,
       "message": "non-trait import `Authority` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -774,7 +774,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 651,
+      "line": 714,
       "column": 20,
       "message": "non-trait import `LinkPolicy` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -800,7 +800,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 651,
+      "line": 714,
       "column": 79,
       "message": "non-trait import `authority_attenuates` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -839,7 +839,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 652,
+      "line": 715,
       "column": 28,
       "message": "non-trait import `is_revoked` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"
@@ -865,7 +865,7 @@
       "group": "tigerstyle::naming",
       "severity": "warning",
       "file": "crates/mneme-kernel/tests/kernel.rs",
-      "line": 651,
+      "line": 714,
       "column": 60,
       "message": "non-trait import `attenuation_valid` hides the owner path; prefer the qualified path at the use site",
       "crate_name": "kernel"

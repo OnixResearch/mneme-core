@@ -85,7 +85,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1077,
+      "line": 1091,
       "column": 50,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -111,7 +111,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/recovery.rs",
-      "line": 1233,
+      "line": 1254,
       "column": 27,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_store"
@@ -150,7 +150,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/sweep.rs",
-      "line": 1457,
+      "line": 1459,
       "column": 50,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -254,7 +254,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/recovery.rs",
-      "line": 728,
+      "line": 749,
       "column": 5,
       "message": "same-crate enum `coordinator::recovery::RestoreLocation` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -319,7 +319,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/sweep.rs",
-      "line": 606,
+      "line": 608,
       "column": 21,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -358,7 +358,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/recovery.rs",
-      "line": 1231,
+      "line": 1252,
       "column": 27,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_store"
@@ -371,7 +371,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/recovery.rs",
-      "line": 1232,
+      "line": 1253,
       "column": 27,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -397,7 +397,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 2834,
+      "line": 2838,
       "column": 12,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_store"
@@ -410,7 +410,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 3082,
+      "line": 3086,
       "column": 13,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -514,7 +514,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1098,
+      "line": 1112,
       "column": 41,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -527,7 +527,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 853,
+      "line": 867,
       "column": 21,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -553,7 +553,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/recovery.rs",
-      "line": 1106,
+      "line": 1127,
       "column": 9,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_store"
@@ -631,7 +631,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 180,
+      "line": 194,
       "column": 13,
       "message": "foreign enum `std::result::Result` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_store"
@@ -657,7 +657,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/recovery.rs",
-      "line": 690,
+      "line": 711,
       "column": 5,
       "message": "same-crate enum `coordinator::recovery::RestoreLocation` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -670,7 +670,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/recovery.rs",
-      "line": 940,
+      "line": 961,
       "column": 36,
       "message": "same-crate enum `coordinator::recovery::RestoreLocation` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -722,7 +722,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1073,
+      "line": 1087,
       "column": 50,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -748,7 +748,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/recovery.rs",
-      "line": 1233,
+      "line": 1254,
       "column": 27,
       "message": "unprotected unsigned addition may overflow",
       "crate_name": "mneme_store"
@@ -761,7 +761,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/mod.rs",
-      "line": 2861,
+      "line": 2865,
       "column": 20,
       "message": "same-crate enum `coordinator::PayloadCheck` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"
@@ -891,7 +891,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/sweep.rs",
-      "line": 994,
+      "line": 996,
       "column": 35,
       "message": "String allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -904,7 +904,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 973,
+      "line": 987,
       "column": 39,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -930,7 +930,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/recovery.rs",
-      "line": 1232,
+      "line": 1253,
       "column": 27,
       "message": "unprotected unsigned subtraction may overflow",
       "crate_name": "mneme_store"
@@ -943,7 +943,7 @@
       "group": "tigerstyle::performance",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/commit.rs",
-      "line": 1076,
+      "line": 1090,
       "column": 41,
       "message": "Vec allocation constructor runs inside a loop",
       "crate_name": "mneme_store"
@@ -969,7 +969,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-store/src/coordinator/publishing.rs",
-      "line": 155,
+      "line": 169,
       "column": 27,
       "message": "same-crate enum `payload::WorkingEntry` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_store"

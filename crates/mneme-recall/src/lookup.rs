@@ -1232,8 +1232,10 @@ fn split_camel_case_into<'a>(segment: &'a str, out: &mut Vec<&'a str>) {
         let next = chars.get(idx.saturating_add(1)).map(|(_, ch)| *ch);
         let is_lower_or_digit_to_upper =
             (prev.is_lowercase() || prev.is_ascii_digit()) && curr.is_uppercase();
-        let is_acronym_to_word =
+        let acronym_len = chars[idx].0.saturating_sub(start);
+        let is_acronym_boundary =
             prev.is_uppercase() && curr.is_uppercase() && next.is_some_and(char::is_lowercase);
+        let is_acronym_to_word = is_acronym_boundary && acronym_len >= 3;
         if is_lower_or_digit_to_upper || is_acronym_to_word {
             let split_at = chars[idx].0;
             if split_at > start {

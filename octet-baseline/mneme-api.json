@@ -33,7 +33,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 1049,
+      "line": 1051,
       "column": 12,
       "message": "condition has 6 boolean operators",
       "crate_name": "mneme_api"
@@ -46,7 +46,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 2049,
+      "line": 2051,
       "column": 9,
       "message": "same-crate enum `service::FederatedReasonSource` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_api"
@@ -150,7 +150,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 1223,
+      "line": 1225,
       "column": 21,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_api"
@@ -202,7 +202,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3965,
+      "line": 3967,
       "column": 12,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_api"
@@ -293,7 +293,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 1159,
+      "line": 1161,
       "column": 12,
       "message": "condition has 5 boolean operators",
       "crate_name": "mneme_api"
@@ -319,7 +319,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 1578,
+      "line": 1580,
       "column": 5,
       "message": "same-crate enum `command::ReviseAction` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_api"
@@ -371,7 +371,7 @@
       "group": "tigerstyle::structure",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 1030,
+      "line": 1032,
       "column": 12,
       "message": "condition has 3 boolean operators",
       "crate_name": "mneme_api"
@@ -436,7 +436,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 2153,
+      "line": 2155,
       "column": 23,
       "message": "same-crate enum `service::FederatedReasonSource` is matched exhaustively without a fallback; adding a variant will force this site to change",
       "crate_name": "mneme_api"
@@ -566,7 +566,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 1458,
+      "line": 1460,
       "column": 9,
       "message": "foreign enum `std::option::Option` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_api"
@@ -579,7 +579,7 @@
       "group": "tigerstyle::safety",
       "severity": "warning",
       "file": "crates/mneme-api/src/service.rs",
-      "line": 3913,
+      "line": 3915,
       "column": 13,
       "message": "foreign enum `mneme_memory::EpisodeType` uses a `_` catch-all arm; handle new variants explicitly or document the fallback",
       "crate_name": "mneme_api"

@@ -1,5 +1,7 @@
 //! Integration tests for Heterogeneous Personalized PageRank (`Mode::GraphPpr`)
 //! and opt-in Conformal Risk Control threshold filtering (`Request::calibration`).
+// Integration tests panic on fixture setup failure via `expect`.
+#![allow(clippy::expect_used)]
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 const ACTOR: &str = "ppr-test";
