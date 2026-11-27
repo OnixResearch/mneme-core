@@ -1923,3 +1923,253 @@ fn repl_sync_after_rule_change_enforces_step_limits_and_charges_total_work() {
         "failed sync_after_rule_change must roll back without partial state"
     );
 }
+
+fn status_entity_payload(
+    entity_type: &str,
+    label: &str,
+    status: mneme_datalog::EpistemicStatus,
+) -> mneme_core::Payload {
+    mneme_core::Payload::new([
+        (
+            mneme_core::Symbol::from("entity-type"),
+            mneme_core::Value::symbol(entity_type),
+        ),
+        (
+            mneme_core::Symbol::from("label"),
+            mneme_core::Value::string(label),
+        ),
+        (
+            mneme_core::Symbol::from("properties"),
+            mneme_core::Value::symbol_dictionary([(
+                mneme_core::Symbol::from("status"),
+                mneme_core::Value::symbol(status.name()),
+            )]),
+        ),
+    ])
+}
+
+#[test]
+fn k_relation_ivm_tracks_epistemic_downgrade_upgrade_and_kleene_negation_with_fresh_parity() {
+    let temp = tempfile::tempdir().expect("temp");
+    let mut workspace = mneme_store::Workspace::create(
+        temp.path(),
+        mneme_store::WorkspaceConfig {
+            clock: Box::new(mneme_store::FixedClock::new(
+                mneme_core::Timestamp::from_nanos(1_000),
+            )),
+            faults: Box::new(mneme_store::NoFaults),
+        },
+    )
+    .expect("create");
+    let h1 = id_with_tag([0x91, 1]);
+    let v1 = id_with_tag([0x91, 2]);
+    let falsify_id = id_with_tag([0x92, 1]);
+
+    let genesis = workspace.current_revision().expect("genesis");
+    let rev1 = workspace
+        .commit(mneme_store::CommitCommand {
+            base: genesis,
+            actor: "k-ivm-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "k-ivm-rev1".to_owned(),
+            records: vec![
+                draft(
+                    h1,
+                    rev_with_tag([0x91, 1]),
+                    mneme_core::RecordKind::Entity,
+                    scope(),
+                    status_entity_payload(
+                        "hypothesis",
+                        "H1",
+                        mneme_datalog::EpistemicStatus::Accepted,
+                    ),
+                ),
+                draft(
+                    v1,
+                    rev_with_tag([0x91, 2]),
+                    mneme_core::RecordKind::Entity,
+                    scope(),
+                    status_entity_payload(
+                        "oracle_verdict",
+                        "V1",
+                        mneme_datalog::EpistemicStatus::Accepted,
+                    ),
+                ),
+            ],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("rev1")
+        .revision;
+
+    let mut session = open_session(
+        &mut workspace,
+        Some(rev1),
+        mneme_datalog::ReplLimits::default(),
+    );
+    let rules = vec![
+        mneme_datalog::Rule::new(
+            "r-falsified",
+            mneme_datalog::Atom::new("falsified", vec![mneme_datalog::Term::var("H")]),
+            vec![mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                "relation",
+                vec![
+                    mneme_datalog::Term::constant(mneme_core::Value::symbol("falsifies")),
+                    mneme_datalog::Term::var("V"),
+                    mneme_datalog::Term::var("H"),
+                ],
+            ))],
+        ),
+        mneme_datalog::Rule::new(
+            "r-open-hyp",
+            mneme_datalog::Atom::new("open_hypothesis", vec![mneme_datalog::Term::var("H")]),
+            vec![
+                mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                    "entity",
+                    vec![
+                        mneme_datalog::Term::var("H"),
+                        mneme_datalog::Term::constant(mneme_core::Value::symbol("hypothesis")),
+                        mneme_datalog::Term::var("L"),
+                    ],
+                )),
+                mneme_datalog::Literal::Negative(mneme_datalog::Atom::new(
+                    "falsified",
+                    vec![mneme_datalog::Term::var("H")],
+                )),
+            ],
+        ),
+    ];
+    for rule in &rules {
+        session.add_rule(rule.clone()).expect("add rule");
+    }
+
+    // Rev 1: no falsifier -> open_hypothesis(h1) is Accepted.
+    let q1 = session
+        .query_relation(None, mneme_datalog::Query::all("open_hypothesis", 10))
+        .expect("q1");
+    assert_eq!(q1.rows.len(), 1);
+    assert_eq!(
+        q1.rows[0].epistemic,
+        mneme_datalog::EpistemicStatus::Accepted
+    );
+
+    // Rev 2: insert Proposed falsifies(v1, h1) -> Kleene IVM downgrades open_hypothesis(h1) to Proposed!
+    let r2_edge = rev_with_tag([0x92, 2]);
+    let rev2 = workspace
+        .commit(mneme_store::CommitCommand {
+            base: rev1,
+            actor: "k-ivm-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "k-ivm-rev2".to_owned(),
+            records: vec![draft(
+                falsify_id,
+                r2_edge,
+                mneme_core::RecordKind::Relation,
+                scope(),
+                status_relation_payload(
+                    "falsifies",
+                    v1,
+                    h1,
+                    mneme_datalog::EpistemicStatus::Proposed,
+                ),
+            )],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("rev2")
+        .revision;
+    session
+        .advance_to_revision(&mut workspace, Some(rev2))
+        .expect("advance rev2");
+    let q2 = session
+        .query_relation(None, mneme_datalog::Query::all("open_hypothesis", 10))
+        .expect("q2");
+    assert_eq!(q2.rows.len(), 1);
+    assert_eq!(
+        q2.rows[0].epistemic,
+        mneme_datalog::EpistemicStatus::Proposed
+    );
+    assert!(!session.justifications().is_empty());
+
+    // Rev 3: promote falsifies(v1, h1) to Accepted -> Kleene IVM retracts open_hypothesis(h1)!
+    let r3_edge = rev_with_tag([0x92, 3]);
+    let rev3 = workspace
+        .commit(mneme_store::CommitCommand {
+            base: rev2,
+            actor: "k-ivm-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "k-ivm-rev3".to_owned(),
+            records: vec![mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Relation,
+                record_id: falsify_id,
+                revision_id: r3_edge,
+                predecessor: Some(r2_edge),
+                scope: scope(),
+                payload: status_relation_payload(
+                    "falsifies",
+                    v1,
+                    h1,
+                    mneme_datalog::EpistemicStatus::Accepted,
+                ),
+            }],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("rev3")
+        .revision;
+    session
+        .advance_to_revision(&mut workspace, Some(rev3))
+        .expect("advance rev3");
+    let q3 = session
+        .query_relation(None, mneme_datalog::Query::all("open_hypothesis", 10))
+        .expect("q3");
+    assert!(q3.rows.is_empty());
+
+    // Rev 4: reject falsifies(v1, h1) -> Kleene IVM restores open_hypothesis(h1) as Accepted!
+    let r4_edge = rev_with_tag([0x92, 4]);
+    let rev4 = workspace
+        .commit(mneme_store::CommitCommand {
+            base: rev3,
+            actor: "k-ivm-test".to_owned(),
+            scope: scope(),
+            idempotency_key: "k-ivm-rev4".to_owned(),
+            records: vec![mneme_store::RecordDraft {
+                schema_version: 1,
+                kind: mneme_core::RecordKind::Relation,
+                record_id: falsify_id,
+                revision_id: r4_edge,
+                predecessor: Some(r3_edge),
+                scope: scope(),
+                payload: status_relation_payload(
+                    "falsifies",
+                    v1,
+                    h1,
+                    mneme_datalog::EpistemicStatus::Rejected,
+                ),
+            }],
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("rev4")
+        .revision;
+    session
+        .advance_to_revision(&mut workspace, Some(rev4))
+        .expect("advance rev4");
+    let q4 = session
+        .query_relation(None, mneme_datalog::Query::all("open_hypothesis", 10))
+        .expect("q4");
+    assert_eq!(q4.rows.len(), 1);
+    assert_eq!(
+        q4.rows[0].epistemic,
+        mneme_datalog::EpistemicStatus::Accepted
+    );
+}

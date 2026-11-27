@@ -3995,10 +3995,50 @@ fn explain_missing_on_atms_verdict_fixture_covers_missing_blocker_constraint_and
             && reason.terms.get(2) == Some(&constant(b1.to_value()))
     }));
 
-    // 3. Active negation blocker: H1 was already retested_with X2 -> BlockingNegation.
-    let blocked = service
+    // 3a. Under Kleene three-valued epistemic negation (default), a Proposed
+    // negation witness (`retested(h1, x2)`) attenuates rather than blocks.
+    let kleene_attenuated = service
         .explain_missing_build(
             &full_build,
+            mneme_datalog::ExplainMissingRequest::ground(
+                "unblocked_retest_candidate",
+                vec![h1.to_value(), b1.to_value(), x2.to_value()],
+            ),
+        )
+        .expect("kleene attenuated explain");
+    assert_eq!(
+        kleene_attenuated.status,
+        mneme_datalog::MissingStatus::Present
+    );
+    assert_eq!(
+        kleene_attenuated.present_epistemic,
+        Some(mneme_datalog::EpistemicStatus::Proposed)
+    );
+
+    // 3b. Under Strict negation, the Proposed negation witness blocks with BlockingNegation.
+    let strict_build = service
+        .build_with_config(
+            mneme_datalog::BuildRequest {
+                actor: "tester".to_owned(),
+                scope: scope(),
+                revision: full_build.context().served_revision,
+                bundle: atms_bundle.clone(),
+                limits: limits(),
+                publish: false,
+                incomplete_extents: std::collections::BTreeSet::new(),
+                cancellation: None,
+                access: mneme_memory::Access::scopes([scope()]),
+                at: None,
+            },
+            mneme_datalog::EvaluationConfig {
+                negation: mneme_datalog::NegationSemantics::Strict,
+                ..mneme_datalog::EvaluationConfig::default()
+            },
+        )
+        .expect("strict build");
+    let blocked = service
+        .explain_missing_build(
+            &strict_build,
             mneme_datalog::ExplainMissingRequest::ground(
                 "unblocked_retest_candidate",
                 vec![h1.to_value(), b1.to_value(), x2.to_value()],

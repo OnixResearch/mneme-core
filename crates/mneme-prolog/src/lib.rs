@@ -56,6 +56,7 @@
 
 pub mod execution;
 pub mod process;
+pub mod proof;
 pub mod snapshot;
 
 /// Prefix for an output candidate that is not ground.
@@ -68,6 +69,8 @@ pub const RESPONSE_PROTOCOL_VERSION: u32 = 1;
 pub const RESPONSE_HEADER_PREFIX: &str = "!mneme-response-v1";
 /// One ordered binding frame.
 pub const RESPONSE_ROW_PREFIX: &str = "!mneme-row-v1";
+/// One proof certificate frame paired with the preceding binding frame.
+pub const RESPONSE_PROOF_PREFIX: &str = "!mneme-proof-v1";
 /// Terminal search observation frame.
 pub const RESPONSE_STOP_PREFIX: &str = "!mneme-stop-v1";
 
@@ -1122,6 +1125,10 @@ pub struct Solution {
     pub premises: Vec<Premise>,
     pub assumptions: std::collections::BTreeSet<String>,
     pub certification: Certification,
+    /// Epistemic status propagated across verified proof leaves (`Accepted` when uncertified).
+    pub epistemic: mneme_datalog::EpistemicStatus,
+    /// Verified host-side proof certificate when [`Feature::CertifiedProofs`] was requested.
+    pub proof: Option<proof::Certificate>,
 }
 
 /// Resource consumption.
@@ -1787,7 +1794,7 @@ fn outcome_from_worker(
         .iter()
         .map(|assumption| assumption.id.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let classification = classify_output(worker, request, identity, &assumptions);
+    let classification = classify_output(worker, image, request, identity, &assumptions);
     let parsed = match classification {
         OutputClassification::Rejected(reason) => {
             return rejected_outcome(reason, worker, image, request, identity);
@@ -2051,6 +2058,7 @@ struct ParsedOutput {
 /// Parse complete solution lines, dropping only a cut-off final fragment.
 fn classify_output(
     worker: &process::WorkerOutcome,
+    image: &snapshot::InputImage,
     request: &Request,
     identity: &ProtocolIdentity,
     assumptions: &std::collections::BTreeSet<String>,
@@ -2090,6 +2098,8 @@ fn classify_output(
             variables: &variables,
             assumptions,
             worker_status: worker.status,
+            request,
+            image,
         },
         solutions,
     ) {
@@ -2144,6 +2154,8 @@ struct ResponseFrameContext<'a> {
     variables: &'a std::collections::BTreeSet<String>,
     assumptions: &'a std::collections::BTreeSet<String>,
     worker_status: process::WorkerStatus,
+    request: &'a Request,
+    image: &'a snapshot::InputImage,
 }
 
 fn parse_response_frames<'a>(
@@ -2156,28 +2168,47 @@ fn parse_response_frames<'a>(
         variables,
         assumptions,
         worker_status,
+        request,
+        image,
     } = context;
+    let is_certified_requested = request.features.contains(&Feature::CertifiedProofs);
+    let row_prefix = format!("{}\t{}\t", RESPONSE_ROW_PREFIX, identity.request_digest);
+    let proof_prefix = format!("{}\t{}\t", RESPONSE_PROOF_PREFIX, identity.request_digest);
+    let unbound_line = format!("{}\t{}", UNBOUND_MARKER, identity.request_digest);
+    let stop_prefix = format!("{}\t{}\t", RESPONSE_STOP_PREFIX, identity.request_digest);
+
     let mut terminal = None;
+    let mut pending_solution: Option<Solution> = None;
     for line in lines {
         if terminal.is_some() {
             return Err("worker response contains frames after its terminal observation");
         }
-        if let Some(bindings) = line.strip_prefix(&format!(
-            "{}\t{}\t",
-            RESPONSE_ROW_PREFIX, identity.request_digest
-        )) {
-            match parse_solution_line(bindings, variables, assumptions) {
-                Ok(solution) => solutions.push(solution),
-                Err(_) => {
-                    return Err("worker binding frame is malformed or has an unexpected variable");
-                }
+        if let Some(bindings) = line.strip_prefix(&row_prefix) {
+            if pending_solution.is_some() {
+                return Err("worker emitted a row without a proof frame for the preceding row");
             }
-        } else if line == format!("{}\t{}", UNBOUND_MARKER, identity.request_digest) {
+            let solution = parse_solution_line(bindings, variables, assumptions)
+                .map_err(|_| "worker binding frame is malformed or has an unexpected variable")?;
+            if is_certified_requested {
+                pending_solution = Some(solution);
+            } else {
+                solutions.push(solution);
+            }
+        } else if let Some(proof_text) = line.strip_prefix(&proof_prefix) {
+            if !is_certified_requested {
+                return Err("worker emitted an unexpected proof frame");
+            }
+            let Some(mut solution) = pending_solution.take() else {
+                return Err("worker emitted a proof frame without a preceding binding row");
+            };
+            attach_verified_proof(&mut solution, proof_text, request, image)?;
+            solutions.push(solution);
+        } else if line == unbound_line {
             return Err("worker reported an unbound output candidate");
-        } else if let Some(stop_name) = line.strip_prefix(&format!(
-            "{}\t{}\t",
-            RESPONSE_STOP_PREFIX, identity.request_digest
-        )) {
+        } else if let Some(stop_name) = line.strip_prefix(&stop_prefix) {
+            if pending_solution.is_some() {
+                return Err("worker stopped without emitting a proof frame for the last row");
+            }
             terminal = parse_terminal(stop_name);
             if terminal.is_none() {
                 return Err("worker terminal observation is malformed");
@@ -2186,10 +2217,34 @@ fn parse_response_frames<'a>(
             return Err("worker output contains an unknown frame");
         }
     }
-    if worker_status == process::WorkerStatus::Complete && terminal.is_none() {
-        return Err("worker completed without a terminal search observation");
+    if worker_status == process::WorkerStatus::Complete {
+        if pending_solution.is_some() {
+            return Err("worker completed without a proof frame for its last binding row");
+        }
+        if terminal.is_none() {
+            return Err("worker completed without a terminal search observation");
+        }
     }
     Ok((solutions, terminal))
+}
+
+fn attach_verified_proof(
+    solution: &mut Solution,
+    proof_text: &str,
+    request: &Request,
+    image: &snapshot::InputImage,
+) -> Result<(), &'static str> {
+    let verified = proof::verify_term(proof_text, &solution.bindings, request, image)
+        .map_err(|_| "worker proof certificate failed host verification")?;
+    solution.premises = verified.premises;
+    solution.assumptions = verified.assumptions;
+    solution.epistemic = verified.epistemic;
+    solution.proof = Some(verified.certificate);
+    solution.certification = match verified.uncertified_reason {
+        None => Certification::Certified,
+        Some(reason) => Certification::Uncertified { reason },
+    };
+    Ok(())
 }
 
 fn parse_terminal(value: &str) -> Option<SearchStop> {
@@ -2275,6 +2330,8 @@ impl<'a> TermParser<'a> {
             certification: Certification::Uncertified {
                 reason: "engine returned no premise certificate".to_owned(),
             },
+            epistemic: mneme_datalog::EpistemicStatus::Accepted,
+            proof: None,
         })
     }
 
@@ -2767,6 +2824,11 @@ impl Solution {
                 if !self.assumptions.is_empty() {
                     return Err(CapabilityError::InvalidRequest(
                         "hypothetical assumptions cannot be certified".to_owned(),
+                    ));
+                }
+                if self.epistemic == mneme_datalog::EpistemicStatus::Rejected {
+                    return Err(CapabilityError::InvalidRequest(
+                        "rejected solutions cannot be certified".to_owned(),
                     ));
                 }
             }
@@ -3363,6 +3425,8 @@ mod tests {
             certification: Certification::Uncertified {
                 reason: "no proof certificate".to_owned(),
             },
+            epistemic: mneme_datalog::EpistemicStatus::Accepted,
+            proof: None,
         };
         assert_eq!(
             serialize_solution(&solution, profile, 64),
@@ -3383,6 +3447,8 @@ mod tests {
             certification: Certification::Uncertified {
                 reason: "no proof certificate".to_owned(),
             },
+            epistemic: mneme_datalog::EpistemicStatus::Accepted,
+            proof: None,
         };
         assert!(matches!(
             serialize_solution(&variable_binding, profile, 64),
@@ -3907,6 +3973,8 @@ mod tests {
             ],
             assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Certified,
+            epistemic: mneme_datalog::EpistemicStatus::Accepted,
+            proof: None,
         };
         assert_eq!(solution.independent_support_count(), 1);
         solution
@@ -3921,6 +3989,8 @@ mod tests {
             premises: Vec::new(),
             assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Certified,
+            epistemic: mneme_datalog::EpistemicStatus::Accepted,
+            proof: None,
         };
         assert!(empty.validate(&std::collections::BTreeSet::new()).is_err());
         let root = (
@@ -3932,6 +4002,8 @@ mod tests {
             premises: vec![premise(std::collections::BTreeSet::from([root]), false)],
             assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Certified,
+            epistemic: mneme_datalog::EpistemicStatus::Accepted,
+            proof: None,
         };
         assert!(
             complete
@@ -3951,6 +4023,8 @@ mod tests {
             premises: vec![premise(std::collections::BTreeSet::from([root]), false)],
             assumptions: std::collections::BTreeSet::from(["assumption-1".to_owned()]),
             certification: Certification::Certified,
+            epistemic: mneme_datalog::EpistemicStatus::Accepted,
+            proof: None,
         };
         assert!(
             solution
@@ -3991,6 +4065,8 @@ mod tests {
             premises: vec![pruned],
             assumptions: std::collections::BTreeSet::new(),
             certification: Certification::Certified,
+            epistemic: mneme_datalog::EpistemicStatus::Accepted,
+            proof: None,
         };
         assert_eq!(solution.unavailable_premises().len(), 1);
         assert!(
@@ -4012,6 +4088,8 @@ mod tests {
             certification: Certification::Uncertified {
                 reason: "engine did not provide proof".to_owned(),
             },
+            epistemic: mneme_datalog::EpistemicStatus::Accepted,
+            proof: None,
         };
         assert!(
             solution

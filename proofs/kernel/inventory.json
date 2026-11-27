@@ -1479,6 +1479,101 @@
       "statement": "(status : EpistemicStatus) : negation_blocks status = ok true ↔ status ≠ EpistemicStatus.Rejected"
     },
     {
+      "name": "mneme_kernel.epistemic.negate_total",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::negate"
+      ],
+      "statement": "(status : EpistemicStatus) : ∃ r, negate status = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.negate_values",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::negate"
+      ],
+      "statement": ": negate EpistemicStatus.Accepted = ok EpistemicStatus.Rejected ∧ negate EpistemicStatus.Proposed = ok EpistemicStatus.Proposed ∧ negate EpistemicStatus.Rejected = ok EpistemicStatus.Accepted"
+    },
+    {
+      "name": "mneme_kernel.epistemic.negate_involutive",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::negate"
+      ],
+      "statement": "(a : EpistemicStatus) : ∃ na, negate a = ok na ∧ negate na = ok a"
+    },
+    {
+      "name": "mneme_kernel.epistemic.negate_antitone",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::negate",
+        "epistemic::rank"
+      ],
+      "statement": "(a b : EpistemicStatus) : ∃ ra rb na nb rna rnb, rank a = ok ra ∧ rank b = ok rb ∧ negate a = ok na ∧ negate b = ok nb ∧ rank na = ok rna ∧ rank nb = ok rnb ∧ (ra.val ≤ rb.val → rnb.val ≤ rna.val)"
+    },
+    {
+      "name": "mneme_kernel.epistemic.negate_de_morgan_join",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::negate",
+        "epistemic::join",
+        "epistemic::union"
+      ],
+      "statement": "(a b : EpistemicStatus) : ∃ ab na nb r, join a b = ok ab ∧ negate ab = ok r ∧ negate a = ok na ∧ negate b = ok nb ∧ union na nb = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.negate_de_morgan_union",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::negate",
+        "epistemic::join",
+        "epistemic::union"
+      ],
+      "statement": "(a b : EpistemicStatus) : ∃ ab na nb r, union a b = ok ab ∧ negate ab = ok r ∧ negate a = ok na ∧ negate b = ok nb ∧ join na nb = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.strict_negate_total",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::strict_negate"
+      ],
+      "statement": "(status : EpistemicStatus) : ∃ r, strict_negate status = ok r"
+    },
+    {
+      "name": "mneme_kernel.epistemic.strict_negate_values",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::strict_negate"
+      ],
+      "statement": ": strict_negate EpistemicStatus.Accepted = ok EpistemicStatus.Rejected ∧ strict_negate EpistemicStatus.Proposed = ok EpistemicStatus.Rejected ∧ strict_negate EpistemicStatus.Rejected = ok EpistemicStatus.Accepted"
+    },
+    {
+      "name": "mneme_kernel.epistemic.strict_negate_le_negate",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::strict_negate",
+        "epistemic::negate",
+        "epistemic::rank"
+      ],
+      "statement": "(a : EpistemicStatus) : ∃ sn kn rsn rkn, strict_negate a = ok sn ∧ negate a = ok kn ∧ rank sn = ok rsn ∧ rank kn = ok rkn ∧ rsn.val ≤ rkn.val"
+    },
+    {
+      "name": "mneme_kernel.epistemic.kleene_negation_blocks_total",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::kleene_negation_blocks"
+      ],
+      "statement": "(status : EpistemicStatus) : ∃ blocks, kleene_negation_blocks status = ok blocks"
+    },
+    {
+      "name": "mneme_kernel.epistemic.kleene_negation_blocks_iff",
+      "file": "MnemeKernelProofs/Epistemic.lean",
+      "subjects": [
+        "epistemic::kleene_negation_blocks"
+      ],
+      "statement": "(status : EpistemicStatus) : kleene_negation_blocks status = ok true ↔ status = EpistemicStatus.Accepted"
+    },
+    {
       "name": "mneme_kernel.claim.proposed_allows_any_transition",
       "file": "MnemeKernelProofs/Claim.lean",
       "subjects": [

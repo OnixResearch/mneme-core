@@ -1054,3 +1054,280 @@ fn explain_missing_expands_all_missing_derived_conjuncts_and_marks_truncation_ho
     );
     assert_eq!(truncated.status, mneme_datalog::MissingStatus::BudgetCutoff);
 }
+
+#[test]
+fn kleene_three_valued_negation_distinguishes_proposed_rejected_and_accepted_falsifications() {
+    let mut harness = Harness::new();
+    let h_open = indexed_rid(201);
+    let h_rej = indexed_rid(202);
+    let h_prop = indexed_rid(203);
+    let h_acc = indexed_rid(204);
+    let v_rej = indexed_rid(210);
+    let v_prop = indexed_rid(211);
+    let v_acc = indexed_rid(212);
+
+    let mut records = Vec::with_capacity(10);
+    let mut tag = 300_u16;
+    for (id, etype, label) in [
+        (h_open, "hypothesis", "H-open"),
+        (h_rej, "hypothesis", "H-rejected-falsifier"),
+        (h_prop, "hypothesis", "H-proposed-falsifier"),
+        (h_acc, "hypothesis", "H-accepted-falsifier"),
+        (v_rej, "oracle_verdict", "V-rejected"),
+        (v_prop, "oracle_verdict", "V-proposed"),
+        (v_acc, "oracle_verdict", "V-accepted"),
+    ] {
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: id,
+            revision_id: indexed_rev(tag),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: etype,
+                label,
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
+        });
+        tag = tag.saturating_add(1);
+    }
+    for (from, to, status) in [
+        (v_rej, h_rej, mneme_datalog::EpistemicStatus::Rejected),
+        (v_prop, h_prop, mneme_datalog::EpistemicStatus::Proposed),
+        (v_acc, h_acc, mneme_datalog::EpistemicStatus::Accepted),
+    ] {
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(tag),
+            revision_id: indexed_rev(tag),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(RelationPayloadSpec {
+                relation_type: "falsifies",
+                from,
+                to,
+                status,
+            }),
+        });
+        tag = tag.saturating_add(1);
+    }
+    harness.commit("kleene-open-hypothesis", records, Vec::new());
+
+    let sym = |name: &str| constant(mneme_core::Value::symbol(name));
+    let rules = bundle(
+        vec![
+            mneme_datalog::Rule::new(
+                "falsified",
+                atom("falsified", vec![var("H")]),
+                vec![mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("falsifies"), var("V"), var("H")],
+                ))],
+            ),
+            mneme_datalog::Rule::new(
+                "open-hypothesis",
+                atom("open_hypothesis", vec![var("H")]),
+                vec![
+                    mneme_datalog::Literal::Positive(atom(
+                        "entity",
+                        vec![var("H"), sym("hypothesis"), var("L")],
+                    )),
+                    mneme_datalog::Literal::Negative(atom("falsified", vec![var("H")])),
+                ],
+            ),
+        ],
+        &["entity", "relation", "falsified"],
+    );
+
+    let kleene_build = harness.build(rules.clone());
+    assert_eq!(
+        kleene_build.negation_semantics(),
+        mneme_datalog::NegationSemantics::Kleene
+    );
+    let rev_head = kleene_build.context().served_revision;
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+    let open = service
+        .query_build(
+            &kleene_build,
+            mneme_datalog::Query::all("open_hypothesis", 20),
+        )
+        .expect("kleene query");
+
+    let status_of = |rows: &[mneme_datalog::QueryRow], id: mneme_core::RecordId| {
+        rows.iter()
+            .find(|r| r.values == vec![id.to_value()])
+            .map(|r| r.epistemic)
+    };
+    assert_eq!(
+        status_of(&open.rows, h_open),
+        Some(mneme_datalog::EpistemicStatus::Accepted)
+    );
+    assert_eq!(
+        status_of(&open.rows, h_rej),
+        Some(mneme_datalog::EpistemicStatus::Accepted)
+    );
+    assert_eq!(
+        status_of(&open.rows, h_prop),
+        Some(mneme_datalog::EpistemicStatus::Proposed)
+    );
+    assert_eq!(status_of(&open.rows, h_acc), None);
+
+    // Verify ATMS justification DAG recorded the attenuated Proposed derivation.
+    let prop_ref = ("open_hypothesis".to_owned(), vec![h_prop.to_value()]);
+    let envs = kleene_build
+        .justifications()
+        .minimal_environments(&prop_ref, 32);
+    assert!(!envs.is_empty());
+
+    // Under Strict negation, Proposed falsifier blocks h_prop.
+    let strict_build = service
+        .build_with_config(
+            mneme_datalog::BuildRequest {
+                actor: "datalog-test".to_owned(),
+                scope: scope(),
+                revision: rev_head,
+                bundle: rules,
+                limits: limits(),
+                publish: false,
+                incomplete_extents: std::collections::BTreeSet::new(),
+                cancellation: None,
+                access: mneme_memory::Access::Operator,
+                at: None,
+            },
+            mneme_datalog::EvaluationConfig {
+                negation: mneme_datalog::NegationSemantics::Strict,
+                ..mneme_datalog::EvaluationConfig::default()
+            },
+        )
+        .expect("strict build");
+    let strict_open = service
+        .query_build(
+            &strict_build,
+            mneme_datalog::Query::all("open_hypothesis", 20),
+        )
+        .expect("strict query");
+    assert_eq!(
+        status_of(&strict_open.rows, h_open),
+        Some(mneme_datalog::EpistemicStatus::Accepted)
+    );
+    assert_eq!(
+        status_of(&strict_open.rows, h_rej),
+        Some(mneme_datalog::EpistemicStatus::Accepted)
+    );
+    assert_eq!(status_of(&strict_open.rows, h_prop), None);
+    assert_eq!(status_of(&strict_open.rows, h_acc), None);
+}
+
+#[test]
+fn well_founded_alternating_fixpoint_resolves_negative_cycles_to_proposed_and_definite_wins() {
+    let mut harness = Harness::new();
+    let n1 = indexed_rid(401);
+    let n2 = indexed_rid(402);
+    let n3 = indexed_rid(403);
+    let n4 = indexed_rid(404);
+
+    let mut records = Vec::with_capacity(7);
+    let mut tag = 450_u16;
+    for (id, label) in [(n1, "N1"), (n2, "N2"), (n3, "N3"), (n4, "N4")] {
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: id,
+            revision_id: indexed_rev(tag),
+            predecessor: None,
+            scope: scope(),
+            payload: status_entity_payload(EntityPayloadSpec {
+                entity_type: "state",
+                label,
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
+        });
+        tag = tag.saturating_add(1);
+    }
+    // Game graph: n1 -> n2 (terminal: n2 loses, n1 wins), and cycle n3 <-> n4 (drawn: Proposed).
+    for (from, to) in [(n1, n2), (n3, n4), (n4, n3)] {
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: indexed_rid(tag),
+            revision_id: indexed_rev(tag),
+            predecessor: None,
+            scope: scope(),
+            payload: status_relation_payload(RelationPayloadSpec {
+                relation_type: "move",
+                from,
+                to,
+                status: mneme_datalog::EpistemicStatus::Accepted,
+            }),
+        });
+        tag = tag.saturating_add(1);
+    }
+    harness.commit("wfs-game", records, Vec::new());
+
+    let sym = |name: &str| constant(mneme_core::Value::symbol(name));
+    let wfs_bundle = bundle(
+        vec![mneme_datalog::Rule::new(
+            "win-rule",
+            atom("win", vec![var("X")]),
+            vec![
+                mneme_datalog::Literal::Positive(atom(
+                    "relation",
+                    vec![sym("move"), var("X"), var("Y")],
+                )),
+                mneme_datalog::Literal::Negative(atom("win", vec![var("Y")])),
+            ],
+        )],
+        &["entity", "relation", "win"],
+    );
+    // Stratified validation rejects negative recursion; WFS validation accepts it.
+    assert!(wfs_bundle.validate().is_err());
+    assert!(wfs_bundle.validate_well_founded().is_ok());
+
+    let rev_head = harness.workspace.current_revision().expect("rev");
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+    let build = service
+        .build_with_config(
+            mneme_datalog::BuildRequest {
+                actor: "datalog-test".to_owned(),
+                scope: scope(),
+                revision: rev_head,
+                bundle: wfs_bundle,
+                limits: limits(),
+                publish: false,
+                incomplete_extents: std::collections::BTreeSet::new(),
+                cancellation: None,
+                access: mneme_memory::Access::Operator,
+                at: None,
+            },
+            mneme_datalog::EvaluationConfig {
+                mode: mneme_datalog::EvaluationMode::WellFounded,
+                ..mneme_datalog::EvaluationConfig::default()
+            },
+        )
+        .expect("wfs build");
+    assert_eq!(build.status(), mneme_datalog::ExecutionStatus::Complete);
+    let wins = service
+        .query_build(&build, mneme_datalog::Query::all("win", 20))
+        .expect("win query");
+    let win_status = |id: mneme_core::RecordId| {
+        wins.rows
+            .iter()
+            .find(|r| r.values == vec![id.to_value()])
+            .map(|r| r.epistemic)
+    };
+    assert_eq!(
+        win_status(n1),
+        Some(mneme_datalog::EpistemicStatus::Accepted)
+    );
+    assert_eq!(win_status(n2), None);
+    assert_eq!(
+        win_status(n3),
+        Some(mneme_datalog::EpistemicStatus::Proposed)
+    );
+    assert_eq!(
+        win_status(n4),
+        Some(mneme_datalog::EpistemicStatus::Proposed)
+    );
+}

@@ -2452,6 +2452,47 @@ def epistemic.negation_blocks
   (status : epistemic.EpistemicStatus) : Result Bool := do
   epistemic.is_active status
 
+/-- [mneme_kernel::epistemic::negate]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 69:0-77:1
+    Visibility: public -/
+def epistemic.negate
+  (status : epistemic.EpistemicStatus) : Result epistemic.EpistemicStatus := do
+  let b ←
+    match status with
+    | epistemic.EpistemicStatus.Rejected => ok false
+    | epistemic.EpistemicStatus.Proposed => ok false
+    | epistemic.EpistemicStatus.Accepted => ok true
+  if b
+  then ok epistemic.EpistemicStatus.Rejected
+  else
+    let b1 ←
+      match status with
+      | epistemic.EpistemicStatus.Rejected => ok false
+      | epistemic.EpistemicStatus.Proposed => ok true
+      | epistemic.EpistemicStatus.Accepted => ok false
+    if b1
+    then ok epistemic.EpistemicStatus.Proposed
+    else ok epistemic.EpistemicStatus.Accepted
+
+/-- [mneme_kernel::epistemic::strict_negate]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 83:0-89:1
+    Visibility: public -/
+def epistemic.strict_negate
+  (status : epistemic.EpistemicStatus) : Result epistemic.EpistemicStatus := do
+  let b ← epistemic.is_active status
+  if b
+  then ok epistemic.EpistemicStatus.Rejected
+  else ok epistemic.EpistemicStatus.Accepted
+
+/-- [mneme_kernel::epistemic::kleene_negation_blocks]:
+    Source: 'crates/mneme-kernel/src/epistemic.rs', lines 95:0-97:1
+    Visibility: public -/
+def epistemic.kleene_negation_blocks
+  (status : epistemic.EpistemicStatus) : Result Bool := do
+  let es ← epistemic.negate status
+  let b ← epistemic.is_active es
+  ok (¬ b)
+
 /-- [mneme_kernel::extent::ExcerptRequest]
     Source: 'crates/mneme-kernel/src/extent.rs', lines 9:0-18:1
     Visibility: public -/

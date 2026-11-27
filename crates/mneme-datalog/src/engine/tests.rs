@@ -1253,6 +1253,7 @@ fn build_fact_data_with_budget_exhaustion_never_promotes_to_accepted() {
             coverage_map: &coverage_map,
             bindings: &bindings,
             target_terms: &target_terms,
+            negation_semantics: crate::NegationSemantics::default(),
         },
         &mut budget,
         &mut target_store,
@@ -1286,6 +1287,7 @@ fn build_fact_data_with_budget_exhaustion_never_promotes_to_accepted() {
             coverage_map: &coverage_map,
             bindings: &bindings,
             target_terms: &target_terms,
+            negation_semantics: crate::NegationSemantics::default(),
         },
         &mut agg_budget,
         &mut agg_store,
@@ -1316,6 +1318,7 @@ fn build_fact_data_with_budget_exhaustion_never_promotes_to_accepted() {
             coverage_map: &coverage_map,
             bindings: &bindings,
             target_terms: &target_terms,
+            negation_semantics: crate::NegationSemantics::default(),
         },
         &mut ok_budget,
         &mut ok_store,
@@ -1324,4 +1327,64 @@ fn build_fact_data_with_budget_exhaustion_never_promotes_to_accepted() {
     assert!(ok_budget.work >= 3);
     let row = ok_store.rows.get(&target_terms).expect("refreshed row");
     assert_eq!(row.epistemic, crate::EpistemicStatus::Proposed);
+}
+
+#[test]
+fn semi_naive_free_join_reduces_work_at_least_5x_on_deep_blast_radius_closure() {
+    // 25-node deep dependency chain `0 -> 1 -> ... -> 24` plus a parallel branch.
+    let mut base_facts = Vec::with_capacity(40);
+    let mut next_id = 1_u16;
+    for src in 0..24_i64 {
+        base_facts.push((
+            "dep_edge".to_owned(),
+            vec![
+                mneme_core::Value::integer(src),
+                mneme_core::Value::integer(src + 1),
+            ],
+            rid(next_id),
+        ));
+        next_id = next_id.saturating_add(1);
+    }
+    let bundle = crate::RuleBundle::new(crate::RuleBundleOptions {
+        id: "deep-blast-radius".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 3,
+        base_predicates: std::collections::BTreeMap::from([("dep_edge".to_owned(), 2)]),
+        complete_predicates: std::collections::BTreeSet::from(["dep_edge".to_owned()]),
+        rules: vec![
+            crate::Rule::new(
+                "dep_reach_base",
+                atom("dep_reach", vec![var("a"), var("b")]),
+                vec![crate::Literal::Positive(atom(
+                    "dep_edge",
+                    vec![var("a"), var("b")],
+                ))],
+            ),
+            crate::Rule::new(
+                "dep_reach_step",
+                atom("dep_reach", vec![var("a"), var("c")]),
+                vec![
+                    crate::Literal::Positive(atom("dep_reach", vec![var("a"), var("b")])),
+                    crate::Literal::Positive(atom("dep_edge", vec![var("b"), var("c")])),
+                ],
+            ),
+        ],
+    });
+    let generous_limits = crate::Limits {
+        max_work: 50_000_000,
+        max_time_ms: 60_000,
+        max_result_rows: 10_000,
+        max_supports_per_fact: 8,
+        max_recursion_depth: 32,
+    };
+    let (naive_work, semi_naive_work) =
+        assert_equivalent_to_naive(&bundle, &base_facts, &generous_limits);
+    eprintln!(
+        "deep blast_radius (25-node chain): naive_work={naive_work}, semi_naive_work={semi_naive_work}, speedup={:.2}x",
+        naive_work as f64 / semi_naive_work.max(1) as f64
+    );
+    assert!(
+        naive_work >= semi_naive_work.saturating_mul(5),
+        "expected >= 5x work reduction on deep blast_radius closure (naive={naive_work}, semi_naive={semi_naive_work})"
+    );
 }

@@ -1391,6 +1391,8 @@ fn premises_and_assumption_bookkeeping_stay_consistent() {
         premises: vec![pruned.clone()],
         assumptions: std::collections::BTreeSet::new(),
         certification: mneme_prolog::Certification::Certified,
+        epistemic: mneme_datalog::EpistemicStatus::Accepted,
+        proof: None,
     };
     assert!(
         fabricated
@@ -1407,6 +1409,8 @@ fn premises_and_assumption_bookkeeping_stay_consistent() {
         premises: vec![pruned],
         assumptions: std::collections::BTreeSet::new(),
         certification: mneme_prolog::Certification::Certified,
+        epistemic: mneme_datalog::EpistemicStatus::Accepted,
+        proof: None,
     };
     assert_eq!(disclosed.unavailable_premises().len(), 1);
     assert!(
@@ -1690,4 +1694,215 @@ fn proposed_and_rejected_datalog_rows_are_never_promoted_to_unqualified_relation
             ("proposed-item".to_owned(), "proposed".to_owned()),
         ]
     );
+}
+
+#[test]
+fn certified_proofs_verify_multi_hop_canonical_and_epistemic_derivations_and_reject_tampering() {
+    let s1 = subject(0x41);
+    let s2 = subject(0x42);
+    let rec1 = mneme_core::RecordId::from_bytes([0x51; 16]);
+    let rev1 = mneme_core::RevisionId::from_bytes([0x61; 16]);
+    let rec2 = mneme_core::RecordId::from_bytes([0x52; 16]);
+    let rev2 = mneme_core::RevisionId::from_bytes([0x62; 16]);
+
+    let canonical = vec![mneme_prolog::snapshot::CanonicalFact {
+        record_id: rec1,
+        revision_id: rev1,
+        scope: scope(),
+        subject: s1,
+        predicate: "owner".to_owned(),
+        value: string("alice"),
+        valid_time: mneme_core::ValidTime::always(),
+    }];
+    let proposed_support = mneme_datalog::Derivation {
+        rule_id: "r-proposed".to_owned(),
+        rule_version: "1".to_owned(),
+        premises: vec![mneme_datalog::Premise {
+            predicate: "relation".to_owned(),
+            terms: vec![
+                mneme_core::Value::symbol("links"),
+                s1.to_value(),
+                s2.to_value(),
+            ],
+            canonical: Some(rec2),
+            canonical_roots: std::collections::BTreeSet::from([rec2]),
+            sources: std::collections::BTreeSet::from([(rec2, rev2)]),
+            source_availability: None,
+            vault: Some("primary".to_owned()),
+            vaults: std::collections::BTreeSet::from(["primary".to_owned()]),
+            absent: false,
+            coverage: None,
+            epistemic: mneme_datalog::EpistemicStatus::Proposed,
+        }],
+        sources: std::collections::BTreeSet::from([(rec2, rev2)]),
+        vaults: std::collections::BTreeSet::from(["primary".to_owned()]),
+        temporal_parameters: Vec::new(),
+        revision: revision(),
+        scope: scope(),
+        truncated: false,
+        epistemic: mneme_datalog::EpistemicStatus::Proposed,
+    };
+    let rel = mneme_prolog::snapshot::SelectedRelation {
+        predicate: "link".to_owned(),
+        rows: vec![mneme_prolog::snapshot::SelectedRow {
+            values: vec![string(&s1.to_hex()), string(&s2.to_hex())],
+            supports: vec![proposed_support],
+            epistemic: mneme_datalog::EpistemicStatus::Proposed,
+            support_truncated: false,
+        }],
+        coverage: mneme_prolog::InputCoverage {
+            complete: true,
+            reason: None,
+        },
+    };
+    let image = input_image(canonical, vec![rel]);
+
+    let mut md = metadata();
+    md.features.insert(mneme_prolog::Feature::CertifiedProofs);
+    md.features
+        .insert(mneme_prolog::Feature::HypotheticalAssumptions);
+    md.allowed_predicates
+        .insert(mneme_prolog::snapshot::SelectedRow::EPISTEMIC_RELATION.to_owned());
+    md.allowed_predicates.insert("string".to_owned());
+    md.allowed_predicates.insert("linked_owner".to_owned());
+    md.allowed_predicates.insert("assumed_flag".to_owned());
+    md.allowed_predicates.insert("flagged_owner".to_owned());
+
+    let rule = mneme_prolog::Rule {
+        id: "linked-owner-rule".to_owned(),
+        version: "1".to_owned(),
+        head: atom(
+            "linked_owner",
+            vec![
+                mneme_prolog::Term::Variable("Owner".to_owned()),
+                mneme_prolog::Term::Variable("Target".to_owned()),
+                mneme_prolog::Term::Variable("Status".to_owned()),
+            ],
+        ),
+        body: vec![
+            mneme_prolog::Literal::Positive(atom(
+                mneme_prolog::ASSERTION_RELATION,
+                vec![
+                    mneme_prolog::Term::String("owner".to_owned()),
+                    mneme_prolog::Term::Variable("Subj".to_owned()),
+                    mneme_prolog::Term::Variable("Owner".to_owned()),
+                ],
+            )),
+            mneme_prolog::Literal::Positive(atom(
+                mneme_prolog::snapshot::SelectedRow::EPISTEMIC_RELATION,
+                vec![
+                    mneme_prolog::Term::String("link".to_owned()),
+                    mneme_prolog::Term::List(vec![
+                        mneme_prolog::Term::Variable("Subj".to_owned()),
+                        mneme_prolog::Term::Variable("Target".to_owned()),
+                    ]),
+                    mneme_prolog::Term::Variable("Status".to_owned()),
+                ],
+            )),
+        ],
+    };
+    let mut req = request_for(
+        &image,
+        atom(
+            "linked_owner",
+            vec![
+                mneme_prolog::Term::Variable("Owner".to_owned()),
+                mneme_prolog::Term::Variable("Target".to_owned()),
+                mneme_prolog::Term::Variable("Status".to_owned()),
+            ],
+        ),
+        vec![rule],
+    );
+    req.features.insert(mneme_prolog::Feature::CertifiedProofs);
+
+    let out = run(&md, &image, &req, limits()).expect("certified query");
+    assert_eq!(out.status, mneme_prolog::ExecutionStatus::Complete);
+    let sols = solutions(&out);
+    assert_eq!(sols.len(), 1);
+    let sol = &sols[0];
+    assert_eq!(sol.certification, mneme_prolog::Certification::Certified);
+    assert_eq!(sol.epistemic, mneme_datalog::EpistemicStatus::Proposed);
+    assert_eq!(bound_string(sol, "Owner"), "alice");
+    assert_eq!(bound_string(sol, "Target"), s2.to_hex());
+    assert_eq!(bound_string(sol, "Status"), "proposed");
+    assert_eq!(sol.independent_support_count(), 2);
+
+    // Independent host verification succeeds on the returned certificate.
+    let cert = sol.proof.as_ref().expect("proof certificate present");
+    let verified = mneme_prolog::proof::verify_certificate(cert, &sol.bindings, &req, &image)
+        .expect("independent verification succeeds");
+    assert_eq!(verified.epistemic, mneme_datalog::EpistemicStatus::Proposed);
+
+    // Tampering with epistemic status or proof tree must fail verification.
+    let mut tampered_epistemic = cert.clone();
+    tampered_epistemic.epistemic = mneme_datalog::EpistemicStatus::Accepted;
+    assert!(
+        mneme_prolog::proof::verify_certificate(&tampered_epistemic, &sol.bindings, &req, &image)
+            .is_err(),
+        "forged epistemic promotion must fail host verification"
+    );
+    let mut tampered_root = cert.clone();
+    tampered_root.root =
+        mneme_prolog::proof::Node::Leaf(mneme_prolog::proof::Leaf::Canonical { index: 0 });
+    assert!(
+        mneme_prolog::proof::verify_certificate(&tampered_root, &sol.bindings, &req, &image)
+            .is_err(),
+        "tampered proof root must fail host verification"
+    );
+
+    // Hypothetical assumptions stay Uncertified even under Feature::CertifiedProofs.
+    let assumption_rule = mneme_prolog::Rule {
+        id: "flagged-rule".to_owned(),
+        version: "1".to_owned(),
+        head: atom(
+            "flagged_owner",
+            vec![mneme_prolog::Term::Variable("Owner".to_owned())],
+        ),
+        body: vec![
+            mneme_prolog::Literal::Positive(atom(
+                mneme_prolog::ASSERTION_RELATION,
+                vec![
+                    mneme_prolog::Term::String("owner".to_owned()),
+                    mneme_prolog::Term::Variable("Subj".to_owned()),
+                    mneme_prolog::Term::Variable("Owner".to_owned()),
+                ],
+            )),
+            mneme_prolog::Literal::Positive(atom(
+                "assumed_flag",
+                vec![mneme_prolog::Term::Variable("Subj".to_owned())],
+            )),
+        ],
+    };
+    let mut req_hyp = request_for(
+        &image,
+        atom(
+            "flagged_owner",
+            vec![mneme_prolog::Term::Variable("Owner".to_owned())],
+        ),
+        vec![assumption_rule],
+    );
+    req_hyp
+        .features
+        .insert(mneme_prolog::Feature::CertifiedProofs);
+    req_hyp
+        .features
+        .insert(mneme_prolog::Feature::HypotheticalAssumptions);
+    req_hyp.assumptions.push(mneme_prolog::Assumption {
+        id: "hyp-1".to_owned(),
+        atom: atom(
+            "assumed_flag",
+            vec![mneme_prolog::Term::String(s1.to_hex())],
+        ),
+        rationale: "what-if flag".to_owned(),
+    });
+    let out_hyp = run(&md, &image, &req_hyp, limits()).expect("hypothetical certified query");
+    assert_eq!(out_hyp.status, mneme_prolog::ExecutionStatus::Complete);
+    let hyp_sols = solutions(&out_hyp);
+    assert_eq!(hyp_sols.len(), 1);
+    assert!(matches!(
+        hyp_sols[0].certification,
+        mneme_prolog::Certification::Uncertified { .. }
+    ));
+    assert!(hyp_sols[0].assumptions.contains("hyp-1"));
+    assert!(hyp_sols[0].proof.is_some());
 }

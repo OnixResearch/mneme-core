@@ -5,6 +5,8 @@
 pub(super) struct SupportContext<'a> {
     pub context: &'a crate::BuildContext,
     pub facts: &'a std::collections::BTreeMap<String, super::FactStore>,
+    pub negation_oracle: Option<&'a std::collections::BTreeMap<String, super::FactStore>>,
+    pub negation_semantics: crate::NegationSemantics,
     pub coverage: &'a std::collections::BTreeMap<String, crate::CoverageStatus>,
     pub participating_vaults: &'a std::collections::BTreeSet<String>,
 }
@@ -686,6 +688,24 @@ fn negative_literal_support(
         .iter()
         .filter_map(|term| super::term_value(term, ctx.binding))
         .collect::<Vec<_>>();
+    let neg_facts = ctx
+        .support_ctx
+        .negation_oracle
+        .unwrap_or(ctx.support_ctx.facts);
+    let matched_status = neg_facts
+        .get(&atom.predicate)
+        .and_then(|store| store.rows.get(&terms))
+        .filter(|data| data.is_active())
+        .map_or(crate::EpistemicStatus::Rejected, |data| data.epistemic);
+    let negated_epistemic =
+        if ctx.support_ctx.negation_semantics == crate::NegationSemantics::Kleene {
+            matched_status.negate()
+        } else {
+            matched_status.strict_negate()
+        };
+    if !negated_epistemic.is_active() {
+        return None;
+    }
     let (vault, vaults) = if atom.predicate.starts_with("vault_")
         && let Some(alias) = terms.first().and_then(mneme_core::Value::as_string)
     {
@@ -719,7 +739,7 @@ fn negative_literal_support(
                 .name()
                 .to_owned(),
         ),
-        epistemic: crate::EpistemicStatus::Accepted,
+        epistemic: negated_epistemic,
     };
     Some(LiteralSupportOutput {
         premises: vec![premise],

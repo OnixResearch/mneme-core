@@ -54,10 +54,44 @@ pub fn is_active(status: EpistemicStatus) -> bool {
     !matches!(status, EpistemicStatus::Rejected)
 }
 
-/// Whether a fact with `status` blocks a negated literal (`not p(...)`).
+/// Whether a fact with `status` blocks a strict negated literal (`strict_not p(...)`).
 ///
 /// Rejected (`ZERO`) facts are absent from active relations and never block
-/// negation; active (`Proposed` or `Accepted`) facts block negation.
+/// negation; active (`Proposed` or `Accepted`) facts block strict negation.
 pub fn negation_blocks(status: EpistemicStatus) -> bool {
     is_active(status)
+}
+
+/// Kleene three-valued epistemic negation over `{Rejected, Proposed, Accepted}`:
+/// - `negate(Accepted) = Rejected` (blocks rule)
+/// - `negate(Proposed) = Proposed` (attenuates derived head to `Proposed`)
+/// - `negate(Rejected) = Accepted` (does not block or attenuate)
+pub fn negate(status: EpistemicStatus) -> EpistemicStatus {
+    if matches!(status, EpistemicStatus::Accepted) {
+        EpistemicStatus::Rejected
+    } else if matches!(status, EpistemicStatus::Proposed) {
+        EpistemicStatus::Proposed
+    } else {
+        EpistemicStatus::Accepted
+    }
+}
+
+/// Strict classical epistemic negation over `{Rejected, Proposed, Accepted}`:
+/// - `strict_negate(Accepted) = Rejected`
+/// - `strict_negate(Proposed) = Rejected`
+/// - `strict_negate(Rejected) = Accepted`
+pub fn strict_negate(status: EpistemicStatus) -> EpistemicStatus {
+    if is_active(status) {
+        EpistemicStatus::Rejected
+    } else {
+        EpistemicStatus::Accepted
+    }
+}
+
+/// Whether a fact with `status` blocks a Kleene three-valued negated literal (`not p(...)`).
+///
+/// Only `Accepted` facts annihilate a Kleene negated literal (`negate(Accepted) = Rejected`);
+/// `Proposed` facts attenuate rather than block, and `Rejected` facts yield `Accepted`.
+pub fn kleene_negation_blocks(status: EpistemicStatus) -> bool {
+    !is_active(negate(status))
 }

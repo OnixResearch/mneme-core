@@ -140,4 +140,79 @@ theorem negation_blocks_iff (status : EpistemicStatus) :
     negation_blocks status = ok true ↔ status ≠ EpistemicStatus.Rejected := by
   cases status <;> simp [negation_blocks, is_active]
 
+/-! ## Kleene three-valued epistemic negation (`negate`, `strict_negate`, `kleene_negation_blocks`) -/
+
+/-- `negate` never fails or diverges. -/
+theorem negate_total (status : EpistemicStatus) :
+    ∃ r, negate status = ok r := by
+  cases status <;> simp [negate]
+
+/-- `negate` implements Kleene three-valued negation:
+    `¬Accepted = Rejected`, `¬Proposed = Proposed`, `¬Rejected = Accepted`. -/
+theorem negate_values :
+    negate EpistemicStatus.Accepted = ok EpistemicStatus.Rejected ∧
+      negate EpistemicStatus.Proposed = ok EpistemicStatus.Proposed ∧
+      negate EpistemicStatus.Rejected = ok EpistemicStatus.Accepted := by
+  simp [negate]
+
+/-- `negate` is an involution: `¬(¬a) = a`. -/
+theorem negate_involutive (a : EpistemicStatus) :
+    ∃ na, negate a = ok na ∧ negate na = ok a := by
+  cases a <;> simp [negate]
+
+/-- `negate` is antitone with respect to `rank`: `rank a ≤ rank b → rank (¬b) ≤ rank (¬a)`. -/
+theorem negate_antitone (a b : EpistemicStatus) :
+    ∃ ra rb na nb rna rnb,
+      rank a = ok ra ∧ rank b = ok rb ∧
+      negate a = ok na ∧ negate b = ok nb ∧
+      rank na = ok rna ∧ rank nb = ok rnb ∧
+      (ra.val ≤ rb.val → rnb.val ≤ rna.val) := by
+  cases a <;> cases b <;> simp [negate, rank]
+
+/-- De Morgan law for `join`: `¬(a × b) = (¬a) + (¬b)`. -/
+theorem negate_de_morgan_join (a b : EpistemicStatus) :
+    ∃ ab na nb r,
+      join a b = ok ab ∧ negate ab = ok r ∧
+      negate a = ok na ∧ negate b = ok nb ∧
+      union na nb = ok r := by
+  cases a <;> cases b <;> simp [negate, join, union, rank]
+
+/-- De Morgan law for `union`: `¬(a + b) = (¬a) × (¬b)`. -/
+theorem negate_de_morgan_union (a b : EpistemicStatus) :
+    ∃ ab na nb r,
+      union a b = ok ab ∧ negate ab = ok r ∧
+      negate a = ok na ∧ negate b = ok nb ∧
+      join na nb = ok r := by
+  cases a <;> cases b <;> simp [negate, join, union, rank]
+
+/-- `strict_negate` never fails or diverges. -/
+theorem strict_negate_total (status : EpistemicStatus) :
+    ∃ r, strict_negate status = ok r := by
+  cases status <;> simp [strict_negate, is_active]
+
+/-- `strict_negate` maps `Accepted | Proposed` to `Rejected` and `Rejected` to `Accepted`. -/
+theorem strict_negate_values :
+    strict_negate EpistemicStatus.Accepted = ok EpistemicStatus.Rejected ∧
+      strict_negate EpistemicStatus.Proposed = ok EpistemicStatus.Rejected ∧
+      strict_negate EpistemicStatus.Rejected = ok EpistemicStatus.Accepted := by
+  simp [strict_negate, is_active]
+
+/-- `strict_negate` is always at or below `negate` in epistemic rank. -/
+theorem strict_negate_le_negate (a : EpistemicStatus) :
+    ∃ sn kn rsn rkn,
+      strict_negate a = ok sn ∧ negate a = ok kn ∧
+      rank sn = ok rsn ∧ rank kn = ok rkn ∧
+      rsn.val ≤ rkn.val := by
+  cases a <;> simp [strict_negate, negate, is_active, rank]
+
+/-- `kleene_negation_blocks` never fails or diverges. -/
+theorem kleene_negation_blocks_total (status : EpistemicStatus) :
+    ∃ blocks, kleene_negation_blocks status = ok blocks := by
+  cases status <;> simp [kleene_negation_blocks, negate, is_active]
+
+/-- Under Kleene epistemic negation, only an `Accepted` fact blocks the negated literal. -/
+theorem kleene_negation_blocks_iff (status : EpistemicStatus) :
+    kleene_negation_blocks status = ok true ↔ status = EpistemicStatus.Accepted := by
+  cases status <;> simp [kleene_negation_blocks, negate, is_active]
+
 end mneme_kernel.epistemic

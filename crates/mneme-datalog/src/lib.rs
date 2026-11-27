@@ -61,9 +61,12 @@ pub enum FederatedVaultSource {
 impl FederatedVaultSource {
     /// Alias assigned to this attached vault.
     pub fn alias(&self) -> &str {
-        match self {
-            FederatedVaultSource::Local(attachment) => &attachment.alias,
-            FederatedVaultSource::External(external) => &external.metadata.alias,
+        if let FederatedVaultSource::Local(attachment) = self {
+            &attachment.alias
+        } else if let FederatedVaultSource::External(external) = self {
+            &external.metadata.alias
+        } else {
+            ""
         }
     }
 }
@@ -83,12 +86,22 @@ pub fn validate_vault_alias(alias: &str) -> Result<(), Error> {
     Ok(())
 }
 
+pub mod justification;
 pub mod repl;
 pub mod temporal;
 pub mod zset;
+pub use justification::{
+    DEFAULT_MAX_JUSTIFICATION_NODES, FactRef, Hypergraph, Node, NodeId, PremiseEdge,
+};
+pub type JustificationGraph = justification::Hypergraph;
+pub type JustificationNode = justification::Node;
+pub type JustificationId = justification::NodeId;
 pub use repl::{ReplLimits, ReplSession, ReplSessionRequest, ReplStepSummary};
 pub use temporal::{DEFAULT_MAX_INTERVALS_PER_FACT, FactValidity, IntervalSet};
-pub use zset::{BilinearJoin, IndexedZSet, ZSet, delta_join};
+pub use zset::{
+    BilinearJoin, EpistemicBilinearJoin, EpistemicCombineOp, EpistemicWeight, EpistemicZSet,
+    IndexedEpistemicZSet, IndexedZSet, ZSet, delta_epistemic_join, delta_join,
+};
 
 /// Configuration for temporal interval bounds during Datalog evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +116,37 @@ impl Default for TemporalConfig {
             max_intervals_per_fact: DEFAULT_MAX_INTERVALS_PER_FACT,
         }
     }
+}
+
+/// Epistemic semantics for negated body literals (`not p(...)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NegationSemantics {
+    /// Kleene three-valued epistemic negation (`¬Accepted = Rejected`,
+    /// `¬Proposed = Proposed`, `¬Rejected = Accepted`): a `Proposed` negated fact
+    /// attenuates the derived head to `Proposed` instead of silently suppressing it.
+    #[default]
+    Kleene,
+    /// Strict classical negation blocking on any active fact (`Accepted | Proposed`).
+    Strict,
+}
+
+/// Fixpoint evaluation mode for rule programs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EvaluationMode {
+    /// Stratified fixpoint evaluation (default).
+    #[default]
+    Stratified,
+    /// Bounded alternating-fixpoint Well-Founded Semantics (WFS) supporting
+    /// bounded belief-revision cycles through negation.
+    WellFounded,
+}
+
+/// Evaluation configuration combining temporal bounds, negation semantics, and WFS mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct EvaluationConfig {
+    pub temporal: TemporalConfig,
+    pub negation: NegationSemantics,
+    pub mode: EvaluationMode,
 }
 
 /// A Datalog term.
@@ -330,12 +374,16 @@ pub enum ExecutionStatus {
 impl ExecutionStatus {
     /// Stable lower-case name.
     pub const fn name(self) -> &'static str {
-        match self {
-            ExecutionStatus::Complete => "complete",
-            ExecutionStatus::Partial => "partial",
-            ExecutionStatus::Timeout => "timeout",
-            ExecutionStatus::Cancelled => "cancelled",
-            ExecutionStatus::Failed => "failed",
+        if matches!(self, ExecutionStatus::Complete) {
+            "complete"
+        } else if matches!(self, ExecutionStatus::Partial) {
+            "partial"
+        } else if matches!(self, ExecutionStatus::Timeout) {
+            "timeout"
+        } else if matches!(self, ExecutionStatus::Cancelled) {
+            "cancelled"
+        } else {
+            "failed"
         }
     }
 }
@@ -351,10 +399,12 @@ pub enum CoverageStatus {
 impl CoverageStatus {
     /// Stable lower-case name.
     pub const fn name(self) -> &'static str {
-        match self {
-            CoverageStatus::Complete => "complete",
-            CoverageStatus::Incomplete => "incomplete",
-            CoverageStatus::Unknown => "unknown",
+        if matches!(self, CoverageStatus::Complete) {
+            "complete"
+        } else if matches!(self, CoverageStatus::Incomplete) {
+            "incomplete"
+        } else {
+            "unknown"
         }
     }
 }
@@ -514,6 +564,8 @@ pub struct Build {
         String,
         std::collections::BTreeMap<Vec<mneme_core::Value>, FactData>,
     >,
+    pub(crate) justifications: JustificationGraph,
+    pub(crate) negation_semantics: NegationSemantics,
     pub(crate) arities: std::collections::BTreeMap<String, usize>,
     pub(crate) bundle: RuleBundle,
     pub(crate) vault_barriers: Vec<VaultBarrier>,
@@ -558,6 +610,16 @@ impl Build {
     /// Whether every declared base predicate matches its canonical extent.
     pub fn declaration_valid(&self) -> bool {
         self.declaration_valid
+    }
+
+    /// Bounded content-addressed justification hypergraph for derived and base facts.
+    pub fn justifications(&self) -> &JustificationGraph {
+        &self.justifications
+    }
+
+    /// Epistemic negation semantics used to construct this build.
+    pub const fn negation_semantics(&self) -> NegationSemantics {
+        self.negation_semantics
     }
 
     /// Number of materialized rows in one predicate.
@@ -874,8 +936,8 @@ struct BuildInvocation {
     requested_was_head: bool,
     /// The instant taken before the snapshot and history were loaded.
     start: std::time::Instant,
-    /// Per-fact coalesced interval cap for bitemporal / DatalogMTL evaluation.
-    temporal_config: TemporalConfig,
+    /// Evaluation configuration (temporal interval bounds, negation semantics, and WFS mode).
+    config: EvaluationConfig,
 }
 
 /// The query cache identity.
@@ -911,6 +973,12 @@ impl RuleBundle {
     pub fn validate(&self) -> Result<RuleProgram, Vec<RuleDiagnostic>> {
         rules::validate(self)
     }
+
+    /// Validate this bundle for bounded Well-Founded Semantics evaluation,
+    /// permitting bounded cycles through negation.
+    pub fn validate_well_founded(&self) -> Result<RuleProgram, Vec<RuleDiagnostic>> {
+        rules::validate_well_founded(self)
+    }
 }
 
 /// The public build assembled from one evaluation's facts.
@@ -935,6 +1003,8 @@ fn assembled_build(
             .into_iter()
             .map(|(predicate, store)| (predicate, store.rows))
             .collect(),
+        justifications: evaluated.justifications,
+        negation_semantics: evaluated.negation_semantics,
         arities: program.arities,
         bundle: program.bundle,
         vault_barriers,
@@ -955,21 +1025,42 @@ impl<'w> Service<'w> {
     /// Build a private projection and optionally publish its pointer through
     /// the workspace projection registry.
     pub fn build(&mut self, request: BuildRequest) -> Result<Build, Error> {
-        self.build_with_temporal_config(request, TemporalConfig::default())
+        self.build_with_config(request, EvaluationConfig::default())
     }
 
     /// Build a projection with an explicit [`TemporalConfig`] bounding
     /// per-fact coalesced intervals.
-    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
     pub fn build_with_temporal_config(
         &mut self,
         request: BuildRequest,
         temporal_config: TemporalConfig,
     ) -> Result<Build, Error> {
+        self.build_with_config(
+            request,
+            EvaluationConfig {
+                temporal: temporal_config,
+                ..EvaluationConfig::default()
+            },
+        )
+    }
+
+    /// Build a projection with an explicit [`EvaluationConfig`] selecting
+    /// temporal interval bounds, epistemic negation semantics, and WFS mode.
+    #[allow(unknown_lints)] // Octet structural exception: cohesive state-machine code; split tracked separately
+    pub fn build_with_config(
+        &mut self,
+        request: BuildRequest,
+        config: EvaluationConfig,
+    ) -> Result<Build, Error> {
         // The clock starts before the snapshot and history are read, so the
         // wall-clock bound covers loading as well as evaluation.
         let start = engine::evaluation_start();
-        let program = request.bundle.validate().map_err(Error::InvalidBundle)?;
+        let program = if config.mode == EvaluationMode::WellFounded {
+            request.bundle.validate_well_founded()
+        } else {
+            request.bundle.validate()
+        }
+        .map_err(Error::InvalidBundle)?;
         let generation = self.workspace.eligibility_generation()?;
         let head_revision = self.workspace.current_revision()?;
         let mut build_id = rules::build_id(rules::BuildIdContext {
@@ -981,8 +1072,14 @@ impl<'w> Service<'w> {
             incomplete_extents: &request.incomplete_extents,
             at: request.at,
         });
-        if temporal_config != TemporalConfig::default() {
-            build_id.push_str(&format!(":ti{}", temporal_config.max_intervals_per_fact));
+        if config.temporal != TemporalConfig::default() {
+            build_id.push_str(&format!(":ti{}", config.temporal.max_intervals_per_fact));
+        }
+        if config.negation == NegationSemantics::Strict {
+            build_id.push_str(":neg-strict");
+        }
+        if config.mode == EvaluationMode::WellFounded {
+            build_id.push_str(":wfs");
         }
         let is_cancellation_requested = request
             .cancellation
@@ -1015,7 +1112,7 @@ impl<'w> Service<'w> {
                 generation,
                 requested_was_head: request.revision == head_revision,
                 start,
-                temporal_config,
+                config,
             },
             snapshot,
         )?;
@@ -1153,7 +1250,7 @@ impl<'w> Service<'w> {
             generation,
             requested_was_head,
             start,
-            temporal_config,
+            config,
         } = invocation;
         debug_assert!(!build_id.is_empty());
         debug_assert!(!program.bundle.id.is_empty());
@@ -1188,7 +1285,7 @@ impl<'w> Service<'w> {
             engine::BuildEnvironment {
                 start,
                 current_sources: &loaded.current_sources,
-                temporal_config,
+                config,
             },
         );
         if self.workspace.eligibility_generation()? != generation {
@@ -1608,10 +1705,12 @@ pub(crate) fn matching_query_rows(build: &Build, query: &Query) -> Vec<QueryRow>
 }
 
 fn kernel_coverage(status: CoverageStatus) -> mneme_kernel::completeness::Coverage {
-    match status {
-        CoverageStatus::Complete => mneme_kernel::completeness::Coverage::Complete,
-        CoverageStatus::Incomplete => mneme_kernel::completeness::Coverage::Incomplete,
-        CoverageStatus::Unknown => mneme_kernel::completeness::Coverage::Unknown,
+    if status == CoverageStatus::Complete {
+        mneme_kernel::completeness::Coverage::Complete
+    } else if status == CoverageStatus::Incomplete {
+        mneme_kernel::completeness::Coverage::Incomplete
+    } else {
+        mneme_kernel::completeness::Coverage::Unknown
     }
 }
 
