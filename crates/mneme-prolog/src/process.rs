@@ -243,8 +243,9 @@ fn worker_solution_limit(request: &crate::Request) -> usize {
     match request.mode {
         crate::QueryMode::GroundTest => 0,
         crate::QueryMode::FindOne => 1,
-        crate::QueryMode::Enumerate => request.limits.max_solutions,
-        crate::QueryMode::Collect => request.limits.max_solutions,
+        crate::QueryMode::Enumerate
+        | crate::QueryMode::Collect
+        | crate::QueryMode::Abduce { .. } => request.limits.max_solutions,
     }
 }
 
@@ -628,11 +629,17 @@ fn write_program(
     let identity = source.protocol_identity(request, metadata)?;
     assert!(!identity.image_digest.is_empty());
     let mut text = String::from(EMITTER_SOURCE);
+    let is_certified = request.features.contains(&crate::Feature::CertifiedProofs);
+    if !is_certified {
+        for directive in crate::slg::tabling_directives(&request.rules) {
+            text.push_str(&directive);
+            text.push('\n');
+        }
+    }
     for clause in program_clauses(source, request, metadata)? {
         text.push_str(&clause);
         text.push('\n');
     }
-    let is_certified = request.features.contains(&crate::Feature::CertifiedProofs);
     if is_certified {
         for clause in proof_clauses(source, request, metadata)? {
             text.push_str(&clause);
@@ -1062,7 +1069,7 @@ fn goal_directive(
             "(({goal}), {emit}, fail ; {exhausted}), halt(0)",
             exhausted = stop("exhausted"),
         ),
-        crate::QueryMode::Collect => format!(
+        crate::QueryMode::Collect | crate::QueryMode::Abduce { .. } => format!(
             "(({goal}), {emit}, fail ; {exhausted}), halt(0)",
             exhausted = stop("exhausted"),
         ),

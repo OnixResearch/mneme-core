@@ -443,7 +443,7 @@ impl ApiService {
         };
         let Some(adapter) = &self.prolog else {
             return Ok(Dispatch::qualified(
-                reasoning_disabled_value(query.mode),
+                reasoning_disabled_value(&query.mode),
                 None,
                 "disabled",
             ));
@@ -470,7 +470,7 @@ impl ApiService {
             revision,
             eligibility_generation: generation,
             image_digest: image.context.image_digest.clone(),
-            mode: query.mode,
+            mode: query.mode.clone(),
             goal: query.goal.clone(),
             variables: query.variables.clone(),
             rules: query.rules.clone(),
@@ -548,7 +548,7 @@ impl ApiService {
     ) -> crate::error::CallResult<Dispatch> {
         let Some(adapter) = &self.prolog else {
             return Ok(Dispatch::qualified(
-                reasoning_disabled_value(request.query.mode),
+                reasoning_disabled_value(&request.query.mode),
                 None,
                 "disabled",
             ));
@@ -2008,7 +2008,7 @@ fn reasoning_execution_status(status: mneme_prolog::ExecutionStatus) -> &'static
     }
 }
 
-fn reasoning_disabled_value(mode: mneme_prolog::QueryMode) -> mneme_core::Value {
+fn reasoning_disabled_value(mode: &mneme_prolog::QueryMode) -> mneme_core::Value {
     mneme_core::Value::symbol_dictionary([
         (
             mneme_core::Symbol::from("available"),
@@ -2204,7 +2204,7 @@ fn federated_prolog_request(
         revision,
         eligibility_generation,
         image_digest: federated.image.context.image_digest.clone(),
-        mode: request.query.mode,
+        mode: request.query.mode.clone(),
         goal: request.query.goal.clone(),
         variables: request.query.variables.clone(),
         rules: request.query.rules.clone(),
