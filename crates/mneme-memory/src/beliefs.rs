@@ -5,6 +5,7 @@
 //! canonical state or promotes a proposed assertion.
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
+pub mod aspic;
 pub mod captures;
 
 /// The policy predicate used for action-completion claims.
@@ -47,12 +48,14 @@ pub struct BeliefView {
     pub include_disputed: bool,
 }
 
-/// Incompatible claims retained under one subject/predicate and scope.
+/// Incompatible or challenged claims retained under one subject/predicate and scope.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConflictGroup {
     pub subject: mneme_core::RecordId,
     pub predicate: String,
     pub assertions: Vec<crate::model::AssertionView>,
+    pub argumentation: aspic::ArgumentationVerdict,
+    pub opinion: aspic::Opinion,
 }
 
 /// Classification of an assertion change between two workspace revisions within
@@ -187,6 +190,7 @@ pub struct Corroboration {
     pub roots: std::collections::BTreeSet<SourceRevisionKey>,
     pub independent_supports: usize,
     pub shared_ancestry: bool,
+    pub opinion: aspic::Opinion,
 }
 
 /// A bounded explanation of one current assertion.
@@ -198,6 +202,8 @@ pub struct Explanation {
     pub evidence: Vec<EvidenceExplanation>,
     pub derivations: Vec<DerivationAlternative>,
     pub corroboration: Corroboration,
+    pub argumentation: aspic::ArgumentationVerdict,
+    pub opinion: aspic::Opinion,
     pub truncated: bool,
     /// Graph nodes the bounded walk visited while building this explanation.
     pub visited_nodes: u64,
@@ -322,7 +328,11 @@ impl View {
 
     /// Whether content held in `scope` may be shown to a caller working in
     /// `base`. The kernel owns the rule; the base scope is always readable.
-    fn content_readable_in(&self, scope: &mneme_core::ScopeId, base: &mneme_core::ScopeId) -> bool {
+    pub(crate) fn content_readable_in(
+        &self,
+        scope: &mneme_core::ScopeId,
+        base: &mneme_core::ScopeId,
+    ) -> bool {
         mneme_kernel::isolation::content_readable(&mneme_kernel::isolation::ContentFacts {
             same_scope: scope == base,
             target_authorized: self.access.allows(scope),
@@ -963,7 +973,14 @@ impl View {
     /// never answers a requested instant, and an open bound is unbounded on
     /// that side. Belief and conflict selection both use it, so the two views
     /// can never disagree about which claims apply at an instant.
-    fn valid_time_applies(valid_time: mneme_core::ValidTime, at: mneme_core::Timestamp) -> bool {
+    pub(crate) fn all_envelopes(&self) -> impl Iterator<Item = &mneme_core::RecordEnvelope> {
+        self.records.values()
+    }
+
+    pub(crate) fn valid_time_applies(
+        valid_time: mneme_core::ValidTime,
+        at: mneme_core::Timestamp,
+    ) -> bool {
         mneme_kernel::temporal::validity_contains(
             valid_time_to_kernel(valid_time),
             i128::from(at.nanos()),
@@ -1019,13 +1036,10 @@ impl View {
         Ok(beliefs)
     }
 
-    /// Incompatible currently eligible claims that apply at the view instant,
-    /// grouped by subject and predicate.
-    ///
-    /// Two claims can only conflict where both answer the requested instant, so
-    /// the candidates are filtered by the same valid-time rule beliefs use
-    /// before any pair is compared.
-    pub fn conflicts(&self, view: &BeliefView) -> crate::failure::Result<Vec<ConflictGroup>> {
+    fn conflict_candidates(
+        &self,
+        view: &BeliefView,
+    ) -> crate::failure::Result<Vec<crate::model::AssertionView>> {
         let assertions = self.assertions()?;
         let mut candidates = Vec::with_capacity(assertions.len());
         for assertion in assertions {
@@ -1048,26 +1062,25 @@ impl View {
             }
             candidates.push(assertion);
         }
+        Ok(candidates)
+    }
+
+    /// Incompatible currently eligible claims that apply at the view instant,
+    /// grouped by subject and predicate.
+    ///
+    /// Two claims can only conflict where both answer the requested instant, so
+    /// the candidates are filtered by the same valid-time rule beliefs use
+    /// before any pair is compared.
+    pub fn conflicts(&self, view: &BeliefView) -> crate::failure::Result<Vec<ConflictGroup>> {
+        let candidates = self.conflict_candidates(view)?;
+        let verdicts = aspic::evaluate_assertions_at(self, &candidates, view.at);
         let mut groups: std::collections::BTreeMap<
             (mneme_core::RecordId, String),
             Vec<crate::model::AssertionView>,
         > = std::collections::BTreeMap::new();
         for (index, left) in candidates.iter().enumerate() {
             for right in candidates.iter().skip(index.saturating_add(1)) {
-                if left.subject != right.subject || left.predicate != right.predicate {
-                    continue;
-                }
-                let is_incompatible = match (left.stance, right.stance) {
-                    (crate::model::Stance::Affirm, crate::model::Stance::Deny)
-                    | (crate::model::Stance::Deny, crate::model::Stance::Affirm) => true,
-                    (crate::model::Stance::Affirm, crate::model::Stance::Affirm) => {
-                        left.value != right.value
-                    }
-                    (crate::model::Stance::Deny, crate::model::Stance::Deny) => false,
-                    (crate::model::Stance::Hypothesis, _)
-                    | (_, crate::model::Stance::Hypothesis) => false,
-                };
-                if is_incompatible {
+                if aspic::assertions_incompatible(left, right) {
                     let group = groups
                         .entry((left.subject, left.predicate.clone()))
                         .or_default();
@@ -1086,14 +1099,56 @@ impl View {
                 }
             }
         }
-        Ok(groups
-            .into_iter()
-            .map(|((subject, predicate), assertions)| ConflictGroup {
+        // Surface assertions undercut by retained `SupportRelation::Challenges`
+        // evidence or defeated via derivation chains even without a rival claim.
+        for candidate in &candidates {
+            let is_defeated = verdicts.get(&candidate.record.record_id).is_some_and(|v| {
+                !matches!(v.status, aspic::ArgumentationStatus::In) || !v.defeats.is_empty()
+            });
+            if is_defeated {
+                let group = groups
+                    .entry((candidate.subject, candidate.predicate.clone()))
+                    .or_default();
+                if !group
+                    .iter()
+                    .any(|assertion| assertion.record.record_id == candidate.record.record_id)
+                {
+                    group.push(candidate.clone());
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(groups.len());
+        for ((subject, predicate), assertions) in groups {
+            let argumentation = aspic::summarize_conflict_group_verdict(&assertions, &verdicts);
+            let opinion = aspic::compute_conflict_group_opinion(self, &assertions)?;
+            out.push(ConflictGroup {
                 subject,
                 predicate,
                 assertions,
-            })
-            .collect())
+                argumentation,
+                opinion,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Evaluate the grounded ASPIC+ argumentation verdict for one assertion.
+    pub fn argumentation_verdict(
+        &self,
+        assertion: mneme_core::RecordId,
+    ) -> crate::failure::Result<aspic::ArgumentationVerdict> {
+        let assertion = self.assertion(assertion)?;
+        Ok(aspic::evaluate_assertion_verdict(self, &assertion))
+    }
+
+    /// Compute the read-only `RootIdentity`-partitioned Subjective Logic opinion
+    /// for one assertion.
+    pub fn opinion(
+        &self,
+        assertion: mneme_core::RecordId,
+    ) -> crate::failure::Result<aspic::Opinion> {
+        let assertion = self.assertion(assertion)?;
+        aspic::compute_assertion_opinion(self, &assertion)
     }
 
     /// Compare two committed snapshots over a half-open `valid_window`,
@@ -1402,11 +1457,13 @@ impl View {
             visible_supports.into_iter().flatten().collect();
         let is_complete = is_complete && !ancestry.exhausted;
         let independent_supports = content_roots.len();
+        let opinion = aspic::compute_assertion_opinion(self, assertion)?;
         Ok((
             Corroboration {
                 shared_ancestry: is_complete && supporting > 1 && independent_supports == 1,
                 roots: roots.into_values().collect(),
                 independent_supports,
+                opinion,
             },
             is_complete,
             ancestry.exhausted,
@@ -1415,7 +1472,7 @@ impl View {
 
     /// Keep only the ancestry roots a caller working in `base` may inspect.
     /// The second value is false when a root had to be withheld.
-    fn visible_roots(
+    pub(crate) fn visible_roots(
         &self,
         roots: &std::collections::BTreeMap<RootIdentity, SourceRevisionKey>,
         base: &mneme_core::ScopeId,
@@ -1450,7 +1507,7 @@ impl View {
 
     /// Whether a corroboration root is exact source content rather than the
     /// provenance record that introduced it.
-    fn is_content_root(&self, identity: &RootIdentity, key: SourceRevisionKey) -> bool {
+    pub(crate) fn is_content_root(&self, identity: &RootIdentity, key: SourceRevisionKey) -> bool {
         if matches!(identity, RootIdentity::Digest(_)) {
             return true;
         }
@@ -1462,7 +1519,10 @@ impl View {
         kind == Some(mneme_core::RecordKind::SourceRevision)
     }
 
-    fn derivation_revision_matches(&self, derivation: &crate::model::DerivationView) -> bool {
+    pub(crate) fn derivation_revision_matches(
+        &self,
+        derivation: &crate::model::DerivationView,
+    ) -> bool {
         let Some(evaluated) = self.revision_sequences.get(&derivation.evaluation_revision) else {
             return false;
         };
@@ -1665,6 +1725,9 @@ impl View {
         // query does, so a truncated evidence list never fabricates it.
         let (corroboration, corroboration_complete, over_budget) =
             self.corroboration_inner(&assertion)?;
+        let argumentation = aspic::evaluate_assertion_verdict(self, &assertion);
+        let opinion = corroboration.opinion;
+        let is_arg_truncated = argumentation.is_truncated;
         Ok(Explanation {
             assertion,
             workspace_revision: self.snapshot.revision,
@@ -1672,11 +1735,14 @@ impl View {
             evidence,
             derivations,
             corroboration,
+            argumentation,
+            opinion,
             truncated: is_truncated
                 || ancestry.incomplete
                 || ancestry.exhausted
                 || !corroboration_complete
-                || over_budget,
+                || over_budget
+                || is_arg_truncated,
             visited_nodes: ancestry.used,
             inaccessible_decisions,
         })
@@ -1920,19 +1986,19 @@ fn inaccessible_evidence_explanation() -> EvidenceExplanation {
 /// Identity a corroboration root is counted by: the exact content when known,
 /// so the same bytes imported under two records are one root.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum RootIdentity {
+pub(crate) enum RootIdentity {
     Digest(mneme_core::ContentDigest),
     Revision(SourceRevisionKey),
 }
 
 /// What one graph node contributes to support and ancestry.
 #[derive(Clone, Default)]
-struct NodeFacts {
+pub(crate) struct NodeFacts {
     /// Every child of the node was resolved.
-    complete: bool,
+    pub(crate) complete: bool,
     /// The node may ground or back a claim.
-    eligible: bool,
-    roots: std::collections::BTreeMap<RootIdentity, SourceRevisionKey>,
+    pub(crate) eligible: bool,
+    pub(crate) roots: std::collections::BTreeMap<RootIdentity, SourceRevisionKey>,
 }
 
 /// One node's parsed shape, decided once per query.
@@ -1982,11 +2048,11 @@ impl NodePlan {
 /// one visit, not one visit per path. The work budget is charged with
 /// [`mneme_kernel::budget::charge`]; an exhausted budget marks the result
 /// incomplete instead of walking on.
-struct Ancestry<'v> {
+pub(crate) struct Ancestry<'v> {
     view: &'v View,
     limit: u64,
     used: u64,
-    exhausted: bool,
+    pub(crate) exhausted: bool,
     /// A visited node could not resolve its full ancestry.
     incomplete: bool,
     /// Integrity errors abort the walk instead of marking the node unusable.
@@ -1999,7 +2065,7 @@ struct Ancestry<'v> {
 }
 
 impl<'v> Ancestry<'v> {
-    fn new(view: &'v View, limit: u64, strict: bool) -> Self {
+    pub(crate) fn new(view: &'v View, limit: u64, strict: bool) -> Self {
         Ancestry {
             view,
             limit,
@@ -2065,7 +2131,10 @@ impl<'v> Ancestry<'v> {
     }
 
     /// Facts for one record, evaluating only the nodes not yet memoized.
-    fn evaluate(&mut self, record: mneme_core::RecordId) -> crate::failure::Result<NodeFacts> {
+    pub(crate) fn evaluate(
+        &mut self,
+        record: mneme_core::RecordId,
+    ) -> crate::failure::Result<NodeFacts> {
         enum Step {
             Enter(mneme_core::RecordId),
             Finish(mneme_core::RecordId),

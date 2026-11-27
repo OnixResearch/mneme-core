@@ -82,7 +82,7 @@ pub(crate) fn canonical_schema(predicate: &str) -> Option<&'static [CanonicalKin
             CanonicalKind::Any,
             CanonicalKind::RecordId,
         ]),
-        "evidence" => Some(&[CanonicalKind::RecordId, CanonicalKind::RecordId]),
+        "evidence" | "challenge" => Some(&[CanonicalKind::RecordId, CanonicalKind::RecordId]),
         "document" => Some(&[
             CanonicalKind::RecordId,
             // The loader falls back to the `unbound` symbol when a document has
@@ -121,7 +121,7 @@ fn vault_canonical_schema(predicate: &str) -> Option<&'static [CanonicalKind]> {
             CanonicalKind::Any,
             CanonicalKind::RecordId,
         ]),
-        "vault_evidence" => Some(&[
+        "vault_evidence" | "vault_challenge" => Some(&[
             CanonicalKind::String,
             CanonicalKind::RecordId,
             CanonicalKind::RecordId,

@@ -4640,3 +4640,103 @@ fn federated_query_joins_across_vaults_with_provenance_negation_and_pinned_deter
     assert!(locked.is_err(), "locked attached vault must be refused");
     drop(sweep_guard);
 }
+
+fn challenge_test_bundle() -> mneme_datalog::RuleBundle {
+    mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "challenge-test".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 1,
+        base_predicates: std::collections::BTreeMap::from([
+            ("evidence".to_owned(), 2),
+            ("challenge".to_owned(), 2),
+        ]),
+        complete_predicates: std::collections::BTreeSet::from([
+            "evidence".to_owned(),
+            "challenge".to_owned(),
+        ]),
+        rules: vec![
+            mneme_datalog::Rule::new(
+                "r-supported",
+                atom("supported", vec![var("A"), var("S")]),
+                vec![mneme_datalog::Literal::Positive(atom(
+                    "evidence",
+                    vec![var("A"), var("S")],
+                ))],
+            ),
+            mneme_datalog::Rule::new(
+                "r-challenged",
+                atom("challenged", vec![var("A"), var("S")]),
+                vec![mneme_datalog::Literal::Positive(atom(
+                    "challenge",
+                    vec![var("A"), var("S")],
+                ))],
+            ),
+        ],
+    })
+}
+
+#[test]
+fn challenge_predicate_projects_challenges_evidence_separately_from_evidence() {
+    let mut harness = Harness::new();
+    let assertion = add_assertion_support(&mut harness, false);
+    let (counter_source, counter_blob) = mneme_memory::build_source(
+        rid(0x28),
+        rev(0x29),
+        &scope(),
+        mneme_memory::SourceOptions {
+            bytes: b"counter-evidence source text",
+            media_type: "text/plain",
+            entity: Some(rid(0x10)),
+            path_hint: Some("counter.txt"),
+        },
+    )
+    .expect("counter source");
+    let challenge = mneme_memory::build_evidence(
+        rid(0x38),
+        rev(0x39),
+        &scope(),
+        mneme_memory::EvidenceOptions {
+            assertion,
+            source: rid(0x28),
+            source_revision: rev(0x29),
+            span: None,
+            anchor: Some("challenge"),
+            relation: mneme_memory::SupportRelation::Challenges,
+            origin: mneme_core::Origin::AuthoredStatement,
+            ancestry: &[],
+        },
+    );
+    harness.commit(
+        "challenge-evidence",
+        vec![counter_source, challenge],
+        vec![counter_blob],
+    );
+    let head = harness.workspace.current_revision().expect("head");
+    let mut service = mneme_datalog::Service::new(&mut harness.workspace);
+    let build = service
+        .build(mneme_datalog::BuildRequest {
+            actor: "test".to_owned(),
+            scope: scope(),
+            revision: head,
+            bundle: challenge_test_bundle(),
+            limits: limits(),
+            publish: false,
+            incomplete_extents: std::collections::BTreeSet::new(),
+            cancellation: None,
+            access: mneme_memory::Access::Operator,
+            at: None,
+        })
+        .expect("build");
+    let supported = service
+        .query_build(&build, mneme_datalog::Query::all("supported", 100))
+        .expect("supported query");
+    assert_eq!(supported.rows.len(), 1);
+    assert_eq!(supported.rows[0].values[0], assertion.to_value());
+    assert_eq!(supported.rows[0].values[1], rid(0x20).to_value());
+    let challenged = service
+        .query_build(&build, mneme_datalog::Query::all("challenged", 100))
+        .expect("challenged query");
+    assert_eq!(challenged.rows.len(), 1);
+    assert_eq!(challenged.rows[0].values[0], assertion.to_value());
+    assert_eq!(challenged.rows[0].values[1], rid(0x28).to_value());
+}

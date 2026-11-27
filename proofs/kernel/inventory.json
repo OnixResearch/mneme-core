@@ -2438,6 +2438,403 @@
         "contraction::node_next_grounded"
       ],
       "statement": "(a b : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) (ha0 : a.val < grounded.length → grounded.val[a.val]? = some false) (hb0 : b.val < grounded.length → grounded.val[b.val]? = some false) (hedges : ∀ e ∈ edges.val, e.target.val = a.val ∨ e.target.val = b.val → e.premises.len.val = 0 ∨ premises.length < e.premises.start.val + e.premises.len.val ∨ ∃ j, e.premises.start.val ≤ j ∧ j < e.premises.start.val + e.premises.len.val ∧ ∀ p, premises.val[j]? = some p → grounded.length ≤ p.val ∨ p.val = a.val ∨ p.val = b.val) : node_next_grounded a edges premises grounded = ok false ∧ node_next_grounded b edges premises grounded = ok false"
+    },
+    {
+      "name": "mneme_kernel.argumentation.authority_rank_total",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::authority_rank"
+      ],
+      "statement": "(authority : Authority) : ∃ r, authority_rank authority = ok r"
+    },
+    {
+      "name": "mneme_kernel.argumentation.authority_rank_order",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::authority_rank"
+      ],
+      "statement": ": authority_rank Authority.Proposed = ok 0#u8 ∧ authority_rank Authority.Accepted = ok 1#u8 ∧ authority_rank Authority.ConflictResolution = ok 2#u8"
+    },
+    {
+      "name": "mneme_kernel.argumentation.preference_defeats_total",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::preference_defeats",
+        "argumentation::authority_rank"
+      ],
+      "statement": "(attacker target : Authority) : ∃ b, preference_defeats attacker target = ok b"
+    },
+    {
+      "name": "mneme_kernel.argumentation.preference_defeats_reflexive",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::preference_defeats",
+        "argumentation::authority_rank"
+      ],
+      "statement": "(a : Authority) : preference_defeats a a = ok true"
+    },
+    {
+      "name": "mneme_kernel.argumentation.preference_defeats_strict_asymmetric",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::preference_defeats",
+        "argumentation::authority_rank"
+      ],
+      "statement": "(a b : Authority) (ra rb : U8) (ha : authority_rank a = ok ra) (hb : authority_rank b = ok rb) (hlt : rb.val < ra.val) : preference_defeats a b = ok true ∧ preference_defeats b a = ok false"
+    },
+    {
+      "name": "mneme_kernel.argumentation.preference_defeats_transitive",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::preference_defeats",
+        "argumentation::authority_rank"
+      ],
+      "statement": "(a b c : Authority) (hab : preference_defeats a b = ok true) (hbc : preference_defeats b c = ok true) : preference_defeats a c = ok true"
+    },
+    {
+      "name": "mneme_kernel.argumentation.best_label_total",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::best_label"
+      ],
+      "statement": "(left right : Label) : ∃ r, best_label left right = ok r"
+    },
+    {
+      "name": "mneme_kernel.argumentation.best_label_comm",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::best_label"
+      ],
+      "statement": "(left right : Label) : best_label left right = best_label right left"
+    },
+    {
+      "name": "mneme_kernel.argumentation.best_label_assoc",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::best_label"
+      ],
+      "statement": "(a b c : Label) : ∃ ab bc r, best_label a b = ok ab ∧ best_label b c = ok bc ∧ best_label ab c = ok r ∧ best_label a bc = ok r"
+    },
+    {
+      "name": "mneme_kernel.argumentation.best_label_idem",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::best_label"
+      ],
+      "statement": "(a : Label) : best_label a a = ok a"
+    },
+    {
+      "name": "mneme_kernel.argumentation.best_label_bounds",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::best_label"
+      ],
+      "statement": "(a : Label) : best_label Label.In a = ok Label.In ∧ best_label Label.Out a = ok a"
+    },
+    {
+      "name": "mneme_kernel.argumentation.next_label_total",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::next_label"
+      ],
+      "statement": "(node : Usize) (defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, next_label node defeats labels = ok r"
+    },
+    {
+      "name": "mneme_kernel.argumentation.next_label_spec",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::next_label"
+      ],
+      "statement": "(node : Usize) (defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, next_label node defeats labels = ok r ∧ (r = Label.Out ↔ node.val < labels.length ∧ ∃ e ∈ defeats.val, e.target = node ∧ e.attacker.val < labels.length ∧ labels.val[e.attacker.val]? = some Label.In) ∧ (r = Label.In ↔ node.val < labels.length ∧ ∀ e ∈ defeats.val, e.target = node → e.attacker.val < labels.length → labels.val[e.attacker.val]? = some Label.Out)"
+    },
+    {
+      "name": "mneme_kernel.argumentation.next_label_monotone",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::next_label"
+      ],
+      "statement": "(node : Usize) (defeats : Slice DefeatEdge) (labels1 labels2 : Slice Label) (hlen : labels1.length = labels2.length) (hle : ∀ i, i < labels1.length → ∀ a b, labels1.val[i]? = some a → labels2.val[i]? = some b → a = Label.Undec ∨ a = b) : ∃ r1 r2, next_label node defeats labels1 = ok r1 ∧ next_label node defeats labels2 = ok r2 ∧ (r1 = Label.Undec ∨ r1 = r2)"
+    },
+    {
+      "name": "mneme_kernel.argumentation.next_label_perm_invariant",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::next_label"
+      ],
+      "statement": "(node : Usize) (defeats1 defeats2 : Slice DefeatEdge) (labels : Slice Label) (heq : ∀ e, e ∈ defeats1.val ↔ e ∈ defeats2.val) : next_label node defeats1 labels = next_label node defeats2 labels"
+    },
+    {
+      "name": "mneme_kernel.argumentation.is_fixpoint_total",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_fixpoint",
+        "argumentation::next_label"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, is_fixpoint defeats labels = ok r"
+    },
+    {
+      "name": "mneme_kernel.argumentation.is_fixpoint_iff",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_fixpoint",
+        "argumentation::next_label"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : is_fixpoint defeats labels = ok true ↔ ∀ i, i < labels.length → ∀ u : Usize, u.val = i → ∀ l, labels.val[i]? = some l → next_label u defeats labels = ok l"
+    },
+    {
+      "name": "mneme_kernel.argumentation.is_conflict_free_total",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_conflict_free"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, is_conflict_free defeats labels = ok r"
+    },
+    {
+      "name": "mneme_kernel.argumentation.is_conflict_free_iff",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_conflict_free"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : is_conflict_free defeats labels = ok true ↔ ∀ e ∈ defeats.val, e.attacker.val < labels.length → e.target.val < labels.length → ¬ (labels.val[e.attacker.val]? = some Label.In ∧ labels.val[e.target.val]? = some Label.In)"
+    },
+    {
+      "name": "mneme_kernel.argumentation.is_admissible_total",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_admissible",
+        "argumentation::is_conflict_free"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, is_admissible defeats labels = ok r"
+    },
+    {
+      "name": "mneme_kernel.argumentation.is_admissible_iff",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_admissible",
+        "argumentation::is_conflict_free"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : is_admissible defeats labels = ok true ↔ is_conflict_free defeats labels = ok true ∧ ∀ e ∈ defeats.val, e.attacker.val < labels.length → e.target.val < labels.length → labels.val[e.target.val]? = some Label.In → ∃ d ∈ defeats.val, d.target = e.attacker ∧ d.attacker.val < labels.length ∧ labels.val[d.attacker.val]? = some Label.In"
+    },
+    {
+      "name": "mneme_kernel.argumentation.fixpoint_conflict_free",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_fixpoint",
+        "argumentation::is_conflict_free",
+        "argumentation::next_label"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) (hfix : is_fixpoint defeats labels = ok true) : is_conflict_free defeats labels = ok true"
+    },
+    {
+      "name": "mneme_kernel.argumentation.fixpoint_admissible",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_fixpoint",
+        "argumentation::is_admissible",
+        "argumentation::next_label"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) (hfix : is_fixpoint defeats labels = ok true) : is_admissible defeats labels = ok true"
+    },
+    {
+      "name": "mneme_kernel.argumentation.grounded_terminates_in_n_rounds",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::next_label",
+        "argumentation::is_fixpoint",
+        "argumentation::is_conflict_free",
+        "argumentation::is_admissible"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (n : Nat) (hn : n ≤ Usize.max) : ∃ g : Slice Label, g.length = n ∧ is_fixpoint defeats g = ok true ∧ is_conflict_free defeats g = ok true ∧ is_admissible defeats g = ok true ∧ ∀ h : Slice Label, h.length = n → is_fixpoint defeats h = ok true → ∀ i, i < n → ∀ a b, g.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b"
+    },
+    {
+      "name": "mneme_kernel.argumentation.grounded_unique",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_fixpoint",
+        "argumentation::next_label"
+      ],
+      "statement": "(defeats : Slice DefeatEdge) (g1 g2 : Slice Label) (hlen : g1.length = g2.length) (hf1 : is_fixpoint defeats g1 = ok true) (hf2 : is_fixpoint defeats g2 = ok true) (hl1 : ∀ h : Slice Label, h.length = g1.length → is_fixpoint defeats h = ok true → ∀ i, i < g1.length → ∀ a b, g1.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b) (hl2 : ∀ h : Slice Label, h.length = g2.length → is_fixpoint defeats h = ok true → ∀ i, i < g2.length → ∀ a b, g2.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b) : g1.val = g2.val"
+    },
+    {
+      "name": "mneme_kernel.argumentation.grounded_perm_invariant",
+      "file": "MnemeKernelProofs/Argumentation.lean",
+      "subjects": [
+        "argumentation::is_fixpoint",
+        "argumentation::next_label"
+      ],
+      "statement": "(d1 d2 : Slice DefeatEdge) (g1 g2 : Slice Label) (n : Nat) (heq : ∀ e, e ∈ d1.val ↔ e ∈ d2.val) (h1len : g1.length = n) (h2len : g2.length = n) (hf1 : is_fixpoint d1 g1 = ok true) (hf2 : is_fixpoint d2 g2 = ok true) (hl1 : ∀ h : Slice Label, h.length = n → is_fixpoint d1 h = ok true → ∀ i, i < n → ∀ a b, g1.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b) (hl2 : ∀ h : Slice Label, h.length = n → is_fixpoint d2 h = ok true → ∀ i, i < n → ∀ a b, g2.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b) : g1.val = g2.val"
+    },
+    {
+      "name": "mneme_kernel.opinion.is_valid_total",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::is_valid"
+      ],
+      "statement": "(ev : Evidence) : ∃ b, is_valid ev = ok b"
+    },
+    {
+      "name": "mneme_kernel.opinion.is_valid_iff",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::is_valid"
+      ],
+      "statement": "(ev : Evidence) : is_valid ev = ok true ↔ 0 < ev.w.val ∧ ev.base_rate.val ≤ BASE_RATE_SCALE.val ∧ ev.r.val + ev.s.val + ev.w.val ≤ U128.max"
+    },
+    {
+      "name": "mneme_kernel.opinion.vacuous_total",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::vacuous"
+      ],
+      "statement": "(base_rate : U64) : ∃ ev, vacuous base_rate = ok ev"
+    },
+    {
+      "name": "mneme_kernel.opinion.vacuous_valid",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::vacuous",
+        "opinion::is_valid"
+      ],
+      "statement": "(base_rate : U64) : ∃ ev, vacuous base_rate = ok ev ∧ is_valid ev = ok true"
+    },
+    {
+      "name": "mneme_kernel.opinion.vacuous_projects_exact",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::vacuous",
+        "opinion::project"
+      ],
+      "statement": "(base_rate : U64) : ∃ ev p, vacuous base_rate = ok ev ∧ project ev = ok (some p) ∧ p.b_num.val = 0 ∧ p.d_num.val = 0 ∧ p.u_num.val = p.denom.val ∧ p.denom.val = 2 ∧ p.conflict_num.val = 0"
+    },
+    {
+      "name": "mneme_kernel.opinion.project_total",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::project"
+      ],
+      "statement": "(ev : Evidence) : ∃ p, project ev = ok p"
+    },
+    {
+      "name": "mneme_kernel.opinion.project_simplex_preservation",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::project"
+      ],
+      "statement": "(ev : Evidence) (p : Projected) (hp : project ev = ok (some p)) : p.b_num.val + p.d_num.val + p.u_num.val = p.denom.val ∧ 0 < p.denom.val ∧ p.conflict_num.val = 2 * min p.b_num.val p.d_num.val ∧ p.conflict_num.val ≤ p.b_num.val + p.d_num.val ∧ p.conflict_num.val < p.denom.val ∧ p.base_rate.val ≤ BASE_RATE_SCALE.val"
+    },
+    {
+      "name": "mneme_kernel.opinion.project_conflict_pos_iff",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::project"
+      ],
+      "statement": "(ev : Evidence) (p : Projected) (hp : project ev = ok (some p)) : 0 < p.conflict_num.val ↔ 0 < p.b_num.val ∧ 0 < p.d_num.val"
+    },
+    {
+      "name": "mneme_kernel.opinion.averaging_cluster_total",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::averaging_cluster"
+      ],
+      "statement": "(supports challenges base_rate : U64) : ∃ ev, averaging_cluster supports challenges base_rate = ok ev"
+    },
+    {
+      "name": "mneme_kernel.opinion.averaging_cluster_echo_chamber_invariance",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::averaging_cluster",
+        "opinion::project"
+      ],
+      "statement": "(supports challenges base_rate : U64) : ∃ ev p, averaging_cluster supports challenges base_rate = ok ev ∧ project ev = ok (some p) ∧ (supports.val = 0 ∧ challenges.val = 0 → p.b_num.val = 0 ∧ p.d_num.val = 0 ∧ p.u_num.val = p.denom.val) ∧ (0 < supports.val ∨ 0 < challenges.val → 3 * p.u_num.val = 2 * p.denom.val) ∧ (0 < supports.val ∧ challenges.val = 0 → ev.r.val = 1 ∧ ev.s.val = 0 ∧ ev.w.val = 2) ∧ (supports.val = 0 ∧ 0 < challenges.val → ev.r.val = 0 ∧ ev.s.val = 1 ∧ ev.w.val = 2)"
+    },
+    {
+      "name": "mneme_kernel.opinion.cumulative_fuse_total",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::cumulative_fuse"
+      ],
+      "statement": "(left right : Evidence) : ∃ o, cumulative_fuse left right = ok o"
+    },
+    {
+      "name": "mneme_kernel.opinion.cumulative_fuse_spec",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::cumulative_fuse"
+      ],
+      "statement": "(left right out : Evidence) (h : cumulative_fuse left right = ok (some out)) : is_valid left = ok true ∧ is_valid right = ok true ∧ is_valid out = ok true ∧ out.r.val * (left.w.val * right.w.val) = (left.r.val * right.w.val + right.r.val * left.w.val) * out.w.val ∧ out.s.val * (left.w.val * right.w.val) = (left.s.val * right.w.val + right.s.val * left.w.val) * out.w.val ∧ out.base_rate.val = min left.base_rate.val right.base_rate.val"
+    },
+    {
+      "name": "mneme_kernel.opinion.cumulative_fuse_comm",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::cumulative_fuse"
+      ],
+      "statement": "(left right : Evidence) : cumulative_fuse left right = cumulative_fuse right left"
+    },
+    {
+      "name": "mneme_kernel.opinion.cumulative_fuse_assoc",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::cumulative_fuse"
+      ],
+      "statement": "(a b c ab bc lhs rhs : Evidence) (hab : cumulative_fuse a b = ok (some ab)) (hbc : cumulative_fuse b c = ok (some bc)) (hlhs : cumulative_fuse ab c = ok (some lhs)) (hrhs : cumulative_fuse a bc = ok (some rhs)) : lhs.r.val * rhs.w.val = rhs.r.val * lhs.w.val ∧ lhs.s.val * rhs.w.val = rhs.s.val * lhs.w.val ∧ lhs.base_rate = rhs.base_rate"
+    },
+    {
+      "name": "mneme_kernel.opinion.cumulative_fuse_vacuous_identity",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::cumulative_fuse",
+        "opinion::vacuous"
+      ],
+      "statement": "(ev v out : Evidence) (hv : vacuous ev.base_rate = ok v) (hf : cumulative_fuse ev v = ok (some out)) : out.r.val * ev.w.val = ev.r.val * out.w.val ∧ out.s.val * ev.w.val = ev.s.val * out.w.val ∧ out.base_rate = ev.base_rate"
+    },
+    {
+      "name": "mneme_kernel.opinion.averaging_fuse_total",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::averaging_fuse"
+      ],
+      "statement": "(left right : Evidence) : ∃ o, averaging_fuse left right = ok o"
+    },
+    {
+      "name": "mneme_kernel.opinion.averaging_fuse_comm",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::averaging_fuse"
+      ],
+      "statement": "(left right : Evidence) : averaging_fuse left right = averaging_fuse right left"
+    },
+    {
+      "name": "mneme_kernel.opinion.averaging_fuse_idempotent",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::averaging_fuse"
+      ],
+      "statement": "(ev out : Evidence) (h : averaging_fuse ev ev = ok (some out)) : is_valid out = ok true ∧ out.r.val * ev.w.val = ev.r.val * out.w.val ∧ out.s.val * ev.w.val = ev.s.val * out.w.val ∧ out.r.val * (ev.r.val + ev.s.val + ev.w.val) = ev.r.val * (out.r.val + out.s.val + out.w.val) ∧ out.s.val * (ev.r.val + ev.s.val + ev.w.val) = ev.s.val * (out.r.val + out.s.val + out.w.val) ∧ out.w.val * (ev.r.val + ev.s.val + ev.w.val) = ev.w.val * (out.r.val + out.s.val + out.w.val) ∧ out.base_rate = ev.base_rate"
+    },
+    {
+      "name": "mneme_kernel.opinion.trust_discount_total",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::trust_discount"
+      ],
+      "statement": "(trust target : Evidence) : ∃ o, trust_discount trust target = ok o"
+    },
+    {
+      "name": "mneme_kernel.opinion.trust_discount_non_inflation",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::trust_discount"
+      ],
+      "statement": "(trust target out : Evidence) (h : trust_discount trust target = ok (some out)) : let dt"
+    },
+    {
+      "name": "mneme_kernel.opinion.trust_discount_vacuous_trust",
+      "file": "MnemeKernelProofs/Opinion.lean",
+      "subjects": [
+        "opinion::trust_discount"
+      ],
+      "statement": "(trust target out : Evidence) (h0 : trust.r.val = 0) (h : trust_discount trust target = ok (some out)) : out.r.val = 0 ∧ out.s.val = 0"
     }
   ]
 }

@@ -142,9 +142,11 @@ def admission.CommitDecision.Insts.CoreCmpPartialEqCommitDecision.eq
 /-- Trait implementation: [mneme_kernel::admission::{impl core::cmp::PartialEq<mneme_kernel::admission::CommitDecision> for mneme_kernel::admission::CommitDecision}]
     Source: 'crates/mneme-kernel/src/admission.rs', lines 36:22-36:31 -/
 @[reducible]
-def admission.CommitDecision.Insts.CoreCmpPartialEqCommitDecision :
+impl_def admission.CommitDecision.Insts.CoreCmpPartialEqCommitDecision :
   core.cmp.PartialEq admission.CommitDecision admission.CommitDecision := {
   eq := admission.CommitDecision.Insts.CoreCmpPartialEqCommitDecision.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    admission.CommitDecision.Insts.CoreCmpPartialEqCommitDecision
 }
 
 /-- [mneme_kernel::admission::{impl core::cmp::Eq for mneme_kernel::admission::CommitDecision}::assert_fields_are_eq]:
@@ -261,9 +263,11 @@ def admission.ReplayDecision.Insts.CoreCmpPartialEqReplayDecision.eq
 /-- Trait implementation: [mneme_kernel::admission::{impl core::cmp::PartialEq<mneme_kernel::admission::ReplayDecision> for mneme_kernel::admission::ReplayDecision}]
     Source: 'crates/mneme-kernel/src/admission.rs', lines 90:22-90:31 -/
 @[reducible]
-def admission.ReplayDecision.Insts.CoreCmpPartialEqReplayDecision :
+impl_def admission.ReplayDecision.Insts.CoreCmpPartialEqReplayDecision :
   core.cmp.PartialEq admission.ReplayDecision admission.ReplayDecision := {
   eq := admission.ReplayDecision.Insts.CoreCmpPartialEqReplayDecision.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    admission.ReplayDecision.Insts.CoreCmpPartialEqReplayDecision
 }
 
 /-- [mneme_kernel::admission::{impl core::cmp::Eq for mneme_kernel::admission::ReplayDecision}::assert_fields_are_eq]:
@@ -369,6 +373,678 @@ def admission.non_monotonic_rule_admissible
   | completeness.Coverage.Incomplete => ok false
   | completeness.Coverage.Unknown => ok false
 
+/-- [mneme_kernel::argumentation::RANK_PROPOSED]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 18:0-18:28 -/
+@[global_simps, irreducible] def argumentation.RANK_PROPOSED : Std.U8 := 0#u8
+
+/-- [mneme_kernel::argumentation::RANK_ACCEPTED]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 19:0-19:28 -/
+@[global_simps, irreducible] def argumentation.RANK_ACCEPTED : Std.U8 := 1#u8
+
+/-- [mneme_kernel::argumentation::RANK_CONFLICT_RESOLUTION]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 20:0-20:39 -/
+@[global_simps, irreducible]
+def argumentation.RANK_CONFLICT_RESOLUTION : Std.U8 := 2#u8
+
+/-- [mneme_kernel::argumentation::LABEL_RANK_OUT]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 22:0-22:29 -/
+@[global_simps, irreducible] def argumentation.LABEL_RANK_OUT : Std.U8 := 0#u8
+
+/-- [mneme_kernel::argumentation::LABEL_RANK_UNDEC]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 23:0-23:31 -/
+@[global_simps, irreducible]
+def argumentation.LABEL_RANK_UNDEC : Std.U8 := 1#u8
+
+/-- [mneme_kernel::argumentation::LABEL_RANK_IN]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 24:0-24:28 -/
+@[global_simps, irreducible] def argumentation.LABEL_RANK_IN : Std.U8 := 2#u8
+
+/-- [mneme_kernel::argumentation::Label]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 29:0-36:1
+    Visibility: public -/
+@[discriminant isize]
+inductive argumentation.Label where
+| Out : argumentation.Label
+| Undec : argumentation.Label
+| In : argumentation.Label
+
+/-- [mneme_kernel::argumentation::{impl core::clone::Clone for mneme_kernel::argumentation::Label}::clone]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 27:9-27:14
+    Visibility: public -/
+def argumentation.Label.Insts.CoreCloneClone.clone
+  (self : argumentation.Label) : Result argumentation.Label := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::clone::Clone for mneme_kernel::argumentation::Label}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 27:9-27:14 -/
+@[reducible]
+def argumentation.Label.Insts.CoreCloneClone : core.clone.Clone
+  argumentation.Label := {
+  clone := argumentation.Label.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::marker::Copy for mneme_kernel::argumentation::Label}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 27:16-27:20 -/
+@[reducible]
+def argumentation.Label.Insts.CoreMarkerCopy : core.marker.Copy
+  argumentation.Label := {
+  cloneInst := argumentation.Label.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::marker::StructuralPartialEq for mneme_kernel::argumentation::Label}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 27:22-27:31 -/
+@[reducible]
+def argumentation.Label.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq argumentation.Label := {
+}
+
+/-- [mneme_kernel::argumentation::{impl core::cmp::PartialEq<mneme_kernel::argumentation::Label> for mneme_kernel::argumentation::Label}::eq]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 27:22-27:31
+    Visibility: public -/
+def argumentation.Label.Insts.CoreCmpPartialEqLabel.eq
+  (self : argumentation.Label) (other : argumentation.Label) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::cmp::PartialEq<mneme_kernel::argumentation::Label> for mneme_kernel::argumentation::Label}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 27:22-27:31 -/
+@[reducible]
+impl_def argumentation.Label.Insts.CoreCmpPartialEqLabel : core.cmp.PartialEq
+  argumentation.Label argumentation.Label := {
+  eq := argumentation.Label.Insts.CoreCmpPartialEqLabel.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    argumentation.Label.Insts.CoreCmpPartialEqLabel
+}
+
+/-- [mneme_kernel::argumentation::{impl core::cmp::Eq for mneme_kernel::argumentation::Label}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 27:33-27:35
+    Visibility: public -/
+def argumentation.Label.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : argumentation.Label) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::cmp::Eq for mneme_kernel::argumentation::Label}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 27:33-27:35 -/
+@[reducible]
+def argumentation.Label.Insts.CoreCmpEq : core.cmp.Eq argumentation.Label := {
+  partialEqInst := argumentation.Label.Insts.CoreCmpPartialEqLabel
+  assert_fields_are_eq :=
+    argumentation.Label.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::argumentation::Authority]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 41:0-48:1
+    Visibility: public -/
+@[discriminant isize]
+inductive argumentation.Authority where
+| Proposed : argumentation.Authority
+| Accepted : argumentation.Authority
+| ConflictResolution : argumentation.Authority
+
+/-- [mneme_kernel::argumentation::{impl core::clone::Clone for mneme_kernel::argumentation::Authority}::clone]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 39:9-39:14
+    Visibility: public -/
+def argumentation.Authority.Insts.CoreCloneClone.clone
+  (self : argumentation.Authority) : Result argumentation.Authority := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::clone::Clone for mneme_kernel::argumentation::Authority}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 39:9-39:14 -/
+@[reducible]
+def argumentation.Authority.Insts.CoreCloneClone : core.clone.Clone
+  argumentation.Authority := {
+  clone := argumentation.Authority.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::marker::Copy for mneme_kernel::argumentation::Authority}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 39:16-39:20 -/
+@[reducible]
+def argumentation.Authority.Insts.CoreMarkerCopy : core.marker.Copy
+  argumentation.Authority := {
+  cloneInst := argumentation.Authority.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::marker::StructuralPartialEq for mneme_kernel::argumentation::Authority}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 39:22-39:31 -/
+@[reducible]
+def argumentation.Authority.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq argumentation.Authority := {
+}
+
+/-- [mneme_kernel::argumentation::{impl core::cmp::PartialEq<mneme_kernel::argumentation::Authority> for mneme_kernel::argumentation::Authority}::eq]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 39:22-39:31
+    Visibility: public -/
+def argumentation.Authority.Insts.CoreCmpPartialEqAuthority.eq
+  (self : argumentation.Authority) (other : argumentation.Authority) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::cmp::PartialEq<mneme_kernel::argumentation::Authority> for mneme_kernel::argumentation::Authority}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 39:22-39:31 -/
+@[reducible]
+impl_def argumentation.Authority.Insts.CoreCmpPartialEqAuthority :
+  core.cmp.PartialEq argumentation.Authority argumentation.Authority := {
+  eq := argumentation.Authority.Insts.CoreCmpPartialEqAuthority.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    argumentation.Authority.Insts.CoreCmpPartialEqAuthority
+}
+
+/-- [mneme_kernel::argumentation::{impl core::cmp::Eq for mneme_kernel::argumentation::Authority}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 39:33-39:35
+    Visibility: public -/
+def argumentation.Authority.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : argumentation.Authority) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::cmp::Eq for mneme_kernel::argumentation::Authority}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 39:33-39:35 -/
+@[reducible]
+def argumentation.Authority.Insts.CoreCmpEq : core.cmp.Eq
+  argumentation.Authority := {
+  partialEqInst := argumentation.Authority.Insts.CoreCmpPartialEqAuthority
+  assert_fields_are_eq :=
+    argumentation.Authority.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::argumentation::DefeatEdge]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 54:0-59:1
+    Visibility: public -/
+structure argumentation.DefeatEdge where
+  attacker : Std.Usize
+  target : Std.Usize
+
+/-- [mneme_kernel::argumentation::{impl core::clone::Clone for mneme_kernel::argumentation::DefeatEdge}::clone]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 51:9-51:14
+    Visibility: public -/
+def argumentation.DefeatEdge.Insts.CoreCloneClone.clone
+  (self : argumentation.DefeatEdge) : Result argumentation.DefeatEdge := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::clone::Clone for mneme_kernel::argumentation::DefeatEdge}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 51:9-51:14 -/
+@[reducible]
+def argumentation.DefeatEdge.Insts.CoreCloneClone : core.clone.Clone
+  argumentation.DefeatEdge := {
+  clone := argumentation.DefeatEdge.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::marker::Copy for mneme_kernel::argumentation::DefeatEdge}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 51:16-51:20 -/
+@[reducible]
+def argumentation.DefeatEdge.Insts.CoreMarkerCopy : core.marker.Copy
+  argumentation.DefeatEdge := {
+  cloneInst := argumentation.DefeatEdge.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::marker::StructuralPartialEq for mneme_kernel::argumentation::DefeatEdge}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 51:22-51:31 -/
+@[reducible]
+def argumentation.DefeatEdge.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq argumentation.DefeatEdge := {
+}
+
+/-- [mneme_kernel::argumentation::{impl core::cmp::PartialEq<mneme_kernel::argumentation::DefeatEdge> for mneme_kernel::argumentation::DefeatEdge}::eq]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 51:22-51:31
+    Visibility: public -/
+def argumentation.DefeatEdge.Insts.CoreCmpPartialEqDefeatEdge.eq
+  (self : argumentation.DefeatEdge) (other : argumentation.DefeatEdge) :
+  Result Bool
+  := do
+  if self.attacker = other.attacker
+  then ok (self.target = other.target)
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::cmp::PartialEq<mneme_kernel::argumentation::DefeatEdge> for mneme_kernel::argumentation::DefeatEdge}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 51:22-51:31 -/
+@[reducible]
+impl_def argumentation.DefeatEdge.Insts.CoreCmpPartialEqDefeatEdge :
+  core.cmp.PartialEq argumentation.DefeatEdge argumentation.DefeatEdge := {
+  eq := argumentation.DefeatEdge.Insts.CoreCmpPartialEqDefeatEdge.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    argumentation.DefeatEdge.Insts.CoreCmpPartialEqDefeatEdge
+}
+
+/-- [mneme_kernel::argumentation::{impl core::cmp::Eq for mneme_kernel::argumentation::DefeatEdge}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 51:33-51:35
+    Visibility: public -/
+def argumentation.DefeatEdge.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : argumentation.DefeatEdge) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::argumentation::{impl core::cmp::Eq for mneme_kernel::argumentation::DefeatEdge}]
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 51:33-51:35 -/
+@[reducible]
+def argumentation.DefeatEdge.Insts.CoreCmpEq : core.cmp.Eq
+  argumentation.DefeatEdge := {
+  partialEqInst := argumentation.DefeatEdge.Insts.CoreCmpPartialEqDefeatEdge
+  assert_fields_are_eq :=
+    argumentation.DefeatEdge.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::argumentation::authority_rank]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 62:0-70:1
+    Visibility: public -/
+def argumentation.authority_rank
+  (authority : argumentation.Authority) : Result Std.U8 := do
+  let b ←
+    match authority with
+    | argumentation.Authority.Proposed => ok true
+    | argumentation.Authority.Accepted => ok false
+    | argumentation.Authority.ConflictResolution => ok false
+  if b
+  then ok argumentation.RANK_PROPOSED
+  else
+    let b1 ←
+      match authority with
+      | argumentation.Authority.Proposed => ok false
+      | argumentation.Authority.Accepted => ok true
+      | argumentation.Authority.ConflictResolution => ok false
+    if b1
+    then ok argumentation.RANK_ACCEPTED
+    else ok argumentation.RANK_CONFLICT_RESOLUTION
+
+/-- [mneme_kernel::argumentation::preference_defeats]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 79:0-81:1
+    Visibility: public -/
+def argumentation.preference_defeats
+  (attacker : argumentation.Authority) (target : argumentation.Authority) :
+  Result Bool
+  := do
+  let i ← argumentation.authority_rank attacker
+  let i1 ← argumentation.authority_rank target
+  ok (i >= i1)
+
+/-- [mneme_kernel::argumentation::label_rank]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 83:0-91:1 -/
+def argumentation.label_rank
+  (label : argumentation.Label) : Result Std.U8 := do
+  let b ←
+    match label with
+    | argumentation.Label.Out => ok true
+    | argumentation.Label.Undec => ok false
+    | argumentation.Label.In => ok false
+  if b
+  then ok argumentation.LABEL_RANK_OUT
+  else
+    let b1 ←
+      match label with
+      | argumentation.Label.Out => ok false
+      | argumentation.Label.Undec => ok true
+      | argumentation.Label.In => ok false
+    if b1
+    then ok argumentation.LABEL_RANK_UNDEC
+    else ok argumentation.LABEL_RANK_IN
+
+/-- [mneme_kernel::argumentation::best_label]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 95:0-101:1
+    Visibility: public -/
+def argumentation.best_label
+  (left : argumentation.Label) (right : argumentation.Label) :
+  Result argumentation.Label
+  := do
+  let i ← argumentation.label_rank left
+  let i1 ← argumentation.label_rank right
+  if i >= i1
+  then ok left
+  else ok right
+
+/-- [mneme_kernel::argumentation::next_label]: loop body 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 117:8-129:9
+    Visibility: public -/
+@[rust_loop_body]
+def argumentation.next_label_loop.body
+  (node : Std.Usize) (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (has_in_attacker : Bool)
+  (has_non_out_attacker : Bool) (index : Std.Usize) :
+  Result (ControlFlow (Bool × Bool × Std.Usize) (Bool × Bool))
+  := do
+  let i := Slice.len defeats
+  if index < i
+  then
+    let edge ← Slice.index_usize defeats index
+    let (has_in_attacker1, has_non_out_attacker1) ←
+      if edge.target = node
+      then
+        let i1 := Slice.len labels
+        if edge.attacker < i1
+        then
+          do
+          let attacker_label ← Slice.index_usize labels edge.attacker
+          let b ←
+            match attacker_label with
+            | argumentation.Label.Out => ok false
+            | argumentation.Label.Undec => ok false
+            | argumentation.Label.In => ok true
+          let has_in_attacker2 ← if b
+                                   then ok true
+                                   else ok has_in_attacker
+          let b1 ←
+            match attacker_label with
+            | argumentation.Label.Out => ok true
+            | argumentation.Label.Undec => ok false
+            | argumentation.Label.In => ok false
+          let b2 ← if b1
+                     then ok has_non_out_attacker
+                     else ok true
+          ok (has_in_attacker2, b2)
+        else ok (has_in_attacker, has_non_out_attacker)
+      else ok (has_in_attacker, has_non_out_attacker)
+    let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+    ok (cont (has_in_attacker1, has_non_out_attacker1, index1))
+  else ok (done (has_in_attacker, has_non_out_attacker))
+
+/-- [mneme_kernel::argumentation::next_label]: loop 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 117:8-129:9
+    Visibility: public -/
+@[rust_loop]
+def argumentation.next_label_loop
+  (node : Std.Usize) (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (has_in_attacker : Bool)
+  (has_non_out_attacker : Bool) (index : Std.Usize) :
+  Result (Bool × Bool)
+  := do
+  loop
+    (fun (has_in_attacker1, has_non_out_attacker1, index1) =>
+      argumentation.next_label_loop.body node defeats labels has_in_attacker1
+      has_non_out_attacker1 index1)
+    (has_in_attacker, has_non_out_attacker, index)
+
+/-- [mneme_kernel::argumentation::next_label]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 110:0-138:1
+    Visibility: public -/
+def argumentation.next_label
+  (node : Std.Usize) (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) :
+  Result argumentation.Label
+  := do
+  let i := Slice.len labels
+  if node >= i
+  then ok argumentation.Label.Undec
+  else
+    let (has_in_attacker, has_non_out_attacker) ←
+      argumentation.next_label_loop node defeats labels false false 0#usize
+    if has_in_attacker
+    then ok argumentation.Label.Out
+    else
+      if has_non_out_attacker
+      then ok argumentation.Label.Undec
+      else ok argumentation.Label.In
+
+/-- [mneme_kernel::argumentation::is_fixpoint]: loop body 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 145:4-151:5
+    Visibility: public -/
+@[rust_loop_body]
+def argumentation.is_fixpoint_loop.body
+  (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (is_all_fixed : Bool)
+  (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len labels
+  if index < i
+  then
+    if is_all_fixed
+    then
+      let updated ← argumentation.next_label index defeats labels
+      let l ← Slice.index_usize labels index
+      let b ←
+        core.cmp.PartialEq.ne.trait_default
+          argumentation.Label.Insts.CoreCmpPartialEqLabel updated l
+      let is_all_fixed1 ← if b
+                            then ok false
+                            else ok true
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (is_all_fixed1, index1))
+    else ok (done false)
+  else ok (done is_all_fixed)
+
+/-- [mneme_kernel::argumentation::is_fixpoint]: loop 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 145:4-151:5
+    Visibility: public -/
+@[rust_loop]
+def argumentation.is_fixpoint_loop
+  (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (is_all_fixed : Bool)
+  (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (is_all_fixed1, index1) => argumentation.is_fixpoint_loop.body defeats
+      labels is_all_fixed1 index1)
+    (is_all_fixed, index)
+
+/-- [mneme_kernel::argumentation::is_fixpoint]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 142:0-153:1
+    Visibility: public -/
+@[reducible]
+def argumentation.is_fixpoint
+  (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) :
+  Result Bool
+  := do
+  argumentation.is_fixpoint_loop defeats labels true 0#usize
+
+/-- [mneme_kernel::argumentation::is_conflict_free]: loop body 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 160:4-170:5
+    Visibility: public -/
+@[rust_loop_body]
+def argumentation.is_conflict_free_loop.body
+  (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (is_free : Bool) (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len defeats
+  if index < i
+  then
+    if is_free
+    then
+      let edge ← Slice.index_usize defeats index
+      let i1 := Slice.len labels
+      let is_free1 ←
+        if edge.attacker < i1
+        then
+          let i2 := Slice.len labels
+          if edge.target < i2
+          then
+            do
+            let l ← Slice.index_usize labels edge.attacker
+            let b ←
+              match l with
+              | argumentation.Label.Out => ok false
+              | argumentation.Label.Undec => ok false
+              | argumentation.Label.In => ok true
+            let is_both_in ←
+              if b
+              then
+                do
+                let l1 ← Slice.index_usize labels edge.target
+                match l1 with
+                | argumentation.Label.Out => ok false
+                | argumentation.Label.Undec => ok false
+                | argumentation.Label.In => ok true
+              else ok false
+            if is_both_in
+            then ok false
+            else ok true
+          else ok true
+        else ok true
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (is_free1, index1))
+    else ok (done false)
+  else ok (done is_free)
+
+/-- [mneme_kernel::argumentation::is_conflict_free]: loop 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 160:4-170:5
+    Visibility: public -/
+@[rust_loop]
+def argumentation.is_conflict_free_loop
+  (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (is_free : Bool) (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (is_free1, index1) => argumentation.is_conflict_free_loop.body defeats
+      labels is_free1 index1)
+    (is_free, index)
+
+/-- [mneme_kernel::argumentation::is_conflict_free]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 157:0-172:1
+    Visibility: public -/
+@[reducible]
+def argumentation.is_conflict_free
+  (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) :
+  Result Bool
+  := do
+  argumentation.is_conflict_free_loop defeats labels true 0#usize
+
+/-- [mneme_kernel::argumentation::has_in_counterattacker]: loop body 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 178:4-187:5 -/
+@[rust_loop_body]
+def argumentation.has_in_counterattacker_loop.body
+  (attacker : Std.Usize) (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (has_defender : Bool)
+  (index : Std.Usize) :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len defeats
+  if index < i
+  then
+    if has_defender
+    then ok (done true)
+    else
+      let edge ← Slice.index_usize defeats index
+      let has_defender1 ←
+        if edge.target = attacker
+        then
+          let i1 := Slice.len labels
+          if edge.attacker < i1
+          then
+            do
+            let l ← Slice.index_usize labels edge.attacker
+            let b ←
+              match l with
+              | argumentation.Label.Out => ok false
+              | argumentation.Label.Undec => ok false
+              | argumentation.Label.In => ok true
+            if b
+            then ok true
+            else ok false
+          else ok false
+        else ok false
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (has_defender1, index1))
+  else ok (done has_defender)
+
+/-- [mneme_kernel::argumentation::has_in_counterattacker]: loop 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 178:4-187:5 -/
+@[rust_loop]
+def argumentation.has_in_counterattacker_loop
+  (attacker : Std.Usize) (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (has_defender : Bool)
+  (index : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (has_defender1, index1) =>
+      argumentation.has_in_counterattacker_loop.body attacker defeats labels
+      has_defender1 index1)
+    (has_defender, index)
+
+/-- [mneme_kernel::argumentation::has_in_counterattacker]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 175:0-189:1 -/
+@[reducible]
+def argumentation.has_in_counterattacker
+  (attacker : Std.Usize) (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) :
+  Result Bool
+  := do
+  argumentation.has_in_counterattacker_loop attacker defeats labels false
+    0#usize
+
+/-- [mneme_kernel::argumentation::is_admissible]: loop body 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 200:8-210:9
+    Visibility: public -/
+@[rust_loop_body]
+def argumentation.is_admissible_loop.body
+  (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (is_defended : Bool) (index : Std.Usize)
+  :
+  Result (ControlFlow (Bool × Std.Usize) Bool)
+  := do
+  let i := Slice.len defeats
+  if index < i
+  then
+    if is_defended
+    then
+      let edge ← Slice.index_usize defeats index
+      let i1 := Slice.len labels
+      let is_defended1 ←
+        if edge.attacker < i1
+        then
+          let i2 := Slice.len labels
+          if edge.target < i2
+          then
+            do
+            let l ← Slice.index_usize labels edge.target
+            let b ←
+              match l with
+              | argumentation.Label.Out => ok false
+              | argumentation.Label.Undec => ok false
+              | argumentation.Label.In => ok true
+            let is_undefended ←
+              if b
+              then
+                do
+                let b1 ←
+                  argumentation.has_in_counterattacker edge.attacker defeats
+                    labels
+                ok (¬ b1)
+              else ok false
+            if is_undefended
+            then ok false
+            else ok true
+          else ok true
+        else ok true
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (is_defended1, index1))
+    else ok (done false)
+  else ok (done is_defended)
+
+/-- [mneme_kernel::argumentation::is_admissible]: loop 0:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 200:8-210:9
+    Visibility: public -/
+@[rust_loop]
+def argumentation.is_admissible_loop
+  (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) (is_defended : Bool) (index : Std.Usize)
+  :
+  Result Bool
+  := do
+  loop
+    (fun (is_defended1, index1) => argumentation.is_admissible_loop.body
+      defeats labels is_defended1 index1)
+    (is_defended, index)
+
+/-- [mneme_kernel::argumentation::is_admissible]:
+    Source: 'crates/mneme-kernel/src/argumentation.rs', lines 194:0-213:1
+    Visibility: public -/
+def argumentation.is_admissible
+  (defeats : Slice argumentation.DefeatEdge)
+  (labels : Slice argumentation.Label) :
+  Result Bool
+  := do
+  let b ← argumentation.is_conflict_free defeats labels
+  if b
+  then argumentation.is_admissible_loop defeats labels true 0#usize
+  else ok false
+
 /-- [mneme_kernel::budget::charge]:
     Source: 'crates/mneme-kernel/src/budget.rs', lines 11:0-22:1
     Visibility: public -/
@@ -447,9 +1123,11 @@ def calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum.eq
 /-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::CalmStratum> for mneme_kernel::calm::CalmStratum}]
     Source: 'crates/mneme-kernel/src/calm.rs', lines 18:22-18:31 -/
 @[reducible]
-def calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum : core.cmp.PartialEq
-  calm.CalmStratum calm.CalmStratum := {
+impl_def calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum :
+  core.cmp.PartialEq calm.CalmStratum calm.CalmStratum := {
   eq := calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    calm.CalmStratum.Insts.CoreCmpPartialEqCalmStratum
 }
 
 /-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::CalmStratum}::assert_fields_are_eq]:
@@ -522,9 +1200,11 @@ def calm.DistributedOp.Insts.CoreCmpPartialEqDistributedOp.eq
 /-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::DistributedOp> for mneme_kernel::calm::DistributedOp}]
     Source: 'crates/mneme-kernel/src/calm.rs', lines 28:22-28:31 -/
 @[reducible]
-def calm.DistributedOp.Insts.CoreCmpPartialEqDistributedOp : core.cmp.PartialEq
-  calm.DistributedOp calm.DistributedOp := {
+impl_def calm.DistributedOp.Insts.CoreCmpPartialEqDistributedOp :
+  core.cmp.PartialEq calm.DistributedOp calm.DistributedOp := {
   eq := calm.DistributedOp.Insts.CoreCmpPartialEqDistributedOp.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    calm.DistributedOp.Insts.CoreCmpPartialEqDistributedOp
 }
 
 /-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::DistributedOp}::assert_fields_are_eq]:
@@ -620,9 +1300,11 @@ def calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel.eq
 /-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::SuppressionLevel> for mneme_kernel::calm::SuppressionLevel}]
     Source: 'crates/mneme-kernel/src/calm.rs', lines 66:22-66:31 -/
 @[reducible]
-def calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel :
+impl_def calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel :
   core.cmp.PartialEq calm.SuppressionLevel calm.SuppressionLevel := {
   eq := calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel
 }
 
 /-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::SuppressionLevel}::assert_fields_are_eq]:
@@ -717,9 +1399,11 @@ def calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState.eq
 /-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::SuppressionState> for mneme_kernel::calm::SuppressionState}]
     Source: 'crates/mneme-kernel/src/calm.rs', lines 96:22-96:31 -/
 @[reducible]
-def calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState :
+impl_def calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState :
   core.cmp.PartialEq calm.SuppressionState calm.SuppressionState := {
   eq := calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState
 }
 
 /-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::SuppressionState}::assert_fields_are_eq]:
@@ -804,9 +1488,11 @@ def calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts.eq
 /-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::CalmSealFacts> for mneme_kernel::calm::CalmSealFacts}]
     Source: 'crates/mneme-kernel/src/calm.rs', lines 118:22-118:31 -/
 @[reducible]
-def calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts : core.cmp.PartialEq
-  calm.CalmSealFacts calm.CalmSealFacts := {
+impl_def calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts :
+  core.cmp.PartialEq calm.CalmSealFacts calm.CalmSealFacts := {
   eq := calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    calm.CalmSealFacts.Insts.CoreCmpPartialEqCalmSealFacts
 }
 
 /-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::CalmSealFacts}::assert_fields_are_eq]:
@@ -901,11 +1587,14 @@ def calm.FederatedNegationFacts.Insts.CoreCmpPartialEqFederatedNegationFacts.eq
 /-- Trait implementation: [mneme_kernel::calm::{impl core::cmp::PartialEq<mneme_kernel::calm::FederatedNegationFacts> for mneme_kernel::calm::FederatedNegationFacts}]
     Source: 'crates/mneme-kernel/src/calm.rs', lines 135:22-135:31 -/
 @[reducible]
-def calm.FederatedNegationFacts.Insts.CoreCmpPartialEqFederatedNegationFacts :
+impl_def
+  calm.FederatedNegationFacts.Insts.CoreCmpPartialEqFederatedNegationFacts :
   core.cmp.PartialEq calm.FederatedNegationFacts calm.FederatedNegationFacts
   := {
   eq :=
     calm.FederatedNegationFacts.Insts.CoreCmpPartialEqFederatedNegationFacts.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    calm.FederatedNegationFacts.Insts.CoreCmpPartialEqFederatedNegationFacts
 }
 
 /-- [mneme_kernel::calm::{impl core::cmp::Eq for mneme_kernel::calm::FederatedNegationFacts}::assert_fields_are_eq]:
@@ -998,9 +1687,11 @@ def capability.Authority.Insts.CoreCmpPartialEqAuthority.eq
 /-- Trait implementation: [mneme_kernel::capability::{impl core::cmp::PartialEq<mneme_kernel::capability::Authority> for mneme_kernel::capability::Authority}]
     Source: 'crates/mneme-kernel/src/capability.rs', lines 13:22-13:31 -/
 @[reducible]
-def capability.Authority.Insts.CoreCmpPartialEqAuthority : core.cmp.PartialEq
-  capability.Authority capability.Authority := {
+impl_def capability.Authority.Insts.CoreCmpPartialEqAuthority :
+  core.cmp.PartialEq capability.Authority capability.Authority := {
   eq := capability.Authority.Insts.CoreCmpPartialEqAuthority.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    capability.Authority.Insts.CoreCmpPartialEqAuthority
 }
 
 /-- [mneme_kernel::capability::{impl core::cmp::Eq for mneme_kernel::capability::Authority}::assert_fields_are_eq]:
@@ -1104,9 +1795,11 @@ def capability.ScopeMode.Insts.CoreCmpPartialEqScopeMode.eq
 /-- Trait implementation: [mneme_kernel::capability::{impl core::cmp::PartialEq<mneme_kernel::capability::ScopeMode> for mneme_kernel::capability::ScopeMode}]
     Source: 'crates/mneme-kernel/src/capability.rs', lines 44:22-44:31 -/
 @[reducible]
-def capability.ScopeMode.Insts.CoreCmpPartialEqScopeMode : core.cmp.PartialEq
-  capability.ScopeMode capability.ScopeMode := {
+impl_def capability.ScopeMode.Insts.CoreCmpPartialEqScopeMode :
+  core.cmp.PartialEq capability.ScopeMode capability.ScopeMode := {
   eq := capability.ScopeMode.Insts.CoreCmpPartialEqScopeMode.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    capability.ScopeMode.Insts.CoreCmpPartialEqScopeMode
 }
 
 /-- [mneme_kernel::capability::{impl core::cmp::Eq for mneme_kernel::capability::ScopeMode}::assert_fields_are_eq]:
@@ -1359,9 +2052,11 @@ def capability.RevocationState.Insts.CoreCmpPartialEqRevocationState.eq
 /-- Trait implementation: [mneme_kernel::capability::{impl core::cmp::PartialEq<mneme_kernel::capability::RevocationState> for mneme_kernel::capability::RevocationState}]
     Source: 'crates/mneme-kernel/src/capability.rs', lines 144:22-144:31 -/
 @[reducible]
-def capability.RevocationState.Insts.CoreCmpPartialEqRevocationState :
+impl_def capability.RevocationState.Insts.CoreCmpPartialEqRevocationState :
   core.cmp.PartialEq capability.RevocationState capability.RevocationState := {
   eq := capability.RevocationState.Insts.CoreCmpPartialEqRevocationState.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    capability.RevocationState.Insts.CoreCmpPartialEqRevocationState
 }
 
 /-- [mneme_kernel::capability::{impl core::cmp::Eq for mneme_kernel::capability::RevocationState}::assert_fields_are_eq]:
@@ -1564,9 +2259,11 @@ def claim.Lifecycle.Insts.CoreCmpPartialEqLifecycle.eq
 /-- Trait implementation: [mneme_kernel::claim::{impl core::cmp::PartialEq<mneme_kernel::claim::Lifecycle> for mneme_kernel::claim::Lifecycle}]
     Source: 'crates/mneme-kernel/src/claim.rs', lines 9:22-9:31 -/
 @[reducible]
-def claim.Lifecycle.Insts.CoreCmpPartialEqLifecycle : core.cmp.PartialEq
+impl_def claim.Lifecycle.Insts.CoreCmpPartialEqLifecycle : core.cmp.PartialEq
   claim.Lifecycle claim.Lifecycle := {
   eq := claim.Lifecycle.Insts.CoreCmpPartialEqLifecycle.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    claim.Lifecycle.Insts.CoreCmpPartialEqLifecycle
 }
 
 /-- [mneme_kernel::claim::{impl core::cmp::Eq for mneme_kernel::claim::Lifecycle}::assert_fields_are_eq]:
@@ -1636,9 +2333,11 @@ def claim.DecisionKind.Insts.CoreCmpPartialEqDecisionKind.eq
 /-- Trait implementation: [mneme_kernel::claim::{impl core::cmp::PartialEq<mneme_kernel::claim::DecisionKind> for mneme_kernel::claim::DecisionKind}]
     Source: 'crates/mneme-kernel/src/claim.rs', lines 25:22-25:31 -/
 @[reducible]
-def claim.DecisionKind.Insts.CoreCmpPartialEqDecisionKind : core.cmp.PartialEq
-  claim.DecisionKind claim.DecisionKind := {
+impl_def claim.DecisionKind.Insts.CoreCmpPartialEqDecisionKind :
+  core.cmp.PartialEq claim.DecisionKind claim.DecisionKind := {
   eq := claim.DecisionKind.Insts.CoreCmpPartialEqDecisionKind.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    claim.DecisionKind.Insts.CoreCmpPartialEqDecisionKind
 }
 
 /-- [mneme_kernel::claim::{impl core::cmp::Eq for mneme_kernel::claim::DecisionKind}::assert_fields_are_eq]:
@@ -1913,9 +2612,11 @@ def cleanup.LocationState.Insts.CoreCmpPartialEqLocationState.eq
 /-- Trait implementation: [mneme_kernel::cleanup::{impl core::cmp::PartialEq<mneme_kernel::cleanup::LocationState> for mneme_kernel::cleanup::LocationState}]
     Source: 'crates/mneme-kernel/src/cleanup.rs', lines 9:22-9:31 -/
 @[reducible]
-def cleanup.LocationState.Insts.CoreCmpPartialEqLocationState :
+impl_def cleanup.LocationState.Insts.CoreCmpPartialEqLocationState :
   core.cmp.PartialEq cleanup.LocationState cleanup.LocationState := {
   eq := cleanup.LocationState.Insts.CoreCmpPartialEqLocationState.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    cleanup.LocationState.Insts.CoreCmpPartialEqLocationState
 }
 
 /-- [mneme_kernel::cleanup::{impl core::cmp::Eq for mneme_kernel::cleanup::LocationState}::assert_fields_are_eq]:
@@ -2013,9 +2714,11 @@ def cleanup.JobSummary.Insts.CoreCmpPartialEqJobSummary.eq
 /-- Trait implementation: [mneme_kernel::cleanup::{impl core::cmp::PartialEq<mneme_kernel::cleanup::JobSummary> for mneme_kernel::cleanup::JobSummary}]
     Source: 'crates/mneme-kernel/src/cleanup.rs', lines 51:22-51:31 -/
 @[reducible]
-def cleanup.JobSummary.Insts.CoreCmpPartialEqJobSummary : core.cmp.PartialEq
-  cleanup.JobSummary cleanup.JobSummary := {
+impl_def cleanup.JobSummary.Insts.CoreCmpPartialEqJobSummary :
+  core.cmp.PartialEq cleanup.JobSummary cleanup.JobSummary := {
   eq := cleanup.JobSummary.Insts.CoreCmpPartialEqJobSummary.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    cleanup.JobSummary.Insts.CoreCmpPartialEqJobSummary
 }
 
 /-- [mneme_kernel::cleanup::{impl core::cmp::Eq for mneme_kernel::cleanup::JobSummary}::assert_fields_are_eq]:
@@ -2214,9 +2917,11 @@ def completeness.Coverage.Insts.CoreCmpPartialEqCoverage.eq
 /-- Trait implementation: [mneme_kernel::completeness::{impl core::cmp::PartialEq<mneme_kernel::completeness::Coverage> for mneme_kernel::completeness::Coverage}]
     Source: 'crates/mneme-kernel/src/completeness.rs', lines 9:22-9:31 -/
 @[reducible]
-def completeness.Coverage.Insts.CoreCmpPartialEqCoverage : core.cmp.PartialEq
-  completeness.Coverage completeness.Coverage := {
+impl_def completeness.Coverage.Insts.CoreCmpPartialEqCoverage :
+  core.cmp.PartialEq completeness.Coverage completeness.Coverage := {
   eq := completeness.Coverage.Insts.CoreCmpPartialEqCoverage.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    completeness.Coverage.Insts.CoreCmpPartialEqCoverage
 }
 
 /-- [mneme_kernel::completeness::{impl core::cmp::Eq for mneme_kernel::completeness::Coverage}::assert_fields_are_eq]:
@@ -2388,9 +3093,11 @@ def contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier.eq
 /-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::OriginTier> for mneme_kernel::contraction::OriginTier}]
     Source: 'crates/mneme-kernel/src/contraction.rs', lines 23:22-23:31 -/
 @[reducible]
-def contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier :
+impl_def contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier :
   core.cmp.PartialEq contraction.OriginTier contraction.OriginTier := {
   eq := contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    contraction.OriginTier.Insts.CoreCmpPartialEqOriginTier
 }
 
 /-- [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::OriginTier}::assert_fields_are_eq]:
@@ -2469,10 +3176,12 @@ def contraction.EntrenchmentKey.Insts.CoreCmpPartialEqEntrenchmentKey.eq
 /-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::EntrenchmentKey> for mneme_kernel::contraction::EntrenchmentKey}]
     Source: 'crates/mneme-kernel/src/contraction.rs', lines 35:22-35:31 -/
 @[reducible]
-def contraction.EntrenchmentKey.Insts.CoreCmpPartialEqEntrenchmentKey :
+impl_def contraction.EntrenchmentKey.Insts.CoreCmpPartialEqEntrenchmentKey :
   core.cmp.PartialEq contraction.EntrenchmentKey contraction.EntrenchmentKey
   := {
   eq := contraction.EntrenchmentKey.Insts.CoreCmpPartialEqEntrenchmentKey.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    contraction.EntrenchmentKey.Insts.CoreCmpPartialEqEntrenchmentKey
 }
 
 /-- [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::EntrenchmentKey}::assert_fields_are_eq]:
@@ -2544,9 +3253,11 @@ def contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan.eq
 /-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::RangeSpan> for mneme_kernel::contraction::RangeSpan}]
     Source: 'crates/mneme-kernel/src/contraction.rs', lines 47:22-47:31 -/
 @[reducible]
-def contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan : core.cmp.PartialEq
-  contraction.RangeSpan contraction.RangeSpan := {
+impl_def contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan :
+  core.cmp.PartialEq contraction.RangeSpan contraction.RangeSpan := {
   eq := contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    contraction.RangeSpan.Insts.CoreCmpPartialEqRangeSpan
 }
 
 /-- [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::RangeSpan}::assert_fields_are_eq]:
@@ -2619,9 +3330,11 @@ def contraction.SupportEdge.Insts.CoreCmpPartialEqSupportEdge.eq
 /-- Trait implementation: [mneme_kernel::contraction::{impl core::cmp::PartialEq<mneme_kernel::contraction::SupportEdge> for mneme_kernel::contraction::SupportEdge}]
     Source: 'crates/mneme-kernel/src/contraction.rs', lines 61:22-61:31 -/
 @[reducible]
-def contraction.SupportEdge.Insts.CoreCmpPartialEqSupportEdge :
+impl_def contraction.SupportEdge.Insts.CoreCmpPartialEqSupportEdge :
   core.cmp.PartialEq contraction.SupportEdge contraction.SupportEdge := {
   eq := contraction.SupportEdge.Insts.CoreCmpPartialEqSupportEdge.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    contraction.SupportEdge.Insts.CoreCmpPartialEqSupportEdge
 }
 
 /-- [mneme_kernel::contraction::{impl core::cmp::Eq for mneme_kernel::contraction::SupportEdge}::assert_fields_are_eq]:
@@ -3128,9 +3841,11 @@ def epistemic.EpistemicStatus.Insts.CoreCmpPartialEqEpistemicStatus.eq
 /-- Trait implementation: [mneme_kernel::epistemic::{impl core::cmp::PartialEq<mneme_kernel::epistemic::EpistemicStatus> for mneme_kernel::epistemic::EpistemicStatus}]
     Source: 'crates/mneme-kernel/src/epistemic.rs', lines 14:22-14:31 -/
 @[reducible]
-def epistemic.EpistemicStatus.Insts.CoreCmpPartialEqEpistemicStatus :
+impl_def epistemic.EpistemicStatus.Insts.CoreCmpPartialEqEpistemicStatus :
   core.cmp.PartialEq epistemic.EpistemicStatus epistemic.EpistemicStatus := {
   eq := epistemic.EpistemicStatus.Insts.CoreCmpPartialEqEpistemicStatus.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    epistemic.EpistemicStatus.Insts.CoreCmpPartialEqEpistemicStatus
 }
 
 /-- [mneme_kernel::epistemic::{impl core::cmp::Eq for mneme_kernel::epistemic::EpistemicStatus}::assert_fields_are_eq]:
@@ -3329,9 +4044,11 @@ def extent.Window.Insts.CoreCmpPartialEqWindow.eq
 /-- Trait implementation: [mneme_kernel::extent::{impl core::cmp::PartialEq<mneme_kernel::extent::Window> for mneme_kernel::extent::Window}]
     Source: 'crates/mneme-kernel/src/extent.rs', lines 21:22-21:31 -/
 @[reducible]
-def extent.Window.Insts.CoreCmpPartialEqWindow : core.cmp.PartialEq
+impl_def extent.Window.Insts.CoreCmpPartialEqWindow : core.cmp.PartialEq
   extent.Window extent.Window := {
   eq := extent.Window.Insts.CoreCmpPartialEqWindow.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    extent.Window.Insts.CoreCmpPartialEqWindow
 }
 
 /-- [mneme_kernel::extent::{impl core::cmp::Eq for mneme_kernel::extent::Window}::assert_fields_are_eq]:
@@ -3471,9 +4188,11 @@ def hashing.Digest.Insts.CoreCmpPartialEqDigest.eq
 /-- Trait implementation: [mneme_kernel::hashing::{impl core::cmp::PartialEq<mneme_kernel::hashing::Digest> for mneme_kernel::hashing::Digest}]
     Source: 'crates/mneme-kernel/src/hashing.rs', lines 8:22-8:31 -/
 @[reducible]
-def hashing.Digest.Insts.CoreCmpPartialEqDigest : core.cmp.PartialEq
+impl_def hashing.Digest.Insts.CoreCmpPartialEqDigest : core.cmp.PartialEq
   hashing.Digest hashing.Digest := {
   eq := hashing.Digest.Insts.CoreCmpPartialEqDigest.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    hashing.Digest.Insts.CoreCmpPartialEqDigest
 }
 
 /-- [mneme_kernel::hashing::{impl core::cmp::Eq for mneme_kernel::hashing::Digest}::assert_fields_are_eq]:
@@ -3564,9 +4283,11 @@ def hlc.HybridTimestamp.Insts.CoreCmpPartialEqHybridTimestamp.eq
 /-- Trait implementation: [mneme_kernel::hlc::{impl core::cmp::PartialEq<mneme_kernel::hlc::HybridTimestamp> for mneme_kernel::hlc::HybridTimestamp}]
     Source: 'crates/mneme-kernel/src/hlc.rs', lines 17:22-17:31 -/
 @[reducible]
-def hlc.HybridTimestamp.Insts.CoreCmpPartialEqHybridTimestamp :
+impl_def hlc.HybridTimestamp.Insts.CoreCmpPartialEqHybridTimestamp :
   core.cmp.PartialEq hlc.HybridTimestamp hlc.HybridTimestamp := {
   eq := hlc.HybridTimestamp.Insts.CoreCmpPartialEqHybridTimestamp.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    hlc.HybridTimestamp.Insts.CoreCmpPartialEqHybridTimestamp
 }
 
 /-- [mneme_kernel::hlc::{impl core::cmp::Eq for mneme_kernel::hlc::HybridTimestamp}::assert_fields_are_eq]:
@@ -3634,9 +4355,11 @@ def hlc.ClockOrder.Insts.CoreCmpPartialEqClockOrder.eq
 /-- Trait implementation: [mneme_kernel::hlc::{impl core::cmp::PartialEq<mneme_kernel::hlc::ClockOrder> for mneme_kernel::hlc::ClockOrder}]
     Source: 'crates/mneme-kernel/src/hlc.rs', lines 27:22-27:31 -/
 @[reducible]
-def hlc.ClockOrder.Insts.CoreCmpPartialEqClockOrder : core.cmp.PartialEq
+impl_def hlc.ClockOrder.Insts.CoreCmpPartialEqClockOrder : core.cmp.PartialEq
   hlc.ClockOrder hlc.ClockOrder := {
   eq := hlc.ClockOrder.Insts.CoreCmpPartialEqClockOrder.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    hlc.ClockOrder.Insts.CoreCmpPartialEqClockOrder
 }
 
 /-- [mneme_kernel::hlc::{impl core::cmp::Eq for mneme_kernel::hlc::ClockOrder}::assert_fields_are_eq]:
@@ -3703,9 +4426,11 @@ def hlc.HlcError.Insts.CoreCmpPartialEqHlcError.eq
 /-- Trait implementation: [mneme_kernel::hlc::{impl core::cmp::PartialEq<mneme_kernel::hlc::HlcError> for mneme_kernel::hlc::HlcError}]
     Source: 'crates/mneme-kernel/src/hlc.rs', lines 39:22-39:31 -/
 @[reducible]
-def hlc.HlcError.Insts.CoreCmpPartialEqHlcError : core.cmp.PartialEq
+impl_def hlc.HlcError.Insts.CoreCmpPartialEqHlcError : core.cmp.PartialEq
   hlc.HlcError hlc.HlcError := {
   eq := hlc.HlcError.Insts.CoreCmpPartialEqHlcError.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    hlc.HlcError.Insts.CoreCmpPartialEqHlcError
 }
 
 /-- [mneme_kernel::hlc::{impl core::cmp::Eq for mneme_kernel::hlc::HlcError}::assert_fields_are_eq]:
@@ -3964,9 +4689,11 @@ def isolation.ScopeClass.Insts.CoreCmpPartialEqScopeClass.eq
 /-- Trait implementation: [mneme_kernel::isolation::{impl core::cmp::PartialEq<mneme_kernel::isolation::ScopeClass> for mneme_kernel::isolation::ScopeClass}]
     Source: 'crates/mneme-kernel/src/isolation.rs', lines 10:22-10:31 -/
 @[reducible]
-def isolation.ScopeClass.Insts.CoreCmpPartialEqScopeClass : core.cmp.PartialEq
-  isolation.ScopeClass isolation.ScopeClass := {
+impl_def isolation.ScopeClass.Insts.CoreCmpPartialEqScopeClass :
+  core.cmp.PartialEq isolation.ScopeClass isolation.ScopeClass := {
   eq := isolation.ScopeClass.Insts.CoreCmpPartialEqScopeClass.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    isolation.ScopeClass.Insts.CoreCmpPartialEqScopeClass
 }
 
 /-- [mneme_kernel::isolation::{impl core::cmp::Eq for mneme_kernel::isolation::ScopeClass}::assert_fields_are_eq]:
@@ -4276,6 +5003,536 @@ def isolation.blob_claim_allowed
   then ok true
   else ok facts.bound_in_scope
 
+/-- [mneme_kernel::opinion::PRIOR_WEIGHT]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 19:0-19:33
+    Visibility: public -/
+@[global_simps, irreducible] def opinion.PRIOR_WEIGHT : Std.U128 := 2#u128
+
+/-- [mneme_kernel::opinion::BASE_RATE_SCALE]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 22:0-22:43
+    Visibility: public -/
+@[global_simps, irreducible]
+def opinion.BASE_RATE_SCALE : Std.U64 := 1000000#u64
+
+/-- [mneme_kernel::opinion::DEFAULT_BASE_RATE]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 25:0-25:43
+    Visibility: public -/
+@[global_simps, irreducible]
+def opinion.DEFAULT_BASE_RATE : Std.U64 := 500000#u64
+
+/-- [mneme_kernel::opinion::Evidence]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 30:0-39:1
+    Visibility: public -/
+structure opinion.Evidence where
+  r : Std.U128
+  s : Std.U128
+  w : Std.U128
+  base_rate : Std.U64
+
+/-- [mneme_kernel::opinion::{impl core::clone::Clone for mneme_kernel::opinion::Evidence}::clone]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 28:9-28:14
+    Visibility: public -/
+def opinion.Evidence.Insts.CoreCloneClone.clone
+  (self : opinion.Evidence) : Result opinion.Evidence := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::clone::Clone for mneme_kernel::opinion::Evidence}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 28:9-28:14 -/
+@[reducible]
+def opinion.Evidence.Insts.CoreCloneClone : core.clone.Clone opinion.Evidence
+  := {
+  clone := opinion.Evidence.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::marker::Copy for mneme_kernel::opinion::Evidence}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 28:16-28:20 -/
+@[reducible]
+def opinion.Evidence.Insts.CoreMarkerCopy : core.marker.Copy opinion.Evidence
+  := {
+  cloneInst := opinion.Evidence.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::marker::StructuralPartialEq for mneme_kernel::opinion::Evidence}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 28:22-28:31 -/
+@[reducible]
+def opinion.Evidence.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq opinion.Evidence := {
+}
+
+/-- [mneme_kernel::opinion::{impl core::cmp::PartialEq<mneme_kernel::opinion::Evidence> for mneme_kernel::opinion::Evidence}::eq]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 28:22-28:31
+    Visibility: public -/
+def opinion.Evidence.Insts.CoreCmpPartialEqEvidence.eq
+  (self : opinion.Evidence) (other : opinion.Evidence) : Result Bool := do
+  if self.r = other.r
+  then
+    if self.s = other.s
+    then
+      if self.w = other.w
+      then ok (self.base_rate = other.base_rate)
+      else ok false
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::cmp::PartialEq<mneme_kernel::opinion::Evidence> for mneme_kernel::opinion::Evidence}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 28:22-28:31 -/
+@[reducible]
+impl_def opinion.Evidence.Insts.CoreCmpPartialEqEvidence : core.cmp.PartialEq
+  opinion.Evidence opinion.Evidence := {
+  eq := opinion.Evidence.Insts.CoreCmpPartialEqEvidence.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    opinion.Evidence.Insts.CoreCmpPartialEqEvidence
+}
+
+/-- [mneme_kernel::opinion::{impl core::cmp::Eq for mneme_kernel::opinion::Evidence}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 28:33-28:35
+    Visibility: public -/
+def opinion.Evidence.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : opinion.Evidence) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::cmp::Eq for mneme_kernel::opinion::Evidence}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 28:33-28:35 -/
+@[reducible]
+def opinion.Evidence.Insts.CoreCmpEq : core.cmp.Eq opinion.Evidence := {
+  partialEqInst := opinion.Evidence.Insts.CoreCmpPartialEqEvidence
+  assert_fields_are_eq := opinion.Evidence.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::opinion::Projected]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 48:0-61:1
+    Visibility: public -/
+structure opinion.Projected where
+  b_num : Std.U128
+  d_num : Std.U128
+  u_num : Std.U128
+  denom : Std.U128
+  conflict_num : Std.U128
+  base_rate : Std.U64
+
+/-- [mneme_kernel::opinion::{impl core::clone::Clone for mneme_kernel::opinion::Projected}::clone]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 46:9-46:14
+    Visibility: public -/
+def opinion.Projected.Insts.CoreCloneClone.clone
+  (self : opinion.Projected) : Result opinion.Projected := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::clone::Clone for mneme_kernel::opinion::Projected}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 46:9-46:14 -/
+@[reducible]
+def opinion.Projected.Insts.CoreCloneClone : core.clone.Clone opinion.Projected
+  := {
+  clone := opinion.Projected.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::marker::Copy for mneme_kernel::opinion::Projected}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 46:16-46:20 -/
+@[reducible]
+def opinion.Projected.Insts.CoreMarkerCopy : core.marker.Copy opinion.Projected
+  := {
+  cloneInst := opinion.Projected.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::marker::StructuralPartialEq for mneme_kernel::opinion::Projected}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 46:22-46:31 -/
+@[reducible]
+def opinion.Projected.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq opinion.Projected := {
+}
+
+/-- [mneme_kernel::opinion::{impl core::cmp::PartialEq<mneme_kernel::opinion::Projected> for mneme_kernel::opinion::Projected}::eq]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 46:22-46:31
+    Visibility: public -/
+def opinion.Projected.Insts.CoreCmpPartialEqProjected.eq
+  (self : opinion.Projected) (other : opinion.Projected) : Result Bool := do
+  if self.b_num = other.b_num
+  then
+    if self.d_num = other.d_num
+    then
+      if self.u_num = other.u_num
+      then
+        if self.denom = other.denom
+        then
+          if self.conflict_num = other.conflict_num
+          then ok (self.base_rate = other.base_rate)
+          else ok false
+        else ok false
+      else ok false
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::cmp::PartialEq<mneme_kernel::opinion::Projected> for mneme_kernel::opinion::Projected}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 46:22-46:31 -/
+@[reducible]
+impl_def opinion.Projected.Insts.CoreCmpPartialEqProjected : core.cmp.PartialEq
+  opinion.Projected opinion.Projected := {
+  eq := opinion.Projected.Insts.CoreCmpPartialEqProjected.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    opinion.Projected.Insts.CoreCmpPartialEqProjected
+}
+
+/-- [mneme_kernel::opinion::{impl core::cmp::Eq for mneme_kernel::opinion::Projected}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 46:33-46:35
+    Visibility: public -/
+def opinion.Projected.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : opinion.Projected) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::opinion::{impl core::cmp::Eq for mneme_kernel::opinion::Projected}]
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 46:33-46:35 -/
+@[reducible]
+def opinion.Projected.Insts.CoreCmpEq : core.cmp.Eq opinion.Projected := {
+  partialEqInst := opinion.Projected.Insts.CoreCmpPartialEqProjected
+  assert_fields_are_eq :=
+    opinion.Projected.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::opinion::clamp_base_rate]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 63:0-69:1 -/
+def opinion.clamp_base_rate (base_rate : Std.U64) : Result Std.U64 := do
+  if base_rate <= opinion.BASE_RATE_SCALE
+  then ok base_rate
+  else ok opinion.BASE_RATE_SCALE
+
+/-- [mneme_kernel::opinion::min_base_rate]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 71:0-73:1 -/
+def opinion.min_base_rate
+  (left : Std.U64) (right : Std.U64) : Result Std.U64 := do
+  if left <= right
+  then ok left
+  else ok right
+
+/-- [mneme_kernel::opinion::checked_denom]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 75:0-80:1 -/
+def opinion.checked_denom
+  (r : Std.U128) (s : Std.U128) (w : Std.U128) : Result (Option Std.U128) := do
+  let o ← lift (U128.checked_add r s)
+  match o with
+  | none => ok none
+  | some rs => ok (U128.checked_add rs w)
+
+/-- [mneme_kernel::opinion::checked_cross_sum]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 82:0-90:1 -/
+def opinion.checked_cross_sum
+  (a : Std.U128) (b : Std.U128) (c : Std.U128) (d : Std.U128) :
+  Result (Option Std.U128)
+  := do
+  let o ← lift (U128.checked_mul a b)
+  match o with
+  | none => ok none
+  | some left_prod =>
+    let o1 ← lift (U128.checked_mul c d)
+    match o1 with
+    | none => ok none
+    | some right_prod => ok (U128.checked_add left_prod right_prod)
+
+/-- [mneme_kernel::opinion::build_valid]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 92:0-101:1 -/
+def opinion.build_valid
+  (r : Std.U128) (s : Std.U128) (w : Std.U128) (base_rate : Std.U64) :
+  Result (Option opinion.Evidence)
+  := do
+  if w = 0#u128
+  then ok none
+  else
+    if base_rate > opinion.BASE_RATE_SCALE
+    then ok none
+    else
+      let o ← opinion.checked_denom r s w
+      match o with
+      | none => ok none
+      | some _ => ok (some { r, s, w, base_rate })
+
+/-- [mneme_kernel::opinion::is_valid]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 105:0-111:1
+    Visibility: public -/
+def opinion.is_valid (ev : opinion.Evidence) : Result Bool := do
+  if ev.w = 0#u128
+  then ok false
+  else
+    if ev.base_rate > opinion.BASE_RATE_SCALE
+    then ok false
+    else
+      let o ← opinion.checked_denom ev.r ev.s ev.w
+      ok (core.option.Option.is_some o)
+
+/-- [mneme_kernel::opinion::vacuous]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 114:0-121:1
+    Visibility: public -/
+def opinion.vacuous (base_rate : Std.U64) : Result opinion.Evidence := do
+  let i ← opinion.clamp_base_rate base_rate
+  ok { r := 0#u128, s := 0#u128, w := opinion.PRIOR_WEIGHT, base_rate := i }
+
+/-- [mneme_kernel::opinion::averaging_cluster]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 132:0-167:1
+    Visibility: public -/
+def opinion.averaging_cluster
+  (supports : Std.U64) (challenges : Std.U64) (base_rate : Std.U64) :
+  Result opinion.Evidence
+  := do
+  let clamped ← opinion.clamp_base_rate base_rate
+  if supports = 0#u64
+  then
+    if challenges = 0#u64
+    then
+      ok
+        {
+          r := 0#u128,
+          s := 0#u128,
+          w := opinion.PRIOR_WEIGHT,
+          base_rate := clamped
+        }
+    else
+      if challenges = 0#u64
+      then
+        ok
+          {
+            r := 1#u128,
+            s := 0#u128,
+            w := opinion.PRIOR_WEIGHT,
+            base_rate := clamped
+          }
+      else
+        if supports = 0#u64
+        then
+          ok
+            {
+              r := 0#u128,
+              s := 1#u128,
+              w := opinion.PRIOR_WEIGHT,
+              base_rate := clamped
+            }
+        else
+          let r ← lift (UScalar.cast .U128 supports)
+          let s ← lift (UScalar.cast .U128 challenges)
+          let total ← lift (core.num.U128.saturating_add r s)
+          let w ← lift (core.num.U128.saturating_add total total)
+          ok { r, s, w, base_rate := clamped }
+  else
+    if challenges = 0#u64
+    then
+      ok
+        {
+          r := 1#u128,
+          s := 0#u128,
+          w := opinion.PRIOR_WEIGHT,
+          base_rate := clamped
+        }
+    else
+      if supports = 0#u64
+      then
+        ok
+          {
+            r := 0#u128,
+            s := 1#u128,
+            w := opinion.PRIOR_WEIGHT,
+            base_rate := clamped
+          }
+      else
+        let r ← lift (UScalar.cast .U128 supports)
+        let s ← lift (UScalar.cast .U128 challenges)
+        let total ← lift (core.num.U128.saturating_add r s)
+        let w ← lift (core.num.U128.saturating_add total total)
+        ok { r, s, w, base_rate := clamped }
+
+/-- [mneme_kernel::opinion::project]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 170:0-190:1
+    Visibility: public -/
+def opinion.project
+  (ev : opinion.Evidence) : Result (Option opinion.Projected) := do
+  if ev.w = 0#u128
+  then ok none
+  else
+    if ev.base_rate > opinion.BASE_RATE_SCALE
+    then ok none
+    else
+      let o ← opinion.checked_denom ev.r ev.s ev.w
+      match o with
+      | none => ok none
+      | some denom =>
+        let min_rs ← if ev.r <= ev.s
+                       then ok ev.r
+                       else ok ev.s
+        let conflict_num ← lift (core.num.U128.saturating_add min_rs min_rs)
+        ok (some
+          {
+            b_num := ev.r,
+            d_num := ev.s,
+            u_num := ev.w,
+            denom,
+            conflict_num,
+            base_rate := ev.base_rate
+          })
+
+/-- [mneme_kernel::opinion::cumulative_fuse_equal_weight]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 192:0-204:1 -/
+def opinion.cumulative_fuse_equal_weight
+  (left : opinion.Evidence) (right : opinion.Evidence) (base_rate : Std.U64) :
+  Result (Option opinion.Evidence)
+  := do
+  let o ← lift (U128.checked_add left.r right.r)
+  match o with
+  | none => ok none
+  | some r =>
+    let o1 ← lift (U128.checked_add left.s right.s)
+    match o1 with
+    | none => ok none
+    | some s => opinion.build_valid r s left.w base_rate
+
+/-- [mneme_kernel::opinion::cumulative_fuse_general]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 206:0-217:1 -/
+def opinion.cumulative_fuse_general
+  (left : opinion.Evidence) (right : opinion.Evidence) (base_rate : Std.U64) :
+  Result (Option opinion.Evidence)
+  := do
+  let o ← opinion.checked_cross_sum left.r right.w right.r left.w
+  match o with
+  | none => ok none
+  | some r =>
+    let o1 ← opinion.checked_cross_sum left.s right.w right.s left.w
+    match o1 with
+    | none => ok none
+    | some s =>
+      let o2 ← lift (U128.checked_mul left.w right.w)
+      match o2 with
+      | none => ok none
+      | some w => opinion.build_valid r s w base_rate
+
+/-- [mneme_kernel::opinion::cumulative_fuse]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 223:0-234:1
+    Visibility: public -/
+def opinion.cumulative_fuse
+  (left : opinion.Evidence) (right : opinion.Evidence) :
+  Result (Option opinion.Evidence)
+  := do
+  let b ← opinion.is_valid left
+  if b
+  then
+    let b1 ← opinion.is_valid right
+    if b1
+    then
+      let base_rate ← opinion.min_base_rate left.base_rate right.base_rate
+      if left.w = right.w
+      then opinion.cumulative_fuse_equal_weight left right base_rate
+      else opinion.cumulative_fuse_general left right base_rate
+    else ok none
+  else ok none
+
+/-- [mneme_kernel::opinion::averaging_fuse_equal_weight]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 236:0-251:1 -/
+def opinion.averaging_fuse_equal_weight
+  (left : opinion.Evidence) (right : opinion.Evidence) (base_rate : Std.U64) :
+  Result (Option opinion.Evidence)
+  := do
+  let o ← lift (U128.checked_add left.r right.r)
+  match o with
+  | none => ok none
+  | some r =>
+    let o1 ← lift (U128.checked_add left.s right.s)
+    match o1 with
+    | none => ok none
+    | some s =>
+      let o2 ← lift (U128.checked_mul left.w opinion.PRIOR_WEIGHT)
+      match o2 with
+      | none => ok none
+      | some w => opinion.build_valid r s w base_rate
+
+/-- [mneme_kernel::opinion::checked_double_mul]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 253:0-258:1 -/
+def opinion.checked_double_mul
+  (a : Std.U128) (b : Std.U128) : Result (Option Std.U128) := do
+  let o ← lift (U128.checked_mul a b)
+  match o with
+  | none => ok none
+  | some prod => ok (U128.checked_mul prod opinion.PRIOR_WEIGHT)
+
+/-- [mneme_kernel::opinion::averaging_fuse_general]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 260:0-271:1 -/
+def opinion.averaging_fuse_general
+  (left : opinion.Evidence) (right : opinion.Evidence) (base_rate : Std.U64) :
+  Result (Option opinion.Evidence)
+  := do
+  let o ← opinion.checked_cross_sum left.r right.w right.r left.w
+  match o with
+  | none => ok none
+  | some r =>
+    let o1 ← opinion.checked_cross_sum left.s right.w right.s left.w
+    match o1 with
+    | none => ok none
+    | some s =>
+      let o2 ← opinion.checked_double_mul left.w right.w
+      match o2 with
+      | none => ok none
+      | some w => opinion.build_valid r s w base_rate
+
+/-- [mneme_kernel::opinion::averaging_fuse]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 277:0-288:1
+    Visibility: public -/
+def opinion.averaging_fuse
+  (left : opinion.Evidence) (right : opinion.Evidence) :
+  Result (Option opinion.Evidence)
+  := do
+  let b ← opinion.is_valid left
+  if b
+  then
+    let b1 ← opinion.is_valid right
+    if b1
+    then
+      let base_rate ← opinion.min_base_rate left.base_rate right.base_rate
+      if left.w = right.w
+      then opinion.averaging_fuse_equal_weight left right base_rate
+      else opinion.averaging_fuse_general left right base_rate
+    else ok none
+  else ok none
+
+/-- [mneme_kernel::opinion::trust_discount_inner]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 290:0-306:1 -/
+def opinion.trust_discount_inner
+  (trust : opinion.Evidence) (target : opinion.Evidence)
+  (target_denom : Std.U128) (trust_non_belief : Std.U128) :
+  Result (Option opinion.Evidence)
+  := do
+  let o ← lift (U128.checked_mul trust.r target.r)
+  match o with
+  | none => ok none
+  | some r =>
+    let o1 ← lift (U128.checked_mul trust.r target.s)
+    match o1 with
+    | none => ok none
+    | some s =>
+      let o2 ←
+        opinion.checked_cross_sum trust_non_belief target_denom trust.r
+          target.w
+      match o2 with
+      | none => ok none
+      | some w => opinion.build_valid r s w target.base_rate
+
+/-- [mneme_kernel::opinion::trust_discount]:
+    Source: 'crates/mneme-kernel/src/opinion.rs', lines 313:0-327:1
+    Visibility: public -/
+def opinion.trust_discount
+  (trust : opinion.Evidence) (target : opinion.Evidence) :
+  Result (Option opinion.Evidence)
+  := do
+  let b ← opinion.is_valid trust
+  if b
+  then
+    let b1 ← opinion.is_valid target
+    if b1
+    then
+      let o ← opinion.checked_denom target.r target.s target.w
+      match o with
+      | none => ok none
+      | some target_denom =>
+        let o1 ← lift (U128.checked_add trust.s trust.w)
+        match o1 with
+        | none => ok none
+        | some trust_non_belief =>
+          opinion.trust_discount_inner trust target target_denom
+            trust_non_belief
+    else ok none
+  else ok none
+
 /-- [mneme_kernel::publish::PublicationDecision]
     Source: 'crates/mneme-kernel/src/publish.rs', lines 11:0-18:1
     Visibility: public -/
@@ -4331,11 +5588,13 @@ def publish.PublicationDecision.Insts.CoreCmpPartialEqPublicationDecision.eq
 /-- Trait implementation: [mneme_kernel::publish::{impl core::cmp::PartialEq<mneme_kernel::publish::PublicationDecision> for mneme_kernel::publish::PublicationDecision}]
     Source: 'crates/mneme-kernel/src/publish.rs', lines 9:22-9:31 -/
 @[reducible]
-def publish.PublicationDecision.Insts.CoreCmpPartialEqPublicationDecision :
-  core.cmp.PartialEq publish.PublicationDecision publish.PublicationDecision
+impl_def publish.PublicationDecision.Insts.CoreCmpPartialEqPublicationDecision
+  : core.cmp.PartialEq publish.PublicationDecision publish.PublicationDecision
   := {
   eq :=
     publish.PublicationDecision.Insts.CoreCmpPartialEqPublicationDecision.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    publish.PublicationDecision.Insts.CoreCmpPartialEqPublicationDecision
 }
 
 /-- [mneme_kernel::publish::{impl core::cmp::Eq for mneme_kernel::publish::PublicationDecision}::assert_fields_are_eq]:
@@ -4459,9 +5718,11 @@ def publish.PublicationPhase.Insts.CoreCmpPartialEqPublicationPhase.eq
 /-- Trait implementation: [mneme_kernel::publish::{impl core::cmp::PartialEq<mneme_kernel::publish::PublicationPhase> for mneme_kernel::publish::PublicationPhase}]
     Source: 'crates/mneme-kernel/src/publish.rs', lines 48:22-48:31 -/
 @[reducible]
-def publish.PublicationPhase.Insts.CoreCmpPartialEqPublicationPhase :
+impl_def publish.PublicationPhase.Insts.CoreCmpPartialEqPublicationPhase :
   core.cmp.PartialEq publish.PublicationPhase publish.PublicationPhase := {
   eq := publish.PublicationPhase.Insts.CoreCmpPartialEqPublicationPhase.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    publish.PublicationPhase.Insts.CoreCmpPartialEqPublicationPhase
 }
 
 /-- [mneme_kernel::publish::{impl core::cmp::Eq for mneme_kernel::publish::PublicationPhase}::assert_fields_are_eq]:
@@ -4545,9 +5806,11 @@ def purge.EntryKind.Insts.CoreCmpPartialEqEntryKind.eq
 /-- Trait implementation: [mneme_kernel::purge::{impl core::cmp::PartialEq<mneme_kernel::purge::EntryKind> for mneme_kernel::purge::EntryKind}]
     Source: 'crates/mneme-kernel/src/purge.rs', lines 7:22-7:31 -/
 @[reducible]
-def purge.EntryKind.Insts.CoreCmpPartialEqEntryKind : core.cmp.PartialEq
+impl_def purge.EntryKind.Insts.CoreCmpPartialEqEntryKind : core.cmp.PartialEq
   purge.EntryKind purge.EntryKind := {
   eq := purge.EntryKind.Insts.CoreCmpPartialEqEntryKind.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    purge.EntryKind.Insts.CoreCmpPartialEqEntryKind
 }
 
 /-- [mneme_kernel::purge::{impl core::cmp::Eq for mneme_kernel::purge::EntryKind}::assert_fields_are_eq]:
@@ -4650,9 +5913,11 @@ def purge.WorkingDecision.Insts.CoreCmpPartialEqWorkingDecision.eq
 /-- Trait implementation: [mneme_kernel::purge::{impl core::cmp::PartialEq<mneme_kernel::purge::WorkingDecision> for mneme_kernel::purge::WorkingDecision}]
     Source: 'crates/mneme-kernel/src/purge.rs', lines 31:22-31:31 -/
 @[reducible]
-def purge.WorkingDecision.Insts.CoreCmpPartialEqWorkingDecision :
+impl_def purge.WorkingDecision.Insts.CoreCmpPartialEqWorkingDecision :
   core.cmp.PartialEq purge.WorkingDecision purge.WorkingDecision := {
   eq := purge.WorkingDecision.Insts.CoreCmpPartialEqWorkingDecision.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    purge.WorkingDecision.Insts.CoreCmpPartialEqWorkingDecision
 }
 
 /-- [mneme_kernel::purge::{impl core::cmp::Eq for mneme_kernel::purge::WorkingDecision}::assert_fields_are_eq]:
@@ -4770,9 +6035,11 @@ def purge.BlobDecision.Insts.CoreCmpPartialEqBlobDecision.eq
 /-- Trait implementation: [mneme_kernel::purge::{impl core::cmp::PartialEq<mneme_kernel::purge::BlobDecision> for mneme_kernel::purge::BlobDecision}]
     Source: 'crates/mneme-kernel/src/purge.rs', lines 74:22-74:31 -/
 @[reducible]
-def purge.BlobDecision.Insts.CoreCmpPartialEqBlobDecision : core.cmp.PartialEq
-  purge.BlobDecision purge.BlobDecision := {
+impl_def purge.BlobDecision.Insts.CoreCmpPartialEqBlobDecision :
+  core.cmp.PartialEq purge.BlobDecision purge.BlobDecision := {
   eq := purge.BlobDecision.Insts.CoreCmpPartialEqBlobDecision.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    purge.BlobDecision.Insts.CoreCmpPartialEqBlobDecision
 }
 
 /-- [mneme_kernel::purge::{impl core::cmp::Eq for mneme_kernel::purge::BlobDecision}::assert_fields_are_eq]:
@@ -4924,9 +6191,11 @@ def restore.LedgerDecision.Insts.CoreCmpPartialEqLedgerDecision.eq
 /-- Trait implementation: [mneme_kernel::restore::{impl core::cmp::PartialEq<mneme_kernel::restore::LedgerDecision> for mneme_kernel::restore::LedgerDecision}]
     Source: 'crates/mneme-kernel/src/restore.rs', lines 37:22-37:31 -/
 @[reducible]
-def restore.LedgerDecision.Insts.CoreCmpPartialEqLedgerDecision :
+impl_def restore.LedgerDecision.Insts.CoreCmpPartialEqLedgerDecision :
   core.cmp.PartialEq restore.LedgerDecision restore.LedgerDecision := {
   eq := restore.LedgerDecision.Insts.CoreCmpPartialEqLedgerDecision.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    restore.LedgerDecision.Insts.CoreCmpPartialEqLedgerDecision
 }
 
 /-- [mneme_kernel::restore::{impl core::cmp::Eq for mneme_kernel::restore::LedgerDecision}::assert_fields_are_eq]:
@@ -5027,9 +6296,11 @@ def temporal.Period.Insts.CoreCmpPartialEqPeriod.eq
 /-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::Period> for mneme_kernel::temporal::Period}]
     Source: 'crates/mneme-kernel/src/temporal.rs', lines 29:22-29:31 -/
 @[reducible]
-def temporal.Period.Insts.CoreCmpPartialEqPeriod : core.cmp.PartialEq
+impl_def temporal.Period.Insts.CoreCmpPartialEqPeriod : core.cmp.PartialEq
   temporal.Period temporal.Period := {
   eq := temporal.Period.Insts.CoreCmpPartialEqPeriod.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    temporal.Period.Insts.CoreCmpPartialEqPeriod
 }
 
 /-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::Period}::assert_fields_are_eq]:
@@ -5174,9 +6445,11 @@ def temporal.Validity.Insts.CoreCmpPartialEqValidity.eq
 /-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::Validity> for mneme_kernel::temporal::Validity}]
     Source: 'crates/mneme-kernel/src/temporal.rs', lines 47:22-47:31 -/
 @[reducible]
-def temporal.Validity.Insts.CoreCmpPartialEqValidity : core.cmp.PartialEq
+impl_def temporal.Validity.Insts.CoreCmpPartialEqValidity : core.cmp.PartialEq
   temporal.Validity temporal.Validity := {
   eq := temporal.Validity.Insts.CoreCmpPartialEqValidity.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    temporal.Validity.Insts.CoreCmpPartialEqValidity
 }
 
 /-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::Validity}::assert_fields_are_eq]:
@@ -5246,9 +6519,11 @@ def temporal.MetricWindow.Insts.CoreCmpPartialEqMetricWindow.eq
 /-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::MetricWindow> for mneme_kernel::temporal::MetricWindow}]
     Source: 'crates/mneme-kernel/src/temporal.rs', lines 57:22-57:31 -/
 @[reducible]
-def temporal.MetricWindow.Insts.CoreCmpPartialEqMetricWindow :
+impl_def temporal.MetricWindow.Insts.CoreCmpPartialEqMetricWindow :
   core.cmp.PartialEq temporal.MetricWindow temporal.MetricWindow := {
   eq := temporal.MetricWindow.Insts.CoreCmpPartialEqMetricWindow.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    temporal.MetricWindow.Insts.CoreCmpPartialEqMetricWindow
 }
 
 /-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::MetricWindow}::assert_fields_are_eq]:
@@ -5331,9 +6606,11 @@ def temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation.eq
 /-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::AllenRelation> for mneme_kernel::temporal::AllenRelation}]
     Source: 'crates/mneme-kernel/src/temporal.rs', lines 68:22-68:31 -/
 @[reducible]
-def temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation :
+impl_def temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation :
   core.cmp.PartialEq temporal.AllenRelation temporal.AllenRelation := {
   eq := temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    temporal.AllenRelation.Insts.CoreCmpPartialEqAllenRelation
 }
 
 /-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::AllenRelation}::assert_fields_are_eq]:
@@ -5420,9 +6697,11 @@ def temporal.ExpiryDecision.Insts.CoreCmpPartialEqExpiryDecision.eq
 /-- Trait implementation: [mneme_kernel::temporal::{impl core::cmp::PartialEq<mneme_kernel::temporal::ExpiryDecision> for mneme_kernel::temporal::ExpiryDecision}]
     Source: 'crates/mneme-kernel/src/temporal.rs', lines 100:22-100:31 -/
 @[reducible]
-def temporal.ExpiryDecision.Insts.CoreCmpPartialEqExpiryDecision :
+impl_def temporal.ExpiryDecision.Insts.CoreCmpPartialEqExpiryDecision :
   core.cmp.PartialEq temporal.ExpiryDecision temporal.ExpiryDecision := {
   eq := temporal.ExpiryDecision.Insts.CoreCmpPartialEqExpiryDecision.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    temporal.ExpiryDecision.Insts.CoreCmpPartialEqExpiryDecision
 }
 
 /-- [mneme_kernel::temporal::{impl core::cmp::Eq for mneme_kernel::temporal::ExpiryDecision}::assert_fields_are_eq]:
@@ -6308,9 +7587,11 @@ def verdict.Status.Insts.CoreCmpPartialEqStatus.eq
 /-- Trait implementation: [mneme_kernel::verdict::{impl core::cmp::PartialEq<mneme_kernel::verdict::Status> for mneme_kernel::verdict::Status}]
     Source: 'crates/mneme-kernel/src/verdict.rs', lines 8:22-8:31 -/
 @[reducible]
-def verdict.Status.Insts.CoreCmpPartialEqStatus : core.cmp.PartialEq
+impl_def verdict.Status.Insts.CoreCmpPartialEqStatus : core.cmp.PartialEq
   verdict.Status verdict.Status := {
   eq := verdict.Status.Insts.CoreCmpPartialEqStatus.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    verdict.Status.Insts.CoreCmpPartialEqStatus
 }
 
 /-- [mneme_kernel::verdict::{impl core::cmp::Eq for mneme_kernel::verdict::Status}::assert_fields_are_eq]:
