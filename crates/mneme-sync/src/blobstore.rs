@@ -227,7 +227,13 @@ impl DiskBlobStore {
         digest: mneme_core::ContentDigest,
         expected_length: u64,
     ) -> crate::error::Result<iroh_blobs::Hash> {
-        let bytes = mneme_store::payload::read(workspace_root, digest)?;
+        let raw_on_disk = mneme_store::payload::read_raw_frame(workspace_root, digest)?;
+        let is_encrypted = mneme_store::payload::is_encrypted_frame(&raw_on_disk);
+        let bytes = if is_encrypted {
+            raw_on_disk
+        } else {
+            mneme_store::payload::read(workspace_root, digest)?
+        };
         let actual_length = u64::try_from(bytes.len()).map_err(|_| {
             crate::error::Failure::VerificationFailed("blob length overflow".to_owned())
         })?;
@@ -244,7 +250,8 @@ impl DiskBlobStore {
         let staged_path = self.inner.staging_dir.path().join(format!("blob-{id}.bin"));
         write_file_synced(&staged_path, &bytes)?;
         let (transport_hash, _) = self.register_staged_file(staged_path, actual_length)?;
-        if digest.algorithm() == mneme_core::HashAlgorithm::Blake3
+        if !is_encrypted
+            && digest.algorithm() == mneme_core::HashAlgorithm::Blake3
             && transport_hash.as_bytes() != digest.as_bytes()
         {
             return Err(crate::error::Failure::VerificationFailed(
@@ -1119,7 +1126,8 @@ fn has_framed_magic(path: &std::path::Path, file_len: u64) -> crate::error::Resu
         .map_err(|error| crate::error::Failure::Io(format!("read blob header: {error}")))?;
     Ok(&magic == ZSTD_FRAME_MAGIC
         || &magic == ZSTD_DICT_FRAME_MAGIC
-        || &magic == FASTCDC_FRAME_MAGIC)
+        || &magic == FASTCDC_FRAME_MAGIC
+        || &magic == b"MNENC01\0")
 }
 
 fn write_file_synced(path: &std::path::Path, bytes: &[u8]) -> crate::error::Result<()> {

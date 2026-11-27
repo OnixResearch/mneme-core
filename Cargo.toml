@@ -36,6 +36,7 @@ mneme-api = { path = "crates/mneme-api" }
 mneme-sync = { path = "crates/mneme-sync" }
 blake3 = "1.8"
 bao-tree = { version = "0.16.1", default-features = false, features = ["fs"] }
+chacha20poly1305 = "0.10"
 getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 iroh = "1.5"
@@ -57,6 +58,7 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1.44", features = ["rt", "rt-multi-thread", "sync", "macros", "time", "net"] }
+zeroize = "1.9"
 zstd = "0.13"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 proptest = { version = "1", default-features = false, features = ["std"] }

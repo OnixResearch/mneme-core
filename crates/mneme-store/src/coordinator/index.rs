@@ -235,7 +235,7 @@ fn select_active_metadata_rows(
          FROM record_membership m
          JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
          WHERE m.last_sequence IS NULL AND r.kind IN ('entity', 'relation', 'document')
-         ORDER BY r.record_id",
+         ORDER BY r.record_id, r.revision_id",
     )?;
     statement
         .query_map([], map_active_metadata_row)?
@@ -522,7 +522,8 @@ fn load_open_membership_row(
             "SELECT r.revision_id, r.kind, r.envelope_digest, r.payload_digest, r.full_digest
              FROM record_membership m
              JOIN records r ON r.record_id = m.record_id AND r.revision_id = m.revision_id
-             WHERE m.record_id = ?1 AND m.last_sequence IS NULL",
+             WHERE m.record_id = ?1 AND m.last_sequence IS NULL
+             ORDER BY r.revision_id ASC LIMIT 1",
             rusqlite::params![record_id.as_bytes().as_slice()],
             map_current_record_row,
         )

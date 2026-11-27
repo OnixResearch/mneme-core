@@ -1068,3 +1068,143 @@ fn hlc_tick_receive_causal_monotonicity_and_skew_guard() {
         Err(mneme_kernel::hlc::HlcError::LogicalOverflow)
     );
 }
+
+#[test]
+fn merkle_crdt_lattice_join_projection_and_merge_resolution() {
+    let empty = mneme_kernel::lattice::FrontierState {
+        nodes_mask: 0,
+        cited_mask: 0,
+        suppression: mneme_kernel::calm::SuppressionState {
+            level: mneme_kernel::calm::SuppressionLevel::None,
+            generation: 0,
+        },
+    };
+
+    // Root R0, two concurrent offline branches R1 and R2 citing R0, and a merge R3 citing {R1, R2}.
+    let root = mneme_kernel::lattice::ingest_node(empty, 1 << 0, 0);
+    let peer_a = mneme_kernel::lattice::ingest_node(root, 1 << 1, 1 << 0);
+    let peer_b = mneme_kernel::lattice::ingest_node(root, 1 << 2, 1 << 0);
+
+    // Commutativity, associativity, idempotence of join_frontier.
+    let ab = mneme_kernel::lattice::join_frontier(peer_a, peer_b);
+    let ba = mneme_kernel::lattice::join_frontier(peer_b, peer_a);
+    assert_eq!(ab, ba);
+    assert_eq!(mneme_kernel::lattice::join_frontier(ab, ab), ab);
+    assert_eq!(
+        mneme_kernel::lattice::join_frontier(
+            mneme_kernel::lattice::join_frontier(root, peer_a),
+            peer_b
+        ),
+        mneme_kernel::lattice::join_frontier(
+            root,
+            mneme_kernel::lattice::join_frontier(peer_a, peer_b)
+        )
+    );
+
+    // Active frontier of {R0, R1, R2} is {R1, R2} -> concurrent -> Disputed.
+    let mask = mneme_kernel::lattice::frontier_mask(ab);
+    assert_eq!(mask, (1 << 1) | (1 << 2));
+    assert!(mneme_kernel::lattice::is_concurrent_mask(mask));
+    assert!(mneme_kernel::lattice::is_concurrent_frontier(
+        mask.count_ones()
+    ));
+
+    let concurrent_view =
+        mneme_kernel::lattice::project_frontier(&mneme_kernel::lattice::FrontierProjectionInput {
+            frontier_count: mask.count_ones(),
+            head_lifecycle: mneme_kernel::claim::Lifecycle::Accepted,
+            suppression: mneme_kernel::calm::SuppressionLevel::None,
+        });
+    assert_eq!(
+        concurrent_view,
+        mneme_kernel::lattice::ProjectedView::DisputedConcurrent { frontier_count: 2 }
+    );
+    assert_eq!(
+        mneme_kernel::lattice::projected_lifecycle(concurrent_view),
+        Some(mneme_kernel::claim::Lifecycle::Disputed)
+    );
+
+    // Explicit merge requires citing all frontier heads AND an explicit decision.
+    assert_eq!(
+        mneme_kernel::lattice::decide_frontier_merge(
+            &mneme_kernel::lattice::MergeResolutionFacts {
+                frontier_count: 2,
+                cited_frontier_count: 1,
+                has_conflict_resolution_decision: true,
+                suppression: mneme_kernel::calm::SuppressionLevel::None,
+            }
+        ),
+        mneme_kernel::lattice::MergeResolutionVerdict::RefusedIncompleteParents
+    );
+    assert_eq!(
+        mneme_kernel::lattice::decide_frontier_merge(
+            &mneme_kernel::lattice::MergeResolutionFacts {
+                frontier_count: 2,
+                cited_frontier_count: 2,
+                has_conflict_resolution_decision: false,
+                suppression: mneme_kernel::calm::SuppressionLevel::None,
+            }
+        ),
+        mneme_kernel::lattice::MergeResolutionVerdict::RefusedMissingDecision
+    );
+    assert_eq!(
+        mneme_kernel::lattice::decide_frontier_merge(
+            &mneme_kernel::lattice::MergeResolutionFacts {
+                frontier_count: 2,
+                cited_frontier_count: 2,
+                has_conflict_resolution_decision: true,
+                suppression: mneme_kernel::calm::SuppressionLevel::None,
+            }
+        ),
+        mneme_kernel::lattice::MergeResolutionVerdict::Allowed
+    );
+
+    // Ingesting merge R3 citing {R1, R2} collapses the frontier to {R3}.
+    let merged = mneme_kernel::lattice::ingest_node(ab, 1 << 3, (1 << 1) | (1 << 2));
+    let merged_mask = mneme_kernel::lattice::frontier_mask(merged);
+    assert_eq!(merged_mask, 1 << 3);
+    assert!(!mneme_kernel::lattice::is_concurrent_mask(merged_mask));
+    let active_view =
+        mneme_kernel::lattice::project_frontier(&mneme_kernel::lattice::FrontierProjectionInput {
+            frontier_count: merged_mask.count_ones(),
+            head_lifecycle: mneme_kernel::claim::Lifecycle::Accepted,
+            suppression: mneme_kernel::calm::SuppressionLevel::None,
+        });
+    assert_eq!(
+        active_view,
+        mneme_kernel::lattice::ProjectedView::Active(mneme_kernel::claim::Lifecycle::Accepted)
+    );
+
+    // Suppression dominates concurrent branches and blocks merges.
+    let forgotten = mneme_kernel::lattice::FrontierState {
+        suppression: mneme_kernel::calm::SuppressionState {
+            level: mneme_kernel::calm::SuppressionLevel::Forgotten,
+            generation: 5,
+        },
+        ..empty
+    };
+    let joined_forgotten = mneme_kernel::lattice::join_frontier(ab, forgotten);
+    assert_eq!(
+        joined_forgotten.suppression.level,
+        mneme_kernel::calm::SuppressionLevel::Forgotten
+    );
+    assert_eq!(
+        mneme_kernel::lattice::project_frontier(&mneme_kernel::lattice::FrontierProjectionInput {
+            frontier_count: mneme_kernel::lattice::frontier_mask(joined_forgotten).count_ones(),
+            head_lifecycle: mneme_kernel::claim::Lifecycle::Accepted,
+            suppression: joined_forgotten.suppression.level,
+        }),
+        mneme_kernel::lattice::ProjectedView::Forgotten
+    );
+    assert_eq!(
+        mneme_kernel::lattice::decide_frontier_merge(
+            &mneme_kernel::lattice::MergeResolutionFacts {
+                frontier_count: 2,
+                cited_frontier_count: 2,
+                has_conflict_resolution_decision: true,
+                suppression: mneme_kernel::calm::SuppressionLevel::Forgotten,
+            }
+        ),
+        mneme_kernel::lattice::MergeResolutionVerdict::RefusedSuppressed
+    );
+}

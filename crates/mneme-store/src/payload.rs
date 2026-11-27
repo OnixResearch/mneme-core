@@ -23,6 +23,14 @@ const ZSTD_FRAME_MAGIC: &[u8; 8] = b"MNZSTD01";
 const ZSTD_HEADER_LEN: usize = 16;
 const ZSTD_DICT_FRAME_MAGIC: &[u8; 8] = b"MNZSTD02";
 pub(crate) const ZSTD_DICT_HEADER_LEN: usize = 49;
+/// On-disk magic prefix for GGM XChaCha20-Poly1305 encrypted blob frames.
+pub(crate) const ENC_FRAME_MAGIC: &[u8; 8] = b"MNENC01\0";
+/// Minimum byte length of an `MNENC01\0` header (`magic(8) + key_slot(4) + uncompressed_len(8) + scope_len(2) + nonce(24) + tag(16)`).
+pub(crate) const ENC_MIN_FRAME_LEN: usize = 8 + 4 + 8 + 2 + 24 + 16;
+const ENC_FIXED_PREFIX_LEN: usize = 22;
+const ENC_NONCE_LEN: usize = 24;
+const ENC_TAG_LEN: usize = 16;
+const ENC_MAX_SCOPE_BYTES: usize = 512;
 const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 pub(crate) const MAX_DECOMPRESSED_BLOB_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -33,6 +41,7 @@ pub(crate) enum BlobFraming {
     Zstd,
     ZstdDict,
     FastCdc,
+    Encrypted,
 }
 
 /// On-disk compression policy for newly staged `source-bytes` blobs.
@@ -343,7 +352,10 @@ pub fn read_range(
     let path = blob_path(root, digest);
     let mut file = open_blob_file(&path, digest)?;
     let magic = read_file_magic(&mut file, &path)?;
-    if magic.as_ref() == Some(ZSTD_FRAME_MAGIC) || magic.as_ref() == Some(ZSTD_DICT_FRAME_MAGIC) {
+    if magic.as_ref() == Some(ZSTD_FRAME_MAGIC)
+        || magic.as_ref() == Some(ZSTD_DICT_FRAME_MAGIC)
+        || magic.as_ref() == Some(ENC_FRAME_MAGIC)
+    {
         let decompressed = read(root, digest)?;
         return slice_range(digest, &decompressed, offset, length);
     }
@@ -1136,6 +1148,9 @@ fn decode_single_blob_bytes(
     if hash_with_algorithm(digest.algorithm(), disk_bytes) == *digest.as_bytes() {
         return Ok(disk_bytes.to_vec());
     }
+    if disk_bytes.starts_with(ENC_FRAME_MAGIC) {
+        return decrypt_enc_frame(root, digest, disk_bytes);
+    }
     if disk_bytes.starts_with(ZSTD_FRAME_MAGIC) {
         return decode_zstd_frame(digest, disk_bytes);
     }
@@ -1146,6 +1161,357 @@ fn decode_single_blob_bytes(
         digest: digest.to_hex(),
         reason: "stored bytes do not hash to the committed digest".to_owned(),
     })
+}
+
+/// Metadata required to stage a GGM-encrypted (`MNENC01\0`) blob.
+#[derive(Clone, Copy)]
+pub struct EncryptedStageTarget<'a> {
+    pub scope: &'a mneme_core::ScopeId,
+    pub record_id: Option<mneme_core::RecordId>,
+    pub revision_id: Option<mneme_core::RevisionId>,
+    pub media_type: &'a str,
+}
+
+/// Stage exact bytes as an `MNENC01\0` XChaCha20-Poly1305 frame backed by
+/// `keytree/<scope>.db`, returning `(StagedBlob, key_slot)`.
+///
+/// Canonical `ContentDigest = BLAKE3(plaintext)` remains the logical identity,
+/// while on-disk bytes store only authenticated ciphertext bound via AAD to
+/// `scope || plaintext_digest`.
+pub fn stage_encrypted(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    bytes: &[u8],
+    target: EncryptedStageTarget<'_>,
+) -> crate::error::Result<(StagedBlob, u32)> {
+    stage_encrypted_with_policy(root, digest, bytes, target, StoragePolicy::default())
+}
+
+pub(crate) fn stage_encrypted_with_policy(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    bytes: &[u8],
+    target: EncryptedStageTarget<'_>,
+    policy: StoragePolicy,
+) -> crate::error::Result<(StagedBlob, u32)> {
+    if hash_bytes(digest.algorithm(), bytes) != *digest.as_bytes() {
+        return Err(crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "staged bytes do not hash to the declared digest".to_owned(),
+        });
+    }
+    let uncompressed_len =
+        u64::try_from(bytes.len()).map_err(|_| crate::error::Failure::CorruptBlob {
+            digest: digest.to_hex(),
+            reason: "staged blob length exceeds u64".to_owned(),
+        })?;
+    let mut tree = crate::keytree::PuncturableTree::open_or_init(root, target.scope)?;
+    let key_slot = tree.allocate_slot(digest, target.record_id, target.revision_id)?;
+    let blob_file = blob_path(root, digest);
+    if blob_file.exists() {
+        let staged = finish_existing_stage(&blob_file, root, digest, uncompressed_len)?;
+        return Ok((staged, key_slot));
+    }
+    let inner_bytes = encode_for_storage(
+        root,
+        digest,
+        bytes,
+        EncodeOptions {
+            uncompressed_len,
+            compression: policy.compression,
+            media_type: target.media_type,
+        },
+    )?;
+    let dek = tree.derive_dek(key_slot, &digest.to_hex())?;
+    let frame = encode_enc_frame(&EncFrameInput {
+        scope: target.scope,
+        digest,
+        key_slot,
+        uncompressed_len,
+        dek: &dek,
+        inner_bytes: &inner_bytes,
+    })?;
+    write_staged_blob(root, &blob_file, &frame)?;
+    Ok((
+        StagedBlob {
+            digest,
+            byte_length: uncompressed_len,
+        },
+        key_slot,
+    ))
+}
+
+struct EncFrameInput<'a> {
+    scope: &'a mneme_core::ScopeId,
+    digest: mneme_core::ContentDigest,
+    key_slot: u32,
+    uncompressed_len: u64,
+    dek: &'a [u8; 32],
+    inner_bytes: &'a [u8],
+}
+
+/// Encode one `MNENC01\0` XChaCha20-Poly1305 frame using `input.dek`.
+#[allow(unknown_lints, ambient_random)] // CSPRNG 192-bit XChaCha20 nonce
+fn encode_enc_frame(input: &EncFrameInput<'_>) -> crate::error::Result<Vec<u8>> {
+    use chacha20poly1305::KeyInit;
+    use chacha20poly1305::aead::Aead;
+
+    let scope_str = input.scope.to_string();
+    let scope_bytes = scope_str.as_bytes();
+    if scope_bytes.len() > ENC_MAX_SCOPE_BYTES {
+        return Err(crate::error::Failure::InvalidCommand(
+            "encrypted blob scope name exceeds maximum length".to_owned(),
+        ));
+    }
+    let scope_len = u16::try_from(scope_bytes.len()).map_err(|_| {
+        crate::error::Failure::InvalidCommand("encrypted blob scope length exceeds u16".to_owned())
+    })?;
+    let mut nonce_bytes = [0_u8; ENC_NONCE_LEN];
+    getrandom::fill(&mut nonce_bytes)
+        .map_err(|error| crate::error::Failure::Random(error.to_string()))?;
+    let aad = build_enc_aad(scope_bytes, input.digest);
+    let cipher = chacha20poly1305::XChaCha20Poly1305::new(input.dek.into());
+    let nonce = chacha20poly1305::XNonce::from(nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(
+            &nonce,
+            chacha20poly1305::aead::Payload {
+                msg: input.inner_bytes,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| crate::error::Failure::CorruptBlob {
+            digest: input.digest.to_hex(),
+            reason: "XChaCha20-Poly1305 encryption failed".to_owned(),
+        })?;
+    let total_len = ENC_FIXED_PREFIX_LEN
+        .saturating_add(scope_bytes.len())
+        .saturating_add(ENC_NONCE_LEN)
+        .saturating_add(ciphertext.len());
+    let mut out = Vec::with_capacity(total_len);
+    out.extend_from_slice(ENC_FRAME_MAGIC);
+    out.extend_from_slice(&input.key_slot.to_le_bytes());
+    out.extend_from_slice(&input.uncompressed_len.to_le_bytes());
+    out.extend_from_slice(&scope_len.to_le_bytes());
+    out.extend_from_slice(scope_bytes);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Parsed fields of an `MNENC01\0` header and ciphertext body.
+struct ParsedEncFrame<'a> {
+    scope: mneme_core::ScopeId,
+    scope_bytes: &'a [u8],
+    key_slot: u32,
+    uncompressed_len: u64,
+    nonce: [u8; ENC_NONCE_LEN],
+    ciphertext: &'a [u8],
+}
+
+fn parse_enc_frame<'a>(
+    digest: mneme_core::ContentDigest,
+    disk_bytes: &'a [u8],
+) -> crate::error::Result<ParsedEncFrame<'a>> {
+    if disk_bytes.len() < ENC_MIN_FRAME_LEN
+        || &disk_bytes[..ENC_FRAME_MAGIC.len()] != ENC_FRAME_MAGIC
+    {
+        return Err(corrupt_enc_frame(
+            digest,
+            "encrypted blob header is truncated",
+        ));
+    }
+    let key_slot = <[u8; 4]>::try_from(&disk_bytes[8..12])
+        .map(u32::from_le_bytes)
+        .map_err(|_| corrupt_enc_frame(digest, "encrypted blob key_slot is malformed"))?;
+    let uncompressed_len = <[u8; 8]>::try_from(&disk_bytes[12..20])
+        .map(u64::from_le_bytes)
+        .map_err(|_| corrupt_enc_frame(digest, "encrypted blob length is malformed"))?;
+    if uncompressed_len > MAX_DECOMPRESSED_BLOB_BYTES {
+        return Err(corrupt_enc_frame(
+            digest,
+            "encrypted blob length exceeds maximum supported size",
+        ));
+    }
+    let scope_len = <[u8; 2]>::try_from(&disk_bytes[20..22])
+        .map(u16::from_le_bytes)
+        .map(usize::from)
+        .map_err(|_| corrupt_enc_frame(digest, "encrypted blob scope length is malformed"))?;
+    if scope_len == 0 || scope_len > ENC_MAX_SCOPE_BYTES {
+        return Err(corrupt_enc_frame(
+            digest,
+            "encrypted blob scope length is out of bounds",
+        ));
+    }
+    let scope_end = ENC_FIXED_PREFIX_LEN.saturating_add(scope_len);
+    let nonce_end = scope_end.saturating_add(ENC_NONCE_LEN);
+    if disk_bytes.len() < nonce_end.saturating_add(ENC_TAG_LEN) {
+        return Err(corrupt_enc_frame(
+            digest,
+            "encrypted blob body is truncated",
+        ));
+    }
+    let scope_bytes = &disk_bytes[ENC_FIXED_PREFIX_LEN..scope_end];
+    let scope_str = std::str::from_utf8(scope_bytes)
+        .map_err(|_| corrupt_enc_frame(digest, "encrypted blob scope is not valid UTF-8"))?;
+    let scope = crate::keytree::parse_scope_str(scope_str)
+        .ok_or_else(|| corrupt_enc_frame(digest, "encrypted blob scope identifier is invalid"))?;
+    let nonce = <[u8; ENC_NONCE_LEN]>::try_from(&disk_bytes[scope_end..nonce_end])
+        .map_err(|_| corrupt_enc_frame(digest, "encrypted blob nonce is malformed"))?;
+    Ok(ParsedEncFrame {
+        scope,
+        scope_bytes,
+        key_slot,
+        uncompressed_len,
+        nonce,
+        ciphertext: &disk_bytes[nonce_end..],
+    })
+}
+
+/// Inspect `(scope, key_slot, uncompressed_len)` of an `MNENC01\0` frame without decrypting.
+pub fn inspect_enc_frame_header(
+    digest: mneme_core::ContentDigest,
+    disk_bytes: &[u8],
+) -> crate::error::Result<(mneme_core::ScopeId, u32, u64)> {
+    let parsed = parse_enc_frame(digest, disk_bytes)?;
+    Ok((parsed.scope, parsed.key_slot, parsed.uncompressed_len))
+}
+
+/// Decrypt and verify an `MNENC01\0` XChaCha20-Poly1305 frame using `keytree/<scope>.db`
+/// under `keytree_root`.
+///
+/// Fails closed with [`crate::error::Failure::CryptographicallyErased`] when the
+/// scope key tree is absent or `key_slot` has been punctured.
+pub fn decrypt_enc_frame(
+    keytree_root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+    disk_bytes: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    use chacha20poly1305::KeyInit;
+    use chacha20poly1305::aead::Aead;
+
+    let parsed = parse_enc_frame(digest, disk_bytes)?;
+    let Some(tree) = crate::keytree::PuncturableTree::open_existing(keytree_root, &parsed.scope)?
+    else {
+        return Err(crate::error::Failure::CryptographicallyErased {
+            scope: parsed.scope.to_string(),
+            key_slot: parsed.key_slot,
+            digest: digest.to_hex(),
+        });
+    };
+    let dek = tree.derive_dek(parsed.key_slot, &digest.to_hex())?;
+    let aad = build_enc_aad(parsed.scope_bytes, digest);
+    let cipher = chacha20poly1305::XChaCha20Poly1305::new(dek.as_ref().into());
+    let nonce = chacha20poly1305::XNonce::from(parsed.nonce);
+    let inner = cipher
+        .decrypt(
+            &nonce,
+            chacha20poly1305::aead::Payload {
+                msg: parsed.ciphertext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| corrupt_enc_frame(digest, "XChaCha20-Poly1305 authentication failed"))?;
+    let plaintext = if inner.starts_with(ZSTD_FRAME_MAGIC)
+        && hash_bytes(digest.algorithm(), &inner) != *digest.as_bytes()
+    {
+        decode_zstd_frame(digest, &inner)?
+    } else if inner.starts_with(ZSTD_DICT_FRAME_MAGIC)
+        && hash_bytes(digest.algorithm(), &inner) != *digest.as_bytes()
+    {
+        decode_zstd_dict_frame(keytree_root, digest, &inner)?
+    } else {
+        inner
+    };
+    verify_decompressed(digest, &plaintext, parsed.uncompressed_len)?;
+    Ok(plaintext)
+}
+
+/// Read the raw on-disk bytes of a blob (ciphertext frame when encrypted,
+/// raw/framed bytes otherwise) without decrypting.
+pub fn read_raw_frame(
+    root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> crate::error::Result<Vec<u8>> {
+    let path = blob_path(root, digest);
+    std::fs::read(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            crate::error::Failure::MissingBlob {
+                digest: digest.to_hex(),
+            }
+        } else {
+            crate::error::Failure::io(&path, error)
+        }
+    })
+}
+
+/// Whether `bytes` carry an `MNENC01\0` encrypted blob frame prefix.
+pub fn is_encrypted_frame(bytes: &[u8]) -> bool {
+    bytes.len() >= ENC_MIN_FRAME_LEN && bytes.starts_with(ENC_FRAME_MAGIC)
+}
+
+/// Encrypt one FastCDC forget-domain chunk under `tree`'s `key_slot` and `chunk_index`.
+#[allow(unknown_lints, ambient_random)] // CSPRNG 192-bit XChaCha20 nonce for per-chunk AEAD
+pub fn encrypt_cdc_chunk(
+    tree: &crate::keytree::PuncturableTree,
+    key_slot: u32,
+    chunk_index: u32,
+    chunk_digest: mneme_core::ContentDigest,
+    chunk_plaintext: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    let dek = tree.derive_chunk_dek(key_slot, chunk_index, &chunk_digest.to_hex())?;
+    let uncompressed_len = u64::try_from(chunk_plaintext.len())
+        .map_err(|_| corrupt_enc_frame(chunk_digest, "chunk length exceeds u64"))?;
+    encode_enc_frame(&EncFrameInput {
+        scope: tree.scope(),
+        digest: chunk_digest,
+        key_slot,
+        uncompressed_len,
+        dek: &dek,
+        inner_bytes: chunk_plaintext,
+    })
+}
+
+/// Decrypt one FastCDC forget-domain chunk under `tree`'s `key_slot` and `chunk_index`.
+pub fn decrypt_cdc_chunk(
+    tree: &crate::keytree::PuncturableTree,
+    chunk_index: u32,
+    chunk_digest: mneme_core::ContentDigest,
+    frame_bytes: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    use chacha20poly1305::KeyInit;
+    use chacha20poly1305::aead::Aead;
+
+    let parsed = parse_enc_frame(chunk_digest, frame_bytes)?;
+    let dek = tree.derive_chunk_dek(parsed.key_slot, chunk_index, &chunk_digest.to_hex())?;
+    let aad = build_enc_aad(parsed.scope_bytes, chunk_digest);
+    let cipher = chacha20poly1305::XChaCha20Poly1305::new(dek.as_ref().into());
+    let nonce = chacha20poly1305::XNonce::from(parsed.nonce);
+    let plaintext = cipher
+        .decrypt(
+            &nonce,
+            chacha20poly1305::aead::Payload {
+                msg: parsed.ciphertext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| corrupt_enc_frame(chunk_digest, "FastCDC chunk AEAD authentication failed"))?;
+    verify_decompressed(chunk_digest, &plaintext, parsed.uncompressed_len)?;
+    Ok(plaintext)
+}
+
+fn build_enc_aad(scope_bytes: &[u8], digest: mneme_core::ContentDigest) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(scope_bytes.len().saturating_add(32));
+    aad.extend_from_slice(scope_bytes);
+    aad.extend_from_slice(digest.as_bytes());
+    aad
+}
+
+fn corrupt_enc_frame(digest: mneme_core::ContentDigest, reason: &str) -> crate::error::Failure {
+    crate::error::Failure::CorruptBlob {
+        digest: digest.to_hex(),
+        reason: reason.to_owned(),
+    }
 }
 
 fn verify_decompressed(
@@ -1400,7 +1766,7 @@ pub(crate) fn read_frame_header_length(
 ) -> crate::error::Result<Option<u64>> {
     let mut file =
         std::fs::File::open(path).map_err(|error| crate::error::Failure::io(path, error))?;
-    let mut header = [0_u8; ZSTD_HEADER_LEN];
+    let mut header = [0_u8; ENC_FIXED_PREFIX_LEN];
     let mut read_so_far = 0_usize;
     while read_so_far < ZSTD_HEADER_LEN {
         let count = file
@@ -1411,11 +1777,24 @@ pub(crate) fn read_frame_header_length(
         }
         read_so_far = read_so_far.saturating_add(count);
     }
-    debug_assert_eq!(read_so_far, ZSTD_HEADER_LEN);
     let magic = &header[..ZSTD_FRAME_MAGIC.len()];
     let min_len = frame_min_length(magic);
     if min_len == 0 || file_len < min_len {
         return Ok(None);
+    }
+    if magic == ENC_FRAME_MAGIC {
+        while read_so_far < ENC_FIXED_PREFIX_LEN {
+            let count = file
+                .read(&mut header[read_so_far..])
+                .map_err(|error| crate::error::Failure::io(path, error))?;
+            if count == 0 {
+                return Ok(None);
+            }
+            read_so_far = read_so_far.saturating_add(count);
+        }
+        return Ok(<[u8; 8]>::try_from(&header[12..20])
+            .ok()
+            .map(u64::from_le_bytes));
     }
     debug_assert!(file_len >= min_len);
     Ok(
@@ -1432,6 +1811,8 @@ fn frame_min_length(magic: &[u8]) -> u64 {
         ZSTD_DICT_HEADER_LEN as u64
     } else if magic == crate::dedup::CDC_MANIFEST_MAGIC {
         crate::dedup::CDC_HEADER_LEN as u64
+    } else if magic == ENC_FRAME_MAGIC {
+        ENC_MIN_FRAME_LEN as u64
     } else {
         0
     }
@@ -1473,6 +1854,8 @@ fn classify_framing(magic: Option<&[u8; 8]>, file_len: u64) -> BlobFraming {
         && file_len >= crate::dedup::CDC_HEADER_LEN as u64
     {
         BlobFraming::FastCdc
+    } else if magic == ENC_FRAME_MAGIC && file_len >= ENC_MIN_FRAME_LEN as u64 {
+        BlobFraming::Encrypted
     } else {
         BlobFraming::Raw
     }
@@ -1611,6 +1994,19 @@ pub(crate) fn read_with_length(
             crate::error::Failure::io(&path, error)
         }
     })?;
+    if bytes.starts_with(ENC_FRAME_MAGIC) {
+        let plaintext = decrypt_enc_frame(root, digest, &bytes)?;
+        if plaintext.len() as u64 != expected_length {
+            return Err(crate::error::Failure::CorruptBlob {
+                digest: digest.to_hex(),
+                reason: format!(
+                    "stored length {} differs from declared {expected_length}",
+                    plaintext.len()
+                ),
+            });
+        }
+        return Ok(plaintext);
+    }
     if bytes.len() as u64 != expected_length {
         return Err(crate::error::Failure::CorruptBlob {
             digest: digest.to_hex(),

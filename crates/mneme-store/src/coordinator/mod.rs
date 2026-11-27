@@ -804,14 +804,20 @@ struct PreparedCommit {
     /// The ledger facts of every blob the new revision requires, read once
     /// before staging and reused inside the commit transaction.
     blob_lengths: BlobIndex,
-    snapshot_records: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    snapshot_records: std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
     revision_id: mneme_core::WorkspaceRevisionId,
     manifest: crate::catalog::Manifest,
     manifest_digest: mneme_core::ContentDigest,
 }
 
 struct CommitManifest {
-    snapshot_records: std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    snapshot_records: std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
     revision_id: mneme_core::WorkspaceRevisionId,
     manifest: crate::catalog::Manifest,
     manifest_digest: mneme_core::ContentDigest,
@@ -915,7 +921,7 @@ CREATE TABLE IF NOT EXISTS record_membership (
     revision_id BLOB NOT NULL,
     first_sequence INTEGER NOT NULL,
     last_sequence INTEGER,
-    PRIMARY KEY (record_id, first_sequence)
+    PRIMARY KEY (record_id, revision_id, first_sequence)
 );
 CREATE INDEX IF NOT EXISTS record_membership_window
     ON record_membership(first_sequence, last_sequence);
@@ -991,6 +997,18 @@ CREATE TABLE IF NOT EXISTS retention_locations (
     PRIMARY KEY (operation_id, location_id),
     FOREIGN KEY (operation_id) REFERENCES retention_operations(operation_id)
 );
+CREATE TABLE IF NOT EXISTS retention_punctures (
+    scope TEXT NOT NULL,
+    key_slot INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    digest BLOB,
+    digest_algorithm TEXT,
+    digest_profile TEXT,
+    digest_boundary TEXT,
+    signer_key_id TEXT,
+    signature_hex TEXT,
+    PRIMARY KEY (scope, key_slot)
+);
 "#;
 
 /// Configuration for a workspace handle.
@@ -1023,6 +1041,15 @@ impl std::fmt::Debug for WorkspaceConfig {
             .debug_struct("WorkspaceConfig")
             .finish_non_exhaustive()
     }
+}
+
+/// Whether an explicit `ConflictResolution` decision accompanies a DAG merge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeDecisionPresence {
+    /// An explicit `ConflictResolution` decision backs the merge revision.
+    Present,
+    /// No explicit decision backs the merge revision.
+    Absent,
 }
 
 /// Current workspace status.
@@ -2682,7 +2709,7 @@ impl Workspace {
             let (_, _, _, envelope_digest, payload_digest, full_digest) = entry;
             if manifest_records
                 .insert(
-                    record_id,
+                    (record_id, revision_id),
                     crate::catalog::ManifestRecord {
                         record_id,
                         revision_id,
@@ -2693,7 +2720,7 @@ impl Workspace {
             {
                 return Err(crate::error::Failure::Integrity {
                     revision,
-                    reason: "snapshot membership names two revisions of one record".to_owned(),
+                    reason: "snapshot membership repeats one record revision".to_owned(),
                 });
             }
             if forgotten.matches(record_id, revision_id) {
@@ -3923,7 +3950,12 @@ fn snapshot_index(
 ) -> crate::error::Result<mneme_core::SnapshotIndex> {
     let mut index = mneme_core::SnapshotIndex::new();
     for record in records {
-        index.insert(record.record_id, record.kind, record.revision_id);
+        index.add_frontier_revision(
+            record.record_id,
+            record.kind,
+            record.revision_id,
+            &std::collections::BTreeSet::new(),
+        );
     }
     let sequence = db_i64(sequence, "revision sequence")?;
     let mut statement = connection.prepare_cached(
@@ -4658,7 +4690,7 @@ fn manifest_record_set(
         let (record_id, revision_id, kind) = membership_record(&entry, revision)?;
         if records
             .insert(
-                record_id,
+                (record_id, revision_id),
                 crate::catalog::ManifestRecord {
                     record_id,
                     revision_id,
@@ -4669,7 +4701,7 @@ fn manifest_record_set(
         {
             return Err(crate::error::Failure::Integrity {
                 revision,
-                reason: "snapshot membership names two revisions of one record".to_owned(),
+                reason: "snapshot membership repeats one record revision".to_owned(),
             });
         }
     }
@@ -4770,7 +4802,7 @@ fn reconstructed_manifest(
 ) -> crate::error::Result<crate::catalog::Manifest> {
     let manifest = crate::catalog::Manifest {
         revision: row.revision,
-        parent: row.parent,
+        parents: row.parent.into_iter().collect(),
         records,
         blobs: manifest_blob_set(connection, row.sequence, row.revision)?,
     };
@@ -4785,7 +4817,7 @@ fn reconstructed_manifest(
 }
 
 /// Whether the ledger holds a table of this exact name.
-fn table_exists(
+pub(super) fn table_exists(
     connection: &rusqlite::Connection,
     name: &'static str,
 ) -> crate::error::Result<bool> {
@@ -4800,7 +4832,7 @@ fn table_exists(
 }
 
 /// Read 32 digest bytes out of a ledger row.
-fn digest_32(bytes: &[u8]) -> crate::error::Result<[u8; 32]> {
+pub(super) fn digest_32(bytes: &[u8]) -> crate::error::Result<[u8; 32]> {
     let digest: [u8; 32] = bytes.try_into().map_err(|_| {
         crate::error::Failure::UnsupportedLayout("ledger digest is not 32 bytes".to_owned())
     })?;
@@ -4815,11 +4847,11 @@ fn join(diagnostics: &[mneme_core::Diagnostic]) -> String {
         .join("; ")
 }
 
-fn db_i64(value: u64, field: &'static str) -> crate::error::Result<i64> {
+pub(super) fn db_i64(value: u64, field: &'static str) -> crate::error::Result<i64> {
     i64::try_from(value).map_err(|_| crate::error::Failure::ValueOutOfRange(field))
 }
 
-fn db_u64(value: i64, field: &'static str) -> crate::error::Result<u64> {
+pub(super) fn db_u64(value: i64, field: &'static str) -> crate::error::Result<u64> {
     u64::try_from(value).map_err(|_| crate::error::Failure::ValueOutOfRange(field))
 }
 

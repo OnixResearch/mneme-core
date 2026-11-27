@@ -70,7 +70,9 @@ pub fn verify_span_range(
     let framing = crate::payload::inspect_file_framing(&mut file, &blob_file_path, blob_bytes)?;
     if matches!(
         framing,
-        crate::payload::BlobFraming::Zstd | crate::payload::BlobFraming::ZstdDict
+        crate::payload::BlobFraming::Zstd
+            | crate::payload::BlobFraming::ZstdDict
+            | crate::payload::BlobFraming::Encrypted
     ) {
         return verify_zstd_span(root, digest, &range);
     }

@@ -723,6 +723,69 @@ impl SyncNode {
         }
     }
 
+    /// Synchronize signed [`mneme_store::KeyPunctureBarrier`]s with `peer` for
+    /// `scope` without transferring any record or source blobs, and apply every
+    /// received barrier to `local_workspace_root`'s GGM key tree.
+    pub async fn sync_key_punctures(
+        &self,
+        peer: iroh::EndpointId,
+        scope: &mneme_core::ScopeId,
+        local_workspace_root: &std::path::Path,
+        capability: Option<&crate::capability::CapabilityToken>,
+    ) -> crate::error::Result<Vec<mneme_store::KeyPunctureBarrier>> {
+        if capability.is_none() {
+            self.require_peer_scope(peer, scope)?;
+        }
+        let local_ws = mneme_store::Workspace::open_read_only(
+            local_workspace_root,
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
+        )?;
+        let local_barriers = local_ws.key_puncture_barriers(scope)?;
+        drop(local_ws);
+        let mut outbound = Vec::with_capacity(local_barriers.len());
+        for barrier in &local_barriers {
+            let wire = crate::protocol::WireKeyPunctureBarrier::from_portable(barrier);
+            outbound.push(wire.signed(&self.secret_key)?);
+        }
+        let response = self
+            .send_control_request(
+                peer,
+                &crate::protocol::SyncControlRequest::SyncKeyPunctures {
+                    scope: scope.to_string(),
+                    punctures: outbound,
+                    hlc: Some(self.hlc.tick()?),
+                    capability: capability.cloned(),
+                },
+            )
+            .await?;
+        let remote_punctures = match response {
+            crate::protocol::SyncControlResponse::KeyPunctures { punctures, .. } => punctures,
+            other => return Err(unexpected_control_response(peer, other)),
+        };
+        let mut applied = Vec::with_capacity(remote_punctures.len());
+        let mut local_rw = mneme_store::Workspace::open(
+            local_workspace_root,
+            mneme_store::WorkspaceConfig::new(
+                Box::new(mneme_store::SystemClock),
+                Box::new(mneme_store::NoFaults),
+            ),
+        )?;
+        for wire in &remote_punctures {
+            let barrier = wire.verify_and_to_portable()?;
+            if barrier.scope != *scope {
+                return Err(crate::error::Failure::Protocol(
+                    "peer returned key puncture barrier for another scope".to_owned(),
+                ));
+            }
+            let _ = local_rw.apply_key_puncture_barrier(&barrier)?;
+            applied.push(barrier);
+        }
+        Ok(applied)
+    }
+
     /// Exchange and deterministically merge CRDT revocation tombstones with `peer` using bounded pagination.
     pub async fn sync_revocations(
         &self,
@@ -896,17 +959,9 @@ impl SyncNode {
         stats.rbsr_remote_only_items = rbsr_outcome.remote_only.len() as u64;
         stats.rbsr_local_only_items = rbsr_outcome.local_only.len() as u64;
 
-        let extra_local = partition_keys(&rbsr_outcome.local_only)?;
+        let _extra_local = partition_keys(&rbsr_outcome.local_only)?;
         let missing = partition_keys(&rbsr_outcome.remote_only)?;
         let has_retention_update = snapshot.eligibility_generation > local_generation;
-        if !extra_local.revisions.is_empty() && !has_retention_update {
-            conn.close(0_u32.into(), b"conflict");
-            return Err(crate::error::Failure::Store(
-                mneme_store::Failure::PortableArchive(
-                    "destination workspace history conflicts with remote peer".to_owned(),
-                ),
-            ));
-        }
 
         if missing.revisions.is_empty() && missing.blobs.is_empty() && !has_retention_update {
             conn.close(0_u32.into(), b"done");
@@ -928,26 +983,6 @@ impl SyncNode {
 
         stats.control_bytes_sent = stats.control_bytes_sent.saturating_add(meta_sent);
         stats.control_bytes_received = stats.control_bytes_received.saturating_add(meta_recv);
-
-        if !extra_local.revisions.is_empty() {
-            let retention_barrier_present = delta_retention.as_ref().is_some_and(|retention| {
-                retention.generation > local_generation
-                    || extra_local.revisions.iter().any(|(rec_id, rev_id)| {
-                        retention.suppressions.iter().any(|sup| {
-                            sup.mode == mneme_store::SuppressionMode::Forgotten
-                                && sup.target == *rec_id
-                                && (sup.revision.is_none() || sup.revision == Some(*rev_id))
-                        })
-                    })
-            });
-            if !retention_barrier_present {
-                return Err(crate::error::Failure::Store(
-                    mneme_store::Failure::PortableArchive(
-                        "destination workspace history conflicts with remote peer".to_owned(),
-                    ),
-                ));
-            }
-        }
 
         let (fetched_blobs, blob_bytes_fetched) = self
             .download_delta_blobs(request.peer, &request.destination, &delta_blob_refs)
@@ -1778,7 +1813,8 @@ fn unexpected_control_response(
         | crate::protocol::SyncControlResponse::RbsrReply(_)
         | crate::protocol::SyncControlResponse::DeltaMetadata { .. }
         | crate::protocol::SyncControlResponse::HeadAccepted { .. }
-        | crate::protocol::SyncControlResponse::Revocations { .. } => {
+        | crate::protocol::SyncControlResponse::Revocations { .. }
+        | crate::protocol::SyncControlResponse::KeyPunctures { .. } => {
             crate::error::Failure::Protocol(format!("unexpected sync control response from {peer}"))
         }
     }

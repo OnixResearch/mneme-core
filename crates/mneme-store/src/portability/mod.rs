@@ -115,6 +115,118 @@ pub struct PortableOmission {
     pub count: u64,
 }
 
+/// Decrypt one blob from an immutable read-only `.mneme` archive using the
+/// scope's mutable GGM key tree under `keytree_root`.
+///
+/// Fails closed with [`crate::error::Failure::CryptographicallyErased`] when
+/// the blob's `key_slot` has been punctured.
+pub fn decrypt_portable_blob(
+    archive_path: &std::path::Path,
+    keytree_root: &std::path::Path,
+    digest: mneme_core::ContentDigest,
+) -> crate::error::Result<Vec<u8>> {
+    let reader = file::ArchiveReader::verify(archive_path)?;
+    reader.blob_with_keytree(keytree_root, digest)
+}
+
+/// Restore all surviving (non-punctured) records from an immutable read-only
+/// encrypted `.mneme` backup using the key tree under `keytree_root`.
+///
+/// Any source record whose encrypted blob fails closed with
+/// [`crate::error::Failure::CryptographicallyErased`] is omitted without
+/// touching or re-encrypting the immutable backup, while 100% of surviving
+/// records are restored and verified into `destination`.
+pub fn restore_portable_encrypted(
+    archive_path: &std::path::Path,
+    keytree_root: &std::path::Path,
+    destination: &std::path::Path,
+    config: crate::WorkspaceConfig,
+) -> crate::error::Result<PortableRestoreReport> {
+    let archive = file::ArchiveReader::verify(archive_path)?;
+    let manifest = &archive.manifest;
+    let mut workspace = crate::Workspace::create(destination, config)?;
+    let mut omissions = OmissionCounts::default();
+    for existing in &manifest.omissions {
+        omissions.bump(&existing.reason, existing.count);
+    }
+    let ordered = ordered_revisions(&manifest.records);
+    let mut surviving_records = 0_u64;
+    let mut surviving_blobs = 0_u64;
+    let mut batch_ordinal = 0_u64;
+    for entries in ordered.chunk_by(same_batch) {
+        let (drafts, blobs) =
+            collect_encrypted_restore_batch(&archive, keytree_root, entries, &mut omissions)?;
+        if drafts.is_empty() {
+            continue;
+        }
+        surviving_records = surviving_records.saturating_add(drafts.len() as u64);
+        surviving_blobs = surviving_blobs.saturating_add(blobs.len() as u64);
+        workspace.commit_merkle_dag(crate::CommitCommand {
+            base: workspace.current_revision()?,
+            actor: "mneme-portable-encrypted-restore".to_owned(),
+            scope: manifest.scope.clone(),
+            idempotency_key: format!("portable-encrypted-restore:{batch_ordinal}"),
+            records: drafts,
+            source_blobs: blobs,
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })?;
+        batch_ordinal = batch_ordinal.saturating_add(1);
+    }
+    Ok(PortableRestoreReport {
+        destination: destination.to_path_buf(),
+        scope: manifest.scope.clone(),
+        revision: workspace.current_revision()?,
+        sequence: workspace.current_sequence()?,
+        record_count: surviving_records,
+        revision_count: surviving_records,
+        blob_count: surviving_blobs,
+        rewritten_predecessors: 0,
+        publications: Vec::new(),
+        omissions: omissions.into_vec(),
+        ambiguous_publication_paths: 0,
+    })
+}
+
+fn collect_encrypted_restore_batch(
+    archive: &file::ArchiveReader,
+    keytree_root: &std::path::Path,
+    entries: &[&PortableRevision],
+    omissions: &mut OmissionCounts,
+) -> crate::error::Result<(Vec<crate::RecordDraft>, Vec<crate::SourceBlobDraft>)> {
+    let mut drafts = Vec::with_capacity(entries.len());
+    let mut blobs = Vec::with_capacity(entries.len());
+    for revision in entries {
+        let envelope = &revision.envelope;
+        if let Some(retained) = portable_retained_source(envelope)? {
+            match archive.blob_with_keytree(keytree_root, retained.digest()) {
+                Ok(plaintext) => {
+                    blobs.push(crate::SourceBlobDraft::inline(
+                        plaintext,
+                        retained.media_type().clone(),
+                    ));
+                }
+                Err(crate::error::Failure::CryptographicallyErased { .. }) => {
+                    omissions.bump("cryptographically-erased", 1);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        drafts.push(crate::RecordDraft {
+            schema_version: envelope.schema_version,
+            kind: envelope.kind,
+            record_id: envelope.record_id,
+            revision_id: envelope.revision_id,
+            predecessor: envelope.predecessor,
+            scope: envelope.scope.clone(),
+            payload: envelope.payload.clone(),
+        });
+    }
+    Ok((drafts, blobs))
+}
+
 /// Everything an imported workspace needs to keep arrival-independent
 /// retention semantics for the exported scope.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -122,6 +234,7 @@ pub struct PortableRetentionState {
     pub generation: u64,
     pub suppressions: Vec<PortableSuppression>,
     pub prunings: Vec<PortablePruning>,
+    pub key_punctures: Vec<crate::keytree::KeyPunctureBarrier>,
 }
 
 /// The verified contents of one archive.
@@ -327,10 +440,7 @@ impl crate::coordinator::Workspace {
                 revisions,
             });
         }
-        let blobs = blob_lengths
-            .into_values()
-            .map(|(digest, length)| PortableBlob { digest, length })
-            .collect();
+        let blobs = plan_export_blobs(self.root(), blob_lengths)?;
         validate_restore_batches(&records)?;
         let manifest = PortableManifest {
             scope: scope.clone(),
@@ -357,14 +467,19 @@ impl crate::coordinator::Workspace {
         let mut writer = file::ArchiveWriter::create(out, Some(self.root()))?;
         writer.write_manifest(&bytes)?;
         for blob in &manifest.blobs {
-            let source = crate::payload::read(self.root(), blob.digest)?;
-            if source.len() as u64 != blob.length {
+            let raw = crate::payload::read_raw_frame(self.root(), blob.digest)?;
+            let bytes_to_write = if crate::payload::is_encrypted_frame(&raw) {
+                raw
+            } else {
+                crate::payload::read(self.root(), blob.digest)?
+            };
+            if bytes_to_write.len() as u64 != blob.length {
                 return Err(crate::error::Failure::CorruptBlob {
                     digest: blob.digest.to_hex(),
                     reason: "source bytes changed between archive checks".to_owned(),
                 });
             }
-            writer.write_blob(blob.digest, &source)?;
+            writer.write_blob(blob.digest, &bytes_to_write)?;
         }
         if self.current_revision()? != manifest.revision {
             return Err(crate::error::Failure::InvalidCommand(
@@ -520,6 +635,26 @@ impl crate::coordinator::Workspace {
 }
 
 type SourceInventory = std::collections::BTreeMap<[u8; 32], (mneme_core::ContentDigest, u64)>;
+
+fn plan_export_blobs(
+    root: &std::path::Path,
+    blob_lengths: SourceInventory,
+) -> crate::error::Result<Vec<PortableBlob>> {
+    let mut blobs = Vec::with_capacity(blob_lengths.len());
+    for (digest, length) in blob_lengths.into_values() {
+        let raw = crate::payload::read_raw_frame(root, digest)?;
+        let archive_length = if crate::payload::is_encrypted_frame(&raw) {
+            raw.len() as u64
+        } else {
+            length
+        };
+        blobs.push(PortableBlob {
+            digest,
+            length: archive_length,
+        });
+    }
+    Ok(blobs)
+}
 
 fn add_sources(
     blob_lengths: &mut SourceInventory,

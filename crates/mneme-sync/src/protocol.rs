@@ -319,6 +319,112 @@ impl WirePortablePruning {
     }
 }
 
+fn no_wire_digest() -> Option<WireDigest> {
+    None
+}
+
+fn no_optional_string() -> Option<String> {
+    None
+}
+
+fn empty_key_punctures() -> Vec<WireKeyPunctureBarrier> {
+    Vec::new()
+}
+
+/// Wire representation of one signed [`mneme_store::KeyPunctureBarrier`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WireKeyPunctureBarrier {
+    pub scope: String,
+    pub key_slot: u32,
+    pub generation: u64,
+    #[serde(default = "no_wire_digest", skip_serializing_if = "Option::is_none")]
+    pub digest: Option<WireDigest>,
+    #[serde(
+        default = "no_optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub signer_key_id: Option<String>,
+    #[serde(
+        default = "no_optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub signature_hex: Option<String>,
+}
+
+impl WireKeyPunctureBarrier {
+    /// Convert a store [`mneme_store::KeyPunctureBarrier`] to wire format.
+    pub fn from_portable(entry: &mneme_store::KeyPunctureBarrier) -> Self {
+        Self {
+            scope: entry.scope.to_string(),
+            key_slot: entry.key_slot,
+            generation: entry.generation,
+            digest: entry.digest.map(WireDigest::from_digest),
+            signer_key_id: entry.signer_key_id.clone(),
+            signature_hex: entry.signature_hex.clone(),
+        }
+    }
+
+    /// Sign this barrier with `secret_key`'s Ed25519 identity.
+    pub fn signed(&self, secret_key: &iroh::SecretKey) -> crate::error::Result<Self> {
+        let portable = self.to_portable()?;
+        let payload = portable.signing_payload();
+        let signature = secret_key.sign(&payload);
+        let mut out = self.clone();
+        out.signer_key_id = Some(secret_key.public().to_string());
+        out.signature_hex = Some(encode_hex(&signature.to_bytes()));
+        Ok(out)
+    }
+
+    /// Verify the Ed25519 signature if present, returning the verified portable barrier.
+    pub fn verify_and_to_portable(&self) -> crate::error::Result<mneme_store::KeyPunctureBarrier> {
+        let portable = self.to_portable()?;
+        match (&self.signer_key_id, &self.signature_hex) {
+            (Some(signer), Some(sig_hex)) => {
+                let key = iroh::PublicKey::from_str(signer).map_err(|error| {
+                    crate::error::Failure::Protocol(format!(
+                        "invalid key puncture signer id: {error}"
+                    ))
+                })?;
+                let sig_bytes = parse_hex_64(sig_hex)?;
+                let signature = iroh::Signature::from_bytes(&sig_bytes);
+                key.verify(&portable.signing_payload(), &signature)
+                    .map_err(|_| {
+                        crate::error::Failure::VerificationFailed(
+                            "key puncture barrier Ed25519 signature verification failed".to_owned(),
+                        )
+                    })?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(crate::error::Failure::Protocol(
+                    "key puncture barrier must carry both signerKeyId and signatureHex or neither"
+                        .to_owned(),
+                ));
+            }
+        }
+        Ok(portable)
+    }
+
+    /// Convert back to [`mneme_store::KeyPunctureBarrier`].
+    pub fn to_portable(&self) -> crate::error::Result<mneme_store::KeyPunctureBarrier> {
+        let scope = parse_scope_id(&self.scope)?;
+        let digest = self
+            .digest
+            .as_ref()
+            .map(WireDigest::to_digest)
+            .transpose()?;
+        Ok(mneme_store::KeyPunctureBarrier {
+            scope,
+            key_slot: self.key_slot,
+            generation: self.generation,
+            digest,
+            signer_key_id: self.signer_key_id.clone(),
+            signature_hex: self.signature_hex.clone(),
+        })
+    }
+}
+
 /// Wire representation of [`mneme_store::portability::PortableRetentionState`].
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -326,6 +432,8 @@ pub(crate) struct WirePortableRetentionState {
     pub generation: u64,
     pub suppressions: Vec<WirePortableSuppression>,
     pub prunings: Vec<WirePortablePruning>,
+    #[serde(default = "empty_key_punctures", skip_serializing_if = "Vec::is_empty")]
+    pub key_punctures: Vec<WireKeyPunctureBarrier>,
 }
 
 impl WirePortableRetentionState {
@@ -341,6 +449,11 @@ impl WirePortableRetentionState {
                 .prunings
                 .iter()
                 .map(WirePortablePruning::from_portable)
+                .collect(),
+            key_punctures: state
+                .key_punctures
+                .iter()
+                .map(WireKeyPunctureBarrier::from_portable)
                 .collect(),
         }
     }
@@ -358,10 +471,16 @@ impl WirePortableRetentionState {
             .iter()
             .map(WirePortablePruning::to_portable)
             .collect::<crate::error::Result<Vec<_>>>()?;
+        let key_punctures = self
+            .key_punctures
+            .iter()
+            .map(WireKeyPunctureBarrier::verify_and_to_portable)
+            .collect::<crate::error::Result<Vec<_>>>()?;
         Ok(mneme_store::portability::PortableRetentionState {
             generation: self.generation,
             suppressions,
             prunings,
+            key_punctures,
         })
     }
 }
@@ -761,6 +880,15 @@ pub(crate) enum SyncControlRequest {
         #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
         capability: Option<crate::capability::CapabilityToken>,
     },
+    SyncKeyPunctures {
+        scope: String,
+        #[serde(default = "empty_key_punctures", skip_serializing_if = "Vec::is_empty")]
+        punctures: Vec<WireKeyPunctureBarrier>,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
+        #[serde(default = "no_capability", skip_serializing_if = "Option::is_none")]
+        capability: Option<crate::capability::CapabilityToken>,
+    },
 }
 
 impl SyncControlRequest {
@@ -770,7 +898,8 @@ impl SyncControlRequest {
             | SyncControlRequest::RbsrReconcile { capability, .. }
             | SyncControlRequest::FetchDeltaMetadata { capability, .. }
             | SyncControlRequest::PushHead { capability, .. }
-            | SyncControlRequest::SyncRevocations { capability, .. } => capability.as_ref(),
+            | SyncControlRequest::SyncRevocations { capability, .. }
+            | SyncControlRequest::SyncKeyPunctures { capability, .. } => capability.as_ref(),
         }
     }
 
@@ -779,7 +908,8 @@ impl SyncControlRequest {
             SyncControlRequest::GetVaultHead { hlc, .. }
             | SyncControlRequest::RbsrReconcile { hlc, .. }
             | SyncControlRequest::FetchDeltaMetadata { hlc, .. }
-            | SyncControlRequest::SyncRevocations { hlc, .. } => *hlc,
+            | SyncControlRequest::SyncRevocations { hlc, .. }
+            | SyncControlRequest::SyncKeyPunctures { hlc, .. } => *hlc,
             SyncControlRequest::PushHead {
                 announcement, hlc, ..
             } => hlc.or(announcement.hlc),
@@ -819,6 +949,12 @@ pub(crate) enum SyncControlResponse {
         #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
         hlc: Option<WireHlc>,
     },
+    KeyPunctures {
+        scope: String,
+        punctures: Vec<WireKeyPunctureBarrier>,
+        #[serde(default = "no_hlc", skip_serializing_if = "Option::is_none")]
+        hlc: Option<WireHlc>,
+    },
     Refused {
         reason: String,
     },
@@ -837,7 +973,8 @@ impl SyncControlResponse {
             SyncControlResponse::VaultHead(info) => info.hlc,
             SyncControlResponse::DeltaMetadata { hlc, .. }
             | SyncControlResponse::HeadAccepted { hlc, .. }
-            | SyncControlResponse::Revocations { hlc, .. } => *hlc,
+            | SyncControlResponse::Revocations { hlc, .. }
+            | SyncControlResponse::KeyPunctures { hlc, .. } => *hlc,
             SyncControlResponse::RbsrReply(_)
             | SyncControlResponse::Refused { .. }
             | SyncControlResponse::CapabilityDenied { .. }
@@ -1390,6 +1527,110 @@ impl SyncControlHandler {
                 *limit,
                 capability.as_ref(),
             ),
+            SyncControlRequest::SyncKeyPunctures {
+                scope,
+                punctures,
+                capability,
+                ..
+            } => self.handle_sync_key_punctures(remote, scope, punctures, capability.as_ref()),
+        }
+    }
+
+    fn handle_sync_key_punctures(
+        &self,
+        remote: iroh::EndpointId,
+        scope: &str,
+        incoming: &[WireKeyPunctureBarrier],
+        capability: Option<&crate::capability::CapabilityToken>,
+    ) -> SyncControlResponse {
+        let entry = match self.lookup_authorized_scope(
+            remote,
+            scope,
+            capability,
+            crate::capability::CapabilityAuthority::ReadOnly,
+        ) {
+            Ok(entry) => entry,
+            Err(refused) => return refused,
+        };
+        let mut live_ws = if !incoming.is_empty() {
+            entry.workspace_root.as_deref().and_then(|root| {
+                mneme_store::Workspace::open(
+                    root,
+                    mneme_store::WorkspaceConfig::new(
+                        Box::new(mneme_store::SystemClock),
+                        Box::new(mneme_store::NoFaults),
+                    ),
+                )
+                .ok()
+            })
+        } else {
+            None
+        };
+        for item in incoming {
+            if item.scope != scope {
+                return SyncControlResponse::Refused {
+                    reason: "key puncture barrier scope mismatch".to_owned(),
+                };
+            }
+            let barrier = match item.verify_and_to_portable() {
+                Ok(barrier) => barrier,
+                Err(error) => {
+                    return SyncControlResponse::Refused {
+                        reason: error.to_string(),
+                    };
+                }
+            };
+            if let Some(ws) = live_ws.as_mut()
+                && let Err(error) = ws.apply_key_puncture_barrier(&barrier)
+            {
+                return SyncControlResponse::Refused {
+                    reason: error.to_string(),
+                };
+            }
+        }
+        let mut punctures: Vec<WireKeyPunctureBarrier> = entry
+            .retention
+            .key_punctures
+            .iter()
+            .map(WireKeyPunctureBarrier::from_portable)
+            .collect();
+        if let Some(root) = entry.workspace_root.as_deref() {
+            Self::append_live_key_punctures(root, scope, &mut punctures);
+        }
+        SyncControlResponse::KeyPunctures {
+            scope: scope.to_owned(),
+            punctures,
+            hlc: self.hlc.tick().ok(),
+        }
+    }
+
+    fn append_live_key_punctures(
+        root: &std::path::Path,
+        scope: &str,
+        punctures: &mut Vec<WireKeyPunctureBarrier>,
+    ) {
+        let Ok(parsed_scope) = parse_scope_id(scope) else {
+            return;
+        };
+        let config = mneme_store::WorkspaceConfig::new(
+            Box::new(mneme_store::SystemClock),
+            Box::new(mneme_store::NoFaults),
+        );
+        let Ok(ws) = mneme_store::Workspace::open_read_only(root, config) else {
+            return;
+        };
+        let Ok(live) = ws.key_puncture_barriers(&parsed_scope) else {
+            return;
+        };
+        punctures.reserve(live.len());
+        for barrier in live {
+            let wire = WireKeyPunctureBarrier::from_portable(&barrier);
+            if !punctures
+                .iter()
+                .any(|existing| existing.key_slot == wire.key_slot)
+            {
+                punctures.push(wire);
+            }
         }
     }
 
@@ -2074,6 +2315,28 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 
 pub(crate) fn parse_hex_32(text: &str) -> crate::error::Result<[u8; 32]> {
     decode_hex_32(text).map_err(|reason| crate::error::Failure::Protocol(reason.to_owned()))
+}
+
+fn parse_hex_64(text: &str) -> crate::error::Result<[u8; 64]> {
+    if text.len() != 128 {
+        return Err(crate::error::Failure::Protocol(
+            "expected 128 hex characters for Ed25519 signature".to_owned(),
+        ));
+    }
+    let first = parse_hex_32(&text[..64])?;
+    let second = parse_hex_32(&text[64..])?;
+    let mut out = [0_u8; 64];
+    out[..32].copy_from_slice(&first);
+    out[32..].copy_from_slice(&second);
+    Ok(out)
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for &byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 #[cfg(feature = "trace-spec")]

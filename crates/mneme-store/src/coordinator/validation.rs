@@ -110,7 +110,7 @@ pub(super) fn validate_record_scopes(
                 "every proposed record must be in the command's scope".to_owned(),
             ));
         }
-        if record.predecessor.is_none() {
+        if record.parents().is_empty() {
             continue;
         }
         let Some(previous) = prior
@@ -188,7 +188,10 @@ pub(super) fn validate_bindings(
 }
 
 pub(super) fn validate_snapshot_bindings(
-    records: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    records: &std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
 ) -> crate::error::Result<()> {
     let mut bindings: std::collections::BTreeMap<String, mneme_core::RecordId> =
         std::collections::BTreeMap::new();
@@ -310,7 +313,10 @@ fn register_supplied_digest(
 }
 
 pub(super) fn validate_snapshot_sources(
-    records: &std::collections::BTreeMap<mneme_core::RecordId, mneme_core::RecordEnvelope>,
+    records: &std::collections::BTreeMap<
+        (mneme_core::RecordId, mneme_core::RevisionId),
+        mneme_core::RecordEnvelope,
+    >,
     blobs: &super::BlobIndex,
 ) -> crate::error::Result<()> {
     for record in records.values() {

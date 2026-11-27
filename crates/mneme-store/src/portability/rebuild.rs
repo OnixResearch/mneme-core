@@ -64,6 +64,7 @@ fn import_into(
             generation: manifest.generation,
             suppressions: manifest.suppressions.clone(),
             prunings: manifest.prunings.clone(),
+            key_punctures: Vec::new(),
         },
     )?;
     let (revisions, rewritten_predecessors) = replay(archive, &mut workspace)?;

@@ -24,6 +24,10 @@ pub struct RevisionEntry {
 pub struct SnapshotIndex {
     current: std::collections::BTreeMap<crate::ids::RecordId, RevisionEntry>,
     revisions: std::collections::BTreeSet<(crate::ids::RecordId, crate::ids::RevisionId)>,
+    frontiers: std::collections::BTreeMap<
+        crate::ids::RecordId,
+        std::collections::BTreeSet<crate::ids::RevisionId>,
+    >,
 }
 
 impl SnapshotIndex {
@@ -46,6 +50,8 @@ impl SnapshotIndex {
         self.current
             .insert(record, RevisionEntry { kind, revision });
         self.revisions.insert((record, revision));
+        self.frontiers
+            .insert(record, std::collections::BTreeSet::from([revision]));
         true
     }
 
@@ -64,7 +70,59 @@ impl SnapshotIndex {
             self.revisions.insert((record, previous.revision));
         }
         self.revisions.insert((record, revision));
+        self.frontiers
+            .insert(record, std::collections::BTreeSet::from([revision]));
         previous
+    }
+
+    /// Insert a Merkle-CRDT revision into `record`'s maximal frontier,
+    /// superseding any active frontier heads listed in `parents`.
+    pub fn add_frontier_revision(
+        &mut self,
+        record: crate::ids::RecordId,
+        kind: crate::fields::RecordKind,
+        revision: crate::ids::RevisionId,
+        parents: &std::collections::BTreeSet<crate::ids::RevisionId>,
+    ) {
+        self.revisions.insert((record, revision));
+        let entry = self.frontiers.entry(record).or_default();
+        for parent in parents {
+            entry.remove(parent);
+        }
+        entry.insert(revision);
+        if let Some(&head) = entry.iter().next() {
+            self.current.insert(
+                record,
+                RevisionEntry {
+                    kind,
+                    revision: head,
+                },
+            );
+        }
+    }
+
+    /// Active maximal frontier revisions for `record`.
+    pub fn frontier(
+        &self,
+        record: &crate::ids::RecordId,
+    ) -> std::collections::BTreeSet<crate::ids::RevisionId> {
+        if let Some(heads) = self.frontiers.get(record)
+            && !heads.is_empty()
+        {
+            return heads.clone();
+        }
+        self.current
+            .get(record)
+            .map(|entry| std::collections::BTreeSet::from([entry.revision]))
+            .unwrap_or_default()
+    }
+
+    /// Whether `record` currently has multiple concurrent maximal frontier heads.
+    pub fn is_concurrent(&self, record: &crate::ids::RecordId) -> bool {
+        match u32::try_from(self.frontier(record).len()) {
+            Ok(count) => mneme_kernel::lattice::is_concurrent_frontier(count),
+            Err(_) => true,
+        }
     }
 
     /// Record an additional retained revision of a known record.

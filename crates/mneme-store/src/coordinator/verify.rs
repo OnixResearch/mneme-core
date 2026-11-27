@@ -579,7 +579,9 @@ impl Scrub<'_> {
         expected: u64,
     ) -> bool {
         match framing {
-            crate::payload::BlobFraming::Raw | crate::payload::BlobFraming::Zstd => true,
+            crate::payload::BlobFraming::Raw
+            | crate::payload::BlobFraming::Zstd
+            | crate::payload::BlobFraming::Encrypted => true,
             crate::payload::BlobFraming::ZstdDict => {
                 self.inspect_zstd_dict_subobject(path, shown, digest)
             }
@@ -752,7 +754,7 @@ impl Scrub<'_> {
                 }
                 true
             }
-            crate::payload::BlobFraming::Zstd => {
+            crate::payload::BlobFraming::Zstd | crate::payload::BlobFraming::Encrypted => {
                 let header_len =
                     crate::payload::read_frame_header_length(&chunk_path, metadata.len())
                         .ok()
@@ -1503,7 +1505,7 @@ impl Scrub<'_> {
             .map_err(|error| error.to_string())?;
         let rebuilt = crate::catalog::Manifest {
             revision: row.revision,
-            parent: row.parent,
+            parents: row.parent.into_iter().collect(),
             records,
             blobs: row.blobs.clone(),
         };

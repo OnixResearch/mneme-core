@@ -853,7 +853,28 @@ pub(super) fn restore_staged_blobs(
                 },
             )?;
         } else if let Some(bytes) = &rebuilt.bytes {
-            if rebuilt.is_full_record {
+            if crate::keytree::is_scope_encrypted(root, &command.scope) {
+                let _ = crate::payload::stage_encrypted_with_policy(
+                    root,
+                    *digest,
+                    bytes,
+                    crate::payload::EncryptedStageTarget {
+                        scope: &command.scope,
+                        record_id: None,
+                        revision_id: None,
+                        media_type: if rebuilt.is_full_record {
+                            "application/preserves"
+                        } else {
+                            &rebuilt.media_type
+                        },
+                    },
+                    if rebuilt.is_full_record {
+                        crate::payload::StoragePolicy::default()
+                    } else {
+                        policy
+                    },
+                )?;
+            } else if rebuilt.is_full_record {
                 crate::payload::stage(root, *digest, bytes)?;
             } else {
                 crate::payload::stage_with_policy(

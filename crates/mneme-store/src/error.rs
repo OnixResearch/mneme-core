@@ -111,6 +111,13 @@ pub enum Failure {
 
     #[error("hybrid logical clock skew exceeded: {0}")]
     ClockSkewExceeded(String),
+
+    #[error("blob {digest} in scope {scope} (key slot {key_slot}) was cryptographically erased")]
+    CryptographicallyErased {
+        scope: String,
+        key_slot: u32,
+        digest: String,
+    },
 }
 
 impl Failure {

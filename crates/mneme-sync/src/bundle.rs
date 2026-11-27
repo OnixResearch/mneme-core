@@ -92,10 +92,12 @@ pub async fn export_scope_to_store(
         .current_hlc()
         .ok()
         .map(crate::protocol::WireHlc::from_kernel);
+    let key_punctures = workspace.key_puncture_barriers(scope)?;
     let retention = mneme_store::portability::PortableRetentionState {
         generation: manifest.generation,
         suppressions: manifest.suppressions,
         prunings: manifest.prunings,
+        key_punctures,
     };
 
     let info = crate::protocol::VaultSnapshotInfo {

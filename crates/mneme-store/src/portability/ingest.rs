@@ -124,6 +124,7 @@ pub fn ingest_into(
             generation: archive.manifest.generation,
             suppressions: archive.manifest.suppressions.clone(),
             prunings: archive.manifest.prunings.clone(),
+            key_punctures: Vec::new(),
         },
     )?;
 
@@ -210,21 +211,12 @@ pub fn ingest_delta(
     };
 
     let forgotten = workspace.forgotten_filter(&delta.scope)?;
-    let mut eligible_revisions = Vec::with_capacity(delta.revisions.len());
-    for revision in &delta.revisions {
-        if !forgotten.matches_revision(revision)? {
-            eligible_revisions.push(revision);
-        }
-    }
-
+    let eligible_revisions = filter_eligible_delta_revisions(&delta.revisions, &forgotten)?;
     let snapshot = workspace.snapshot()?;
     let existing = load_delta_existing_histories(&eligible_revisions, workspace, &snapshot)?;
-    let (known, mut last_committed) = check_delta_prefixes(&eligible_revisions, &existing)?;
+    let (known, _last_committed) = check_delta_prefixes(&eligible_revisions, &existing)?;
     let previous_paths = existing_publication_digests(&snapshot)?;
-
-    let mut ordered: Vec<&super::PortableRevision> = eligible_revisions.clone();
-    sort_revisions_causally(&mut ordered);
-
+    let ordered = sort_revisions_topologically(&eligible_revisions, &known)?;
     let workspace_root = workspace.root().to_path_buf();
     let lookup = BlobLookup::Delta {
         blobs: &blob_map,
@@ -236,8 +228,7 @@ pub fn ingest_delta(
         blobs: &lookup,
     };
     let (batches_applied, records_committed) =
-        apply_missing_batches(&ctx, &ordered, workspace, &known, &mut last_committed)?;
-
+        apply_merkle_delta_batches(&ctx, &ordered, workspace, &known)?;
     let updated_snapshot = if batches_applied == 0 {
         snapshot
     } else {
@@ -252,7 +243,6 @@ pub fn ingest_delta(
         workspace,
         &updated_snapshot,
     )?;
-
     let publications = if batches_applied == 0 {
         Vec::new()
     } else {
@@ -277,6 +267,19 @@ pub fn ingest_delta(
     })
 }
 
+fn filter_eligible_delta_revisions<'a>(
+    revisions: &'a [super::PortableRevision],
+    forgotten: &crate::coordinator::custody::ForgottenFilter,
+) -> crate::error::Result<Vec<&'a super::PortableRevision>> {
+    let mut eligible = Vec::with_capacity(revisions.len());
+    for revision in revisions {
+        if !forgotten.matches_revision(revision)? {
+            eligible.push(revision);
+        }
+    }
+    Ok(eligible)
+}
+
 fn sort_revisions_causally(revisions: &mut [&super::PortableRevision]) {
     revisions.sort_unstable_by_key(|revision| {
         let hlc_key = revision
@@ -289,8 +292,55 @@ fn sort_revisions_causally(revisions: &mut [&super::PortableRevision]) {
             revision.commit.sequence,
             revision.commit.revision,
             revision.envelope.record_id,
+            revision.envelope.revision_id,
         )
     });
+}
+
+fn sort_revisions_topologically<'a>(
+    revisions: &[&'a super::PortableRevision],
+    known: &KnownRevisions,
+) -> crate::error::Result<Vec<&'a super::PortableRevision>> {
+    let mut remaining: Vec<&'a super::PortableRevision> = revisions.to_vec();
+    sort_revisions_causally(&mut remaining);
+    let mut available = known.clone();
+    let mut ordered = Vec::with_capacity(remaining.len());
+    let max_rounds = remaining.len().saturating_add(1);
+    for _ in 0..max_rounds {
+        if remaining.is_empty() {
+            return Ok(ordered);
+        }
+        let mut next_remaining = Vec::with_capacity(remaining.len());
+        let mut has_progressed = false;
+        for revision in remaining {
+            let key = (revision.envelope.record_id, revision.envelope.revision_id);
+            if available.contains(&key) {
+                ordered.push(revision);
+                has_progressed = true;
+                continue;
+            }
+            let are_parents_ready = revision
+                .envelope
+                .parents()
+                .iter()
+                .all(|parent| available.contains(&(revision.envelope.record_id, *parent)));
+            if are_parents_ready {
+                available.insert(key);
+                ordered.push(revision);
+                has_progressed = true;
+            } else {
+                next_remaining.push(revision);
+            }
+        }
+        if !has_progressed {
+            return Err(crate::error::Failure::PortableArchive(
+                "Merkle-CRDT delta contains revisions with missing or cyclic causal parents"
+                    .to_owned(),
+            ));
+        }
+        remaining = next_remaining;
+    }
+    Ok(ordered)
 }
 
 fn filter_eligible_manifest_records(
@@ -519,30 +569,7 @@ fn verify_delta_state(
     if !record_ids.is_empty() {
         let actual_histories = workspace.record_histories_of(snapshot, &record_ids)?;
         for (record_id, expected) in &expected_by_record {
-            let Some(actual) = actual_histories.get(record_id) else {
-                return Err(crate::error::Failure::PortableArchive(
-                    "synced workspace is missing one record history".to_owned(),
-                ));
-            };
-            if actual.len() != expected.len() {
-                return Err(crate::error::Failure::PortableArchive(
-                    "synced workspace history length differs from the delta".to_owned(),
-                ));
-            }
-            let mut previous = None;
-            for (actual_env, wanted_env) in actual.iter().zip(expected) {
-                if !same_revision_content(actual_env, wanted_env) {
-                    return Err(crate::error::Failure::PortableArchive(
-                        "synced record revision differs from the delta".to_owned(),
-                    ));
-                }
-                if actual_env.predecessor != previous {
-                    return Err(crate::error::Failure::PortableArchive(
-                        "synced record revision chain is not contiguous".to_owned(),
-                    ));
-                }
-                previous = Some(actual_env.revision_id);
-            }
+            verify_record_delta_history(actual_histories.get(record_id), expected)?;
         }
     }
     for blob in &delta.blobs {
@@ -550,6 +577,47 @@ fn verify_delta_state(
             continue;
         }
         crate::payload::verify(workspace.root(), blob.digest, blob.bytes.len() as u64)?;
+    }
+    Ok(())
+}
+
+fn verify_record_delta_history(
+    actual: Option<&Vec<mneme_core::RecordEnvelope>>,
+    expected: &[mneme_core::RecordEnvelope],
+) -> crate::error::Result<()> {
+    let Some(actual) = actual else {
+        return Err(crate::error::Failure::PortableArchive(
+            "synced workspace is missing one record history".to_owned(),
+        ));
+    };
+    if actual.len() != expected.len() {
+        return Err(crate::error::Failure::PortableArchive(
+            "synced workspace history length differs from the delta".to_owned(),
+        ));
+    }
+    let actual_by_rev: std::collections::BTreeMap<
+        mneme_core::RevisionId,
+        &mneme_core::RecordEnvelope,
+    > = actual
+        .iter()
+        .map(|envelope| (envelope.revision_id, envelope))
+        .collect();
+    for wanted_env in expected {
+        let Some(actual_env) = actual_by_rev.get(&wanted_env.revision_id) else {
+            return Err(crate::error::Failure::PortableArchive(
+                "synced workspace is missing one delta revision".to_owned(),
+            ));
+        };
+        if !same_revision_content(actual_env, wanted_env) {
+            return Err(crate::error::Failure::PortableArchive(
+                "synced record revision differs from the delta".to_owned(),
+            ));
+        }
+        if actual_env.parents() != wanted_env.parents() {
+            return Err(crate::error::Failure::PortableArchive(
+                "synced record causal parents were altered during ingest".to_owned(),
+            ));
+        }
     }
     Ok(())
 }
@@ -605,6 +673,77 @@ fn same_revision_content(
         && actual.scope == wanted.scope
         && actual.schema_version == wanted.schema_version
         && actual.payload_digest() == wanted.payload_digest()
+}
+
+fn apply_merkle_delta_batches(
+    ctx: &IngestContext<'_>,
+    ordered: &[&super::PortableRevision],
+    workspace: &mut crate::Workspace,
+    known: &KnownRevisions,
+) -> crate::error::Result<(u64, u64)> {
+    let mut batches_applied = 0_u64;
+    let mut records_committed = 0_u64;
+    let mut committed_keys = known.clone();
+    let mut batch_ordinal = 0_u64;
+    for entries in ordered.chunk_by(super::same_batch) {
+        let missing: Vec<&super::PortableRevision> = entries
+            .iter()
+            .copied()
+            .filter(|revision| {
+                !committed_keys
+                    .contains(&(revision.envelope.record_id, revision.envelope.revision_id))
+            })
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        commit_merkle_sync_batch(ctx, workspace, &missing, batch_ordinal)?;
+        for revision in &missing {
+            committed_keys.insert((revision.envelope.record_id, revision.envelope.revision_id));
+        }
+        batch_ordinal = batch_ordinal.saturating_add(1);
+        batches_applied = batches_applied.saturating_add(1);
+        records_committed = records_committed.saturating_add(missing.len() as u64);
+    }
+    Ok((batches_applied, records_committed))
+}
+
+fn commit_merkle_sync_batch(
+    ctx: &IngestContext<'_>,
+    workspace: &mut crate::Workspace,
+    entries: &[&super::PortableRevision],
+    batch_ordinal: u64,
+) -> crate::error::Result<()> {
+    let sequence = entries[0].commit.sequence;
+    let mut records = Vec::with_capacity(entries.len());
+    for revision in entries {
+        let envelope = &revision.envelope;
+        // Preserve original causal parents verbatim without rewriting predecessor.
+        records.push(crate::RecordDraft {
+            schema_version: envelope.schema_version,
+            kind: envelope.kind,
+            record_id: envelope.record_id,
+            revision_id: envelope.revision_id,
+            predecessor: envelope.predecessor,
+            scope: envelope.scope.clone(),
+            payload: envelope.payload.clone(),
+        });
+    }
+    workspace.commit_merkle_dag(crate::CommitCommand {
+        base: workspace.current_revision()?,
+        actor: SYNC_INGEST_ACTOR.to_owned(),
+        scope: ctx.scope.clone(),
+        idempotency_key: format!(
+            "iroh-sync:merkle:{}:{sequence}:{batch_ordinal}",
+            ctx.remote_revision.to_hex()
+        ),
+        records,
+        source_blobs: source_blobs(ctx.blobs, entries)?,
+        publications: Vec::new(),
+        import_candidates: Vec::new(),
+        retention: None,
+    })?;
+    Ok(())
 }
 
 fn apply_missing_batches(

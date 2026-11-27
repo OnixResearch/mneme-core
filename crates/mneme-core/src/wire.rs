@@ -13,10 +13,19 @@ pub const RECORD_LABEL: &str = "mneme-record";
 pub const PRODUCTION_SCHEMA_VERSION: u32 = 1;
 
 /// A typed payload: an ordinary dictionary keyed by declared field symbols.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct Payload {
     fields: std::collections::BTreeMap<crate::typed::Symbol, crate::typed::Value>,
+    extra_parents: std::collections::BTreeSet<crate::ids::RevisionId>,
 }
+
+impl PartialEq for Payload {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields == other.fields
+    }
+}
+
+impl Eq for Payload {}
 
 impl Payload {
     /// Construct from symbol-keyed entries.
@@ -25,7 +34,23 @@ impl Payload {
     ) -> Self {
         Payload {
             fields: entries.into_iter().collect(),
+            extra_parents: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// Additional causal parents carried alongside [`RecordEnvelope::predecessor`].
+    #[doc(hidden)]
+    pub fn envelope_extra_parents(&self) -> &std::collections::BTreeSet<crate::ids::RevisionId> {
+        &self.extra_parents
+    }
+
+    /// Replace the additional causal parents carried alongside [`RecordEnvelope::predecessor`].
+    #[doc(hidden)]
+    pub fn set_envelope_extra_parents(
+        &mut self,
+        parents: std::collections::BTreeSet<crate::ids::RevisionId>,
+    ) {
+        self.extra_parents = parents;
     }
 
     /// A payload field by name.
@@ -123,12 +148,15 @@ impl Payload {
             }
             fields.insert(symbol.clone(), item.clone());
         }
-        Ok(Payload { fields })
+        Ok(Payload {
+            fields,
+            extra_parents: std::collections::BTreeSet::new(),
+        })
     }
 }
 
 /// A durable record envelope.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct RecordEnvelope {
     pub schema_version: u32,
     pub kind: crate::fields::RecordKind,
@@ -140,12 +168,75 @@ pub struct RecordEnvelope {
     pub payload: Payload,
 }
 
+impl PartialEq for RecordEnvelope {
+    fn eq(&self, other: &Self) -> bool {
+        self.schema_version == other.schema_version
+            && self.kind == other.kind
+            && self.record_id == other.record_id
+            && self.revision_id == other.revision_id
+            && self.parents() == other.parents()
+            && self.scope == other.scope
+            && self.recorded == other.recorded
+            && self.payload == other.payload
+    }
+}
+
+impl Eq for RecordEnvelope {}
+
 impl RecordEnvelope {
+    /// Canonical sorted causal parent set for this revision.
+    ///
+    /// Returns the union of [`Self::predecessor`] and any multi-parent merge
+    /// edges carried by this envelope.
+    pub fn parents(&self) -> std::collections::BTreeSet<crate::ids::RevisionId> {
+        let mut set = self.payload.envelope_extra_parents().clone();
+        if let Some(predecessor) = self.predecessor {
+            set.insert(predecessor);
+        }
+        set
+    }
+
+    /// Replace the causal parent set on this revision.
+    /// Return this envelope with its causal parent set replaced by `parents`.
+    ///
+    /// Sets [`Self::predecessor`] to the canonical minimum parent (or `None`
+    /// for root revisions) and stores all remaining parents as v2 multi-parent
+    /// edges.
+    #[must_use]
+    pub fn with_parents(
+        mut self,
+        parents: std::collections::BTreeSet<crate::ids::RevisionId>,
+    ) -> Self {
+        let mut iter = parents.into_iter();
+        self.predecessor = iter.next();
+        self.payload.set_envelope_extra_parents(iter.collect());
+        self
+    }
+
+    /// Whether this revision cites more than one causal parent (a DAG merge).
+    pub fn has_multiple_parents(&self) -> bool {
+        match u32::try_from(self.parents().len()) {
+            Ok(count) => mneme_kernel::lattice::is_concurrent_frontier(count),
+            Err(_) => true,
+        }
+    }
+
     /// Encode the envelope as `<mneme-record …>`.
+    ///
+    /// Single-parent and root revisions encode field 4 identically to v1
+    /// (`none` or `<revision-id>`); multi-parent Merkle-CRDT merge revisions
+    /// encode field 4 as a canonical sorted Preserves set of `<revision-id>`s.
     pub fn to_value(&self) -> crate::typed::Value {
-        let predecessor = match self.predecessor {
-            Some(revision) => revision.to_value(),
-            None => crate::typed::Value::symbol("none"),
+        let parents = self.parents();
+        let predecessor = if parents.is_empty() {
+            crate::typed::Value::symbol("none")
+        } else if parents.len() == 1 {
+            match parents.iter().next() {
+                Some(revision) => revision.to_value(),
+                None => crate::typed::Value::symbol("none"),
+            }
+        } else {
+            crate::typed::Value::set(parents.iter().map(|revision| revision.to_value()))
         };
         crate::typed::Value::record_named(
             RECORD_LABEL,
@@ -195,14 +286,14 @@ impl RecordEnvelope {
     ) -> Result<Self, Vec<crate::problem::Diagnostic>> {
         let (record, schema_version) = envelope_record(value, registry)?;
         let mut diagnostics = Vec::new();
-        let (kind, record_id, revision_id, predecessor) =
+        let (kind, record_id, revision_id, parents) =
             parse_envelope_identity(record, &mut diagnostics);
         let (scope, recorded, payload) = parse_envelope_contents(record, &mut diagnostics);
         match (
             kind,
             record_id,
             revision_id,
-            predecessor,
+            parents,
             scope,
             recorded,
             payload,
@@ -211,20 +302,24 @@ impl RecordEnvelope {
                 Some(kind),
                 Some(record_id),
                 Some(revision_id),
-                Some(predecessor),
+                Some(parents),
                 Some(scope),
                 Some(recorded),
                 Some(payload),
-            ) if diagnostics.is_empty() => Ok(RecordEnvelope {
-                schema_version,
-                kind,
-                record_id,
-                revision_id,
-                predecessor,
-                scope,
-                recorded,
-                payload,
-            }),
+            ) if diagnostics.is_empty() => {
+                let envelope = RecordEnvelope {
+                    schema_version,
+                    kind,
+                    record_id,
+                    revision_id,
+                    predecessor: None,
+                    scope,
+                    recorded,
+                    payload,
+                }
+                .with_parents(parents);
+                Ok(envelope)
+            }
             _ => Err(diagnostics),
         }
     }
@@ -348,8 +443,50 @@ type EnvelopeIdentity = (
     Option<crate::fields::RecordKind>,
     Option<crate::ids::RecordId>,
     Option<crate::ids::RevisionId>,
-    Option<Option<crate::ids::RevisionId>>,
+    Option<std::collections::BTreeSet<crate::ids::RevisionId>>,
 );
+
+fn parse_envelope_parents(
+    value: &crate::typed::Value,
+    diagnostics: &mut Vec<crate::problem::Diagnostic>,
+) -> Option<std::collections::BTreeSet<crate::ids::RevisionId>> {
+    match value {
+        crate::typed::Value::Symbol(symbol) if symbol.as_str() == "none" => {
+            Some(std::collections::BTreeSet::new())
+        }
+        crate::typed::Value::Set(items) => {
+            let mut parents = std::collections::BTreeSet::new();
+            let path = crate::problem::Path::root().field("predecessor");
+            let max_parents = items.len();
+            let mut has_error = false;
+            for item in items {
+                if parents.len() >= max_parents {
+                    break;
+                }
+                match crate::ids::RevisionId::from_value(item, &path) {
+                    Ok(revision) => {
+                        parents.insert(revision);
+                    }
+                    Err(diagnostic) => {
+                        diagnostics.push(diagnostic);
+                        has_error = true;
+                    }
+                }
+            }
+            if has_error { None } else { Some(parents) }
+        }
+        other => match crate::ids::RevisionId::from_value(
+            other,
+            &crate::problem::Path::root().field("predecessor"),
+        ) {
+            Ok(revision) => Some(std::collections::BTreeSet::from([revision])),
+            Err(diagnostic) => {
+                diagnostics.push(diagnostic);
+                None
+            }
+        },
+    }
+}
 
 fn parse_envelope_identity(
     record: &crate::typed::Record,
@@ -381,20 +518,8 @@ fn parse_envelope_identity(
         ),
         diagnostics,
     );
-    let predecessor = match &record.fields()[4] {
-        crate::typed::Value::Symbol(symbol) if symbol.as_str() == "none" => Some(None),
-        other => match crate::ids::RevisionId::from_value(
-            other,
-            &crate::problem::Path::root().field("predecessor"),
-        ) {
-            Ok(revision) => Some(Some(revision)),
-            Err(diagnostic) => {
-                diagnostics.push(diagnostic);
-                None
-            }
-        },
-    };
-    (kind, record_id, revision_id, predecessor)
+    let parents = parse_envelope_parents(&record.fields()[4], diagnostics);
+    (kind, record_id, revision_id, parents)
 }
 
 fn parse_envelope_contents(
@@ -560,7 +685,8 @@ fn validate_predecessor(
     path: &crate::problem::Path,
     diagnostics: &mut Vec<crate::problem::Diagnostic>,
 ) {
-    if envelope.predecessor == Some(envelope.revision_id) {
+    let parents = envelope.parents();
+    if parents.contains(&envelope.revision_id) {
         diagnostics.push(crate::problem::Diagnostic::new(
             crate::problem::Stage::Envelope,
             crate::problem::ErrorCode::InvalidPredecessor,
@@ -583,7 +709,10 @@ fn validate_predecessor(
                         ),
                     ));
                 }
-                if envelope.predecessor != Some(entry.revision) {
+                let frontier = prior.frontier(&envelope.record_id);
+                let has_valid_parents =
+                    !parents.is_empty() && parents.iter().all(|parent| frontier.contains(parent));
+                if !has_valid_parents {
                     // The message names no revision: the offered predecessor is
                     // wrong, and the record's current revision may belong to a
                     // scope the caller is not authorized for.
@@ -596,7 +725,7 @@ fn validate_predecessor(
                 }
             }
             None => {
-                if envelope.predecessor.is_some() {
+                if !parents.is_empty() {
                     diagnostics.push(crate::problem::Diagnostic::new(
                         crate::problem::Stage::Envelope,
                         crate::problem::ErrorCode::InvalidPredecessor,
@@ -730,7 +859,12 @@ pub fn validate_batch(
             )]);
         }
         if index.get(&envelope.record_id).is_some() {
-            index.upsert(envelope.record_id, envelope.kind, envelope.revision_id);
+            index.add_frontier_revision(
+                envelope.record_id,
+                envelope.kind,
+                envelope.revision_id,
+                &envelope.parents(),
+            );
         } else {
             index.insert(envelope.record_id, envelope.kind, envelope.revision_id);
         }
@@ -1489,5 +1623,80 @@ mod tests {
         assert!(error.iter().any(|diagnostic| diagnostic.code
             == crate::problem::ErrorCode::TypeMismatch
             && diagnostic.path.to_string() == "$.payload.includes[\"x.adoc\"]"));
+    }
+
+    #[test]
+    fn v2_multi_parent_record_envelope_roundtrips_and_preserves_v1_compatibility() {
+        let registry = crate::fields::SchemaRegistry::production();
+        let base = assertion("accepted");
+        let p1 = crate::ids::RevisionId::from_bytes([1_u8; 16]);
+        let p2 = crate::ids::RevisionId::from_bytes([2_u8; 16]);
+
+        // Single-parent record encodes identically to v1 scalar predecessor.
+        let mut single = base.clone();
+        single.predecessor = Some(p1);
+        let single_val = single.to_value();
+        let single_decoded =
+            validate_record_value(&single_val, &registry, None).expect("v1 single parent");
+        assert_eq!(single_decoded.predecessor, Some(p1));
+        assert_eq!(
+            single_decoded.parents(),
+            std::collections::BTreeSet::from([p1])
+        );
+        assert!(!single_decoded.has_multiple_parents());
+
+        // Multi-parent merge record encodes a canonical Preserves Set<RevisionId>
+        // independent of insertion order, while keeping payload_digest identical.
+        let merge_ab = base
+            .clone()
+            .with_parents(std::collections::BTreeSet::from([p1, p2]));
+        let merge_ba = base
+            .clone()
+            .with_parents(std::collections::BTreeSet::from([p2, p1]));
+        assert_eq!(merge_ab, merge_ba);
+        assert!(merge_ab.has_multiple_parents());
+        assert_eq!(
+            merge_ab.parents(),
+            std::collections::BTreeSet::from([p1, p2])
+        );
+        assert_eq!(merge_ab.payload_digest(), base.payload_digest());
+        assert_eq!(merge_ab.full_digest(), merge_ba.full_digest());
+        assert_ne!(merge_ab.full_digest(), single.full_digest());
+
+        let encoded = merge_ab.to_value();
+        let decoded =
+            validate_record_value(&encoded, &registry, None).expect("v2 multi-parent roundtrip");
+        assert_eq!(decoded, merge_ab);
+        assert_eq!(
+            decoded.parents(),
+            std::collections::BTreeSet::from([p1, p2])
+        );
+        assert_eq!(decoded.full_digest(), merge_ab.full_digest());
+
+        // Frontier validation accepts a multi-parent merge when every parent is
+        // in the record's active frontier, and rejects unknown parents.
+        let mut snapshot = crate::pointer::SnapshotIndex::default();
+        snapshot.insert(
+            record_id(1),
+            crate::fields::RecordKind::Entity,
+            revision_id(1),
+        );
+        let empty = std::collections::BTreeSet::new();
+        snapshot.add_frontier_revision(base.record_id, base.kind, p1, &empty);
+        snapshot.add_frontier_revision(base.record_id, base.kind, p2, &empty);
+        assert!(snapshot.is_concurrent(&base.record_id));
+        validate_record_value(&encoded, &registry, Some(&snapshot))
+            .expect("multi-parent merge validates against concurrent frontier");
+
+        let p3 = crate::ids::RevisionId::from_bytes([3_u8; 16]);
+        let bad_merge = base
+            .clone()
+            .with_parents(std::collections::BTreeSet::from([p1, p3]));
+        let err = validate_record_value(&bad_merge.to_value(), &registry, Some(&snapshot))
+            .expect_err("unknown parent in multi-parent merge must be rejected");
+        assert!(
+            err.iter()
+                .any(|d| d.code == crate::problem::ErrorCode::InvalidPredecessor)
+        );
     }
 }

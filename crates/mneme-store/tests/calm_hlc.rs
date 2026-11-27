@@ -196,6 +196,7 @@ fn concurrent_forget_and_append_converge_without_resurrecting_forgotten_records(
         generation: manifest_a.generation,
         suppressions: manifest_a.suppressions,
         prunings: manifest_a.prunings,
+        key_punctures: Vec::new(),
     };
     let delta_a = mneme_store::portability::PortableDelta {
         scope: scope.clone(),

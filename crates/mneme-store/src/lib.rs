@@ -14,6 +14,7 @@ pub mod coordinator;
 pub mod dedup;
 pub mod error;
 pub mod injectors;
+pub mod keytree;
 pub mod lifecycle;
 pub mod outboard;
 pub mod payload;
@@ -30,15 +31,17 @@ pub use coordinator::verify::{
 pub use coordinator::{
     CommitOutcome, ConsistencyProof, DocumentMetadata, DocumentQuery, EntityMetadata, EntityQuery,
     FOLDER_WORKSPACE_DIRECTORY, HistoryTreeDb, HistoryTreeHead, InclusionProof, JobClaim,
-    LAYOUT_VERSION, LEDGER_FILE, MAX_METADATA_PAGE_SIZE, MetadataPage, ProjectionRegistration,
-    ProjectionResolution, ProjectionState, PublicationOutcome, PublicationState,
-    RecordRevisionCommit, RecordRevisionCommitPage, RecoveryReport, RelationMetadata,
-    RelationQuery, RevisionCommit, RevisionDelta, SharedRecordCache, Snapshot, Workspace,
-    WorkspaceConfig, WorkspaceStatus, digest_to_kernel, hash_history_interior, hash_history_leaf,
+    LAYOUT_VERSION, LEDGER_FILE, MAX_METADATA_PAGE_SIZE, MergeDecisionPresence, MetadataPage,
+    ProjectionRegistration, ProjectionResolution, ProjectionState, PublicationOutcome,
+    PublicationState, RecordRevisionCommit, RecordRevisionCommitPage, RecoveryReport,
+    RelationMetadata, RelationQuery, RevisionCommit, RevisionDelta, SharedRecordCache, Snapshot,
+    Workspace, WorkspaceConfig, WorkspaceStatus, digest_to_kernel, hash_history_interior,
+    hash_history_leaf,
 };
 pub use dedup::{BlobChunking, FastCdcConfig};
 pub use error::{Failure, Result};
 pub use injectors::{FaultAt, FaultInjector, FaultPoint, NoFaults};
+pub use keytree::{KeyPunctureBarrier, PuncturableTree, PunctureReport};
 pub use lifecycle::{
     BlobPurgeOutcome, RetentionCommit, RetentionJobState, RetentionLocationPlan,
     RetentionLocationState, RetentionLocationStateRecord, RetentionOperation, RetentionParticipant,

@@ -1014,7 +1014,7 @@ fn rewrite_single_source_workspace_to_sha256(
     );
     let manifest1 = mneme_store::Manifest {
         revision: rev1,
-        parent: Some(gen_rev),
+        parents: std::collections::BTreeSet::from([gen_rev]),
         records: std::collections::BTreeSet::from([mneme_store::ManifestRecord {
             record_id: record.record_id,
             revision_id: record.revision_id,
