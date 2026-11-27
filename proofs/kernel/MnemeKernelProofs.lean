@@ -7,6 +7,7 @@ import MnemeKernelProofs.Completeness
 import MnemeKernelProofs.Contraction
 import MnemeKernelProofs.Epistemic
 import MnemeKernelProofs.Hashing
+import MnemeKernelProofs.HistoryTree
 import MnemeKernelProofs.Hlc
 import MnemeKernelProofs.Claim
 import MnemeKernelProofs.Publish

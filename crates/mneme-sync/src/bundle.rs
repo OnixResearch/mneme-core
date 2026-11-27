@@ -109,6 +109,8 @@ pub async fn export_scope_to_store(
         bundle_bytes: archive_len,
         blobs: blob_refs,
         hlc,
+        signed_tree_head: None,
+        consistency_proof: None,
     };
 
     Ok(ExportedSyncBundle {

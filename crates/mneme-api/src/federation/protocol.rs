@@ -273,6 +273,7 @@ pub enum RpcErrorCode {
     Unavailable,
     ProtocolError,
     ClockSkewExceeded,
+    EquivocationDetected,
 }
 
 /// Typed RPC failure returned by the remote federation service.
@@ -306,6 +307,7 @@ pub struct QueryHeadRequest {
     pub scope: String,
     pub sender_hlc: Option<WireHybridTimestamp>,
     pub capability_document: Option<String>,
+    pub known_tree_size: Option<u64>,
 }
 
 /// Head revision state returned by [`QueryHeadRequest`].
@@ -316,6 +318,8 @@ pub struct HeadState {
     pub head_sequence: u64,
     pub eligibility_generation: u64,
     pub sender_hlc: Option<WireHybridTimestamp>,
+    pub signed_tree_head: Option<super::transparency::WireSignedTreeHead>,
+    pub consistency_proof: Option<super::transparency::WireConsistencyProof>,
 }
 
 /// Request scoped metadata for a pinned or head revision.
@@ -391,6 +395,8 @@ pub struct PinnedSnapshotPayload {
     pub suppressions: Vec<EncodedSuppression>,
     pub current_sources: Vec<([u8; 16], EncodedSourceAvailability)>,
     pub sender_hlc: Option<WireHybridTimestamp>,
+    pub signed_tree_head: Option<super::transparency::WireSignedTreeHead>,
+    pub inclusion_proof: Option<super::transparency::WireInclusionProof>,
 }
 
 /// Request a bounded remote Datalog evaluation over one pinned vault revision.

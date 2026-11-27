@@ -3507,6 +3507,1275 @@ def hashing.optional_digest_eq
     | none => ok false
     | some wanted => hashing.digest_eq found wanted
 
+/-- [mneme_kernel::history_tree::BIT_MASK_LSB]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 10:0-10:28 -/
+@[global_simps, irreducible] def history_tree.BIT_MASK_LSB : Std.U64 := 1#u64
+
+/-- [mneme_kernel::history_tree::BIT_SHIFT_ONE]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 11:0-11:29 -/
+@[global_simps, irreducible] def history_tree.BIT_SHIFT_ONE : Std.U32 := 1#u32
+
+/-- [mneme_kernel::history_tree::SiblingSide]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 16:0-21:1
+    Visibility: public -/
+@[discriminant isize]
+inductive history_tree.SiblingSide where
+| Left : history_tree.SiblingSide
+| Right : history_tree.SiblingSide
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::SiblingSide}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 14:9-14:14
+    Visibility: public -/
+def history_tree.SiblingSide.Insts.CoreCloneClone.clone
+  (self : history_tree.SiblingSide) : Result history_tree.SiblingSide := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::SiblingSide}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 14:9-14:14 -/
+@[reducible]
+def history_tree.SiblingSide.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.SiblingSide := {
+  clone := history_tree.SiblingSide.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::SiblingSide}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 14:16-14:20 -/
+@[reducible]
+def history_tree.SiblingSide.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.SiblingSide := {
+  cloneInst := history_tree.SiblingSide.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::SiblingSide}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 14:22-14:31 -/
+@[reducible]
+def history_tree.SiblingSide.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.SiblingSide := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::SiblingSide> for mneme_kernel::history_tree::SiblingSide}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 14:22-14:31
+    Visibility: public -/
+def history_tree.SiblingSide.Insts.CoreCmpPartialEqSiblingSide.eq
+  (self : history_tree.SiblingSide) (other : history_tree.SiblingSide) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::SiblingSide> for mneme_kernel::history_tree::SiblingSide}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 14:22-14:31 -/
+@[reducible]
+def history_tree.SiblingSide.Insts.CoreCmpPartialEqSiblingSide :
+  core.cmp.PartialEq history_tree.SiblingSide history_tree.SiblingSide := {
+  eq := history_tree.SiblingSide.Insts.CoreCmpPartialEqSiblingSide.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::SiblingSide}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 14:33-14:35
+    Visibility: public -/
+def history_tree.SiblingSide.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.SiblingSide) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::SiblingSide}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 14:33-14:35 -/
+@[reducible]
+def history_tree.SiblingSide.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.SiblingSide := {
+  partialEqInst := history_tree.SiblingSide.Insts.CoreCmpPartialEqSiblingSide
+  assert_fields_are_eq :=
+    history_tree.SiblingSide.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::InclusionStep]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 29:0-38:1
+    Visibility: public -/
+structure history_tree.InclusionStep where
+  side : history_tree.SiblingSide
+  left : hashing.Digest
+  right : hashing.Digest
+  parent : hashing.Digest
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::InclusionStep}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 27:9-27:14
+    Visibility: public -/
+def history_tree.InclusionStep.Insts.CoreCloneClone.clone
+  (self : history_tree.InclusionStep) : Result history_tree.InclusionStep := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::InclusionStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 27:9-27:14 -/
+@[reducible]
+def history_tree.InclusionStep.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.InclusionStep := {
+  clone := history_tree.InclusionStep.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::InclusionStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 27:16-27:20 -/
+@[reducible]
+def history_tree.InclusionStep.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.InclusionStep := {
+  cloneInst := history_tree.InclusionStep.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::InclusionStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 27:22-27:31 -/
+@[reducible]
+def history_tree.InclusionStep.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.InclusionStep := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::InclusionStep> for mneme_kernel::history_tree::InclusionStep}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 27:22-27:31
+    Visibility: public -/
+def history_tree.InclusionStep.Insts.CoreCmpPartialEqInclusionStep.eq
+  (self : history_tree.InclusionStep) (other : history_tree.InclusionStep) :
+  Result Bool
+  := do
+  let b ←
+    history_tree.SiblingSide.Insts.CoreCmpPartialEqSiblingSide.eq self.side
+      other.side
+  if b
+  then
+    let b1 ←
+      hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.left other.left
+    if b1
+    then
+      let b2 ←
+        hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.right other.right
+      if b2
+      then
+        hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.parent other.parent
+      else ok false
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::InclusionStep> for mneme_kernel::history_tree::InclusionStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 27:22-27:31 -/
+@[reducible]
+def history_tree.InclusionStep.Insts.CoreCmpPartialEqInclusionStep :
+  core.cmp.PartialEq history_tree.InclusionStep history_tree.InclusionStep := {
+  eq := history_tree.InclusionStep.Insts.CoreCmpPartialEqInclusionStep.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::InclusionStep}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 27:33-27:35
+    Visibility: public -/
+def history_tree.InclusionStep.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.InclusionStep) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::InclusionStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 27:33-27:35 -/
+@[reducible]
+def history_tree.InclusionStep.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.InclusionStep := {
+  partialEqInst :=
+    history_tree.InclusionStep.Insts.CoreCmpPartialEqInclusionStep
+  assert_fields_are_eq :=
+    history_tree.InclusionStep.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::InclusionCheck]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 43:0-52:1
+    Visibility: public -/
+structure history_tree.InclusionCheck where
+  leaf_index : Std.U64
+  tree_size : Std.U64
+  leaf_digest : hashing.Digest
+  expected_root : hashing.Digest
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::InclusionCheck}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 41:9-41:14
+    Visibility: public -/
+def history_tree.InclusionCheck.Insts.CoreCloneClone.clone
+  (self : history_tree.InclusionCheck) :
+  Result history_tree.InclusionCheck
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::InclusionCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 41:9-41:14 -/
+@[reducible]
+def history_tree.InclusionCheck.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.InclusionCheck := {
+  clone := history_tree.InclusionCheck.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::InclusionCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 41:16-41:20 -/
+@[reducible]
+def history_tree.InclusionCheck.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.InclusionCheck := {
+  cloneInst := history_tree.InclusionCheck.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::InclusionCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 41:22-41:31 -/
+@[reducible]
+def history_tree.InclusionCheck.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.InclusionCheck := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::InclusionCheck> for mneme_kernel::history_tree::InclusionCheck}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 41:22-41:31
+    Visibility: public -/
+def history_tree.InclusionCheck.Insts.CoreCmpPartialEqInclusionCheck.eq
+  (self : history_tree.InclusionCheck) (other : history_tree.InclusionCheck) :
+  Result Bool
+  := do
+  if self.leaf_index = other.leaf_index
+  then
+    if self.tree_size = other.tree_size
+    then
+      let b ←
+        hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.leaf_digest
+          other.leaf_digest
+      if b
+      then
+        hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.expected_root
+          other.expected_root
+      else ok false
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::InclusionCheck> for mneme_kernel::history_tree::InclusionCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 41:22-41:31 -/
+@[reducible]
+def history_tree.InclusionCheck.Insts.CoreCmpPartialEqInclusionCheck :
+  core.cmp.PartialEq history_tree.InclusionCheck history_tree.InclusionCheck
+  := {
+  eq := history_tree.InclusionCheck.Insts.CoreCmpPartialEqInclusionCheck.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::InclusionCheck}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 41:33-41:35
+    Visibility: public -/
+def history_tree.InclusionCheck.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.InclusionCheck) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::InclusionCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 41:33-41:35 -/
+@[reducible]
+def history_tree.InclusionCheck.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.InclusionCheck := {
+  partialEqInst :=
+    history_tree.InclusionCheck.Insts.CoreCmpPartialEqInclusionCheck
+  assert_fields_are_eq :=
+    history_tree.InclusionCheck.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::ConsistencyStep]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 66:0-79:1
+    Visibility: public -/
+structure history_tree.ConsistencyStep where
+  side : history_tree.SiblingSide
+  sibling : hashing.Digest
+  old_right : hashing.Digest
+  old_parent : hashing.Digest
+  new_child : hashing.Digest
+  new_parent : hashing.Digest
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::ConsistencyStep}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 64:9-64:14
+    Visibility: public -/
+def history_tree.ConsistencyStep.Insts.CoreCloneClone.clone
+  (self : history_tree.ConsistencyStep) :
+  Result history_tree.ConsistencyStep
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::ConsistencyStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 64:9-64:14 -/
+@[reducible]
+def history_tree.ConsistencyStep.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.ConsistencyStep := {
+  clone := history_tree.ConsistencyStep.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::ConsistencyStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 64:16-64:20 -/
+@[reducible]
+def history_tree.ConsistencyStep.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.ConsistencyStep := {
+  cloneInst := history_tree.ConsistencyStep.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::ConsistencyStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 64:22-64:31 -/
+@[reducible]
+def history_tree.ConsistencyStep.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.ConsistencyStep := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::ConsistencyStep> for mneme_kernel::history_tree::ConsistencyStep}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 64:22-64:31
+    Visibility: public -/
+def history_tree.ConsistencyStep.Insts.CoreCmpPartialEqConsistencyStep.eq
+  (self : history_tree.ConsistencyStep) (other : history_tree.ConsistencyStep)
+  :
+  Result Bool
+  := do
+  let b ←
+    history_tree.SiblingSide.Insts.CoreCmpPartialEqSiblingSide.eq self.side
+      other.side
+  if b
+  then
+    let b1 ←
+      hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.sibling other.sibling
+    if b1
+    then
+      let b2 ←
+        hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.old_right
+          other.old_right
+      if b2
+      then
+        let b3 ←
+          hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.old_parent
+            other.old_parent
+        if b3
+        then
+          let b4 ←
+            hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.new_child
+              other.new_child
+          if b4
+          then
+            hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.new_parent
+              other.new_parent
+          else ok false
+        else ok false
+      else ok false
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::ConsistencyStep> for mneme_kernel::history_tree::ConsistencyStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 64:22-64:31 -/
+@[reducible]
+def history_tree.ConsistencyStep.Insts.CoreCmpPartialEqConsistencyStep :
+  core.cmp.PartialEq history_tree.ConsistencyStep history_tree.ConsistencyStep
+  := {
+  eq := history_tree.ConsistencyStep.Insts.CoreCmpPartialEqConsistencyStep.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::ConsistencyStep}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 64:33-64:35
+    Visibility: public -/
+def history_tree.ConsistencyStep.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.ConsistencyStep) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::ConsistencyStep}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 64:33-64:35 -/
+@[reducible]
+def history_tree.ConsistencyStep.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.ConsistencyStep := {
+  partialEqInst :=
+    history_tree.ConsistencyStep.Insts.CoreCmpPartialEqConsistencyStep
+  assert_fields_are_eq :=
+    history_tree.ConsistencyStep.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::ConsistencyCheck]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 85:0-97:1
+    Visibility: public -/
+structure history_tree.ConsistencyCheck where
+  old_size : Std.U64
+  new_size : Std.U64
+  old_root : hashing.Digest
+  new_root : hashing.Digest
+  initial_digest : hashing.Digest
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::ConsistencyCheck}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 83:9-83:14
+    Visibility: public -/
+def history_tree.ConsistencyCheck.Insts.CoreCloneClone.clone
+  (self : history_tree.ConsistencyCheck) :
+  Result history_tree.ConsistencyCheck
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::ConsistencyCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 83:9-83:14 -/
+@[reducible]
+def history_tree.ConsistencyCheck.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.ConsistencyCheck := {
+  clone := history_tree.ConsistencyCheck.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::ConsistencyCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 83:16-83:20 -/
+@[reducible]
+def history_tree.ConsistencyCheck.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.ConsistencyCheck := {
+  cloneInst := history_tree.ConsistencyCheck.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::ConsistencyCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 83:22-83:31 -/
+@[reducible]
+def history_tree.ConsistencyCheck.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.ConsistencyCheck := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::ConsistencyCheck> for mneme_kernel::history_tree::ConsistencyCheck}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 83:22-83:31
+    Visibility: public -/
+def history_tree.ConsistencyCheck.Insts.CoreCmpPartialEqConsistencyCheck.eq
+  (self : history_tree.ConsistencyCheck)
+  (other : history_tree.ConsistencyCheck) :
+  Result Bool
+  := do
+  if self.old_size = other.old_size
+  then
+    if self.new_size = other.new_size
+    then
+      let b ←
+        hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.old_root
+          other.old_root
+      if b
+      then
+        let b1 ←
+          hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.new_root
+            other.new_root
+        if b1
+        then
+          hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.initial_digest
+            other.initial_digest
+        else ok false
+      else ok false
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::ConsistencyCheck> for mneme_kernel::history_tree::ConsistencyCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 83:22-83:31 -/
+@[reducible]
+def history_tree.ConsistencyCheck.Insts.CoreCmpPartialEqConsistencyCheck :
+  core.cmp.PartialEq history_tree.ConsistencyCheck
+  history_tree.ConsistencyCheck := {
+  eq := history_tree.ConsistencyCheck.Insts.CoreCmpPartialEqConsistencyCheck.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::ConsistencyCheck}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 83:33-83:35
+    Visibility: public -/
+def history_tree.ConsistencyCheck.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.ConsistencyCheck) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::ConsistencyCheck}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 83:33-83:35 -/
+@[reducible]
+def history_tree.ConsistencyCheck.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.ConsistencyCheck := {
+  partialEqInst :=
+    history_tree.ConsistencyCheck.Insts.CoreCmpPartialEqConsistencyCheck
+  assert_fields_are_eq :=
+    history_tree.ConsistencyCheck.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::ConsistencyVerdict]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 102:0-107:1
+    Visibility: public -/
+@[discriminant isize]
+inductive history_tree.ConsistencyVerdict where
+| Consistent : history_tree.ConsistencyVerdict
+| Inconsistent : history_tree.ConsistencyVerdict
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::ConsistencyVerdict}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 100:9-100:14
+    Visibility: public -/
+def history_tree.ConsistencyVerdict.Insts.CoreCloneClone.clone
+  (self : history_tree.ConsistencyVerdict) :
+  Result history_tree.ConsistencyVerdict
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::ConsistencyVerdict}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 100:9-100:14 -/
+@[reducible]
+def history_tree.ConsistencyVerdict.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.ConsistencyVerdict := {
+  clone := history_tree.ConsistencyVerdict.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::ConsistencyVerdict}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 100:16-100:20 -/
+@[reducible]
+def history_tree.ConsistencyVerdict.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.ConsistencyVerdict := {
+  cloneInst := history_tree.ConsistencyVerdict.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::ConsistencyVerdict}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 100:22-100:31 -/
+@[reducible]
+def history_tree.ConsistencyVerdict.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.ConsistencyVerdict := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::ConsistencyVerdict> for mneme_kernel::history_tree::ConsistencyVerdict}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 100:22-100:31
+    Visibility: public -/
+def history_tree.ConsistencyVerdict.Insts.CoreCmpPartialEqConsistencyVerdict.eq
+  (self : history_tree.ConsistencyVerdict)
+  (other : history_tree.ConsistencyVerdict) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::ConsistencyVerdict> for mneme_kernel::history_tree::ConsistencyVerdict}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 100:22-100:31 -/
+@[reducible]
+def history_tree.ConsistencyVerdict.Insts.CoreCmpPartialEqConsistencyVerdict :
+  core.cmp.PartialEq history_tree.ConsistencyVerdict
+  history_tree.ConsistencyVerdict := {
+  eq :=
+    history_tree.ConsistencyVerdict.Insts.CoreCmpPartialEqConsistencyVerdict.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::ConsistencyVerdict}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 100:33-100:35
+    Visibility: public -/
+def history_tree.ConsistencyVerdict.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.ConsistencyVerdict) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::ConsistencyVerdict}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 100:33-100:35 -/
+@[reducible]
+def history_tree.ConsistencyVerdict.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.ConsistencyVerdict := {
+  partialEqInst :=
+    history_tree.ConsistencyVerdict.Insts.CoreCmpPartialEqConsistencyVerdict
+  assert_fields_are_eq :=
+    history_tree.ConsistencyVerdict.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::EquivocationFacts]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 112:0-125:1
+    Visibility: public -/
+structure history_tree.EquivocationFacts where
+  is_both_signed_same_origin : Bool
+  first_size : Std.U64
+  first_root : hashing.Digest
+  second_size : Std.U64
+  second_root : hashing.Digest
+  consistency : history_tree.ConsistencyVerdict
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::EquivocationFacts}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 110:9-110:14
+    Visibility: public -/
+def history_tree.EquivocationFacts.Insts.CoreCloneClone.clone
+  (self : history_tree.EquivocationFacts) :
+  Result history_tree.EquivocationFacts
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::EquivocationFacts}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 110:9-110:14 -/
+@[reducible]
+def history_tree.EquivocationFacts.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.EquivocationFacts := {
+  clone := history_tree.EquivocationFacts.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::EquivocationFacts}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 110:16-110:20 -/
+@[reducible]
+def history_tree.EquivocationFacts.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.EquivocationFacts := {
+  cloneInst := history_tree.EquivocationFacts.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::EquivocationFacts}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 110:22-110:31 -/
+@[reducible]
+def history_tree.EquivocationFacts.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.EquivocationFacts := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::EquivocationFacts> for mneme_kernel::history_tree::EquivocationFacts}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 110:22-110:31
+    Visibility: public -/
+def history_tree.EquivocationFacts.Insts.CoreCmpPartialEqEquivocationFacts.eq
+  (self : history_tree.EquivocationFacts)
+  (other : history_tree.EquivocationFacts) :
+  Result Bool
+  := do
+  if self.is_both_signed_same_origin = other.is_both_signed_same_origin
+  then
+    if self.first_size = other.first_size
+    then
+      if self.second_size = other.second_size
+      then
+        let b ←
+          hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.first_root
+            other.first_root
+        if b
+        then
+          let b1 ←
+            hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.second_root
+              other.second_root
+          if b1
+          then
+            history_tree.ConsistencyVerdict.Insts.CoreCmpPartialEqConsistencyVerdict.eq
+              self.consistency other.consistency
+          else ok false
+        else ok false
+      else ok false
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::EquivocationFacts> for mneme_kernel::history_tree::EquivocationFacts}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 110:22-110:31 -/
+@[reducible]
+def history_tree.EquivocationFacts.Insts.CoreCmpPartialEqEquivocationFacts :
+  core.cmp.PartialEq history_tree.EquivocationFacts
+  history_tree.EquivocationFacts := {
+  eq :=
+    history_tree.EquivocationFacts.Insts.CoreCmpPartialEqEquivocationFacts.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::EquivocationFacts}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 110:33-110:35
+    Visibility: public -/
+def history_tree.EquivocationFacts.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.EquivocationFacts) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::EquivocationFacts}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 110:33-110:35 -/
+@[reducible]
+def history_tree.EquivocationFacts.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.EquivocationFacts := {
+  partialEqInst :=
+    history_tree.EquivocationFacts.Insts.CoreCmpPartialEqEquivocationFacts
+  assert_fields_are_eq :=
+    history_tree.EquivocationFacts.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::IndexCursor]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 129:0-132:1 -/
+structure history_tree.IndexCursor where
+  fn_idx : Std.U64
+  sn_idx : Std.U64
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::IndexCursor}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 128:9-128:14
+    Visibility: public -/
+def history_tree.IndexCursor.Insts.CoreCloneClone.clone
+  (self : history_tree.IndexCursor) : Result history_tree.IndexCursor := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::IndexCursor}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 128:9-128:14 -/
+@[reducible]
+def history_tree.IndexCursor.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.IndexCursor := {
+  clone := history_tree.IndexCursor.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::IndexCursor}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 128:16-128:20 -/
+@[reducible]
+def history_tree.IndexCursor.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.IndexCursor := {
+  cloneInst := history_tree.IndexCursor.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::IndexCursor}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 128:22-128:31 -/
+@[reducible]
+def history_tree.IndexCursor.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.IndexCursor := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::IndexCursor> for mneme_kernel::history_tree::IndexCursor}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 128:22-128:31
+    Visibility: public -/
+def history_tree.IndexCursor.Insts.CoreCmpPartialEqIndexCursor.eq
+  (self : history_tree.IndexCursor) (other : history_tree.IndexCursor) :
+  Result Bool
+  := do
+  if self.fn_idx = other.fn_idx
+  then ok (self.sn_idx = other.sn_idx)
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::IndexCursor> for mneme_kernel::history_tree::IndexCursor}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 128:22-128:31 -/
+@[reducible]
+def history_tree.IndexCursor.Insts.CoreCmpPartialEqIndexCursor :
+  core.cmp.PartialEq history_tree.IndexCursor history_tree.IndexCursor := {
+  eq := history_tree.IndexCursor.Insts.CoreCmpPartialEqIndexCursor.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::IndexCursor}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 128:33-128:35
+    Visibility: public -/
+def history_tree.IndexCursor.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.IndexCursor) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::IndexCursor}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 128:33-128:35 -/
+@[reducible]
+def history_tree.IndexCursor.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.IndexCursor := {
+  partialEqInst := history_tree.IndexCursor.Insts.CoreCmpPartialEqIndexCursor
+  assert_fields_are_eq :=
+    history_tree.IndexCursor.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::InclusionState]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 136:0-139:1 -/
+structure history_tree.InclusionState where
+  cursor : history_tree.IndexCursor
+  current : hashing.Digest
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::InclusionState}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 135:9-135:14
+    Visibility: public -/
+def history_tree.InclusionState.Insts.CoreCloneClone.clone
+  (self : history_tree.InclusionState) :
+  Result history_tree.InclusionState
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::InclusionState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 135:9-135:14 -/
+@[reducible]
+def history_tree.InclusionState.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.InclusionState := {
+  clone := history_tree.InclusionState.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::InclusionState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 135:16-135:20 -/
+@[reducible]
+def history_tree.InclusionState.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.InclusionState := {
+  cloneInst := history_tree.InclusionState.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::InclusionState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 135:22-135:31 -/
+@[reducible]
+def history_tree.InclusionState.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.InclusionState := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::InclusionState> for mneme_kernel::history_tree::InclusionState}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 135:22-135:31
+    Visibility: public -/
+def history_tree.InclusionState.Insts.CoreCmpPartialEqInclusionState.eq
+  (self : history_tree.InclusionState) (other : history_tree.InclusionState) :
+  Result Bool
+  := do
+  let b ←
+    history_tree.IndexCursor.Insts.CoreCmpPartialEqIndexCursor.eq self.cursor
+      other.cursor
+  if b
+  then
+    hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.current other.current
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::InclusionState> for mneme_kernel::history_tree::InclusionState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 135:22-135:31 -/
+@[reducible]
+def history_tree.InclusionState.Insts.CoreCmpPartialEqInclusionState :
+  core.cmp.PartialEq history_tree.InclusionState history_tree.InclusionState
+  := {
+  eq := history_tree.InclusionState.Insts.CoreCmpPartialEqInclusionState.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::InclusionState}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 135:33-135:35
+    Visibility: public -/
+def history_tree.InclusionState.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.InclusionState) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::InclusionState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 135:33-135:35 -/
+@[reducible]
+def history_tree.InclusionState.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.InclusionState := {
+  partialEqInst :=
+    history_tree.InclusionState.Insts.CoreCmpPartialEqInclusionState
+  assert_fields_are_eq :=
+    history_tree.InclusionState.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::ConsistencyState]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 143:0-147:1 -/
+structure history_tree.ConsistencyState where
+  cursor : history_tree.IndexCursor
+  old_acc : hashing.Digest
+  new_acc : hashing.Digest
+
+/-- [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::ConsistencyState}::clone]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 142:9-142:14
+    Visibility: public -/
+def history_tree.ConsistencyState.Insts.CoreCloneClone.clone
+  (self : history_tree.ConsistencyState) :
+  Result history_tree.ConsistencyState
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::clone::Clone for mneme_kernel::history_tree::ConsistencyState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 142:9-142:14 -/
+@[reducible]
+def history_tree.ConsistencyState.Insts.CoreCloneClone : core.clone.Clone
+  history_tree.ConsistencyState := {
+  clone := history_tree.ConsistencyState.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::Copy for mneme_kernel::history_tree::ConsistencyState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 142:16-142:20 -/
+@[reducible]
+def history_tree.ConsistencyState.Insts.CoreMarkerCopy : core.marker.Copy
+  history_tree.ConsistencyState := {
+  cloneInst := history_tree.ConsistencyState.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::marker::StructuralPartialEq for mneme_kernel::history_tree::ConsistencyState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 142:22-142:31 -/
+@[reducible]
+def history_tree.ConsistencyState.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq history_tree.ConsistencyState := {
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::ConsistencyState> for mneme_kernel::history_tree::ConsistencyState}::eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 142:22-142:31
+    Visibility: public -/
+def history_tree.ConsistencyState.Insts.CoreCmpPartialEqConsistencyState.eq
+  (self : history_tree.ConsistencyState)
+  (other : history_tree.ConsistencyState) :
+  Result Bool
+  := do
+  let b ←
+    history_tree.IndexCursor.Insts.CoreCmpPartialEqIndexCursor.eq self.cursor
+      other.cursor
+  if b
+  then
+    let b1 ←
+      hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.old_acc other.old_acc
+    if b1
+    then
+      hashing.Digest.Insts.CoreCmpPartialEqDigest.eq self.new_acc other.new_acc
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::PartialEq<mneme_kernel::history_tree::ConsistencyState> for mneme_kernel::history_tree::ConsistencyState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 142:22-142:31 -/
+@[reducible]
+def history_tree.ConsistencyState.Insts.CoreCmpPartialEqConsistencyState :
+  core.cmp.PartialEq history_tree.ConsistencyState
+  history_tree.ConsistencyState := {
+  eq := history_tree.ConsistencyState.Insts.CoreCmpPartialEqConsistencyState.eq
+}
+
+/-- [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::ConsistencyState}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 142:33-142:35
+    Visibility: public -/
+def history_tree.ConsistencyState.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : history_tree.ConsistencyState) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::history_tree::{impl core::cmp::Eq for mneme_kernel::history_tree::ConsistencyState}]
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 142:33-142:35 -/
+@[reducible]
+def history_tree.ConsistencyState.Insts.CoreCmpEq : core.cmp.Eq
+  history_tree.ConsistencyState := {
+  partialEqInst :=
+    history_tree.ConsistencyState.Insts.CoreCmpPartialEqConsistencyState
+  assert_fields_are_eq :=
+    history_tree.ConsistencyState.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::history_tree::same_digest]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 150:0-152:1 -/
+def history_tree.same_digest
+  (left : hashing.Digest) (right : hashing.Digest) : Result Bool := do
+  if left.hi = right.hi
+  then ok (left.lo = right.lo)
+  else ok false
+
+/-- [mneme_kernel::history_tree::is_left_sibling_step]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 155:0-157:1 -/
+def history_tree.is_left_sibling_step
+  (cursor : history_tree.IndexCursor) : Result Bool := do
+  let i ← lift (cursor.fn_idx &&& history_tree.BIT_MASK_LSB)
+  if i = history_tree.BIT_MASK_LSB
+  then ok true
+  else ok (cursor.fn_idx = cursor.sn_idx)
+
+/-- [mneme_kernel::history_tree::shift_trailing_zeros]: loop body 0:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 163:4-166:5 -/
+@[rust_loop_body]
+def history_tree.shift_trailing_zeros_loop.body
+  (fn_idx : Std.U64) (sn_idx : Std.U64) :
+  Result (ControlFlow (Std.U64 × Std.U64) (Std.U64 × Std.U64))
+  := do
+  if fn_idx != 0#u64
+  then
+    let i ← lift (fn_idx &&& history_tree.BIT_MASK_LSB)
+    if i = 0#u64
+    then
+      let fn_idx1 ← fn_idx >>> history_tree.BIT_SHIFT_ONE
+      let sn_idx1 ← sn_idx >>> history_tree.BIT_SHIFT_ONE
+      ok (cont (fn_idx1, sn_idx1))
+    else ok (done (fn_idx, sn_idx))
+  else ok (done (fn_idx, sn_idx))
+
+/-- [mneme_kernel::history_tree::shift_trailing_zeros]: loop 0:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 163:4-166:5 -/
+@[rust_loop]
+def history_tree.shift_trailing_zeros_loop
+  (fn_idx : Std.U64) (sn_idx : Std.U64) : Result (Std.U64 × Std.U64) := do
+  loop
+    (fun (fn_idx1, sn_idx1) => history_tree.shift_trailing_zeros_loop.body
+      fn_idx1 sn_idx1)
+    (fn_idx, sn_idx)
+
+/-- [mneme_kernel::history_tree::shift_trailing_zeros]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 160:0-168:1 -/
+def history_tree.shift_trailing_zeros
+  (cursor : history_tree.IndexCursor) : Result history_tree.IndexCursor := do
+  let (fn_idx, sn_idx) ←
+    history_tree.shift_trailing_zeros_loop cursor.fn_idx cursor.sn_idx
+  ok { fn_idx, sn_idx }
+
+/-- [mneme_kernel::history_tree::shift_trailing_ones]: loop body 0:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 174:4-177:5 -/
+@[rust_loop_body]
+def history_tree.shift_trailing_ones_loop.body
+  (fn_idx : Std.U64) (sn_idx : Std.U64) :
+  Result (ControlFlow (Std.U64 × Std.U64) (Std.U64 × Std.U64))
+  := do
+  let i ← lift (fn_idx &&& history_tree.BIT_MASK_LSB)
+  if i = history_tree.BIT_MASK_LSB
+  then
+    let fn_idx1 ← fn_idx >>> history_tree.BIT_SHIFT_ONE
+    let sn_idx1 ← sn_idx >>> history_tree.BIT_SHIFT_ONE
+    ok (cont (fn_idx1, sn_idx1))
+  else ok (done (fn_idx, sn_idx))
+
+/-- [mneme_kernel::history_tree::shift_trailing_ones]: loop 0:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 174:4-177:5 -/
+@[rust_loop]
+def history_tree.shift_trailing_ones_loop
+  (fn_idx : Std.U64) (sn_idx : Std.U64) : Result (Std.U64 × Std.U64) := do
+  loop
+    (fun (fn_idx1, sn_idx1) => history_tree.shift_trailing_ones_loop.body
+      fn_idx1 sn_idx1)
+    (fn_idx, sn_idx)
+
+/-- [mneme_kernel::history_tree::shift_trailing_ones]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 171:0-179:1 -/
+def history_tree.shift_trailing_ones
+  (cursor : history_tree.IndexCursor) : Result history_tree.IndexCursor := do
+  let (fn_idx, sn_idx) ←
+    history_tree.shift_trailing_ones_loop cursor.fn_idx cursor.sn_idx
+  ok { fn_idx, sn_idx }
+
+/-- [mneme_kernel::history_tree::apply_inclusion_step]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 182:0-215:1 -/
+def history_tree.apply_inclusion_step
+  (state : history_tree.InclusionState) (step : history_tree.InclusionStep) :
+  Result (Option history_tree.InclusionState)
+  := do
+  let is_left_eq ← history_tree.same_digest step.left state.current
+  let is_right_eq ← history_tree.same_digest step.right state.current
+  if state.cursor.sn_idx = 0#u64
+  then ok none
+  else
+    let b ← history_tree.is_left_sibling_step state.cursor
+    if b
+    then
+      let is_side_ok ←
+        match step.side with
+        | history_tree.SiblingSide.Left => ok true
+        | history_tree.SiblingSide.Right => ok false
+      if is_side_ok
+      then
+        if is_right_eq
+        then
+          let shifted ← history_tree.shift_trailing_zeros state.cursor
+          let i ← shifted.fn_idx >>> history_tree.BIT_SHIFT_ONE
+          let i1 ← shifted.sn_idx >>> history_tree.BIT_SHIFT_ONE
+          ok (some
+            { cursor := { fn_idx := i, sn_idx := i1 }, current := step.parent })
+        else ok none
+      else ok none
+    else
+      let is_side_ok ←
+        match step.side with
+        | history_tree.SiblingSide.Left => ok false
+        | history_tree.SiblingSide.Right => ok true
+      if is_side_ok
+      then
+        if is_left_eq
+        then
+          let i ← state.cursor.fn_idx >>> history_tree.BIT_SHIFT_ONE
+          let i1 ← state.cursor.sn_idx >>> history_tree.BIT_SHIFT_ONE
+          ok (some
+            { cursor := { fn_idx := i, sn_idx := i1 }, current := step.parent })
+        else ok none
+      else ok none
+
+/-- [mneme_kernel::history_tree::apply_consistency_step]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 218:0-256:1 -/
+def history_tree.apply_consistency_step
+  (state : history_tree.ConsistencyState) (step : history_tree.ConsistencyStep)
+  :
+  Result (Option history_tree.ConsistencyState)
+  := do
+  let is_old_ok ← history_tree.same_digest step.old_right state.old_acc
+  let is_new_ok ← history_tree.same_digest step.new_child state.new_acc
+  if state.cursor.sn_idx = 0#u64
+  then ok none
+  else
+    let b ← history_tree.is_left_sibling_step state.cursor
+    if b
+    then
+      let is_side_ok ←
+        match step.side with
+        | history_tree.SiblingSide.Left => ok true
+        | history_tree.SiblingSide.Right => ok false
+      if is_side_ok
+      then
+        if is_old_ok
+        then
+          if is_new_ok
+          then
+            let shifted ← history_tree.shift_trailing_zeros state.cursor
+            let i ← shifted.fn_idx >>> history_tree.BIT_SHIFT_ONE
+            let i1 ← shifted.sn_idx >>> history_tree.BIT_SHIFT_ONE
+            ok (some
+              {
+                cursor := { fn_idx := i, sn_idx := i1 },
+                old_acc := step.old_parent,
+                new_acc := step.new_parent
+              })
+          else ok none
+        else ok none
+      else ok none
+    else
+      let is_side_ok ←
+        match step.side with
+        | history_tree.SiblingSide.Left => ok false
+        | history_tree.SiblingSide.Right => ok true
+      if is_side_ok
+      then
+        if is_new_ok
+        then
+          let i ← state.cursor.fn_idx >>> history_tree.BIT_SHIFT_ONE
+          let i1 ← state.cursor.sn_idx >>> history_tree.BIT_SHIFT_ONE
+          ok (some
+            {
+              state
+                with
+                cursor := { fn_idx := i, sn_idx := i1 },
+                new_acc := step.new_parent
+            })
+        else ok none
+      else ok none
+
+/-- [mneme_kernel::history_tree::verify_inclusion_proof]: loop body 0:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 281:8-291:9
+    Visibility: public -/
+@[rust_loop_body]
+def history_tree.verify_inclusion_proof_loop.body
+  (steps : Slice history_tree.InclusionStep)
+  (state : history_tree.InclusionState) (is_valid : Bool) (index : Std.Usize) :
+  Result (ControlFlow (history_tree.InclusionState × Bool × Std.Usize)
+    (history_tree.InclusionState × Bool))
+  := do
+  let i := Slice.len steps
+  if index < i
+  then
+    if is_valid
+    then
+      let is ← Slice.index_usize steps index
+      let o ← history_tree.apply_inclusion_step state is
+      let (state1, is_valid1) ←
+        match o with
+        | none => ok (state, false)
+        | some next => ok (next, true)
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (state1, is_valid1, index1))
+    else ok (done (state, false))
+  else ok (done (state, is_valid))
+
+/-- [mneme_kernel::history_tree::verify_inclusion_proof]: loop 0:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 281:8-291:9
+    Visibility: public -/
+@[rust_loop]
+def history_tree.verify_inclusion_proof_loop
+  (steps : Slice history_tree.InclusionStep)
+  (state : history_tree.InclusionState) (is_valid : Bool) (index : Std.Usize) :
+  Result (history_tree.InclusionState × Bool)
+  := do
+  loop
+    (fun (state1, is_valid1, index1) =>
+      history_tree.verify_inclusion_proof_loop.body steps state1 is_valid1
+      index1)
+    (state, is_valid, index)
+
+/-- [mneme_kernel::history_tree::verify_inclusion_proof]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 264:0-295:1
+    Visibility: public -/
+def history_tree.verify_inclusion_proof
+  (check : history_tree.InclusionCheck)
+  (steps : Slice history_tree.InclusionStep) :
+  Result Bool
+  := do
+  if check.tree_size = 0#u64
+  then ok false
+  else
+    if check.leaf_index >= check.tree_size
+    then ok false
+    else
+      let i ← lift (core.num.U64.saturating_sub check.tree_size 1#u64)
+      let (state, is_valid) ←
+        history_tree.verify_inclusion_proof_loop steps
+          {
+            cursor := { fn_idx := check.leaf_index, sn_idx := i },
+            current := check.leaf_digest
+          } true 0#usize
+      let is_root_ok ←
+        history_tree.same_digest state.current check.expected_root
+      if is_valid
+      then if state.cursor.sn_idx = 0#u64
+           then ok is_root_ok
+           else ok false
+      else ok false
+
+/-- [mneme_kernel::history_tree::verify_consistency_proof]: loop body 0:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 327:8-337:9
+    Visibility: public -/
+@[rust_loop_body]
+def history_tree.verify_consistency_proof_loop.body
+  (steps : Slice history_tree.ConsistencyStep)
+  (state : history_tree.ConsistencyState) (is_valid : Bool) (index : Std.Usize)
+  :
+  Result (ControlFlow (history_tree.ConsistencyState × Bool × Std.Usize)
+    (history_tree.ConsistencyState × Bool))
+  := do
+  let i := Slice.len steps
+  if index < i
+  then
+    if is_valid
+    then
+      let cs ← Slice.index_usize steps index
+      let o ← history_tree.apply_consistency_step state cs
+      let (state1, is_valid1) ←
+        match o with
+        | none => ok (state, false)
+        | some next => ok (next, true)
+      let index1 ← lift (core.num.Usize.saturating_add index 1#usize)
+      ok (cont (state1, is_valid1, index1))
+    else ok (done (state, false))
+  else ok (done (state, is_valid))
+
+/-- [mneme_kernel::history_tree::verify_consistency_proof]: loop 0:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 327:8-337:9
+    Visibility: public -/
+@[rust_loop]
+def history_tree.verify_consistency_proof_loop
+  (steps : Slice history_tree.ConsistencyStep)
+  (state : history_tree.ConsistencyState) (is_valid : Bool) (index : Std.Usize)
+  :
+  Result (history_tree.ConsistencyState × Bool)
+  := do
+  loop
+    (fun (state1, is_valid1, index1) =>
+      history_tree.verify_consistency_proof_loop.body steps state1 is_valid1
+      index1)
+    (state, is_valid, index)
+
+/-- [mneme_kernel::history_tree::verify_consistency_proof]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 302:0-342:1
+    Visibility: public -/
+def history_tree.verify_consistency_proof
+  (check : history_tree.ConsistencyCheck)
+  (steps : Slice history_tree.ConsistencyStep) :
+  Result Bool
+  := do
+  let is_same_root ← history_tree.same_digest check.old_root check.new_root
+  let is_initial_root ←
+    history_tree.same_digest check.initial_digest check.old_root
+  if check.old_size = 0#u64
+  then ok false
+  else
+    if check.old_size > check.new_size
+    then ok false
+    else
+      if check.old_size = check.new_size
+      then
+        let b ← core.slice.Slice.is_empty steps
+        if b
+        then ok is_same_root
+        else ok false
+      else
+        let i ← lift (core.num.U64.saturating_sub check.old_size 1#u64)
+        let i1 ← lift (core.num.U64.saturating_sub check.new_size 1#u64)
+        let initial ←
+          history_tree.shift_trailing_ones { fn_idx := i, sn_idx := i1 }
+        let is_valid ←
+          if initial.fn_idx != 0#u64
+          then ok true
+          else ok is_initial_root
+        let (state, is_valid1) ←
+          history_tree.verify_consistency_proof_loop steps
+            {
+              cursor := initial,
+              old_acc := check.initial_digest,
+              new_acc := check.initial_digest
+            } is_valid 0#usize
+        let is_old_match ←
+          history_tree.same_digest state.old_acc check.old_root
+        let is_new_match ←
+          history_tree.same_digest state.new_acc check.new_root
+        if is_valid1
+        then
+          if state.cursor.sn_idx = 0#u64
+          then if is_old_match
+               then ok is_new_match
+               else ok false
+          else ok false
+        else ok false
+
+/-- [mneme_kernel::history_tree::equivocation_detected]:
+    Source: 'crates/mneme-kernel/src/historytree.rs', lines 346:0-355:1
+    Visibility: public -/
+def history_tree.equivocation_detected
+  (facts : history_tree.EquivocationFacts) : Result Bool := do
+  let is_same_root ←
+    history_tree.same_digest facts.first_root facts.second_root
+  if facts.is_both_signed_same_origin
+  then
+    if facts.first_size = 0#u64
+    then ok false
+    else
+      if facts.second_size = 0#u64
+      then ok false
+      else
+        if facts.first_size = facts.second_size
+        then ok (¬ is_same_root)
+        else
+          match facts.consistency with
+          | history_tree.ConsistencyVerdict.Consistent => ok false
+          | history_tree.ConsistencyVerdict.Inconsistent => ok true
+  else ok false
+
 /-- [mneme_kernel::hlc::DEFAULT_MAX_SKEW_NS]
     Source: 'crates/mneme-kernel/src/hlc.rs', lines 14:0-14:51
     Visibility: public -/

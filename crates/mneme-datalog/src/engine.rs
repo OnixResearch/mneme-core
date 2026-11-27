@@ -210,6 +210,7 @@ pub(crate) fn canonical_extents() -> &'static [&'static str] {
         "document",
         "derivation",
         "source",
+        "verdict",
     ]
 }
 
@@ -798,8 +799,21 @@ fn load_record_facts(
         mneme_core::RecordKind::Document => load_document_fact(ctx, record, evaluation),
         mneme_core::RecordKind::SourceRevision => load_source_fact(ctx, record, evaluation),
         mneme_core::RecordKind::Derivation => load_derivation_facts(ctx, record, evaluation),
-        mneme_core::RecordKind::Episode
-        | mneme_core::RecordKind::Checkpoint
+        mneme_core::RecordKind::Episode => {
+            if let Some(terms) = crate::verdict::extract_terms(record) {
+                add_canonical_pair(
+                    ctx,
+                    evaluation,
+                    PredicatePair {
+                        base: "verdict",
+                        vault: "vault_verdict",
+                    },
+                    terms,
+                    plain_row(ctx, record),
+                );
+            }
+        }
+        mneme_core::RecordKind::Checkpoint
         | mneme_core::RecordKind::Proposal
         | mneme_core::RecordKind::Decision
         | mneme_core::RecordKind::RetentionDirective

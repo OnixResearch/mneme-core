@@ -53,6 +53,7 @@ pub(crate) mod custody;
 mod history;
 mod index;
 mod jobs;
+pub(crate) mod merkle;
 mod publishing;
 mod recovery;
 mod sweep;
@@ -65,6 +66,10 @@ pub use index::{
     MetadataPage, RelationMetadata, RelationQuery,
 };
 pub use jobs::JobClaim;
+pub use merkle::{
+    ConsistencyProof, HistoryTreeDb, HistoryTreeHead, InclusionProof, digest_to_kernel,
+    hash_history_interior, hash_history_leaf,
+};
 mod validation;
 
 /// The ledger file name inside a workspace root.
@@ -1475,6 +1480,7 @@ impl Workspace {
         transaction.execute_batch(MEMBERSHIP_DDL)?;
         transaction.execute_batch(RETENTION_DDL)?;
         transaction.execute_batch(index::METADATA_PROJECTION_DDL)?;
+        transaction.execute_batch(merkle::HISTORY_TREE_DDL)?;
         let revision = mneme_core::WorkspaceRevisionId::from_bytes(crate::payload::random_bytes()?);
         let manifest = crate::catalog::Manifest::genesis(revision);
         let manifest_digest = manifest.digest();
@@ -1497,6 +1503,8 @@ impl Workspace {
                 committed_at,
             ],
         )?;
+        let genesis_leaf = merkle::hash_history_leaf(0, revision, manifest_digest, 1);
+        merkle::append_leaf(&transaction, 0, genesis_leaf)?;
         set_meta(&transaction, META_LAYOUT, b"1")?;
         set_meta(&transaction, META_RETENTION_FORMAT, b"1")?;
         set_meta(&transaction, META_MEMBERSHIP_FORMAT, b"2")?;
@@ -1575,6 +1583,7 @@ impl Workspace {
         // unverified membership.
         history::migrate_membership_format(&mut connection)?;
         index::migrate_metadata_projection(&root, &mut connection)?;
+        merkle::ensure_history_tree(&mut connection)?;
         // A restore that was interrupted before its ledger was applied leaves
         // this marker behind; every later open refuses to serve until the
         // marker and the ledger state are written together.

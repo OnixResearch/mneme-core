@@ -28,12 +28,13 @@ pub use coordinator::verify::{
     IssueKind, OrphanBlob, OrphanReason, VerifyIssue, VerifyMode, VerifyReport, verify_workspace,
 };
 pub use coordinator::{
-    CommitOutcome, DocumentMetadata, DocumentQuery, EntityMetadata, EntityQuery,
-    FOLDER_WORKSPACE_DIRECTORY, JobClaim, LAYOUT_VERSION, LEDGER_FILE, MAX_METADATA_PAGE_SIZE,
-    MetadataPage, ProjectionRegistration, ProjectionResolution, ProjectionState,
-    PublicationOutcome, PublicationState, RecordRevisionCommit, RecordRevisionCommitPage,
-    RecoveryReport, RelationMetadata, RelationQuery, RevisionCommit, RevisionDelta,
-    SharedRecordCache, Snapshot, Workspace, WorkspaceConfig, WorkspaceStatus,
+    CommitOutcome, ConsistencyProof, DocumentMetadata, DocumentQuery, EntityMetadata, EntityQuery,
+    FOLDER_WORKSPACE_DIRECTORY, HistoryTreeDb, HistoryTreeHead, InclusionProof, JobClaim,
+    LAYOUT_VERSION, LEDGER_FILE, MAX_METADATA_PAGE_SIZE, MetadataPage, ProjectionRegistration,
+    ProjectionResolution, ProjectionState, PublicationOutcome, PublicationState,
+    RecordRevisionCommit, RecordRevisionCommitPage, RecoveryReport, RelationMetadata,
+    RelationQuery, RevisionCommit, RevisionDelta, SharedRecordCache, Snapshot, Workspace,
+    WorkspaceConfig, WorkspaceStatus, digest_to_kernel, hash_history_interior, hash_history_leaf,
 };
 pub use dedup::{BlobChunking, FastCdcConfig};
 pub use error::{Failure, Result};

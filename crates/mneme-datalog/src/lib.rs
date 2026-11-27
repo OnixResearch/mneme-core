@@ -1016,6 +1016,7 @@ mod freejoin;
 mod ivm;
 mod provenance;
 mod rules;
+mod verdict;
 
 pub use provenance::{
     EpistemicStatus, ExplainLimits, ExplainMissingRequest, MissingExplanation, MissingReason,

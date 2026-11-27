@@ -45,6 +45,8 @@ pub mod contraction;
 pub mod epistemic;
 pub mod extent;
 pub mod hashing;
+#[path = "historytree.rs"]
+pub mod history_tree;
 pub mod hlc;
 pub mod isolation;
 pub mod publish;

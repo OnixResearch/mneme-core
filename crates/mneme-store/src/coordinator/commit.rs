@@ -801,6 +801,13 @@ impl super::Workspace {
                 i64::from(prepared.hlc.logical),
             ],
         )?;
+        let leaf_digest = super::merkle::hash_history_leaf(
+            prepared.next_sequence,
+            prepared.revision_id,
+            prepared.manifest_digest,
+            prepared.next_generation,
+        );
+        super::merkle::append_leaf(transaction, prepared.next_sequence, leaf_digest)?;
         Ok(())
     }
 

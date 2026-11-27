@@ -30,6 +30,13 @@ pub enum Failure {
     /// Post-pull workspace verification failed closed.
     #[error("workspace verification failed after sync: {0}")]
     VerificationFailed(String),
+    /// Peer signed conflicting history tree heads (split view or history rewrite).
+    #[error("equivocation detected from peer {peer} on scope {scope}")]
+    EquivocationDetected {
+        peer: String,
+        scope: String,
+        proof: Box<crate::transparency::EquivocationProof>,
+    },
     /// Payload or archive exceeds configured transfer bounds.
     #[error("transfer size {actual_bytes} bytes exceeds bound {limit_bytes} bytes")]
     SizeLimitExceeded { actual_bytes: u64, limit_bytes: u64 },

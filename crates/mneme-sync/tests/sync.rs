@@ -527,6 +527,7 @@ fn allowlist_persistence_and_gossip_announcement_bounds() {
         bundle_hash: iroh_blobs::Hash::EMPTY.to_string(),
         bundle_bytes: 128,
         hlc: None,
+        signed_tree_head: None,
         origin: None,
         signature: None,
     }

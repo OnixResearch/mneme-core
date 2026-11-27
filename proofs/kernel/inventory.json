@@ -2438,6 +2438,62 @@
         "contraction::node_next_grounded"
       ],
       "statement": "(a b : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) (ha0 : a.val < grounded.length → grounded.val[a.val]? = some false) (hb0 : b.val < grounded.length → grounded.val[b.val]? = some false) (hedges : ∀ e ∈ edges.val, e.target.val = a.val ∨ e.target.val = b.val → e.premises.len.val = 0 ∨ premises.length < e.premises.start.val + e.premises.len.val ∨ ∃ j, e.premises.start.val ≤ j ∧ j < e.premises.start.val + e.premises.len.val ∧ ∀ p, premises.val[j]? = some p → grounded.length ≤ p.val ∨ p.val = a.val ∨ p.val = b.val) : node_next_grounded a edges premises grounded = ok false ∧ node_next_grounded b edges premises grounded = ok false"
+    },
+    {
+      "name": "mneme_kernel.history_tree.verify_inclusion_proof_total_and_spec",
+      "file": "MnemeKernelProofs/HistoryTree.lean",
+      "subjects": [
+        "historytree::verify_inclusion_proof"
+      ],
+      "statement": "(check : InclusionCheck) (steps : Slice InclusionStep) : ∃ r : Bool, verify_inclusion_proof check steps = ok r ∧ (r = true ↔ InclusionProofValid check steps.val)"
+    },
+    {
+      "name": "mneme_kernel.history_tree.verify_inclusion_proof_rejects_out_of_bounds",
+      "file": "MnemeKernelProofs/HistoryTree.lean",
+      "subjects": [
+        "historytree::verify_inclusion_proof"
+      ],
+      "statement": "(check : InclusionCheck) (steps : Slice InclusionStep) (h : check.tree_size = 0#u64 ∨ check.leaf_index ≥ check.tree_size) : verify_inclusion_proof check steps = ok false"
+    },
+    {
+      "name": "mneme_kernel.history_tree.verify_inclusion_proof_singleton_iff",
+      "file": "MnemeKernelProofs/HistoryTree.lean",
+      "subjects": [
+        "historytree::verify_inclusion_proof"
+      ],
+      "statement": "(check : InclusionCheck) (steps : Slice InclusionStep) (hsize : check.tree_size = 1#u64) (hidx : check.leaf_index = 0#u64) (hempty : steps.val = []) : ∃ r : Bool, verify_inclusion_proof check steps = ok r ∧ (r = true ↔ check.leaf_digest = check.expected_root)"
+    },
+    {
+      "name": "mneme_kernel.history_tree.verify_consistency_proof_total_and_spec",
+      "file": "MnemeKernelProofs/HistoryTree.lean",
+      "subjects": [
+        "historytree::verify_consistency_proof"
+      ],
+      "statement": "(check : ConsistencyCheck) (steps : Slice ConsistencyStep) : ∃ r : Bool, verify_consistency_proof check steps = ok r ∧ (r = true ↔ ConsistencyProofValid check steps.val)"
+    },
+    {
+      "name": "mneme_kernel.history_tree.verify_consistency_proof_rejects_invalid_sizes",
+      "file": "MnemeKernelProofs/HistoryTree.lean",
+      "subjects": [
+        "historytree::verify_consistency_proof"
+      ],
+      "statement": "(check : ConsistencyCheck) (steps : Slice ConsistencyStep) (h : check.old_size = 0#u64 ∨ check.old_size > check.new_size) : verify_consistency_proof check steps = ok false"
+    },
+    {
+      "name": "mneme_kernel.history_tree.verify_consistency_proof_reflexive_iff",
+      "file": "MnemeKernelProofs/HistoryTree.lean",
+      "subjects": [
+        "historytree::verify_consistency_proof"
+      ],
+      "statement": "(check : ConsistencyCheck) (steps : Slice ConsistencyStep) (hpos : check.old_size ≠ 0#u64) (heq : check.old_size = check.new_size) : ∃ r : Bool, verify_consistency_proof check steps = ok r ∧ (r = true ↔ steps.val = [] ∧ check.old_root = check.new_root)"
+    },
+    {
+      "name": "mneme_kernel.history_tree.equivocation_detected_iff",
+      "file": "MnemeKernelProofs/HistoryTree.lean",
+      "subjects": [
+        "historytree::equivocation_detected"
+      ],
+      "statement": "(facts : EquivocationFacts) : ∃ r : Bool, equivocation_detected facts = ok r ∧ (r = true ↔ facts.is_both_signed_same_origin = true ∧ facts.first_size ≠ 0#u64 ∧ facts.second_size ≠ 0#u64 ∧ ((facts.first_size = facts.second_size ∧ facts.first_root ≠ facts.second_root) ∨ (facts.first_size ≠ facts.second_size ∧ facts.consistency = ConsistencyVerdict.Inconsistent)))"
     }
   ]
 }
