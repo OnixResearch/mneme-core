@@ -396,7 +396,7 @@ fn require_reconstructed_manifest(
     let revision = stored.revision;
     let manifest = crate::catalog::Manifest {
         revision,
-        parent: stored.parent,
+        parents: stored.parent.into_iter().collect(),
         records: super::manifest_record_set(transaction, stored.sequence, revision)?,
         blobs: blobs.clone(),
     };

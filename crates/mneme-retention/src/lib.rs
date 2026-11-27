@@ -524,6 +524,24 @@ impl<'w> Engine<'w> {
         .with_access(mneme_memory::Access::Operator))
     }
 
+    /// Read all [`mneme_store::KeyPunctureBarrier`]s emitted by `Forget`
+    /// commits for `scope`.
+    pub fn key_puncture_barriers(
+        &self,
+        scope: &mneme_core::ScopeId,
+    ) -> Result<Vec<mneme_store::KeyPunctureBarrier>> {
+        Ok(self.workspace.key_puncture_barriers(scope)?)
+    }
+
+    /// Apply a synchronized [`mneme_store::KeyPunctureBarrier`] to the
+    /// workspace's GGM key tree and retention ledger.
+    pub fn apply_key_puncture_barrier(
+        &mut self,
+        barrier: &mneme_store::KeyPunctureBarrier,
+    ) -> Result<mneme_store::PunctureReport> {
+        Ok(self.workspace.apply_key_puncture_barrier(barrier)?)
+    }
+
     fn cleanup(&mut self, operation: mneme_store::RetentionOperation) -> Result<Outcome> {
         if operation.state == mneme_store::RetentionJobState::Complete {
             return self.result(operation, CleanupRun::Completed);

@@ -8,7 +8,7 @@
 // Octet structural exception: domain-qualified names and macro-only imports are intentional
 
 /// A record revision proposed for the next snapshot.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct RecordDraft {
     pub schema_version: u32,
     pub kind: mneme_core::RecordKind,
@@ -19,7 +19,47 @@ pub struct RecordDraft {
     pub payload: mneme_core::Payload,
 }
 
+impl PartialEq for RecordDraft {
+    fn eq(&self, other: &Self) -> bool {
+        self.schema_version == other.schema_version
+            && self.kind == other.kind
+            && self.record_id == other.record_id
+            && self.revision_id == other.revision_id
+            && self.parents() == other.parents()
+            && self.scope == other.scope
+            && self.payload == other.payload
+    }
+}
+
+impl Eq for RecordDraft {}
+
 impl RecordDraft {
+    /// Canonical sorted causal parent set for this draft revision.
+    pub fn parents(&self) -> std::collections::BTreeSet<mneme_core::RevisionId> {
+        let mut set = self.payload.envelope_extra_parents().clone();
+        if let Some(predecessor) = self.predecessor {
+            set.insert(predecessor);
+        }
+        set
+    }
+
+    /// Replace the causal parent set on this draft revision.
+    pub fn set_parents(&mut self, parents: std::collections::BTreeSet<mneme_core::RevisionId>) {
+        let mut iter = parents.into_iter();
+        self.predecessor = iter.next();
+        self.payload.set_envelope_extra_parents(iter.collect());
+    }
+
+    /// Return this draft with its causal parent set replaced by `parents`.
+    #[must_use]
+    pub fn with_parents(
+        mut self,
+        parents: std::collections::BTreeSet<mneme_core::RevisionId>,
+    ) -> Self {
+        self.set_parents(parents);
+        self
+    }
+
     /// Build the immutable envelope with coordinator-assigned recorded time.
     pub fn into_envelope(self, recorded: mneme_core::RecordedTime) -> mneme_core::RecordEnvelope {
         mneme_core::RecordEnvelope {
@@ -35,6 +75,17 @@ impl RecordDraft {
     }
 
     fn request_value(&self) -> mneme_core::Value {
+        let parents = self.parents();
+        let parent_value = if parents.is_empty() {
+            mneme_core::Value::symbol("none")
+        } else if parents.len() == 1 {
+            match parents.iter().next() {
+                Some(revision) => revision.to_value(),
+                None => mneme_core::Value::symbol("none"),
+            }
+        } else {
+            mneme_core::Value::set(parents.iter().map(|revision| revision.to_value()))
+        };
         mneme_core::Value::record_named(
             "draft-record",
             vec![
@@ -42,10 +93,7 @@ impl RecordDraft {
                 self.kind.to_value(),
                 self.record_id.to_value(),
                 self.revision_id.to_value(),
-                match self.predecessor {
-                    Some(revision) => revision.to_value(),
-                    None => mneme_core::Value::symbol("none"),
-                },
+                parent_value,
                 self.scope.to_value(),
                 self.payload.to_value(),
             ],

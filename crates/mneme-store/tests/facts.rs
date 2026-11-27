@@ -543,7 +543,7 @@ fn rewrite_revision_copied(
 ) {
     let manifest = mneme_store::Manifest {
         revision: workspace_identity(revision),
-        parent: parent.map(workspace_identity),
+        parents: parent.map(workspace_identity).into_iter().collect(),
         records: revision_manifest_records(connection, sequence),
         blobs: revision_blob_requirements(connection, sequence),
     };

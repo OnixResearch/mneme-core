@@ -139,7 +139,11 @@ impl ArchiveWriter {
         if length_bytes > super::MAX_PORTABLE_BLOB_BYTES {
             return Err(crate::error::Failure::HistoryLimitExceeded);
         }
-        if mneme_core::ContentDigest::of_source_bytes_with(bytes, digest.algorithm()) != digest {
+        if crate::payload::is_encrypted_frame(bytes) {
+            let _header = crate::payload::inspect_enc_frame_header(digest, bytes)?;
+        } else if mneme_core::ContentDigest::of_source_bytes_with(bytes, digest.algorithm())
+            != digest
+        {
             return Err(crate::error::Failure::CorruptBlob {
                 digest: digest.to_hex(),
                 reason: "source bytes do not hash to their committed digest".to_owned(),
@@ -231,8 +235,11 @@ impl ArchiveReader {
         })
     }
 
-    /// Read one blob and verify its digest and declared length.
-    pub(super) fn blob(&self, digest: mneme_core::ContentDigest) -> crate::error::Result<Vec<u8>> {
+    /// Read one raw blob entry from the archive without checking its inner plaintext digest.
+    pub(super) fn raw_blob(
+        &self,
+        digest: mneme_core::ContentDigest,
+    ) -> crate::error::Result<Vec<u8>> {
         debug_assert!(!self.path.as_os_str().is_empty());
         let Some((offset, length)) = self.blob_offsets.get(digest.as_bytes()).copied() else {
             return Err(invalid(format!(
@@ -249,9 +256,39 @@ impl ArchiveReader {
         std::os::unix::fs::FileExt::read_exact_at(&self.file, &mut bytes, offset)
             .map_err(|error| io(&self.path, error))?;
         debug_assert_eq!(bytes.len(), byte_count);
-        if bytes.len() as u64 != length
-            || mneme_core::ContentDigest::of_source_bytes_with(&bytes, digest.algorithm()) != digest
-        {
+        if bytes.len() as u64 != length {
+            return Err(crate::error::Failure::CorruptBlob {
+                digest: digest.to_hex(),
+                reason: "archive bytes length differs from descriptor".to_owned(),
+            });
+        }
+        Ok(bytes)
+    }
+
+    /// Read one blob and decrypt it using `keytree_root` when stored as an
+    /// `MNENC01\0` ciphertext frame.
+    pub(super) fn blob_with_keytree(
+        &self,
+        keytree_root: &std::path::Path,
+        digest: mneme_core::ContentDigest,
+    ) -> crate::error::Result<Vec<u8>> {
+        let bytes = self.raw_blob(digest)?;
+        if crate::payload::is_encrypted_frame(&bytes) {
+            return crate::payload::decrypt_enc_frame(keytree_root, digest, &bytes);
+        }
+        if mneme_core::ContentDigest::of_source_bytes_with(&bytes, digest.algorithm()) != digest {
+            return Err(crate::error::Failure::CorruptBlob {
+                digest: digest.to_hex(),
+                reason: "archive bytes do not match their declared digest".to_owned(),
+            });
+        }
+        Ok(bytes)
+    }
+
+    /// Read one blob and verify its digest and declared length.
+    pub(super) fn blob(&self, digest: mneme_core::ContentDigest) -> crate::error::Result<Vec<u8>> {
+        let bytes = self.raw_blob(digest)?;
+        if mneme_core::ContentDigest::of_source_bytes_with(&bytes, digest.algorithm()) != digest {
             return Err(crate::error::Failure::CorruptBlob {
                 digest: digest.to_hex(),
                 reason: "archive bytes do not match their declared digest".to_owned(),
@@ -339,6 +376,19 @@ fn read_offsets(
     body_start: u64,
     file_length: u64,
 ) -> crate::error::Result<Offsets> {
+    let mut expected_plaintext_lengths: std::collections::BTreeMap<[u8; 32], u64> =
+        std::collections::BTreeMap::new();
+    for record in &manifest.records {
+        for revision in &record.revisions {
+            if let Some(retained) = super::portable_retained_source(&revision.envelope)? {
+                if expected_plaintext_lengths.len() >= super::MAX_PORTABLE_BLOBS {
+                    return Err(crate::error::Failure::HistoryLimitExceeded);
+                }
+                expected_plaintext_lengths
+                    .insert(*retained.digest().as_bytes(), retained.byte_length());
+            }
+        }
+    }
     let mut blob_offsets = std::collections::BTreeMap::new();
     file.seek(std::io::SeekFrom::Start(body_start))
         .map_err(|error| io(path, error))?;
@@ -361,6 +411,29 @@ fn read_offsets(
             ));
         }
         let offset = file.stream_position().map_err(|error| io(path, error))?;
+        if let Some(&expected_plain_len) = expected_plaintext_lengths.get(&digest)
+            && length != expected_plain_len
+        {
+            let prefix_len = usize::try_from(length.min(4096))
+                .map_err(|_| crate::error::Failure::HistoryLimitExceeded)?;
+            let mut prefix = vec![0_u8; prefix_len];
+            file.read_exact(&mut prefix)
+                .map_err(|error| io(path, error))?;
+            if !crate::payload::is_encrypted_frame(&prefix) {
+                return Err(invalid(
+                    "archive blob length does not match the source revision that names it",
+                ));
+            }
+            let (_scope, _slot, uncompressed_len) =
+                crate::payload::inspect_enc_frame_header(blob.digest, &prefix)?;
+            if uncompressed_len != expected_plain_len {
+                return Err(invalid(
+                    "archive encrypted blob plaintext length does not match the source revision",
+                ));
+            }
+            file.seek(std::io::SeekFrom::Start(offset))
+                .map_err(|error| io(path, error))?;
+        }
         if blob_offsets.insert(digest, (offset, length)).is_some() {
             return Err(invalid("archive repeats one blob header"));
         }

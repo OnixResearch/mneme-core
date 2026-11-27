@@ -16,6 +16,7 @@ import MnemeKernelProofs.Publish
 import MnemeKernelProofs.Purge
 import MnemeKernelProofs.Restore
 import MnemeKernelProofs.Isolation
+import MnemeKernelProofs.Lattice
 import MnemeKernelProofs.Extent
 import MnemeKernelProofs.Temporal
 import MnemeKernelProofs.Verdict

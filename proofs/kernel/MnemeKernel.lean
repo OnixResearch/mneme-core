@@ -6293,6 +6293,599 @@ def isolation.blob_claim_allowed
   then ok true
   else ok facts.bound_in_scope
 
+/-- [mneme_kernel::lattice::CONCURRENT_FRONTIER_MIN]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 23:0-23:43
+    Visibility: public -/
+@[global_simps, irreducible]
+def lattice.CONCURRENT_FRONTIER_MIN : Std.U32 := 2#u32
+
+/-- [mneme_kernel::lattice::EMPTY_FRONTIER_MASK]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 25:0-25:35 -/
+@[global_simps, irreducible] def lattice.EMPTY_FRONTIER_MASK : Std.U64 := 0#u64
+
+/-- [mneme_kernel::lattice::SINGLE_BIT_STEP]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 26:0-26:31 -/
+@[global_simps, irreducible] def lattice.SINGLE_BIT_STEP : Std.U64 := 1#u64
+
+/-- [mneme_kernel::lattice::EMPTY_FRONTIER_COUNT]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 27:0-27:36 -/
+@[global_simps, irreducible]
+def lattice.EMPTY_FRONTIER_COUNT : Std.U32 := 0#u32
+
+/-- [mneme_kernel::lattice::SUPPRESSION_NONE_RANK]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 28:0-28:36 -/
+@[global_simps, irreducible] def lattice.SUPPRESSION_NONE_RANK : Std.U8 := 0#u8
+
+/-- [mneme_kernel::lattice::SUPPRESSION_WITHDRAWN_RANK]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 29:0-29:41 -/
+@[global_simps, irreducible]
+def lattice.SUPPRESSION_WITHDRAWN_RANK : Std.U8 := 1#u8
+
+/-- [mneme_kernel::lattice::SUPPRESSION_FORGOTTEN_RANK]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 30:0-30:41 -/
+@[global_simps, irreducible]
+def lattice.SUPPRESSION_FORGOTTEN_RANK : Std.U8 := 2#u8
+
+/-- [mneme_kernel::lattice::FrontierState]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 38:0-45:1
+    Visibility: public -/
+structure lattice.FrontierState where
+  nodes_mask : Std.U64
+  cited_mask : Std.U64
+  suppression : calm.SuppressionState
+
+/-- [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::FrontierState}::clone]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 36:9-36:14
+    Visibility: public -/
+def lattice.FrontierState.Insts.CoreCloneClone.clone
+  (self : lattice.FrontierState) : Result lattice.FrontierState := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::FrontierState}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 36:9-36:14 -/
+@[reducible]
+def lattice.FrontierState.Insts.CoreCloneClone : core.clone.Clone
+  lattice.FrontierState := {
+  clone := lattice.FrontierState.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::Copy for mneme_kernel::lattice::FrontierState}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 36:16-36:20 -/
+@[reducible]
+def lattice.FrontierState.Insts.CoreMarkerCopy : core.marker.Copy
+  lattice.FrontierState := {
+  cloneInst := lattice.FrontierState.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::StructuralPartialEq for mneme_kernel::lattice::FrontierState}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 36:22-36:31 -/
+@[reducible]
+def lattice.FrontierState.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq lattice.FrontierState := {
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::FrontierState> for mneme_kernel::lattice::FrontierState}::eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 36:22-36:31
+    Visibility: public -/
+def lattice.FrontierState.Insts.CoreCmpPartialEqFrontierState.eq
+  (self : lattice.FrontierState) (other : lattice.FrontierState) :
+  Result Bool
+  := do
+  if self.nodes_mask = other.nodes_mask
+  then
+    if self.cited_mask = other.cited_mask
+    then
+      calm.SuppressionState.Insts.CoreCmpPartialEqSuppressionState.eq
+        self.suppression other.suppression
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::FrontierState> for mneme_kernel::lattice::FrontierState}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 36:22-36:31 -/
+@[reducible]
+impl_def lattice.FrontierState.Insts.CoreCmpPartialEqFrontierState :
+  core.cmp.PartialEq lattice.FrontierState lattice.FrontierState := {
+  eq := lattice.FrontierState.Insts.CoreCmpPartialEqFrontierState.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    lattice.FrontierState.Insts.CoreCmpPartialEqFrontierState
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::FrontierState}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 36:33-36:35
+    Visibility: public -/
+def lattice.FrontierState.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : lattice.FrontierState) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::FrontierState}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 36:33-36:35 -/
+@[reducible]
+def lattice.FrontierState.Insts.CoreCmpEq : core.cmp.Eq lattice.FrontierState
+  := {
+  partialEqInst := lattice.FrontierState.Insts.CoreCmpPartialEqFrontierState
+  assert_fields_are_eq :=
+    lattice.FrontierState.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::lattice::join_frontier]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 52:0-58:1
+    Visibility: public -/
+def lattice.join_frontier
+  (left : lattice.FrontierState) (right : lattice.FrontierState) :
+  Result lattice.FrontierState
+  := do
+  let i ← lift (left.nodes_mask ||| right.nodes_mask)
+  let i1 ← lift (left.cited_mask ||| right.cited_mask)
+  let ss ← calm.join_suppression left.suppression right.suppression
+  ok { nodes_mask := i, cited_mask := i1, suppression := ss }
+
+/-- [mneme_kernel::lattice::frontier_mask]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 61:0-63:1
+    Visibility: public -/
+def lattice.frontier_mask
+  (state : lattice.FrontierState) : Result Std.U64 := do
+  let i ← lift (~~~ state.cited_mask)
+  ok (state.nodes_mask &&& i)
+
+/-- [mneme_kernel::lattice::ingest_node]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 66:0-72:1
+    Visibility: public -/
+def lattice.ingest_node
+  (state : lattice.FrontierState) (node_bit : Std.U64) (parents_mask : Std.U64)
+  :
+  Result lattice.FrontierState
+  := do
+  let i ← lift (state.nodes_mask ||| node_bit)
+  let i1 ← lift (state.cited_mask ||| parents_mask)
+  ok { state with nodes_mask := i, cited_mask := i1 }
+
+/-- [mneme_kernel::lattice::is_concurrent_mask]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 75:0-81:1
+    Visibility: public -/
+def lattice.is_concurrent_mask (mask : Std.U64) : Result Bool := do
+  if mask = lattice.EMPTY_FRONTIER_MASK
+  then ok false
+  else
+    let i ← lift (core.num.U64.wrapping_sub mask lattice.SINGLE_BIT_STEP)
+    let i1 ← lift (mask &&& i)
+    ok (i1 != lattice.EMPTY_FRONTIER_MASK)
+
+/-- [mneme_kernel::lattice::is_concurrent_frontier]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 84:0-86:1
+    Visibility: public -/
+def lattice.is_concurrent_frontier
+  (frontier_count : Std.U32) : Result Bool := do
+  ok (frontier_count >= lattice.CONCURRENT_FRONTIER_MIN)
+
+/-- [mneme_kernel::lattice::FrontierProjectionInput]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 92:0-99:1
+    Visibility: public -/
+structure lattice.FrontierProjectionInput where
+  frontier_count : Std.U32
+  head_lifecycle : claim.Lifecycle
+  suppression : calm.SuppressionLevel
+
+/-- [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::FrontierProjectionInput}::clone]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 90:9-90:14
+    Visibility: public -/
+def lattice.FrontierProjectionInput.Insts.CoreCloneClone.clone
+  (self : lattice.FrontierProjectionInput) :
+  Result lattice.FrontierProjectionInput
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::FrontierProjectionInput}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 90:9-90:14 -/
+@[reducible]
+def lattice.FrontierProjectionInput.Insts.CoreCloneClone : core.clone.Clone
+  lattice.FrontierProjectionInput := {
+  clone := lattice.FrontierProjectionInput.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::Copy for mneme_kernel::lattice::FrontierProjectionInput}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 90:16-90:20 -/
+@[reducible]
+def lattice.FrontierProjectionInput.Insts.CoreMarkerCopy : core.marker.Copy
+  lattice.FrontierProjectionInput := {
+  cloneInst := lattice.FrontierProjectionInput.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::StructuralPartialEq for mneme_kernel::lattice::FrontierProjectionInput}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 90:22-90:31 -/
+@[reducible]
+def lattice.FrontierProjectionInput.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq lattice.FrontierProjectionInput := {
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::FrontierProjectionInput> for mneme_kernel::lattice::FrontierProjectionInput}::eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 90:22-90:31
+    Visibility: public -/
+def
+  lattice.FrontierProjectionInput.Insts.CoreCmpPartialEqFrontierProjectionInput.eq
+  (self : lattice.FrontierProjectionInput)
+  (other : lattice.FrontierProjectionInput) :
+  Result Bool
+  := do
+  if self.frontier_count = other.frontier_count
+  then
+    let b ←
+      claim.Lifecycle.Insts.CoreCmpPartialEqLifecycle.eq self.head_lifecycle
+        other.head_lifecycle
+    if b
+    then
+      calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel.eq
+        self.suppression other.suppression
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::FrontierProjectionInput> for mneme_kernel::lattice::FrontierProjectionInput}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 90:22-90:31 -/
+@[reducible]
+impl_def
+  lattice.FrontierProjectionInput.Insts.CoreCmpPartialEqFrontierProjectionInput
+  : core.cmp.PartialEq lattice.FrontierProjectionInput
+  lattice.FrontierProjectionInput := {
+  eq :=
+    lattice.FrontierProjectionInput.Insts.CoreCmpPartialEqFrontierProjectionInput.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    lattice.FrontierProjectionInput.Insts.CoreCmpPartialEqFrontierProjectionInput
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::FrontierProjectionInput}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 90:33-90:35
+    Visibility: public -/
+def lattice.FrontierProjectionInput.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : lattice.FrontierProjectionInput) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::FrontierProjectionInput}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 90:33-90:35 -/
+@[reducible]
+def lattice.FrontierProjectionInput.Insts.CoreCmpEq : core.cmp.Eq
+  lattice.FrontierProjectionInput := {
+  partialEqInst :=
+    lattice.FrontierProjectionInput.Insts.CoreCmpPartialEqFrontierProjectionInput
+  assert_fields_are_eq :=
+    lattice.FrontierProjectionInput.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::lattice::ProjectedView]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 104:0-116:1
+    Visibility: public -/
+@[discriminant isize]
+inductive lattice.ProjectedView where
+| Absent : lattice.ProjectedView
+| Active : claim.Lifecycle → lattice.ProjectedView
+| DisputedConcurrent : Std.U32 → lattice.ProjectedView
+| Withdrawn : lattice.ProjectedView
+| Forgotten : lattice.ProjectedView
+
+/-- [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::ProjectedView}::clone]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 102:9-102:14
+    Visibility: public -/
+def lattice.ProjectedView.Insts.CoreCloneClone.clone
+  (self : lattice.ProjectedView) : Result lattice.ProjectedView := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::ProjectedView}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 102:9-102:14 -/
+@[reducible]
+def lattice.ProjectedView.Insts.CoreCloneClone : core.clone.Clone
+  lattice.ProjectedView := {
+  clone := lattice.ProjectedView.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::Copy for mneme_kernel::lattice::ProjectedView}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 102:16-102:20 -/
+@[reducible]
+def lattice.ProjectedView.Insts.CoreMarkerCopy : core.marker.Copy
+  lattice.ProjectedView := {
+  cloneInst := lattice.ProjectedView.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::StructuralPartialEq for mneme_kernel::lattice::ProjectedView}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 102:22-102:31 -/
+@[reducible]
+def lattice.ProjectedView.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq lattice.ProjectedView := {
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::ProjectedView> for mneme_kernel::lattice::ProjectedView}::eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 102:22-102:31
+    Visibility: public -/
+def lattice.ProjectedView.Insts.CoreCmpPartialEqProjectedView.eq
+  (self : lattice.ProjectedView) (other : lattice.ProjectedView) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  if self1 = other1
+  then
+    match self with
+    | lattice.ProjectedView.Absent => ok true
+    | lattice.ProjectedView.Active __self_0 =>
+      match other with
+      | lattice.ProjectedView.Absent => ok true
+      | lattice.ProjectedView.Active __arg1_0 =>
+        claim.Lifecycle.Insts.CoreCmpPartialEqLifecycle.eq __self_0 __arg1_0
+      | lattice.ProjectedView.DisputedConcurrent _ => ok true
+      | lattice.ProjectedView.Withdrawn => ok true
+      | lattice.ProjectedView.Forgotten => ok true
+    | lattice.ProjectedView.DisputedConcurrent __self_0 =>
+      match other with
+      | lattice.ProjectedView.Absent => ok true
+      | lattice.ProjectedView.Active _ => ok true
+      | lattice.ProjectedView.DisputedConcurrent __arg1_0 =>
+        lift (core.cmp.impls.PartialEqU32.eq __self_0 __arg1_0)
+      | lattice.ProjectedView.Withdrawn => ok true
+      | lattice.ProjectedView.Forgotten => ok true
+    | lattice.ProjectedView.Withdrawn => ok true
+    | lattice.ProjectedView.Forgotten => ok true
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::ProjectedView> for mneme_kernel::lattice::ProjectedView}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 102:22-102:31 -/
+@[reducible]
+impl_def lattice.ProjectedView.Insts.CoreCmpPartialEqProjectedView :
+  core.cmp.PartialEq lattice.ProjectedView lattice.ProjectedView := {
+  eq := lattice.ProjectedView.Insts.CoreCmpPartialEqProjectedView.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    lattice.ProjectedView.Insts.CoreCmpPartialEqProjectedView
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::ProjectedView}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 102:33-102:35
+    Visibility: public -/
+def lattice.ProjectedView.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : lattice.ProjectedView) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::ProjectedView}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 102:33-102:35 -/
+@[reducible]
+def lattice.ProjectedView.Insts.CoreCmpEq : core.cmp.Eq lattice.ProjectedView
+  := {
+  partialEqInst := lattice.ProjectedView.Insts.CoreCmpPartialEqProjectedView
+  assert_fields_are_eq :=
+    lattice.ProjectedView.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::lattice::project_frontier]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 125:0-140:1
+    Visibility: public -/
+def lattice.project_frontier
+  (input : lattice.FrontierProjectionInput) :
+  Result lattice.ProjectedView
+  := do
+  let rank ← calm.suppression_rank input.suppression
+  if rank >= lattice.SUPPRESSION_FORGOTTEN_RANK
+  then ok lattice.ProjectedView.Forgotten
+  else
+    if rank = lattice.SUPPRESSION_WITHDRAWN_RANK
+    then ok lattice.ProjectedView.Withdrawn
+    else
+      if input.frontier_count = lattice.EMPTY_FRONTIER_COUNT
+      then ok lattice.ProjectedView.Absent
+      else
+        let b ← lattice.is_concurrent_frontier input.frontier_count
+        if b
+        then ok (lattice.ProjectedView.DisputedConcurrent input.frontier_count)
+        else ok (lattice.ProjectedView.Active input.head_lifecycle)
+
+/-- [mneme_kernel::lattice::projected_lifecycle]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 146:0-152:1
+    Visibility: public -/
+def lattice.projected_lifecycle
+  (view : lattice.ProjectedView) : Result (Option claim.Lifecycle) := do
+  match view with
+  | lattice.ProjectedView.Absent => ok none
+  | lattice.ProjectedView.Active lifecycle => ok (some lifecycle)
+  | lattice.ProjectedView.DisputedConcurrent _ =>
+    ok (some claim.Lifecycle.Disputed)
+  | lattice.ProjectedView.Withdrawn => ok none
+  | lattice.ProjectedView.Forgotten => ok none
+
+/-- [mneme_kernel::lattice::MergeResolutionFacts]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 157:0-166:1
+    Visibility: public -/
+structure lattice.MergeResolutionFacts where
+  frontier_count : Std.U32
+  cited_frontier_count : Std.U32
+  has_conflict_resolution_decision : Bool
+  suppression : calm.SuppressionLevel
+
+/-- [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::MergeResolutionFacts}::clone]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 155:9-155:14
+    Visibility: public -/
+def lattice.MergeResolutionFacts.Insts.CoreCloneClone.clone
+  (self : lattice.MergeResolutionFacts) :
+  Result lattice.MergeResolutionFacts
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::MergeResolutionFacts}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 155:9-155:14 -/
+@[reducible]
+def lattice.MergeResolutionFacts.Insts.CoreCloneClone : core.clone.Clone
+  lattice.MergeResolutionFacts := {
+  clone := lattice.MergeResolutionFacts.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::Copy for mneme_kernel::lattice::MergeResolutionFacts}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 155:16-155:20 -/
+@[reducible]
+def lattice.MergeResolutionFacts.Insts.CoreMarkerCopy : core.marker.Copy
+  lattice.MergeResolutionFacts := {
+  cloneInst := lattice.MergeResolutionFacts.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::StructuralPartialEq for mneme_kernel::lattice::MergeResolutionFacts}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 155:22-155:31 -/
+@[reducible]
+def lattice.MergeResolutionFacts.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq lattice.MergeResolutionFacts := {
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::MergeResolutionFacts> for mneme_kernel::lattice::MergeResolutionFacts}::eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 155:22-155:31
+    Visibility: public -/
+def lattice.MergeResolutionFacts.Insts.CoreCmpPartialEqMergeResolutionFacts.eq
+  (self : lattice.MergeResolutionFacts) (other : lattice.MergeResolutionFacts)
+  :
+  Result Bool
+  := do
+  if self.frontier_count = other.frontier_count
+  then
+    if self.cited_frontier_count = other.cited_frontier_count
+    then
+      if self.has_conflict_resolution_decision =
+        other.has_conflict_resolution_decision
+      then
+        calm.SuppressionLevel.Insts.CoreCmpPartialEqSuppressionLevel.eq
+          self.suppression other.suppression
+      else ok false
+    else ok false
+  else ok false
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::MergeResolutionFacts> for mneme_kernel::lattice::MergeResolutionFacts}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 155:22-155:31 -/
+@[reducible]
+impl_def
+  lattice.MergeResolutionFacts.Insts.CoreCmpPartialEqMergeResolutionFacts :
+  core.cmp.PartialEq lattice.MergeResolutionFacts lattice.MergeResolutionFacts
+  := {
+  eq :=
+    lattice.MergeResolutionFacts.Insts.CoreCmpPartialEqMergeResolutionFacts.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    lattice.MergeResolutionFacts.Insts.CoreCmpPartialEqMergeResolutionFacts
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::MergeResolutionFacts}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 155:33-155:35
+    Visibility: public -/
+def lattice.MergeResolutionFacts.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : lattice.MergeResolutionFacts) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::MergeResolutionFacts}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 155:33-155:35 -/
+@[reducible]
+def lattice.MergeResolutionFacts.Insts.CoreCmpEq : core.cmp.Eq
+  lattice.MergeResolutionFacts := {
+  partialEqInst :=
+    lattice.MergeResolutionFacts.Insts.CoreCmpPartialEqMergeResolutionFacts
+  assert_fields_are_eq :=
+    lattice.MergeResolutionFacts.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::lattice::MergeResolutionVerdict]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 171:0-180:1
+    Visibility: public -/
+@[discriminant isize]
+inductive lattice.MergeResolutionVerdict where
+| Allowed : lattice.MergeResolutionVerdict
+| RefusedSuppressed : lattice.MergeResolutionVerdict
+| RefusedIncompleteParents : lattice.MergeResolutionVerdict
+| RefusedMissingDecision : lattice.MergeResolutionVerdict
+
+/-- [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::MergeResolutionVerdict}::clone]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 169:9-169:14
+    Visibility: public -/
+def lattice.MergeResolutionVerdict.Insts.CoreCloneClone.clone
+  (self : lattice.MergeResolutionVerdict) :
+  Result lattice.MergeResolutionVerdict
+  := do
+  ok self
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::clone::Clone for mneme_kernel::lattice::MergeResolutionVerdict}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 169:9-169:14 -/
+@[reducible]
+def lattice.MergeResolutionVerdict.Insts.CoreCloneClone : core.clone.Clone
+  lattice.MergeResolutionVerdict := {
+  clone := lattice.MergeResolutionVerdict.Insts.CoreCloneClone.clone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::Copy for mneme_kernel::lattice::MergeResolutionVerdict}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 169:16-169:20 -/
+@[reducible]
+def lattice.MergeResolutionVerdict.Insts.CoreMarkerCopy : core.marker.Copy
+  lattice.MergeResolutionVerdict := {
+  cloneInst := lattice.MergeResolutionVerdict.Insts.CoreCloneClone
+}
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::marker::StructuralPartialEq for mneme_kernel::lattice::MergeResolutionVerdict}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 169:22-169:31 -/
+@[reducible]
+def lattice.MergeResolutionVerdict.Insts.CoreMarkerStructuralPartialEq :
+  core.marker.StructuralPartialEq lattice.MergeResolutionVerdict := {
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::MergeResolutionVerdict> for mneme_kernel::lattice::MergeResolutionVerdict}::eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 169:22-169:31
+    Visibility: public -/
+def
+  lattice.MergeResolutionVerdict.Insts.CoreCmpPartialEqMergeResolutionVerdict.eq
+  (self : lattice.MergeResolutionVerdict)
+  (other : lattice.MergeResolutionVerdict) :
+  Result Bool
+  := do
+  let self1 := read_discriminant self
+  let other1 := read_discriminant other
+  ok (self1 = other1)
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::PartialEq<mneme_kernel::lattice::MergeResolutionVerdict> for mneme_kernel::lattice::MergeResolutionVerdict}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 169:22-169:31 -/
+@[reducible]
+impl_def
+  lattice.MergeResolutionVerdict.Insts.CoreCmpPartialEqMergeResolutionVerdict :
+  core.cmp.PartialEq lattice.MergeResolutionVerdict
+  lattice.MergeResolutionVerdict := {
+  eq :=
+    lattice.MergeResolutionVerdict.Insts.CoreCmpPartialEqMergeResolutionVerdict.eq
+  ne := core.cmp.PartialEq.ne.trait_default
+    lattice.MergeResolutionVerdict.Insts.CoreCmpPartialEqMergeResolutionVerdict
+}
+
+/-- [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::MergeResolutionVerdict}::assert_fields_are_eq]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 169:33-169:35
+    Visibility: public -/
+def lattice.MergeResolutionVerdict.Insts.CoreCmpEq.assert_fields_are_eq
+  (self : lattice.MergeResolutionVerdict) : Result Unit := do
+  ok ()
+
+/-- Trait implementation: [mneme_kernel::lattice::{impl core::cmp::Eq for mneme_kernel::lattice::MergeResolutionVerdict}]
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 169:33-169:35 -/
+@[reducible]
+def lattice.MergeResolutionVerdict.Insts.CoreCmpEq : core.cmp.Eq
+  lattice.MergeResolutionVerdict := {
+  partialEqInst :=
+    lattice.MergeResolutionVerdict.Insts.CoreCmpPartialEqMergeResolutionVerdict
+  assert_fields_are_eq :=
+    lattice.MergeResolutionVerdict.Insts.CoreCmpEq.assert_fields_are_eq
+}
+
+/-- [mneme_kernel::lattice::decide_frontier_merge]:
+    Source: 'crates/mneme-kernel/src/lattice.rs', lines 183:0-196:1
+    Visibility: public -/
+def lattice.decide_frontier_merge
+  (facts : lattice.MergeResolutionFacts) :
+  Result lattice.MergeResolutionVerdict
+  := do
+  let rank ← calm.suppression_rank facts.suppression
+  if rank > lattice.SUPPRESSION_NONE_RANK
+  then ok lattice.MergeResolutionVerdict.RefusedSuppressed
+  else
+    let b ← lattice.is_concurrent_frontier facts.frontier_count
+    if b
+    then
+      if facts.cited_frontier_count != facts.frontier_count
+      then ok lattice.MergeResolutionVerdict.RefusedIncompleteParents
+      else
+        if facts.has_conflict_resolution_decision
+        then ok lattice.MergeResolutionVerdict.Allowed
+        else ok lattice.MergeResolutionVerdict.RefusedMissingDecision
+    else ok lattice.MergeResolutionVerdict.RefusedIncompleteParents
+
 /-- [mneme_kernel::opinion::PRIOR_WEIGHT]
     Source: 'crates/mneme-kernel/src/opinion.rs', lines 19:0-19:33
     Visibility: public -/

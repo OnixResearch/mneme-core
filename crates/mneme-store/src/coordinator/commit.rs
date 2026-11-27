@@ -3,6 +3,19 @@
 
 use rusqlite::OptionalExtension;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ValidationMode {
+    Strict,
+    MerkleDag,
+}
+
+struct SourceStageContext<'a> {
+    scope: &'a mneme_core::ScopeId,
+    new_records: &'a [mneme_core::RecordEnvelope],
+    is_encrypted: bool,
+    policy: crate::payload::StoragePolicy,
+}
+
 impl super::Workspace {
     /// Commit one command through the serialized coordinator.
     ///
@@ -13,7 +26,19 @@ impl super::Workspace {
         &mut self,
         command: crate::requests::CommitCommand,
     ) -> crate::error::Result<super::CommitOutcome> {
-        self.commit_command(command, None)
+        self.commit_command(command, None, ValidationMode::Strict)
+    }
+
+    /// Commit one Merkle-CRDT DAG batch without rewriting causal `parents`.
+    ///
+    /// Admits concurrent revisions whose parents exist in the workspace's
+    /// retained DAG history (or earlier in the same batch), maintaining the
+    /// exact maximal frontier in `record_membership`.
+    pub fn commit_merkle_dag(
+        &mut self,
+        command: crate::requests::CommitCommand,
+    ) -> crate::error::Result<super::CommitOutcome> {
+        self.commit_command(command, None, ValidationMode::MerkleDag)
     }
 
     /// Commit one command whose idempotency key is bound to `fingerprint`.
@@ -26,13 +51,14 @@ impl super::Workspace {
         command: crate::requests::CommitCommand,
         fingerprint: mneme_core::ContentDigest,
     ) -> crate::error::Result<super::CommitOutcome> {
-        self.commit_command(command, Some(fingerprint))
+        self.commit_command(command, Some(fingerprint), ValidationMode::Strict)
     }
 
     fn commit_command(
         &mut self,
         command: crate::requests::CommitCommand,
         fingerprint: Option<mneme_core::ContentDigest>,
+        mode: ValidationMode,
     ) -> crate::error::Result<super::CommitOutcome> {
         self.require_restore_suppression()?;
         super::validation::validate_command(&command)?;
@@ -59,12 +85,12 @@ impl super::Workspace {
         // generation advance. Publication runs after the guard is dropped.
         let (prepared, written) = if command.retention.is_some() {
             let _guard = self.exclusive_sweep_lock()?;
-            let prepared = self.prepare_commit(&command, request_digest, fingerprint)?;
+            let prepared = self.prepare_commit(&command, request_digest, fingerprint, mode)?;
             let written = self.write_prepared_commit(&command, &prepared)?;
             (prepared, written)
         } else {
             let _guard = self.shared_commit_lock()?;
-            let prepared = self.prepare_commit(&command, request_digest, fingerprint)?;
+            let prepared = self.prepare_commit(&command, request_digest, fingerprint, mode)?;
             let written = self.write_prepared_commit(&command, &prepared)?;
             (prepared, written)
         };
@@ -226,6 +252,7 @@ impl super::Workspace {
         command: &crate::requests::CommitCommand,
         request_digest: mneme_core::ContentDigest,
         fingerprint: Option<mneme_core::ContentDigest>,
+        mode: ValidationMode,
     ) -> crate::error::Result<super::PreparedCommit> {
         let base = self.current_revision()?;
         if command.base != base {
@@ -255,7 +282,7 @@ impl super::Workspace {
         let hlc = self.tick_hlc()?;
         self.ensure_not_suppressed(command)?;
         let prior = self.prior_snapshot_for_commit()?;
-        let new_records = self.validate_commit_records(command, recorded, &prior)?;
+        let new_records = self.validate_commit_records(command, recorded, &prior, mode)?;
         let (staged, record_files) = self.stage_commit_blobs(command, &new_records)?;
         crate::injectors::check(
             self.faults.as_ref(),
@@ -312,6 +339,7 @@ impl super::Workspace {
         command: &crate::requests::CommitCommand,
         recorded: mneme_core::RecordedTime,
         prior: &super::Snapshot,
+        mode: ValidationMode,
     ) -> crate::error::Result<Vec<mneme_core::RecordEnvelope>> {
         let envelopes: Vec<mneme_core::RecordEnvelope> = command
             .records
@@ -319,17 +347,21 @@ impl super::Workspace {
             .into_iter()
             .map(|draft| draft.into_envelope(recorded))
             .collect();
-        let values: Vec<mneme_core::Value> = envelopes
-            .iter()
-            .map(mneme_core::RecordEnvelope::to_value)
-            .collect();
-        let validated = mneme_core::validate_batch(
-            &values,
-            &mneme_core::SchemaRegistry::production(),
-            Some(&prior.index),
-        )
-        .map_err(crate::error::Failure::Validation)?;
-        let new_records = validated.records;
+        let new_records = if mode == ValidationMode::MerkleDag {
+            validate_merkle_dag_batch(&envelopes, &prior.index)?
+        } else {
+            let values: Vec<mneme_core::Value> = envelopes
+                .iter()
+                .map(mneme_core::RecordEnvelope::to_value)
+                .collect();
+            let validated = mneme_core::validate_batch(
+                &values,
+                &mneme_core::SchemaRegistry::production(),
+                Some(&prior.index),
+            )
+            .map_err(crate::error::Failure::Validation)?;
+            validated.records
+        };
         self.ensure_revisions_unused(&new_records)?;
         super::validation::validate_record_scopes(&command.scope, &prior.records, &new_records)?;
         super::validation::validate_bindings(&prior.records, &new_records)?;
@@ -358,9 +390,20 @@ impl super::Workspace {
         let mut staged = std::collections::BTreeMap::new();
         let mut record_files = std::collections::BTreeMap::new();
         self.stage_record_blobs(new_records, &mut staged, &mut record_files)?;
-        self.stage_source_blobs(&command.source_blobs, new_records, &mut staged)?;
-        self.stage_import_candidate_blobs(&command.import_candidates, new_records, &mut staged)?;
+        self.stage_source_blobs(
+            &command.scope,
+            &command.source_blobs,
+            new_records,
+            &mut staged,
+        )?;
+        self.stage_import_candidate_blobs(
+            &command.scope,
+            &command.import_candidates,
+            new_records,
+            &mut staged,
+        )?;
         self.stage_publication_blobs(
+            &command.scope,
             &command.publications,
             &command.source_blobs,
             new_records,
@@ -379,7 +422,22 @@ impl super::Workspace {
             let value = record.to_value();
             let bytes = mneme_core::binary::encode(&value);
             let digest = mneme_core::ContentDigest::of_full_record(&value);
-            let staged_blob = crate::payload::stage(&self.root, digest, &bytes)?;
+            let staged_blob = if crate::keytree::is_scope_encrypted(&self.root, &record.scope) {
+                let (blob, _slot) = crate::payload::stage_encrypted(
+                    &self.root,
+                    digest,
+                    &bytes,
+                    crate::payload::EncryptedStageTarget {
+                        scope: &record.scope,
+                        record_id: Some(record.record_id),
+                        revision_id: Some(record.revision_id),
+                        media_type: "application/preserves",
+                    },
+                )?;
+                blob
+            } else {
+                crate::payload::stage(&self.root, digest, &bytes)?
+            };
             // The identity the bytes were just verified from, so a later cache
             // hit can prove the blob file was not replaced behind it.
             if let Some(file) = super::blob_file_identity(&self.root, digest)
@@ -402,11 +460,13 @@ impl super::Workspace {
 
     fn stage_source_blobs(
         &self,
+        scope: &mneme_core::ScopeId,
         sources: &[crate::requests::SourceBlobDraft],
         new_records: &[mneme_core::RecordEnvelope],
         staged: &mut super::BlobIndex,
     ) -> crate::error::Result<()> {
         let policy = self.storage_policy();
+        let is_encrypted = crate::keytree::is_scope_encrypted(&self.root, scope);
         let referenced: std::collections::BTreeSet<mneme_core::ContentDigest> = new_records
             .iter()
             .filter_map(super::validation::retained_source_digest)
@@ -417,48 +477,112 @@ impl super::Workspace {
                 .iter()
                 .all(|source| !source.media_type.as_str().is_empty())
         );
+        let stage_ctx = SourceStageContext {
+            scope,
+            new_records,
+            is_encrypted,
+            policy,
+        };
         for source in sources {
             if let Some(file) = &source.file {
-                let digest = source.digest();
-                let staged_blob = crate::payload::stage_file_with_policy(
-                    &self.root,
-                    digest,
-                    crate::payload::StreamedStageInput {
-                        source: &file.path,
-                        expected_bytes: file.size_bytes,
-                        policy,
-                        media_type: source.media_type.as_str(),
-                    },
-                )?;
-                debug_assert_eq!(staged_blob.digest, digest);
-                debug_assert_eq!(staged_blob.byte_length, source.byte_length());
+                let staged_blob = self.stage_file_source(&stage_ctx, source, file)?;
                 insert_staged_source(staged, staged_blob);
                 continue;
             }
             let target_digests = matching_inline_source_digests(&source.bytes, &referenced);
             for digest in target_digests {
-                let staged_blob = crate::payload::stage_with_policy(
-                    &self.root,
-                    digest,
-                    &source.bytes,
-                    policy,
-                    source.media_type.as_str(),
-                )?;
-                debug_assert_eq!(staged_blob.digest, digest);
-                debug_assert_eq!(staged_blob.byte_length, source.byte_length());
+                let staged_blob = self.stage_inline_source(&stage_ctx, digest, source)?;
                 insert_staged_source(staged, staged_blob);
             }
         }
         Ok(())
     }
 
+    fn stage_file_source(
+        &self,
+        ctx: &SourceStageContext<'_>,
+        source: &crate::requests::SourceBlobDraft,
+        file: &crate::requests::SourceFile,
+    ) -> crate::error::Result<crate::payload::StagedBlob> {
+        let digest = source.digest();
+        let staged_blob = if ctx.is_encrypted {
+            let file_bytes = std::fs::read(&file.path)
+                .map_err(|error| crate::error::Failure::io(&file.path, error))?;
+            let owner = source_owner_for_digest(ctx.new_records, digest);
+            let (blob, _slot) = crate::payload::stage_encrypted_with_policy(
+                &self.root,
+                digest,
+                &file_bytes,
+                crate::payload::EncryptedStageTarget {
+                    scope: ctx.scope,
+                    record_id: owner.map(|(record_id, _)| record_id),
+                    revision_id: owner.map(|(_, revision_id)| revision_id),
+                    media_type: source.media_type.as_str(),
+                },
+                ctx.policy,
+            )?;
+            blob
+        } else {
+            crate::payload::stage_file_with_policy(
+                &self.root,
+                digest,
+                crate::payload::StreamedStageInput {
+                    source: &file.path,
+                    expected_bytes: file.size_bytes,
+                    policy: ctx.policy,
+                    media_type: source.media_type.as_str(),
+                },
+            )?
+        };
+        debug_assert_eq!(staged_blob.digest, digest);
+        debug_assert_eq!(staged_blob.byte_length, source.byte_length());
+        Ok(staged_blob)
+    }
+
+    fn stage_inline_source(
+        &self,
+        ctx: &SourceStageContext<'_>,
+        digest: mneme_core::ContentDigest,
+        source: &crate::requests::SourceBlobDraft,
+    ) -> crate::error::Result<crate::payload::StagedBlob> {
+        let staged_blob = if ctx.is_encrypted {
+            let owner = source_owner_for_digest(ctx.new_records, digest);
+            let (blob, _slot) = crate::payload::stage_encrypted_with_policy(
+                &self.root,
+                digest,
+                &source.bytes,
+                crate::payload::EncryptedStageTarget {
+                    scope: ctx.scope,
+                    record_id: owner.map(|(record_id, _)| record_id),
+                    revision_id: owner.map(|(_, revision_id)| revision_id),
+                    media_type: source.media_type.as_str(),
+                },
+                ctx.policy,
+            )?;
+            blob
+        } else {
+            crate::payload::stage_with_policy(
+                &self.root,
+                digest,
+                &source.bytes,
+                ctx.policy,
+                source.media_type.as_str(),
+            )?
+        };
+        debug_assert_eq!(staged_blob.digest, digest);
+        debug_assert_eq!(staged_blob.byte_length, source.byte_length());
+        Ok(staged_blob)
+    }
+
     fn stage_import_candidate_blobs(
         &self,
+        scope: &mneme_core::ScopeId,
         candidates: &[crate::requests::ImportCandidateDraft],
         records: &[mneme_core::RecordEnvelope],
         staged: &mut super::BlobIndex,
     ) -> crate::error::Result<()> {
         let policy = self.storage_policy();
+        let is_encrypted = crate::keytree::is_scope_encrypted(&self.root, scope);
         debug_assert!(!self.root.as_os_str().is_empty());
         for candidate in candidates {
             crate::payload::validate_relative_path(&candidate.path)?;
@@ -475,13 +599,29 @@ impl super::Workspace {
                 .and_then(super::validation::retained_source_media_type)
                 .map(|(_, media_type)| media_type);
             let digest = candidate.digest();
-            let staged_blob = crate::payload::stage_with_policy(
-                &self.root,
-                digest,
-                &candidate.bytes,
-                policy,
-                media_type.as_ref().map_or("", mneme_core::Symbol::as_str),
-            )?;
+            let staged_blob = if is_encrypted {
+                let (blob, _slot) = crate::payload::stage_encrypted_with_policy(
+                    &self.root,
+                    digest,
+                    &candidate.bytes,
+                    crate::payload::EncryptedStageTarget {
+                        scope,
+                        record_id: matching_record.map(|record| record.record_id),
+                        revision_id: matching_record.map(|record| record.revision_id),
+                        media_type: media_type.as_ref().map_or("", mneme_core::Symbol::as_str),
+                    },
+                    policy,
+                )?;
+                blob
+            } else {
+                crate::payload::stage_with_policy(
+                    &self.root,
+                    digest,
+                    &candidate.bytes,
+                    policy,
+                    media_type.as_ref().map_or("", mneme_core::Symbol::as_str),
+                )?
+            };
             insert_staged_source(staged, staged_blob);
             debug_assert!(staged.contains_key(digest.as_bytes()));
         }
@@ -490,23 +630,42 @@ impl super::Workspace {
 
     fn stage_publication_blobs(
         &self,
+        scope: &mneme_core::ScopeId,
         publications: &[crate::requests::PublicationDraft],
         sources: &[crate::requests::SourceBlobDraft],
         records: &[mneme_core::RecordEnvelope],
         staged: &mut super::BlobIndex,
     ) -> crate::error::Result<()> {
         let policy = self.storage_policy();
+        let is_encrypted = crate::keytree::is_scope_encrypted(&self.root, scope);
         for publication in publications {
             crate::payload::validate_relative_path(&publication.path)?;
             let digest = publication.desired_digest();
             let media_type = publication_media_type(publication, digest, sources, records);
-            let staged_blob = crate::payload::stage_with_policy(
-                &self.root,
-                digest,
-                &publication.bytes,
-                policy,
-                media_type,
-            )?;
+            let staged_blob = if is_encrypted {
+                let owner = source_owner_for_digest(records, digest);
+                let (blob, _slot) = crate::payload::stage_encrypted_with_policy(
+                    &self.root,
+                    digest,
+                    &publication.bytes,
+                    crate::payload::EncryptedStageTarget {
+                        scope,
+                        record_id: owner.map(|(record_id, _)| record_id),
+                        revision_id: owner.map(|(_, revision_id)| revision_id),
+                        media_type,
+                    },
+                    policy,
+                )?;
+                blob
+            } else {
+                crate::payload::stage_with_policy(
+                    &self.root,
+                    digest,
+                    &publication.bytes,
+                    policy,
+                    media_type,
+                )?
+            };
             insert_staged_source(staged, staged_blob);
         }
         Ok(())
@@ -520,17 +679,26 @@ impl super::Workspace {
         new_records: &[mneme_core::RecordEnvelope],
     ) -> crate::error::Result<super::CommitManifest> {
         let mut snapshot_records: std::collections::BTreeMap<
-            mneme_core::RecordId,
+            (mneme_core::RecordId, mneme_core::RevisionId),
             mneme_core::RecordEnvelope,
         > = prior
             .records
             .iter()
-            .map(|record| (record.record_id, record.clone()))
+            .map(|record| ((record.record_id, record.revision_id), record.clone()))
             .collect();
         let mut new_keys = std::collections::BTreeSet::new();
+        let mut cited_parents = std::collections::BTreeSet::new();
         for record in new_records {
             new_keys.insert((record.record_id, record.revision_id));
-            snapshot_records.insert(record.record_id, record.clone());
+            for parent in record.parents() {
+                cited_parents.insert((record.record_id, parent));
+            }
+            snapshot_records.insert((record.record_id, record.revision_id), record.clone());
+        }
+        // Any revision cited as a parent by an ingested child is no longer a
+        // maximal frontier head.
+        for cited in &cited_parents {
+            snapshot_records.remove(cited);
         }
         super::validation::validate_snapshot_bindings(&snapshot_records)?;
         let manifest_records = snapshot_records
@@ -568,7 +736,7 @@ impl super::Workspace {
             mneme_core::WorkspaceRevisionId::from_bytes(crate::payload::random_bytes()?);
         let manifest = crate::catalog::Manifest {
             revision: revision_id,
-            parent: Some(base),
+            parents: std::collections::BTreeSet::from([base]),
             records: manifest_records,
             blobs: required_blobs,
         };
@@ -685,7 +853,7 @@ impl super::Workspace {
         }
         debug_assert_eq!(current_now.as_slice(), prepared.base.as_bytes());
         Self::ensure_commit_blobs_present(&self.root, command, prepared, policy)?;
-        let intent_ids = Self::insert_prepared_commit(&transaction, command, prepared)?;
+        let intent_ids = Self::insert_prepared_commit(&self.root, &transaction, command, prepared)?;
         transaction.commit()?;
         Ok(super::CommitWrite::New(intent_ids))
     }
@@ -734,6 +902,7 @@ impl super::Workspace {
     }
 
     fn insert_prepared_commit(
+        root: &std::path::Path,
         transaction: &rusqlite::Transaction<'_>,
         command: &crate::requests::CommitCommand,
         prepared: &super::PreparedCommit,
@@ -746,7 +915,7 @@ impl super::Workspace {
         let intent_ids = Self::insert_publication_intents(transaction, command, prepared)?;
         Self::insert_command_row(transaction, command, prepared)?;
         if command.retention.is_some() {
-            Self::insert_retention_commit(transaction, command, prepared)?;
+            Self::insert_retention_commit(root, transaction, command, prepared)?;
         }
         super::index::apply_commit(
             transaction,
@@ -909,28 +1078,36 @@ impl super::Workspace {
                     super::revision_id_from_blob(&revision_id, prepared.revision_id)?,
                 ))
             })
-            .collect::<crate::error::Result<std::collections::BTreeMap<_, _>>>()?;
+            .collect::<crate::error::Result<std::collections::BTreeSet<_>>>()?;
+        let active_record_ids: std::collections::BTreeSet<mneme_core::RecordId> = prepared
+            .snapshot_records
+            .keys()
+            .map(|(record_id, _)| *record_id)
+            .collect();
         let closing = super::db_i64(prepared.next_sequence.saturating_sub(1), "sequence")?;
-        let mut dropped = Vec::with_capacity(open.len());
+        let mut dropped_ids = std::collections::BTreeSet::new();
         for (record_id, revision_id) in &open {
-            let is_kept = prepared
+            if prepared
                 .snapshot_records
-                .get(record_id)
-                .is_some_and(|record| record.revision_id == *revision_id);
-            if is_kept {
+                .contains_key(&(*record_id, *revision_id))
+            {
                 continue;
             }
-            if !prepared.snapshot_records.contains_key(record_id) {
-                dropped.push(*record_id);
+            if !active_record_ids.contains(record_id) {
+                dropped_ids.insert(*record_id);
             }
             transaction.execute(
                 "UPDATE record_membership SET last_sequence = ?1
-                 WHERE record_id = ?2 AND last_sequence IS NULL",
-                rusqlite::params![closing, record_id.as_bytes().as_slice(),],
+                 WHERE record_id = ?2 AND revision_id = ?3 AND last_sequence IS NULL",
+                rusqlite::params![
+                    closing,
+                    record_id.as_bytes().as_slice(),
+                    revision_id.as_bytes().as_slice(),
+                ],
             )?;
         }
-        for (record_id, record) in &prepared.snapshot_records {
-            if open.get(record_id) == Some(&record.revision_id) {
+        for (record_id, revision_id) in prepared.snapshot_records.keys() {
+            if open.contains(&(*record_id, *revision_id)) {
                 continue;
             }
             transaction.execute(
@@ -939,12 +1116,12 @@ impl super::Workspace {
                  VALUES (?1, ?2, ?3, NULL)",
                 rusqlite::params![
                     record_id.as_bytes().as_slice(),
-                    record.revision_id.as_bytes().as_slice(),
+                    revision_id.as_bytes().as_slice(),
                     super::db_i64(prepared.next_sequence, "sequence")?,
                 ],
             )?;
         }
-        Ok(dropped)
+        Ok(dropped_ids.into_iter().collect())
     }
 
     /// Record how this revision's required-digest set differs from its parent's.
@@ -1032,6 +1209,7 @@ impl super::Workspace {
     }
 
     fn insert_retention_commit(
+        root: &std::path::Path,
         transaction: &rusqlite::Transaction<'_>,
         command: &crate::requests::CommitCommand,
         prepared: &super::PreparedCommit,
@@ -1065,6 +1243,13 @@ impl super::Workspace {
         Self::insert_retention_selectors(transaction, retention)?;
         Self::insert_retention_suppressions(transaction, retention)?;
         Self::insert_retention_locations(transaction, retention, prepared.recorded)?;
+        puncture_forgotten_keytree_slots(
+            root,
+            transaction,
+            &command.scope,
+            retention,
+            prepared.next_generation,
+        )?;
         transaction.execute(
             "UPDATE publication_intents
              SET state = 'suppressed', detail = 'retention barrier',
@@ -1354,6 +1539,144 @@ fn matching_inline_source_digests(
         matched.push(blake3);
     }
     matched
+}
+
+fn source_owner_for_digest(
+    records: &[mneme_core::RecordEnvelope],
+    digest: mneme_core::ContentDigest,
+) -> Option<(mneme_core::RecordId, mneme_core::RevisionId)> {
+    records.iter().find_map(|record| {
+        if super::validation::retained_source_digest(record) == Some(digest) {
+            Some((record.record_id, record.revision_id))
+        } else {
+            None
+        }
+    })
+}
+
+fn puncture_forgotten_keytree_slots(
+    root: &std::path::Path,
+    transaction: &rusqlite::Transaction<'_>,
+    scope: &mneme_core::ScopeId,
+    retention: &crate::lifecycle::RetentionCommit,
+    generation: u64,
+) -> crate::error::Result<()> {
+    let Some(mut tree) = crate::keytree::PuncturableTree::open_existing(root, scope)? else {
+        return Ok(());
+    };
+    let mut slots: std::collections::BTreeMap<u32, Option<mneme_core::ContentDigest>> =
+        std::collections::BTreeMap::new();
+    for suppression in &retention.suppressions {
+        if suppression.mode != crate::lifecycle::SuppressionMode::Forgotten {
+            continue;
+        }
+        for (slot, _digest_bytes) in
+            tree.slots_for_record(suppression.target, suppression.revision)?
+        {
+            slots.entry(slot).or_insert(suppression.content_digest);
+        }
+        if let Some(digest) = suppression.content_digest
+            && let Some(slot) = tree.slot_for_digest(digest)?
+        {
+            if slots.len() >= crate::portability::MAX_PORTABLE_BLOBS {
+                return Err(crate::error::Failure::HistoryLimitExceeded);
+            }
+            slots.insert(slot, Some(digest));
+        }
+    }
+    if slots.is_empty() {
+        return Ok(());
+    }
+    super::custody::ensure_retention_punctures_table(transaction)?;
+    for (key_slot, digest) in slots {
+        let _report = tree.puncture_slot(key_slot, generation)?;
+        let barrier = crate::keytree::KeyPunctureBarrier {
+            scope: scope.clone(),
+            key_slot,
+            generation,
+            digest,
+            signer_key_id: None,
+            signature_hex: None,
+        };
+        super::custody::record_puncture_barrier_in(transaction, &barrier)?;
+    }
+    Ok(())
+}
+
+fn validate_merkle_dag_batch(
+    envelopes: &[mneme_core::RecordEnvelope],
+    prior_index: &mneme_core::SnapshotIndex,
+) -> crate::error::Result<Vec<mneme_core::RecordEnvelope>> {
+    let registry = mneme_core::SchemaRegistry::production();
+    let mut resolution = prior_index.clone();
+    let mut batch_revisions = std::collections::BTreeSet::new();
+    let mut diagnostics = Vec::with_capacity(envelopes.len());
+    for (position, envelope) in envelopes.iter().enumerate() {
+        let prefix = mneme_core::Path::root().index(position);
+        let value = envelope.to_value();
+        if let Err(mut diag) = mneme_core::binary::check_profile(&value) {
+            diag.path = prefix;
+            diagnostics.push(diag);
+            continue;
+        }
+        if !batch_revisions.insert((envelope.record_id, envelope.revision_id)) {
+            diagnostics.push(mneme_core::Diagnostic::new(
+                mneme_core::Stage::Envelope,
+                mneme_core::ErrorCode::DuplicateRevisionId,
+                prefix.field("revision-id"),
+                "duplicate revision in Merkle-CRDT batch",
+            ));
+            continue;
+        }
+        resolution.add_frontier_revision(
+            envelope.record_id,
+            envelope.kind,
+            envelope.revision_id,
+            &envelope.parents(),
+        );
+    }
+    if !diagnostics.is_empty() {
+        return Err(crate::error::Failure::Validation(diagnostics));
+    }
+    let mut seen_in_batch = std::collections::BTreeSet::new();
+    let context = mneme_core::RecordContext {
+        registry: &registry,
+        resolution: Some(&resolution),
+        prior: None,
+    };
+    for (position, envelope) in envelopes.iter().enumerate() {
+        let prefix = mneme_core::Path::root().index(position);
+        let record_diags = mneme_core::validate_record(envelope, &context, &prefix);
+        diagnostics.reserve(record_diags.len());
+        diagnostics.extend(record_diags);
+        if let Some(entry) = prior_index.get(&envelope.record_id)
+            && entry.kind != envelope.kind
+        {
+            diagnostics.push(mneme_core::Diagnostic::new(
+                mneme_core::Stage::Envelope,
+                mneme_core::ErrorCode::InvalidPredecessor,
+                prefix.field("kind"),
+                "record kind cannot change between revisions",
+            ));
+        }
+        for parent in envelope.parents() {
+            let is_known = prior_index.knows_revision(&envelope.record_id, &parent)
+                || seen_in_batch.contains(&(envelope.record_id, parent));
+            if !is_known {
+                diagnostics.push(mneme_core::Diagnostic::new(
+                    mneme_core::Stage::Envelope,
+                    mneme_core::ErrorCode::InvalidPredecessor,
+                    prefix.field("predecessor"),
+                    "Merkle-CRDT revision names an unknown causal parent",
+                ));
+            }
+        }
+        seen_in_batch.insert((envelope.record_id, envelope.revision_id));
+    }
+    if !diagnostics.is_empty() {
+        return Err(crate::error::Failure::Validation(diagnostics));
+    }
+    Ok(envelopes.to_vec())
 }
 
 fn publication_media_type<'a>(

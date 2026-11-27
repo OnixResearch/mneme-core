@@ -16,7 +16,7 @@
       "subjects": [
         "admission::decide_commit"
       ],
-      "statement": "(facts : CommitFacts) : \u2203 d : CommitDecision, decide_commit facts = ok d"
+      "statement": "(facts : CommitFacts) : ∃ d : CommitDecision, decide_commit facts = ok d"
     },
     {
       "name": "mneme_kernel.admission.decide_commit_proceed",
@@ -24,7 +24,7 @@
       "subjects": [
         "admission::decide_commit"
       ],
-      "statement": "(facts : CommitFacts) : \u2203 d, decide_commit facts = ok d \u2227 (d = CommitDecision.Proceed \u2192 facts.stored = none \u2227 facts.base_is_current = true \u2227 facts.generation_is_pinned = true)"
+      "statement": "(facts : CommitFacts) : ∃ d, decide_commit facts = ok d ∧ (d = CommitDecision.Proceed → facts.stored = none ∧ facts.base_is_current = true ∧ facts.generation_is_pinned = true)"
     },
     {
       "name": "mneme_kernel.admission.decide_commit_stored",
@@ -32,7 +32,7 @@
       "subjects": [
         "admission::decide_commit"
       ],
-      "statement": "(facts : CommitFacts) (s : StoredCommand) (h : facts.stored = some s) : \u2203 d, decide_commit facts = ok d \u2227 (d = CommitDecision.Replay \u2228 d = CommitDecision.IdempotencyConflict)"
+      "statement": "(facts : CommitFacts) (s : StoredCommand) (h : facts.stored = some s) : ∃ d, decide_commit facts = ok d ∧ (d = CommitDecision.Replay ∨ d = CommitDecision.IdempotencyConflict)"
     },
     {
       "name": "mneme_kernel.admission.decide_commit_replay",
@@ -41,7 +41,7 @@
         "admission::decide_commit",
         "admission::same_request"
       ],
-      "statement": "(facts : CommitFacts) : \u2203 d, decide_commit facts = ok d \u2227 (d = CommitDecision.Replay \u2192 \u2203 s, facts.stored = some s \u2227 ((\u2203 k, s.fingerprint = some k \u2227 facts.fingerprint = some k) \u2228 ((s.fingerprint = none \u2228 facts.fingerprint = none) \u2227 s.command = facts.command)))"
+      "statement": "(facts : CommitFacts) : ∃ d, decide_commit facts = ok d ∧ (d = CommitDecision.Replay → ∃ s, facts.stored = some s ∧ ((∃ k, s.fingerprint = some k ∧ facts.fingerprint = some k) ∨ ((s.fingerprint = none ∨ facts.fingerprint = none) ∧ s.command = facts.command)))"
     },
     {
       "name": "mneme_kernel.admission.decide_commit_conflict_of_distinct_fingerprints",
@@ -50,7 +50,7 @@
         "admission::decide_commit",
         "admission::same_request"
       ],
-      "statement": "(facts : CommitFacts) (s : StoredCommand) (k o : hashing.Digest) (hs : facts.stored = some s) (hk : s.fingerprint = some k) (ho : facts.fingerprint = some o) (hne : k \u2260 o) : decide_commit facts = ok CommitDecision.IdempotencyConflict"
+      "statement": "(facts : CommitFacts) (s : StoredCommand) (k o : hashing.Digest) (hs : facts.stored = some s) (hk : s.fingerprint = some k) (ho : facts.fingerprint = some o) (hne : k ≠ o) : decide_commit facts = ok CommitDecision.IdempotencyConflict"
     },
     {
       "name": "mneme_kernel.admission.decide_replay_fresh_iff",
@@ -58,7 +58,7 @@
       "subjects": [
         "admission::decide_replay"
       ],
-      "statement": "(stored : Option StoredCommand) (fp : hashing.Digest) : \u2203 d, decide_replay stored fp = ok d \u2227 (d = ReplayDecision.Fresh \u2194 stored = none)"
+      "statement": "(stored : Option StoredCommand) (fp : hashing.Digest) : ∃ d, decide_replay stored fp = ok d ∧ (d = ReplayDecision.Fresh ↔ stored = none)"
     },
     {
       "name": "mneme_kernel.admission.decide_replay_replay_iff",
@@ -66,7 +66,7 @@
       "subjects": [
         "admission::decide_replay"
       ],
-      "statement": "(stored : Option StoredCommand) (fp : hashing.Digest) : \u2203 d, decide_replay stored fp = ok d \u2227 (d = ReplayDecision.Replay \u2194 \u2203 s, stored = some s \u2227 s.fingerprint = some fp)"
+      "statement": "(stored : Option StoredCommand) (fp : hashing.Digest) : ∃ d, decide_replay stored fp = ok d ∧ (d = ReplayDecision.Replay ↔ ∃ s, stored = some s ∧ s.fingerprint = some fp)"
     },
     {
       "name": "mneme_kernel.budget.charge_total",
@@ -74,7 +74,7 @@
       "subjects": [
         "budget::charge"
       ],
-      "statement": "(used cost limit : U64) : \u2203 charged, charge used cost limit = ok charged"
+      "statement": "(used cost limit : U64) : ∃ charged, charge used cost limit = ok charged"
     },
     {
       "name": "mneme_kernel.budget.charge_some_iff",
@@ -82,7 +82,7 @@
       "subjects": [
         "budget::charge"
       ],
-      "statement": "(used cost limit total : U64) : charge used cost limit = ok (some total) \u2194 total.val = used.val + cost.val \u2227 used.val + cost.val \u2264 limit.val"
+      "statement": "(used cost limit total : U64) : charge used cost limit = ok (some total) ↔ total.val = used.val + cost.val ∧ used.val + cost.val ≤ limit.val"
     },
     {
       "name": "mneme_kernel.budget.charge_none_iff",
@@ -90,7 +90,7 @@
       "subjects": [
         "budget::charge"
       ],
-      "statement": "(used cost limit : U64) : charge used cost limit = ok none \u2194 limit.val < used.val + cost.val"
+      "statement": "(used cost limit : U64) : charge used cost limit = ok none ↔ limit.val < used.val + cost.val"
     },
     {
       "name": "mneme_kernel.budget.charge_never_exceeds",
@@ -98,7 +98,7 @@
       "subjects": [
         "budget::charge"
       ],
-      "statement": "(used cost limit total : U64) (h : charge used cost limit = ok (some total)) : total.val \u2264 limit.val \u2227 used.val \u2264 total.val"
+      "statement": "(used cost limit total : U64) (h : charge used cost limit = ok (some total)) : total.val ≤ limit.val ∧ used.val ≤ total.val"
     },
     {
       "name": "mneme_kernel.claim.transition_allowed_total",
@@ -106,7 +106,7 @@
       "subjects": [
         "claim::transition_allowed"
       ],
-      "statement": "(prior : Option Lifecycle) (next : Lifecycle) : \u2203 allowed, transition_allowed prior next = ok allowed"
+      "statement": "(prior : Option Lifecycle) (next : Lifecycle) : ∃ allowed, transition_allowed prior next = ok allowed"
     },
     {
       "name": "mneme_kernel.claim.transition_allowed_new_iff",
@@ -114,7 +114,7 @@
       "subjects": [
         "claim::transition_allowed"
       ],
-      "statement": "(next : Lifecycle) : transition_allowed none next = ok true \u2194 next = Lifecycle.Proposed"
+      "statement": "(next : Lifecycle) : transition_allowed none next = ok true ↔ next = Lifecycle.Proposed"
     },
     {
       "name": "mneme_kernel.claim.retracted_is_terminal",
@@ -130,7 +130,7 @@
       "subjects": [
         "claim::transition_allowed"
       ],
-      "statement": "(next : Lifecycle) : transition_allowed (some Lifecycle.Superseded) next = ok true \u2194 next = Lifecycle.Retracted"
+      "statement": "(next : Lifecycle) : transition_allowed (some Lifecycle.Superseded) next = ok true ↔ next = Lifecycle.Retracted"
     },
     {
       "name": "mneme_kernel.claim.no_return_to_proposed",
@@ -138,7 +138,7 @@
       "subjects": [
         "claim::transition_allowed"
       ],
-      "statement": "(previous : Lifecycle) (h : previous \u2260 Lifecycle.Proposed) : transition_allowed (some previous) Lifecycle.Proposed = ok false"
+      "statement": "(previous : Lifecycle) (h : previous ≠ Lifecycle.Proposed) : transition_allowed (some previous) Lifecycle.Proposed = ok false"
     },
     {
       "name": "mneme_kernel.claim.required_decision_total",
@@ -146,7 +146,7 @@
       "subjects": [
         "claim::required_decision"
       ],
-      "statement": "(state : Lifecycle) : \u2203 required, required_decision state = ok required"
+      "statement": "(state : Lifecycle) : ∃ required, required_decision state = ok required"
     },
     {
       "name": "mneme_kernel.claim.required_decision_none_iff",
@@ -154,7 +154,7 @@
       "subjects": [
         "claim::required_decision"
       ],
-      "statement": "(state : Lifecycle) : required_decision state = ok none \u2194 state = Lifecycle.Proposed"
+      "statement": "(state : Lifecycle) : required_decision state = ok none ↔ state = Lifecycle.Proposed"
     },
     {
       "name": "mneme_kernel.claim.required_decision_table",
@@ -162,7 +162,7 @@
       "subjects": [
         "claim::required_decision"
       ],
-      "statement": ": required_decision Lifecycle.Proposed = ok none \u2227 required_decision Lifecycle.Accepted = ok (some DecisionKind.Acceptance) \u2227 required_decision Lifecycle.Disputed = ok (some DecisionKind.ConflictResolution) \u2227 required_decision Lifecycle.Superseded = ok (some DecisionKind.Supersession) \u2227 required_decision Lifecycle.Retracted = ok (some DecisionKind.Retraction)"
+      "statement": ": required_decision Lifecycle.Proposed = ok none ∧ required_decision Lifecycle.Accepted = ok (some DecisionKind.Acceptance) ∧ required_decision Lifecycle.Disputed = ok (some DecisionKind.ConflictResolution) ∧ required_decision Lifecycle.Superseded = ok (some DecisionKind.Supersession) ∧ required_decision Lifecycle.Retracted = ok (some DecisionKind.Retraction)"
     },
     {
       "name": "mneme_kernel.claim.kind_eq_total",
@@ -170,7 +170,7 @@
       "subjects": [
         "claim::kind_eq"
       ],
-      "statement": "(left right : DecisionKind) : \u2203 same, kind_eq left right = ok same"
+      "statement": "(left right : DecisionKind) : ∃ same, kind_eq left right = ok same"
     },
     {
       "name": "mneme_kernel.claim.kind_eq_iff",
@@ -178,7 +178,7 @@
       "subjects": [
         "claim::kind_eq"
       ],
-      "statement": "(left right : DecisionKind) : kind_eq left right = ok true \u2194 left = right"
+      "statement": "(left right : DecisionKind) : kind_eq left right = ok true ↔ left = right"
     },
     {
       "name": "mneme_kernel.claim.decision_backs_total",
@@ -186,7 +186,7 @@
       "subjects": [
         "claim::decision_backs"
       ],
-      "statement": "(state : Lifecycle) (cited : Option CitedDecision) : \u2203 backed, decision_backs state cited = ok backed"
+      "statement": "(state : Lifecycle) (cited : Option CitedDecision) : ∃ backed, decision_backs state cited = ok backed"
     },
     {
       "name": "mneme_kernel.claim.decision_backs_proposed_iff",
@@ -194,7 +194,7 @@
       "subjects": [
         "claim::decision_backs"
       ],
-      "statement": "(cited : Option CitedDecision) : decision_backs Lifecycle.Proposed cited = ok true \u2194 cited = none"
+      "statement": "(cited : Option CitedDecision) : decision_backs Lifecycle.Proposed cited = ok true ↔ cited = none"
     },
     {
       "name": "mneme_kernel.claim.decision_backs_non_proposed_iff",
@@ -202,7 +202,7 @@
       "subjects": [
         "claim::decision_backs"
       ],
-      "statement": "(state : Lifecycle) (cited : Option CitedDecision) (h : state \u2260 Lifecycle.Proposed) : decision_backs state cited = ok true \u2194 \u2203 decision, cited = some decision \u2227 required_decision state = ok (some decision.kind) \u2227 decision.outcome_matches = true \u2227 decision.targets_assertion = true \u2227 decision.binds_replaced_revision = true"
+      "statement": "(state : Lifecycle) (cited : Option CitedDecision) (h : state ≠ Lifecycle.Proposed) : decision_backs state cited = ok true ↔ ∃ decision, cited = some decision ∧ required_decision state = ok (some decision.kind) ∧ decision.outcome_matches = true ∧ decision.targets_assertion = true ∧ decision.binds_replaced_revision = true"
     },
     {
       "name": "mneme_kernel.claim.revision_admissible_total",
@@ -210,7 +210,7 @@
       "subjects": [
         "claim::revision_admissible"
       ],
-      "statement": "(prior : Option Lifecycle) (next : Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) : \u2203 admissible, revision_admissible prior next cited commit = ok admissible"
+      "statement": "(prior : Option Lifecycle) (next : Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) : ∃ admissible, revision_admissible prior next cited commit = ok admissible"
     },
     {
       "name": "mneme_kernel.claim.revision_admissible_sound",
@@ -218,7 +218,7 @@
       "subjects": [
         "claim::revision_admissible"
       ],
-      "statement": "(prior : Option Lifecycle) (next : Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) (h : revision_admissible prior next cited commit = ok true) : transition_allowed prior next = ok true \u2227 decision_backs next cited = ok true \u2227 (cited \u2260 none \u2192 commit.decision_in_batch = true \u2227 commit.actor_is_committer = true)"
+      "statement": "(prior : Option Lifecycle) (next : Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) (h : revision_admissible prior next cited commit = ok true) : transition_allowed prior next = ok true ∧ decision_backs next cited = ok true ∧ (cited ≠ none → commit.decision_in_batch = true ∧ commit.actor_is_committer = true)"
     },
     {
       "name": "mneme_kernel.claim.revision_admissible_complete",
@@ -226,7 +226,7 @@
       "subjects": [
         "claim::revision_admissible"
       ],
-      "statement": "(prior : Option Lifecycle) (next : Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) (htransition : transition_allowed prior next = ok true) (hbacked : decision_backs next cited = ok true) (hfresh : cited \u2260 none \u2192 commit.decision_in_batch = true \u2227 commit.actor_is_committer = true) : revision_admissible prior next cited commit = ok true"
+      "statement": "(prior : Option Lifecycle) (next : Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) (htransition : transition_allowed prior next = ok true) (hbacked : decision_backs next cited = ok true) (hfresh : cited ≠ none → commit.decision_in_batch = true ∧ commit.actor_is_committer = true) : revision_admissible prior next cited commit = ok true"
     },
     {
       "name": "mneme_kernel.claim.accepted_needs_fresh_bound_acceptance",
@@ -236,7 +236,7 @@
         "claim::revision_admissible",
         "claim::transition_allowed"
       ],
-      "statement": "(prior : Option Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) (h : revision_admissible prior Lifecycle.Accepted cited commit = ok true) : \u2203 decision, cited = some decision \u2227 decision.kind = DecisionKind.Acceptance \u2227 decision.outcome_matches = true \u2227 decision.targets_assertion = true \u2227 decision.binds_replaced_revision = true \u2227 commit.decision_in_batch = true \u2227 commit.actor_is_committer = true \u2227 (prior = some Lifecycle.Proposed \u2228 prior = some Lifecycle.Accepted \u2228 prior = some Lifecycle.Disputed)"
+      "statement": "(prior : Option Lifecycle) (cited : Option CitedDecision) (commit : CommitTimeFacts) (h : revision_admissible prior Lifecycle.Accepted cited commit = ok true) : ∃ decision, cited = some decision ∧ decision.kind = DecisionKind.Acceptance ∧ decision.outcome_matches = true ∧ decision.targets_assertion = true ∧ decision.binds_replaced_revision = true ∧ commit.decision_in_batch = true ∧ commit.actor_is_committer = true ∧ (prior = some Lifecycle.Proposed ∨ prior = some Lifecycle.Accepted ∨ prior = some Lifecycle.Disputed)"
     },
     {
       "name": "mneme_kernel.cleanup.is_settled_iff",
@@ -244,7 +244,7 @@
       "subjects": [
         "cleanup::is_settled"
       ],
-      "statement": "(st : LocationState) : (\u2203 b, is_settled st = ok b) \u2227 (is_settled st = ok true \u2194 st = LocationState.Purged \u2228 st = LocationState.Absent \u2228 st = LocationState.Verified)"
+      "statement": "(st : LocationState) : (∃ b, is_settled st = ok b) ∧ (is_settled st = ok true ↔ st = LocationState.Purged ∨ st = LocationState.Absent ∨ st = LocationState.Verified)"
     },
     {
       "name": "mneme_kernel.cleanup.needs_attempt_iff",
@@ -252,7 +252,7 @@
       "subjects": [
         "cleanup::needs_attempt"
       ],
-      "statement": "(st : LocationState) : (\u2203 b, needs_attempt st = ok b) \u2227 (needs_attempt st = ok true \u2194 st = LocationState.Pending \u2228 st = LocationState.Failed \u2228 st = LocationState.RetainedShared \u2228 st = LocationState.Unavailable)"
+      "statement": "(st : LocationState) : (∃ b, needs_attempt st = ok b) ∧ (needs_attempt st = ok true ↔ st = LocationState.Pending ∨ st = LocationState.Failed ∨ st = LocationState.RetainedShared ∨ st = LocationState.Unavailable)"
     },
     {
       "name": "mneme_kernel.cleanup.settled_or_needs_attempt",
@@ -261,7 +261,7 @@
         "cleanup::is_settled",
         "cleanup::needs_attempt"
       ],
-      "statement": "(st : LocationState) : (\u2203 a, is_settled st = ok a) \u2227 (\u2203 b, needs_attempt st = ok b) \u2227 (is_settled st = ok true \u2228 needs_attempt st = ok true) \u2227 \u00ac (is_settled st = ok true \u2227 needs_attempt st = ok true)"
+      "statement": "(st : LocationState) : (∃ a, is_settled st = ok a) ∧ (∃ b, needs_attempt st = ok b) ∧ (is_settled st = ok true ∨ needs_attempt st = ok true) ∧ ¬ (is_settled st = ok true ∧ needs_attempt st = ok true)"
     },
     {
       "name": "mneme_kernel.cleanup.physically_complete_total",
@@ -269,7 +269,7 @@
       "subjects": [
         "cleanup::physically_complete"
       ],
-      "statement": "(s : Slice LocationState) : \u2203 b, physically_complete s = ok b"
+      "statement": "(s : Slice LocationState) : ∃ b, physically_complete s = ok b"
     },
     {
       "name": "mneme_kernel.cleanup.physically_complete_iff",
@@ -277,7 +277,7 @@
       "subjects": [
         "cleanup::physically_complete"
       ],
-      "statement": "(s : Slice LocationState) : (\u2203 b, physically_complete s = ok b) \u2227 (physically_complete s = ok true \u2194 s.val \u2260 [] \u2227 \u2200 x \u2208 s.val, x = LocationState.Purged \u2228 x = LocationState.Absent \u2228 x = LocationState.Verified)"
+      "statement": "(s : Slice LocationState) : (∃ b, physically_complete s = ok b) ∧ (physically_complete s = ok true ↔ s.val ≠ [] ∧ ∀ x ∈ s.val, x = LocationState.Purged ∨ x = LocationState.Absent ∨ x = LocationState.Verified)"
     },
     {
       "name": "mneme_kernel.cleanup.physical_cleanup_incomplete_when_empty",
@@ -293,7 +293,7 @@
       "subjects": [
         "cleanup::summarize"
       ],
-      "statement": "(s : Slice LocationState) : \u2203 r, summarize s = ok r"
+      "statement": "(s : Slice LocationState) : ∃ r, summarize s = ok r"
     },
     {
       "name": "mneme_kernel.cleanup.summarize_complete_iff",
@@ -301,7 +301,7 @@
       "subjects": [
         "cleanup::summarize"
       ],
-      "statement": "(s : Slice LocationState) : (\u2203 r, summarize s = ok r) \u2227 (\u2203 b, physically_complete s = ok b) \u2227 (summarize s = ok JobSummary.Complete \u2194 physically_complete s = ok true)"
+      "statement": "(s : Slice LocationState) : (∃ r, summarize s = ok r) ∧ (∃ b, physically_complete s = ok b) ∧ (summarize s = ok JobSummary.Complete ↔ physically_complete s = ok true)"
     },
     {
       "name": "mneme_kernel.cleanup.summarize_pending_iff",
@@ -309,7 +309,7 @@
       "subjects": [
         "cleanup::summarize"
       ],
-      "statement": "(s : Slice LocationState) : (\u2203 r, summarize s = ok r) \u2227 (summarize s = ok JobSummary.Pending \u2194 LocationState.Pending \u2208 s.val)"
+      "statement": "(s : Slice LocationState) : (∃ r, summarize s = ok r) ∧ (summarize s = ok JobSummary.Pending ↔ LocationState.Pending ∈ s.val)"
     },
     {
       "name": "mneme_kernel.cleanup.summarize_failed_iff",
@@ -317,7 +317,7 @@
       "subjects": [
         "cleanup::summarize"
       ],
-      "statement": "(s : Slice LocationState) : (\u2203 r, summarize s = ok r) \u2227 (summarize s = ok JobSummary.Failed \u2194 LocationState.Failed \u2208 s.val \u2227 LocationState.Pending \u2209 s.val)"
+      "statement": "(s : Slice LocationState) : (∃ r, summarize s = ok r) ∧ (summarize s = ok JobSummary.Failed ↔ LocationState.Failed ∈ s.val ∧ LocationState.Pending ∉ s.val)"
     },
     {
       "name": "mneme_kernel.cleanup.summarize_partial_iff",
@@ -325,7 +325,7 @@
       "subjects": [
         "cleanup::summarize"
       ],
-      "statement": "(s : Slice LocationState) : (\u2203 r, summarize s = ok r) \u2227 (summarize s = ok JobSummary.Partial \u2194 LocationState.Pending \u2209 s.val \u2227 LocationState.Failed \u2209 s.val \u2227 (s.val = [] \u2228 LocationState.RetainedShared \u2208 s.val \u2228 LocationState.Unavailable \u2208 s.val))"
+      "statement": "(s : Slice LocationState) : (∃ r, summarize s = ok r) ∧ (summarize s = ok JobSummary.Partial ↔ LocationState.Pending ∉ s.val ∧ LocationState.Failed ∉ s.val ∧ (s.val = [] ∨ LocationState.RetainedShared ∈ s.val ∨ LocationState.Unavailable ∈ s.val))"
     },
     {
       "name": "mneme_kernel.completeness.answer_complete_total",
@@ -333,7 +333,7 @@
       "subjects": [
         "completeness::answer_complete"
       ],
-      "statement": "(facts : AnswerFacts) : \u2203 complete, answer_complete facts = ok complete"
+      "statement": "(facts : AnswerFacts) : ∃ complete, answer_complete facts = ok complete"
     },
     {
       "name": "mneme_kernel.completeness.answer_complete_iff",
@@ -341,7 +341,7 @@
       "subjects": [
         "completeness::answer_complete"
       ],
-      "statement": "(facts : AnswerFacts) : answer_complete facts = ok true \u2194 facts.exhaustive = true \u2227 facts.coverage = Coverage.Complete \u2227 facts.limit_reached = false \u2227 facts.declaration_valid = true \u2227 facts.generation_current = true"
+      "statement": "(facts : AnswerFacts) : answer_complete facts = ok true ↔ facts.exhaustive = true ∧ facts.coverage = Coverage.Complete ∧ facts.limit_reached = false ∧ facts.declaration_valid = true ∧ facts.generation_current = true"
     },
     {
       "name": "mneme_kernel.completeness.absence_established_total",
@@ -349,7 +349,7 @@
       "subjects": [
         "completeness::absence_established"
       ],
-      "statement": "(facts : AnswerFacts) : \u2203 established, absence_established facts = ok established"
+      "statement": "(facts : AnswerFacts) : ∃ established, absence_established facts = ok established"
     },
     {
       "name": "mneme_kernel.completeness.absence_established_iff",
@@ -357,7 +357,7 @@
       "subjects": [
         "completeness::absence_established"
       ],
-      "statement": "(facts : AnswerFacts) : absence_established facts = ok true \u2194 facts.rows.val = 0 \u2227 facts.exhaustive = true \u2227 facts.coverage = Coverage.Complete \u2227 facts.limit_reached = false \u2227 facts.declaration_valid = true \u2227 facts.generation_current = true"
+      "statement": "(facts : AnswerFacts) : absence_established facts = ok true ↔ facts.rows.val = 0 ∧ facts.exhaustive = true ∧ facts.coverage = Coverage.Complete ∧ facts.limit_reached = false ∧ facts.declaration_valid = true ∧ facts.generation_current = true"
     },
     {
       "name": "mneme_kernel.completeness.absence_implies_complete",
@@ -374,7 +374,7 @@
       "subjects": [
         "completeness::combine_coverage"
       ],
-      "statement": "(left right : Coverage) : \u2203 combined, combine_coverage left right = ok combined"
+      "statement": "(left right : Coverage) : ∃ combined, combine_coverage left right = ok combined"
     },
     {
       "name": "mneme_kernel.completeness.combine_coverage_comm",
@@ -382,7 +382,7 @@
       "subjects": [
         "completeness::combine_coverage"
       ],
-      "statement": "(left right : Coverage) : \u2203 combined, combine_coverage left right = ok combined \u2227 combine_coverage right left = ok combined"
+      "statement": "(left right : Coverage) : ∃ combined, combine_coverage left right = ok combined ∧ combine_coverage right left = ok combined"
     },
     {
       "name": "mneme_kernel.completeness.combine_coverage_assoc",
@@ -390,7 +390,7 @@
       "subjects": [
         "completeness::combine_coverage"
       ],
-      "statement": "(first second third : Coverage) : \u2203 left right combined, combine_coverage first second = ok left \u2227 combine_coverage second third = ok right \u2227 combine_coverage left third = ok combined \u2227 combine_coverage first right = ok combined"
+      "statement": "(first second third : Coverage) : ∃ left right combined, combine_coverage first second = ok left ∧ combine_coverage second third = ok right ∧ combine_coverage left third = ok combined ∧ combine_coverage first right = ok combined"
     },
     {
       "name": "mneme_kernel.completeness.combine_coverage_complete_iff",
@@ -398,7 +398,7 @@
       "subjects": [
         "completeness::combine_coverage"
       ],
-      "statement": "(left right : Coverage) : combine_coverage left right = ok Coverage.Complete \u2194 left = Coverage.Complete \u2227 right = Coverage.Complete"
+      "statement": "(left right : Coverage) : combine_coverage left right = ok Coverage.Complete ↔ left = Coverage.Complete ∧ right = Coverage.Complete"
     },
     {
       "name": "mneme_kernel.completeness.combine_coverage_unknown_absorbs",
@@ -406,7 +406,7 @@
       "subjects": [
         "completeness::combine_coverage"
       ],
-      "statement": "(left right : Coverage) (h : left = Coverage.Unknown \u2228 right = Coverage.Unknown) : combine_coverage left right = ok Coverage.Unknown"
+      "statement": "(left right : Coverage) (h : left = Coverage.Unknown ∨ right = Coverage.Unknown) : combine_coverage left right = ok Coverage.Unknown"
     },
     {
       "name": "mneme_kernel.extent.span_length_some_iff",
@@ -414,7 +414,7 @@
       "subjects": [
         "extent::span_length"
       ],
-      "statement": "(a b n : U64) : \u2203 o, span_length a b = ok o \u2227 (o = some n \u2194 a.val \u2264 b.val \u2227 n.val = b.val - a.val)"
+      "statement": "(a b n : U64) : ∃ o, span_length a b = ok o ∧ (o = some n ↔ a.val ≤ b.val ∧ n.val = b.val - a.val)"
     },
     {
       "name": "mneme_kernel.extent.span_length_none_iff",
@@ -422,7 +422,7 @@
       "subjects": [
         "extent::span_length"
       ],
-      "statement": "(a b : U64) : \u2203 o, span_length a b = ok o \u2227 (o = none \u2194 b.val < a.val)"
+      "statement": "(a b : U64) : ∃ o, span_length a b = ok o ∧ (o = none ↔ b.val < a.val)"
     },
     {
       "name": "mneme_kernel.extent.span_in_text_iff",
@@ -430,7 +430,7 @@
       "subjects": [
         "extent::span_in_text"
       ],
-      "statement": "(start stop text_len : U64) : \u2203 v, span_in_text start stop text_len = ok v \u2227 (v = true \u2194 start.val \u2264 stop.val \u2227 stop.val \u2264 text_len.val)"
+      "statement": "(start stop text_len : U64) : ∃ v, span_in_text start stop text_len = ok v ∧ (v = true ↔ start.val ≤ stop.val ∧ stop.val ≤ text_len.val)"
     },
     {
       "name": "mneme_kernel.extent.excerpt_window_total",
@@ -438,7 +438,7 @@
       "subjects": [
         "extent::excerpt_window"
       ],
-      "statement": "(r : ExcerptRequest) : \u2203 o, excerpt_window r = ok o"
+      "statement": "(r : ExcerptRequest) : ∃ o, excerpt_window r = ok o"
     },
     {
       "name": "mneme_kernel.extent.excerpt_window_none_iff",
@@ -446,7 +446,7 @@
       "subjects": [
         "extent::excerpt_window"
       ],
-      "statement": "(r : ExcerptRequest) : \u2203 o, excerpt_window r = ok o \u2227 (o = none \u2194 \u00ac (r.start.val \u2264 r.stop.val \u2227 r.stop.val \u2264 r.text_len.val))"
+      "statement": "(r : ExcerptRequest) : ∃ o, excerpt_window r = ok o ∧ (o = none ↔ ¬ (r.start.val ≤ r.stop.val ∧ r.stop.val ≤ r.text_len.val))"
     },
     {
       "name": "mneme_kernel.extent.excerpt_window_spec",
@@ -454,7 +454,7 @@
       "subjects": [
         "extent::excerpt_window"
       ],
-      "statement": "(r : ExcerptRequest) (w : Window) (h : excerpt_window r = ok (some w)) : w.start = r.start \u2227 w.start.val \u2264 w.stop.val \u2227 w.stop.val \u2264 r.stop.val \u2227 w.stop.val \u2264 r.text_len.val \u2227 w.stop.val - w.start.val \u2264 r.max_bytes.val \u2227 (w.truncated = true \u2194 r.max_bytes.val < r.stop.val - r.start.val) \u2227 (w.truncated = false \u2192 w.stop = r.stop) \u2227 (w.truncated = true \u2192 w.stop.val = r.start.val + r.max_bytes.val)"
+      "statement": "(r : ExcerptRequest) (w : Window) (h : excerpt_window r = ok (some w)) : w.start = r.start ∧ w.start.val ≤ w.stop.val ∧ w.stop.val ≤ r.stop.val ∧ w.stop.val ≤ r.text_len.val ∧ w.stop.val - w.start.val ≤ r.max_bytes.val ∧ (w.truncated = true ↔ r.max_bytes.val < r.stop.val - r.start.val) ∧ (w.truncated = false → w.stop = r.stop) ∧ (w.truncated = true → w.stop.val = r.start.val + r.max_bytes.val)"
     },
     {
       "name": "mneme_kernel.extent.is_continuation_iff",
@@ -462,7 +462,7 @@
       "subjects": [
         "extent::is_continuation"
       ],
-      "statement": "(b : U8) : \u2203 v, is_continuation b = ok v \u2227 (v = true \u2194 128 \u2264 b.val \u2227 b.val < 192)"
+      "statement": "(b : U8) : ∃ v, is_continuation b = ok v ∧ (v = true ↔ 128 ≤ b.val ∧ b.val < 192)"
     },
     {
       "name": "mneme_kernel.extent.floor_boundary_spec",
@@ -470,7 +470,7 @@
       "subjects": [
         "extent::floor_boundary"
       ],
-      "statement": "(bytes : Slice U8) (i : Usize) : \u2203 p, floor_boundary bytes i = ok p \u2227 p.val \u2264 bytes.val.length \u2227 (bytes.val.length \u2264 i.val \u2192 p.val = bytes.val.length) \u2227 (i.val < bytes.val.length \u2192 p.val \u2264 i.val \u2227 (p.val = 0 \u2228 \u2203 b, bytes.val[p.val]? = some b \u2227 \u00ac Continuation b) \u2227 \u2200 j, p.val < j \u2192 j \u2264 i.val \u2192 \u2203 b, bytes.val[j]? = some b \u2227 Continuation b)"
+      "statement": "(bytes : Slice U8) (i : Usize) : ∃ p, floor_boundary bytes i = ok p ∧ p.val ≤ bytes.val.length ∧ (bytes.val.length ≤ i.val → p.val = bytes.val.length) ∧ (i.val < bytes.val.length → p.val ≤ i.val ∧ (p.val = 0 ∨ ∃ b, bytes.val[p.val]? = some b ∧ ¬ Continuation b) ∧ ∀ j, p.val < j → j ≤ i.val → ∃ b, bytes.val[j]? = some b ∧ Continuation b)"
     },
     {
       "name": "mneme_kernel.hashing.digest_eq_iff",
@@ -478,7 +478,7 @@
       "subjects": [
         "hashing::digest_eq"
       ],
-      "statement": "(a b : Digest) : \u2203 r : Bool, digest_eq a b = ok r \u2227 (r = true \u2194 a = b)"
+      "statement": "(a b : Digest) : ∃ r : Bool, digest_eq a b = ok r ∧ (r = true ↔ a = b)"
     },
     {
       "name": "mneme_kernel.hashing.optional_digest_eq_iff",
@@ -486,7 +486,7 @@
       "subjects": [
         "hashing::optional_digest_eq"
       ],
-      "statement": "(a b : Option Digest) : \u2203 r : Bool, optional_digest_eq a b = ok r \u2227 (r = true \u2194 a = b)"
+      "statement": "(a b : Option Digest) : ∃ r : Bool, optional_digest_eq a b = ok r ∧ (r = true ↔ a = b)"
     },
     {
       "name": "mneme_kernel.isolation.reference_allowed_total",
@@ -494,7 +494,7 @@
       "subjects": [
         "isolation::reference_allowed"
       ],
-      "statement": "(facts : ReferenceFacts) : \u2203 allowed, reference_allowed facts = ok allowed"
+      "statement": "(facts : ReferenceFacts) : ∃ allowed, reference_allowed facts = ok allowed"
     },
     {
       "name": "mneme_kernel.isolation.reference_allowed_same_scope",
@@ -510,7 +510,7 @@
       "subjects": [
         "isolation::reference_allowed"
       ],
-      "statement": "(facts : ReferenceFacts) (h : facts.same_scope = false) : reference_allowed facts = ok true \u2194 facts.target_authorized = true \u2227 \u00ac (facts.source_class = ScopeClass.Operational \u2227 facts.target_class = ScopeClass.Hypothesis)"
+      "statement": "(facts : ReferenceFacts) (h : facts.same_scope = false) : reference_allowed facts = ok true ↔ facts.target_authorized = true ∧ ¬ (facts.source_class = ScopeClass.Operational ∧ facts.target_class = ScopeClass.Hypothesis)"
     },
     {
       "name": "mneme_kernel.isolation.reference_allowed_needs_authorization",
@@ -518,7 +518,7 @@
       "subjects": [
         "isolation::reference_allowed"
       ],
-      "statement": "(facts : ReferenceFacts) (h : reference_allowed facts = ok true) : facts.same_scope = true \u2228 facts.target_authorized = true"
+      "statement": "(facts : ReferenceFacts) (h : reference_allowed facts = ok true) : facts.same_scope = true ∨ facts.target_authorized = true"
     },
     {
       "name": "mneme_kernel.isolation.operational_never_depends_on_foreign_hypothesis",
@@ -534,7 +534,7 @@
       "subjects": [
         "isolation::content_readable"
       ],
-      "statement": "(facts : ContentFacts) : \u2203 readable, content_readable facts = ok readable"
+      "statement": "(facts : ContentFacts) : ∃ readable, content_readable facts = ok readable"
     },
     {
       "name": "mneme_kernel.isolation.content_readable_iff",
@@ -542,7 +542,7 @@
       "subjects": [
         "isolation::content_readable"
       ],
-      "statement": "(facts : ContentFacts) : content_readable facts = ok true \u2194 facts.same_scope = true \u2228 facts.target_authorized = true"
+      "statement": "(facts : ContentFacts) : content_readable facts = ok true ↔ facts.same_scope = true ∨ facts.target_authorized = true"
     },
     {
       "name": "mneme_kernel.isolation.revision_scope_structural_total",
@@ -550,7 +550,7 @@
       "subjects": [
         "isolation::revision_scope_structural"
       ],
-      "statement": "(change : ScopeChange) : \u2203 allowed, revision_scope_structural change = ok allowed"
+      "statement": "(change : ScopeChange) : ∃ allowed, revision_scope_structural change = ok allowed"
     },
     {
       "name": "mneme_kernel.isolation.revision_scope_structural_iff",
@@ -558,7 +558,7 @@
       "subjects": [
         "isolation::revision_scope_structural"
       ],
-      "statement": "(change : ScopeChange) : revision_scope_structural change = ok true \u2194 change.same_scope = true \u2228 (change.prior_class = ScopeClass.Hypothesis \u2227 change.next_class = ScopeClass.Operational)"
+      "statement": "(change : ScopeChange) : revision_scope_structural change = ok true ↔ change.same_scope = true ∨ (change.prior_class = ScopeClass.Hypothesis ∧ change.next_class = ScopeClass.Operational)"
     },
     {
       "name": "mneme_kernel.isolation.revision_scope_allowed_total",
@@ -566,7 +566,7 @@
       "subjects": [
         "isolation::revision_scope_allowed"
       ],
-      "statement": "(facts : RevisionFacts) : \u2203 allowed, revision_scope_allowed facts = ok allowed"
+      "statement": "(facts : RevisionFacts) : ∃ allowed, revision_scope_allowed facts = ok allowed"
     },
     {
       "name": "mneme_kernel.isolation.revision_scope_allowed_same_scope",
@@ -582,7 +582,7 @@
       "subjects": [
         "isolation::revision_scope_allowed"
       ],
-      "statement": "(facts : RevisionFacts) (h : facts.same_scope = false) : revision_scope_allowed facts = ok true \u2194 facts.prior_class = ScopeClass.Hypothesis \u2227 facts.next_class = ScopeClass.Operational \u2227 facts.carries_acceptance = true \u2227 facts.both_authorized = true"
+      "statement": "(facts : RevisionFacts) (h : facts.same_scope = false) : revision_scope_allowed facts = ok true ↔ facts.prior_class = ScopeClass.Hypothesis ∧ facts.next_class = ScopeClass.Operational ∧ facts.carries_acceptance = true ∧ facts.both_authorized = true"
     },
     {
       "name": "mneme_kernel.isolation.revision_scope_allowed_implies_structural",
@@ -598,7 +598,7 @@
       "subjects": [
         "isolation::record_visible"
       ],
-      "statement": "(facts : VisibilityFacts) : \u2203 visible, record_visible facts = ok visible"
+      "statement": "(facts : VisibilityFacts) : ∃ visible, record_visible facts = ok visible"
     },
     {
       "name": "mneme_kernel.isolation.record_visible_iff",
@@ -606,7 +606,7 @@
       "subjects": [
         "isolation::record_visible"
       ],
-      "statement": "(facts : VisibilityFacts) : record_visible facts = ok true \u2194 facts.same_scope = true \u2228 (facts.include_hypothetical = true \u2227 facts.record_class = ScopeClass.Hypothesis \u2227 facts.record_scope_authorized = true)"
+      "statement": "(facts : VisibilityFacts) : record_visible facts = ok true ↔ facts.same_scope = true ∨ (facts.include_hypothetical = true ∧ facts.record_class = ScopeClass.Hypothesis ∧ facts.record_scope_authorized = true)"
     },
     {
       "name": "mneme_kernel.isolation.record_visible_never_widens_to_unauthorized",
@@ -622,7 +622,7 @@
       "subjects": [
         "isolation::blob_claim_allowed"
       ],
-      "statement": "(facts : BlobClaimFacts) : \u2203 allowed, blob_claim_allowed facts = ok allowed"
+      "statement": "(facts : BlobClaimFacts) : ∃ allowed, blob_claim_allowed facts = ok allowed"
     },
     {
       "name": "mneme_kernel.isolation.blob_claim_allowed_iff",
@@ -630,7 +630,7 @@
       "subjects": [
         "isolation::blob_claim_allowed"
       ],
-      "statement": "(facts : BlobClaimFacts) : blob_claim_allowed facts = ok true \u2194 facts.bytes_supplied = true \u2228 facts.bound_in_scope = true"
+      "statement": "(facts : BlobClaimFacts) : blob_claim_allowed facts = ok true ↔ facts.bytes_supplied = true ∨ facts.bound_in_scope = true"
     },
     {
       "name": "mneme_kernel.publish.decide_publication_total",
@@ -638,7 +638,7 @@
       "subjects": [
         "publish::decide_publication"
       ],
-      "statement": "(facts : PublicationFacts) : \u2203 d : PublicationDecision, decide_publication facts = ok d"
+      "statement": "(facts : PublicationFacts) : ∃ d : PublicationDecision, decide_publication facts = ok d"
     },
     {
       "name": "mneme_kernel.publish.decide_publication_already_iff",
@@ -646,7 +646,7 @@
       "subjects": [
         "publish::decide_publication"
       ],
-      "statement": "(facts : PublicationFacts) : \u2203 d, decide_publication facts = ok d \u2227 (d = PublicationDecision.AlreadyPublished \u2194 facts.observed = some facts.desired)"
+      "statement": "(facts : PublicationFacts) : ∃ d, decide_publication facts = ok d ∧ (d = PublicationDecision.AlreadyPublished ↔ facts.observed = some facts.desired)"
     },
     {
       "name": "mneme_kernel.publish.decide_publication_replace_iff",
@@ -654,7 +654,7 @@
       "subjects": [
         "publish::decide_publication"
       ],
-      "statement": "(facts : PublicationFacts) : \u2203 d, decide_publication facts = ok d \u2227 (d = PublicationDecision.Replace \u2194 facts.observed = facts.expected \u2227 facts.observed \u2260 some facts.desired)"
+      "statement": "(facts : PublicationFacts) : ∃ d, decide_publication facts = ok d ∧ (d = PublicationDecision.Replace ↔ facts.observed = facts.expected ∧ facts.observed ≠ some facts.desired)"
     },
     {
       "name": "mneme_kernel.publish.decide_publication_diverged_iff",
@@ -662,7 +662,7 @@
       "subjects": [
         "publish::decide_publication"
       ],
-      "statement": "(facts : PublicationFacts) : \u2203 d, decide_publication facts = ok d \u2227 (d = PublicationDecision.Diverged \u2194 facts.observed \u2260 facts.expected \u2227 facts.observed \u2260 some facts.desired)"
+      "statement": "(facts : PublicationFacts) : ∃ d, decide_publication facts = ok d ∧ (d = PublicationDecision.Diverged ↔ facts.observed ≠ facts.expected ∧ facts.observed ≠ some facts.desired)"
     },
     {
       "name": "mneme_kernel.publish.should_attempt_iff",
@@ -670,7 +670,7 @@
       "subjects": [
         "publish::should_attempt"
       ],
-      "statement": "(p : PublicationPhase) : \u2203 r : Bool, should_attempt p = ok r \u2227 (r = true \u2194 p = PublicationPhase.Pending \u2228 p = PublicationPhase.Failed)"
+      "statement": "(p : PublicationPhase) : ∃ r : Bool, should_attempt p = ok r ∧ (r = true ↔ p = PublicationPhase.Pending ∨ p = PublicationPhase.Failed)"
     },
     {
       "name": "mneme_kernel.purge.decide_working_total",
@@ -678,7 +678,7 @@
       "subjects": [
         "purge::decide_working"
       ],
-      "statement": "(facts : WorkingFacts) : \u2203 d : WorkingDecision, decide_working facts = ok d"
+      "statement": "(facts : WorkingFacts) : ∃ d : WorkingDecision, decide_working facts = ok d"
     },
     {
       "name": "mneme_kernel.purge.decide_working_purge_iff",
@@ -686,7 +686,7 @@
       "subjects": [
         "purge::decide_working"
       ],
-      "statement": "(facts : WorkingFacts) : \u2203 d, decide_working facts = ok d \u2227 (d = WorkingDecision.Purge \u2194 facts.kind = EntryKind.Regular \u2227 facts.observed = some facts.planned)"
+      "statement": "(facts : WorkingFacts) : ∃ d, decide_working facts = ok d ∧ (d = WorkingDecision.Purge ↔ facts.kind = EntryKind.Regular ∧ facts.observed = some facts.planned)"
     },
     {
       "name": "mneme_kernel.purge.decide_working_absent_iff",
@@ -694,7 +694,7 @@
       "subjects": [
         "purge::decide_working"
       ],
-      "statement": "(facts : WorkingFacts) : \u2203 d, decide_working facts = ok d \u2227 (d = WorkingDecision.AlreadyAbsent \u2194 facts.kind = EntryKind.Absent)"
+      "statement": "(facts : WorkingFacts) : ∃ d, decide_working facts = ok d ∧ (d = WorkingDecision.AlreadyAbsent ↔ facts.kind = EntryKind.Absent)"
     },
     {
       "name": "mneme_kernel.purge.decide_working_external_edit_iff",
@@ -702,7 +702,7 @@
       "subjects": [
         "purge::decide_working"
       ],
-      "statement": "(facts : WorkingFacts) : \u2203 d, decide_working facts = ok d \u2227 (d = WorkingDecision.ExternalEdit \u2194 facts.kind = EntryKind.Regular \u2227 \u2203 found, facts.observed = some found \u2227 found \u2260 facts.planned)"
+      "statement": "(facts : WorkingFacts) : ∃ d, decide_working facts = ok d ∧ (d = WorkingDecision.ExternalEdit ↔ facts.kind = EntryKind.Regular ∧ ∃ found, facts.observed = some found ∧ found ≠ facts.planned)"
     },
     {
       "name": "mneme_kernel.purge.decide_blob_total",
@@ -710,7 +710,7 @@
       "subjects": [
         "purge::decide_blob"
       ],
-      "statement": "(facts : BlobFacts) : \u2203 d : BlobDecision, decide_blob facts = ok d"
+      "statement": "(facts : BlobFacts) : ∃ d : BlobDecision, decide_blob facts = ok d"
     },
     {
       "name": "mneme_kernel.purge.decide_blob_purge_iff",
@@ -718,7 +718,7 @@
       "subjects": [
         "purge::decide_blob"
       ],
-      "statement": "(facts : BlobFacts) : \u2203 d, decide_blob facts = ok d \u2227 (d = BlobDecision.Purge \u2194 facts.required = false \u2227 facts.present = true)"
+      "statement": "(facts : BlobFacts) : ∃ d, decide_blob facts = ok d ∧ (d = BlobDecision.Purge ↔ facts.required = false ∧ facts.present = true)"
     },
     {
       "name": "mneme_kernel.purge.decide_blob_required",
@@ -734,7 +734,7 @@
       "subjects": [
         "restore::may_serve"
       ],
-      "statement": "(marker : Marker) : \u2203 r : Bool, may_serve marker = ok r \u2227 (r = true \u2194 marker = Marker.Clear)"
+      "statement": "(marker : Marker) : ∃ r : Bool, may_serve marker = ok r ∧ (r = true ↔ marker = Marker.Clear)"
     },
     {
       "name": "mneme_kernel.restore.decide_ledger_total",
@@ -742,7 +742,7 @@
       "subjects": [
         "restore::decide_ledger"
       ],
-      "statement": "(facts : LedgerFacts) : \u2203 d : LedgerDecision, decide_ledger facts = ok d"
+      "statement": "(facts : LedgerFacts) : ∃ d : LedgerDecision, decide_ledger facts = ok d"
     },
     {
       "name": "mneme_kernel.restore.decide_ledger_apply_iff",
@@ -750,7 +750,7 @@
       "subjects": [
         "restore::decide_ledger"
       ],
-      "statement": "(facts : LedgerFacts) : \u2203 d, decide_ledger facts = ok d \u2227 (d = LedgerDecision.Apply \u2194 facts.same_workspace = true \u2227 facts.restored_generation.val \u2264 facts.ledger_generation.val)"
+      "statement": "(facts : LedgerFacts) : ∃ d, decide_ledger facts = ok d ∧ (d = LedgerDecision.Apply ↔ facts.same_workspace = true ∧ facts.restored_generation.val ≤ facts.ledger_generation.val)"
     },
     {
       "name": "mneme_kernel.restore.decide_ledger_foreign_iff",
@@ -758,7 +758,7 @@
       "subjects": [
         "restore::decide_ledger"
       ],
-      "statement": "(facts : LedgerFacts) : \u2203 d, decide_ledger facts = ok d \u2227 (d = LedgerDecision.ForeignWorkspace \u2194 facts.same_workspace = false)"
+      "statement": "(facts : LedgerFacts) : ∃ d, decide_ledger facts = ok d ∧ (d = LedgerDecision.ForeignWorkspace ↔ facts.same_workspace = false)"
     },
     {
       "name": "mneme_kernel.text.is_lower_hex_byte_iff",
@@ -766,7 +766,7 @@
       "subjects": [
         "text::is_lower_hex_byte"
       ],
-      "statement": "(b : U8) : \u2203 v, is_lower_hex_byte b = ok v \u2227 (v = true \u2194 LowerHex b)"
+      "statement": "(b : U8) : ∃ v, is_lower_hex_byte b = ok v ∧ (v = true ↔ LowerHex b)"
     },
     {
       "name": "mneme_kernel.text.is_atom_start_iff",
@@ -774,7 +774,7 @@
       "subjects": [
         "text::is_atom_start"
       ],
-      "statement": "(b : U8) : \u2203 v, is_atom_start b = ok v \u2227 (v = true \u2194 AtomStart b)"
+      "statement": "(b : U8) : ∃ v, is_atom_start b = ok v ∧ (v = true ↔ AtomStart b)"
     },
     {
       "name": "mneme_kernel.text.is_atom_continue_iff",
@@ -782,7 +782,7 @@
       "subjects": [
         "text::is_atom_continue"
       ],
-      "statement": "(b : U8) : \u2203 v, is_atom_continue b = ok v \u2227 (v = true \u2194 AtomContinue b)"
+      "statement": "(b : U8) : ∃ v, is_atom_continue b = ok v ∧ (v = true ↔ AtomContinue b)"
     },
     {
       "name": "mneme_kernel.text.is_lower_hex_iff",
@@ -790,7 +790,7 @@
       "subjects": [
         "text::is_lower_hex"
       ],
-      "statement": "(s : Slice U8) : \u2203 v, is_lower_hex s = ok v \u2227 (v = true \u2194 \u2200 b \u2208 s.val, LowerHex b)"
+      "statement": "(s : Slice U8) : ∃ v, is_lower_hex s = ok v ∧ (v = true ↔ ∀ b ∈ s.val, LowerHex b)"
     },
     {
       "name": "mneme_kernel.text.is_safe_atom_iff",
@@ -798,7 +798,7 @@
       "subjects": [
         "text::is_safe_atom"
       ],
-      "statement": "(s : Slice U8) : \u2203 v, is_safe_atom s = ok v \u2227 (v = true \u2194 \u2203 first rest, s.val = first :: rest \u2227 AtomStart first \u2227 \u2200 b \u2208 rest, AtomContinue b)"
+      "statement": "(s : Slice U8) : ∃ v, is_safe_atom s = ok v ∧ (v = true ↔ ∃ first rest, s.val = first :: rest ∧ AtomStart first ∧ ∀ b ∈ rest, AtomContinue b)"
     },
     {
       "name": "mneme_kernel.text.is_safe_atom_not_empty",
@@ -806,7 +806,7 @@
       "subjects": [
         "text::is_safe_atom"
       ],
-      "statement": "(s : Slice U8) (h : is_safe_atom s = ok true) : s.val \u2260 []"
+      "statement": "(s : Slice U8) (h : is_safe_atom s = ok true) : s.val ≠ []"
     },
     {
       "name": "mneme_kernel.text.is_safe_atom_alphanumeric",
@@ -814,7 +814,7 @@
       "subjects": [
         "text::is_safe_atom"
       ],
-      "statement": "(s : Slice U8) (h : is_safe_atom s = ok true) : \u2200 b \u2208 s.val, AtomContinue b"
+      "statement": "(s : Slice U8) (h : is_safe_atom s = ok true) : ∀ b ∈ s.val, AtomContinue b"
     },
     {
       "name": "mneme_kernel.text.is_safe_atom_not_variable",
@@ -822,13 +822,13 @@
       "subjects": [
         "text::is_safe_atom"
       ],
-      "statement": "(s : Slice U8) (h : is_safe_atom s = ok true) : \u2203 first, s.val.head? = some first \u2227 AtomStart first"
+      "statement": "(s : Slice U8) (h : is_safe_atom s = ok true) : ∃ first, s.val.head? = some first ∧ AtomStart first"
     },
     {
       "name": "mneme_kernel.text.segment_ok_iff",
       "file": "MnemeKernelProofs/Text.lean",
       "subjects": [],
-      "statement": "(len : U8) (dots : Bool) : \u2203 v, segment_ok len dots = ok v \u2227 (v = true \u2194 0 < len.val \u2227 \u00ac (dots = true \u2227 len.val \u2264 2))"
+      "statement": "(len : U8) (dots : Bool) : ∃ v, segment_ok len dots = ok v ∧ (v = true ↔ 0 < len.val ∧ ¬ (dots = true ∧ len.val ≤ 2))"
     },
     {
       "name": "mneme_kernel.text.path_step_spec",
@@ -836,13 +836,13 @@
       "subjects": [
         "text::path_step"
       ],
-      "statement": "(scan : PathScan) (b : U8) : \u2203 next, path_step scan b = ok next \u2227 (b.val = 0 \u2228 b.val = 92 \u2192 next.valid = false \u2227 next.segment_len = scan.segment_len \u2227 next.only_dots = scan.only_dots) \u2227 (b.val = 47 \u2192 next.valid = (scan.valid && decide (0 < scan.segment_len.val \u2227 \u00ac (scan.only_dots = true \u2227 scan.segment_len.val \u2264 2))) \u2227 next.segment_len.val = 0 \u2227 next.only_dots = true) \u2227 (b.val \u2260 0 \u2192 b.val \u2260 92 \u2192 b.val \u2260 47 \u2192 next.valid = scan.valid \u2227 next.segment_len.val = min 3 (scan.segment_len.val + 1) \u2227 next.only_dots = (scan.only_dots && decide (b.val = 46)))"
+      "statement": "(scan : PathScan) (b : U8) : ∃ next, path_step scan b = ok next ∧ (b.val = 0 ∨ b.val = 92 → next.valid = false ∧ next.segment_len = scan.segment_len ∧ next.only_dots = scan.only_dots) ∧ (b.val = 47 → next.valid = (scan.valid && decide (0 < scan.segment_len.val ∧ ¬ (scan.only_dots = true ∧ scan.segment_len.val ≤ 2))) ∧ next.segment_len.val = 0 ∧ next.only_dots = true) ∧ (b.val ≠ 0 → b.val ≠ 92 → b.val ≠ 47 → next.valid = scan.valid ∧ next.segment_len.val = min 3 (scan.segment_len.val + 1) ∧ next.only_dots = (scan.only_dots && decide (b.val = 46)))"
     },
     {
       "name": "mneme_kernel.text.segments_spec",
       "file": "MnemeKernelProofs/Text.lean",
       "subjects": [],
-      "statement": "(l : List U8) : segments l = List.splitOn (47#u8) l \u2227 List.intercalate [47#u8] (segments l) = l \u2227 \u2200 seg \u2208 segments l, \u2200 b \u2208 seg, b.val \u2260 47"
+      "statement": "(l : List U8) : segments l = List.splitOn (47#u8) l ∧ List.intercalate [47#u8] (segments l) = l ∧ ∀ seg ∈ segments l, ∀ b ∈ seg, b.val ≠ 47"
     },
     {
       "name": "mneme_kernel.text.is_canonical_relative_path_iff",
@@ -859,7 +859,7 @@
       "subjects": [
         "text::is_canonical_relative_path"
       ],
-      "statement": "(s : Slice U8) : \u2203 v, is_canonical_relative_path s = ok v"
+      "statement": "(s : Slice U8) : ∃ v, is_canonical_relative_path s = ok v"
     },
     {
       "name": "mneme_kernel.text.canonical_path_not_empty",
@@ -867,7 +867,7 @@
       "subjects": [
         "text::is_canonical_relative_path"
       ],
-      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : s.val \u2260 []"
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : s.val ≠ []"
     },
     {
       "name": "mneme_kernel.text.canonical_path_no_nul_or_backslash",
@@ -875,7 +875,7 @@
       "subjects": [
         "text::is_canonical_relative_path"
       ],
-      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : \u2200 b \u2208 s.val, b.val \u2260 0 \u2227 b.val \u2260 92"
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∀ b ∈ s.val, b.val ≠ 0 ∧ b.val ≠ 92"
     },
     {
       "name": "mneme_kernel.text.canonical_path_no_leading_slash",
@@ -883,7 +883,7 @@
       "subjects": [
         "text::is_canonical_relative_path"
       ],
-      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : \u2203 b, s.val.head? = some b \u2227 b.val \u2260 47"
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∃ b, s.val.head? = some b ∧ b.val ≠ 47"
     },
     {
       "name": "mneme_kernel.text.canonical_path_no_trailing_slash",
@@ -891,7 +891,7 @@
       "subjects": [
         "text::is_canonical_relative_path"
       ],
-      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : \u2203 b, s.val.getLast? = some b \u2227 b.val \u2260 47"
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∃ b, s.val.getLast? = some b ∧ b.val ≠ 47"
     },
     {
       "name": "mneme_kernel.text.canonical_path_no_empty_segment",
@@ -899,7 +899,7 @@
       "subjects": [
         "text::is_canonical_relative_path"
       ],
-      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : \u2200 i a b, s.val[i]? = some a \u2192 s.val[i + 1]? = some b \u2192 \u00ac (a.val = 47 \u2227 b.val = 47)"
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∀ i a b, s.val[i]? = some a → s.val[i + 1]? = some b → ¬ (a.val = 47 ∧ b.val = 47)"
     },
     {
       "name": "mneme_kernel.text.canonical_path_no_dot_segments",
@@ -907,7 +907,7 @@
       "subjects": [
         "text::is_canonical_relative_path"
       ],
-      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : \u2200 seg \u2208 segments s.val, seg.map UScalar.val \u2260 [46] \u2227 seg.map UScalar.val \u2260 [46, 46]"
+      "statement": "(s : Slice U8) (h : is_canonical_relative_path s = ok true) : ∀ seg ∈ segments s.val, seg.map UScalar.val ≠ [46] ∧ seg.map UScalar.val ≠ [46, 46]"
     },
     {
       "name": "mneme_kernel.verdict.merge_total",
@@ -915,7 +915,7 @@
       "subjects": [
         "verdict::merge"
       ],
-      "statement": "(a b : Status) : \u2203 r, merge a b = ok r"
+      "statement": "(a b : Status) : ∃ r, merge a b = ok r"
     },
     {
       "name": "mneme_kernel.verdict.merge_comm",
@@ -924,7 +924,7 @@
         "verdict::merge",
         "verdict::severity"
       ],
-      "statement": "(a b : Status) : \u2203 r, merge a b = ok r \u2227 merge b a = ok r"
+      "statement": "(a b : Status) : ∃ r, merge a b = ok r ∧ merge b a = ok r"
     },
     {
       "name": "mneme_kernel.verdict.merge_assoc",
@@ -932,7 +932,7 @@
       "subjects": [
         "verdict::merge"
       ],
-      "statement": "(a b c : Status) : \u2203 ab bc r, merge a b = ok ab \u2227 merge b c = ok bc \u2227 merge ab c = ok r \u2227 merge a bc = ok r"
+      "statement": "(a b c : Status) : ∃ ab bc r, merge a b = ok ab ∧ merge b c = ok bc ∧ merge ab c = ok r ∧ merge a bc = ok r"
     },
     {
       "name": "mneme_kernel.verdict.merge_idem",
@@ -948,7 +948,7 @@
       "subjects": [
         "verdict::merge"
       ],
-      "statement": "(a : Status) : merge Status.Passed a = ok a \u2227 merge a Status.Passed = ok a"
+      "statement": "(a : Status) : merge Status.Passed a = ok a ∧ merge a Status.Passed = ok a"
     },
     {
       "name": "mneme_kernel.verdict.merge_failed_absorbs",
@@ -956,7 +956,7 @@
       "subjects": [
         "verdict::merge"
       ],
-      "statement": "(a : Status) : merge Status.Failed a = ok Status.Failed \u2227 merge a Status.Failed = ok Status.Failed"
+      "statement": "(a : Status) : merge Status.Failed a = ok Status.Failed ∧ merge a Status.Failed = ok Status.Failed"
     },
     {
       "name": "mneme_kernel.verdict.merge_eq_passed_iff",
@@ -965,7 +965,7 @@
         "verdict::merge",
         "verdict::severity"
       ],
-      "statement": "(a b : Status) : (\u2203 r, merge a b = ok r) \u2227 (merge a b = ok Status.Passed \u2194 a = Status.Passed \u2227 b = Status.Passed)"
+      "statement": "(a b : Status) : (∃ r, merge a b = ok r) ∧ (merge a b = ok Status.Passed ↔ a = Status.Passed ∧ b = Status.Passed)"
     },
     {
       "name": "mneme_kernel.verdict.case_status_failed",
@@ -981,7 +981,7 @@
       "subjects": [
         "verdict::case_status"
       ],
-      "statement": "(declaration : SkipDeclaration) (observed : Status) : (\u2203 r, case_status declaration observed = ok r) \u2227 (case_status declaration observed = ok Status.Passed \u2194 declaration = SkipDeclaration.NotDeclared \u2227 observed = Status.Passed)"
+      "statement": "(declaration : SkipDeclaration) (observed : Status) : (∃ r, case_status declaration observed = ok r) ∧ (case_status declaration observed = ok Status.Passed ↔ declaration = SkipDeclaration.NotDeclared ∧ observed = Status.Passed)"
     },
     {
       "name": "mneme_kernel.verdict.aggregate_total",
@@ -989,7 +989,7 @@
       "subjects": [
         "verdict::aggregate"
       ],
-      "statement": "(s : Slice Status) : \u2203 r, aggregate s = ok r"
+      "statement": "(s : Slice Status) : ∃ r, aggregate s = ok r"
     },
     {
       "name": "mneme_kernel.verdict.aggregate_empty",
@@ -1005,7 +1005,7 @@
       "subjects": [
         "verdict::aggregate"
       ],
-      "statement": "(s : Slice Status) : (\u2203 r, aggregate s = ok r) \u2227 (aggregate s = ok Status.Passed \u2194 s.val \u2260 [] \u2227 \u2200 x \u2208 s.val, x = Status.Passed)"
+      "statement": "(s : Slice Status) : (∃ r, aggregate s = ok r) ∧ (aggregate s = ok Status.Passed ↔ s.val ≠ [] ∧ ∀ x ∈ s.val, x = Status.Passed)"
     },
     {
       "name": "mneme_kernel.verdict.aggregate_failed_iff",
@@ -1013,7 +1013,7 @@
       "subjects": [
         "verdict::aggregate"
       ],
-      "statement": "(s : Slice Status) : (\u2203 r, aggregate s = ok r) \u2227 (aggregate s = ok Status.Failed \u2194 Status.Failed \u2208 s.val)"
+      "statement": "(s : Slice Status) : (∃ r, aggregate s = ok r) ∧ (aggregate s = ok Status.Failed ↔ Status.Failed ∈ s.val)"
     },
     {
       "name": "mneme_kernel.verdict.acceptance_satisfied_iff",
@@ -1021,7 +1021,7 @@
       "subjects": [
         "verdict::acceptance_satisfied"
       ],
-      "statement": "(s : Slice Status) : (\u2203 b, acceptance_satisfied s = ok b) \u2227 (acceptance_satisfied s = ok true \u2194 s.val \u2260 [] \u2227 \u2200 x \u2208 s.val, x = Status.Passed)"
+      "statement": "(s : Slice Status) : (∃ b, acceptance_satisfied s = ok b) ∧ (acceptance_satisfied s = ok true ↔ s.val ≠ [] ∧ ∀ x ∈ s.val, x = Status.Passed)"
     },
     {
       "name": "mneme_kernel.verdict.acceptance_not_satisfied_when_empty",
@@ -1037,7 +1037,7 @@
       "subjects": [
         "admission::assertion_admissible"
       ],
-      "statement": "(input : AssertionAdmissionInput) : \u2203 admitted, assertion_admissible input = ok admitted"
+      "statement": "(input : AssertionAdmissionInput) : ∃ admitted, assertion_admissible input = ok admitted"
     },
     {
       "name": "mneme_kernel.admission.assertion_admissible_iff",
@@ -1045,7 +1045,7 @@
       "subjects": [
         "admission::assertion_admissible"
       ],
-      "statement": "(input : AssertionAdmissionInput) : assertion_admissible input = ok true \u2194 input.has_accepted_decision = true \u2227 input.has_current_basis = true \u2227 input.suppressed = false \u2227 input.subject_live = true"
+      "statement": "(input : AssertionAdmissionInput) : assertion_admissible input = ok true ↔ input.has_accepted_decision = true ∧ input.has_current_basis = true ∧ input.suppressed = false ∧ input.subject_live = true"
     },
     {
       "name": "mneme_kernel.admission.suppressed_assertion_never_admitted",
@@ -1085,7 +1085,7 @@
       "subjects": [
         "admission::non_monotonic_rule_admissible"
       ],
-      "statement": "(coverage : completeness.Coverage) : \u2203 admitted, non_monotonic_rule_admissible coverage = ok admitted"
+      "statement": "(coverage : completeness.Coverage) : ∃ admitted, non_monotonic_rule_admissible coverage = ok admitted"
     },
     {
       "name": "mneme_kernel.admission.non_monotonic_rule_admissible_iff",
@@ -1093,7 +1093,7 @@
       "subjects": [
         "admission::non_monotonic_rule_admissible"
       ],
-      "statement": "(coverage : completeness.Coverage) : non_monotonic_rule_admissible coverage = ok true \u2194 coverage = completeness.Coverage.Complete"
+      "statement": "(coverage : completeness.Coverage) : non_monotonic_rule_admissible coverage = ok true ↔ coverage = completeness.Coverage.Complete"
     },
     {
       "name": "mneme_kernel.admission.incomplete_coverage_never_admits_non_monotonic",
@@ -1101,7 +1101,7 @@
       "subjects": [
         "admission::non_monotonic_rule_admissible"
       ],
-      "statement": "(coverage : completeness.Coverage) (h : coverage \u2260 completeness.Coverage.Complete) : non_monotonic_rule_admissible coverage = ok false"
+      "statement": "(coverage : completeness.Coverage) (h : coverage ≠ completeness.Coverage.Complete) : non_monotonic_rule_admissible coverage = ok false"
     },
     {
       "name": "mneme_kernel.capability.authority_rank_order",
@@ -1109,7 +1109,7 @@
       "subjects": [
         "capability::authority_rank"
       ],
-      "statement": ": authority_rank Authority.ReadOnly = ok 1#u8 \u2227 authority_rank Authority.SyncPull = ok 2#u8 \u2227 authority_rank Authority.SyncPush = ok 3#u8"
+      "statement": ": authority_rank Authority.ReadOnly = ok 1#u8 ∧ authority_rank Authority.SyncPull = ok 2#u8 ∧ authority_rank Authority.SyncPush = ok 3#u8"
     },
     {
       "name": "mneme_kernel.capability.authority_permits_iff",
@@ -1118,7 +1118,7 @@
         "capability::authority_permits",
         "capability::authority_attenuates"
       ],
-      "statement": "(held required : Authority) : \u2203 r, authority_permits held required = ok r \u2227 (r = true \u2194 authority_attenuates held required = ok true)"
+      "statement": "(held required : Authority) : ∃ r, authority_permits held required = ok r ∧ (r = true ↔ authority_attenuates held required = ok true)"
     },
     {
       "name": "mneme_kernel.capability.authority_attenuates_refl",
@@ -1142,7 +1142,7 @@
       "subjects": [
         "capability::digest_in_slice"
       ],
-      "statement": "(needle : hashing.Digest) (haystack : Slice hashing.Digest) : \u2203 found, digest_in_slice needle haystack = ok found \u2227 (found = true \u2194 needle \u2208 haystack.val)"
+      "statement": "(needle : hashing.Digest) (haystack : Slice hashing.Digest) : ∃ found, digest_in_slice needle haystack = ok found ∧ (found = true ↔ needle ∈ haystack.val)"
     },
     {
       "name": "mneme_kernel.capability.slice_is_subset_iff",
@@ -1150,7 +1150,7 @@
       "subjects": [
         "capability::slice_is_subset"
       ],
-      "statement": "(child parent : Slice hashing.Digest) : \u2203 ok_sub, slice_is_subset child parent = ok ok_sub \u2227 (ok_sub = true \u2194 \u2200 x, x \u2208 child.val \u2192 x \u2208 parent.val)"
+      "statement": "(child parent : Slice hashing.Digest) : ∃ ok_sub, slice_is_subset child parent = ok ok_sub ∧ (ok_sub = true ↔ ∀ x, x ∈ child.val → x ∈ parent.val)"
     },
     {
       "name": "mneme_kernel.capability.scope_subset_total",
@@ -1158,7 +1158,7 @@
       "subjects": [
         "capability::scope_subset"
       ],
-      "statement": "(child_mode : ScopeMode) (child_scopes : Slice hashing.Digest) (parent_mode : ScopeMode) (parent_scopes : Slice hashing.Digest) : \u2203 allowed, scope_subset child_mode child_scopes parent_mode parent_scopes = ok allowed"
+      "statement": "(child_mode : ScopeMode) (child_scopes : Slice hashing.Digest) (parent_mode : ScopeMode) (parent_scopes : Slice hashing.Digest) : ∃ allowed, scope_subset child_mode child_scopes parent_mode parent_scopes = ok allowed"
     },
     {
       "name": "mneme_kernel.capability.scope_subset_iff",
@@ -1166,7 +1166,7 @@
       "subjects": [
         "capability::scope_subset"
       ],
-      "statement": "(child_mode : ScopeMode) (child_scopes : Slice hashing.Digest) (parent_mode : ScopeMode) (parent_scopes : Slice hashing.Digest) : scope_subset child_mode child_scopes parent_mode parent_scopes = ok true \u2194 (child_mode = ScopeMode.Wildcard \u2227 parent_mode = ScopeMode.Wildcard) \u2228 (child_mode = ScopeMode.Explicit \u2227 child_scopes.val \u2260 [] \u2227 parent_mode = ScopeMode.Wildcard) \u2228 (child_mode = ScopeMode.Explicit \u2227 parent_mode = ScopeMode.Explicit \u2227 child_scopes.val \u2260 [] \u2227 parent_scopes.val \u2260 [] \u2227 \u2200 x, x \u2208 child_scopes.val \u2192 x \u2208 parent_scopes.val)"
+      "statement": "(child_mode : ScopeMode) (child_scopes : Slice hashing.Digest) (parent_mode : ScopeMode) (parent_scopes : Slice hashing.Digest) : scope_subset child_mode child_scopes parent_mode parent_scopes = ok true ↔ (child_mode = ScopeMode.Wildcard ∧ parent_mode = ScopeMode.Wildcard) ∨ (child_mode = ScopeMode.Explicit ∧ child_scopes.val ≠ [] ∧ parent_mode = ScopeMode.Wildcard) ∨ (child_mode = ScopeMode.Explicit ∧ parent_mode = ScopeMode.Explicit ∧ child_scopes.val ≠ [] ∧ parent_scopes.val ≠ [] ∧ ∀ x, x ∈ child_scopes.val → x ∈ parent_scopes.val)"
     },
     {
       "name": "mneme_kernel.capability.scope_subset_trans",
@@ -1182,7 +1182,7 @@
       "subjects": [
         "capability::attenuation_valid"
       ],
-      "statement": "(parent : LinkPolicy) (parent_scopes : Slice hashing.Digest) (child : LinkPolicy) (child_scopes : Slice hashing.Digest) (depth max_depth : U8) : \u2203 ok_att, attenuation_valid parent parent_scopes child child_scopes depth max_depth = ok ok_att"
+      "statement": "(parent : LinkPolicy) (parent_scopes : Slice hashing.Digest) (child : LinkPolicy) (child_scopes : Slice hashing.Digest) (depth max_depth : U8) : ∃ ok_att, attenuation_valid parent parent_scopes child child_scopes depth max_depth = ok ok_att"
     },
     {
       "name": "mneme_kernel.capability.attenuation_valid_iff",
@@ -1190,7 +1190,7 @@
       "subjects": [
         "capability::attenuation_valid"
       ],
-      "statement": "(parent : LinkPolicy) (parent_scopes : Slice hashing.Digest) (child : LinkPolicy) (child_scopes : Slice hashing.Digest) (depth max_depth : U8) : attenuation_valid parent parent_scopes child child_scopes depth max_depth = ok true \u2194 child.vault_id = parent.vault_id \u2227 authority_attenuates parent.authority child.authority = ok true \u2227 scope_subset child.scope_mode child_scopes parent.scope_mode parent_scopes = ok true \u2227 child.expires_at.val \u2264 parent.expires_at.val \u2227 child.remaining_depth.val < parent.remaining_depth.val \u2227 depth.val \u2264 max_depth.val"
+      "statement": "(parent : LinkPolicy) (parent_scopes : Slice hashing.Digest) (child : LinkPolicy) (child_scopes : Slice hashing.Digest) (depth max_depth : U8) : attenuation_valid parent parent_scopes child child_scopes depth max_depth = ok true ↔ child.vault_id = parent.vault_id ∧ authority_attenuates parent.authority child.authority = ok true ∧ scope_subset child.scope_mode child_scopes parent.scope_mode parent_scopes = ok true ∧ child.expires_at.val ≤ parent.expires_at.val ∧ child.remaining_depth.val < parent.remaining_depth.val ∧ depth.val ≤ max_depth.val"
     },
     {
       "name": "mneme_kernel.capability.chain_non_escalation",
@@ -1200,7 +1200,7 @@
         "capability::authority_attenuates",
         "capability::scope_subset"
       ],
-      "statement": "(max_depth : U8) (root leaf : LinkPolicy \u00d7 Slice hashing.Digest) (middle : List (LinkPolicy \u00d7 Slice hashing.Digest)) (hvalid : ValidChain max_depth (root :: (middle ++ [leaf]))) : leaf.1.vault_id = root.1.vault_id \u2227 authority_attenuates root.1.authority leaf.1.authority = ok true \u2227 scope_subset leaf.1.scope_mode leaf.2 root.1.scope_mode root.2 = ok true \u2227 leaf.1.expires_at.val \u2264 root.1.expires_at.val \u2227 leaf.1.remaining_depth.val < root.1.remaining_depth.val"
+      "statement": "(max_depth : U8) (root leaf : LinkPolicy × Slice hashing.Digest) (middle : List (LinkPolicy × Slice hashing.Digest)) (hvalid : ValidChain max_depth (root :: (middle ++ [leaf]))) : leaf.1.vault_id = root.1.vault_id ∧ authority_attenuates root.1.authority leaf.1.authority = ok true ∧ scope_subset leaf.1.scope_mode leaf.2 root.1.scope_mode root.2 = ok true ∧ leaf.1.expires_at.val ≤ root.1.expires_at.val ∧ leaf.1.remaining_depth.val < root.1.remaining_depth.val"
     },
     {
       "name": "mneme_kernel.capability.token_in_revocations_iff",
@@ -1208,7 +1208,7 @@
       "subjects": [
         "capability::token_in_revocations"
       ],
-      "statement": "(token : U128) (revocations : Slice U128) : \u2203 found, token_in_revocations token revocations = ok found \u2227 (found = true \u2194 token \u2208 revocations.val)"
+      "statement": "(token : U128) (revocations : Slice U128) : ∃ found, token_in_revocations token revocations = ok found ∧ (found = true ↔ token ∈ revocations.val)"
     },
     {
       "name": "mneme_kernel.capability.is_revoked_iff",
@@ -1216,7 +1216,7 @@
       "subjects": [
         "capability::is_revoked"
       ],
-      "statement": "(chain_ids revocations : Slice U128) : \u2203 revoked, is_revoked chain_ids revocations = ok revoked \u2227 (revoked = true \u2194 \u2203 id, id \u2208 chain_ids.val \u2227 id \u2208 revocations.val)"
+      "statement": "(chain_ids revocations : Slice U128) : ∃ revoked, is_revoked chain_ids revocations = ok revoked ∧ (revoked = true ↔ ∃ id, id ∈ chain_ids.val ∧ id ∈ revocations.val)"
     },
     {
       "name": "mneme_kernel.capability.is_revoked_monotone",
@@ -1224,7 +1224,7 @@
       "subjects": [
         "capability::is_revoked"
       ],
-      "statement": "(chain_ids revs1 revs2 : Slice U128) (hsub : \u2200 x, x \u2208 revs1.val \u2192 x \u2208 revs2.val) (hrev : is_revoked chain_ids revs1 = ok true) : is_revoked chain_ids revs2 = ok true"
+      "statement": "(chain_ids revs1 revs2 : Slice U128) (hsub : ∀ x, x ∈ revs1.val → x ∈ revs2.val) (hrev : is_revoked chain_ids revs1 = ok true) : is_revoked chain_ids revs2 = ok true"
     },
     {
       "name": "mneme_kernel.capability.revocation_state_iff",
@@ -1232,7 +1232,7 @@
       "subjects": [
         "capability::revocation_state"
       ],
-      "statement": "(chain_ids revocations : Slice U128) : \u2203 state, revocation_state chain_ids revocations = ok state \u2227 (state = RevocationState.Revoked \u2194 \u2203 id, id \u2208 chain_ids.val \u2227 id \u2208 revocations.val)"
+      "statement": "(chain_ids revocations : Slice U128) : ∃ state, revocation_state chain_ids revocations = ok state ∧ (state = RevocationState.Revoked ↔ ∃ id, id ∈ chain_ids.val ∧ id ∈ revocations.val)"
     },
     {
       "name": "mneme_kernel.capability.merge_revocation_state_comm",
@@ -1240,7 +1240,7 @@
       "subjects": [
         "capability::merge_revocation_state"
       ],
-      "statement": "(left right : RevocationState) : \u2203 r, merge_revocation_state left right = ok r \u2227 merge_revocation_state right left = ok r"
+      "statement": "(left right : RevocationState) : ∃ r, merge_revocation_state left right = ok r ∧ merge_revocation_state right left = ok r"
     },
     {
       "name": "mneme_kernel.capability.merge_revocation_state_assoc",
@@ -1248,7 +1248,7 @@
       "subjects": [
         "capability::merge_revocation_state"
       ],
-      "statement": "(a b c : RevocationState) : \u2203 ab bc r, merge_revocation_state a b = ok ab \u2227 merge_revocation_state b c = ok bc \u2227 merge_revocation_state ab c = ok r \u2227 merge_revocation_state a bc = ok r"
+      "statement": "(a b c : RevocationState) : ∃ ab bc r, merge_revocation_state a b = ok ab ∧ merge_revocation_state b c = ok bc ∧ merge_revocation_state ab c = ok r ∧ merge_revocation_state a bc = ok r"
     },
     {
       "name": "mneme_kernel.capability.merge_revocation_state_idem",
@@ -1264,7 +1264,7 @@
       "subjects": [
         "capability::merge_revocation_state"
       ],
-      "statement": "(left right : RevocationState) (h : left = RevocationState.Revoked \u2228 right = RevocationState.Revoked) : merge_revocation_state left right = ok RevocationState.Revoked"
+      "statement": "(left right : RevocationState) (h : left = RevocationState.Revoked ∨ right = RevocationState.Revoked) : merge_revocation_state left right = ok RevocationState.Revoked"
     },
     {
       "name": "mneme_kernel.capability.is_revoked_in_merge_iff",
@@ -1272,7 +1272,7 @@
       "subjects": [
         "capability::is_revoked_in_merge"
       ],
-      "statement": "(chain_ids left right : Slice U128) : \u2203 revoked, is_revoked_in_merge chain_ids left right = ok revoked \u2227 (revoked = true \u2194 (\u2203 id, id \u2208 chain_ids.val \u2227 id \u2208 left.val) \u2228 (\u2203 id, id \u2208 chain_ids.val \u2227 id \u2208 right.val))"
+      "statement": "(chain_ids left right : Slice U128) : ∃ revoked, is_revoked_in_merge chain_ids left right = ok revoked ∧ (revoked = true ↔ (∃ id, id ∈ chain_ids.val ∧ id ∈ left.val) ∨ (∃ id, id ∈ chain_ids.val ∧ id ∈ right.val))"
     },
     {
       "name": "mneme_kernel.capability.is_revoked_in_merge_comm",
@@ -1280,7 +1280,7 @@
       "subjects": [
         "capability::is_revoked_in_merge"
       ],
-      "statement": "(chain_ids left right : Slice U128) : \u2203 revoked, is_revoked_in_merge chain_ids left right = ok revoked \u2227 is_revoked_in_merge chain_ids right left = ok revoked"
+      "statement": "(chain_ids left right : Slice U128) : ∃ revoked, is_revoked_in_merge chain_ids left right = ok revoked ∧ is_revoked_in_merge chain_ids right left = ok revoked"
     },
     {
       "name": "mneme_kernel.capability.is_revoked_in_merge_idem",
@@ -1289,7 +1289,7 @@
         "capability::is_revoked_in_merge",
         "capability::is_revoked"
       ],
-      "statement": "(chain_ids revs : Slice U128) : \u2203 revoked, is_revoked_in_merge chain_ids revs revs = ok revoked \u2227 is_revoked chain_ids revs = ok revoked"
+      "statement": "(chain_ids revs : Slice U128) : ∃ revoked, is_revoked_in_merge chain_ids revs revs = ok revoked ∧ is_revoked chain_ids revs = ok revoked"
     },
     {
       "name": "mneme_kernel.capability.is_revoked_in_merge_monotone",
@@ -1298,7 +1298,7 @@
         "capability::is_revoked_in_merge",
         "capability::is_revoked"
       ],
-      "statement": "(chain_ids left right : Slice U128) (h : is_revoked chain_ids left = ok true \u2228 is_revoked chain_ids right = ok true) : is_revoked_in_merge chain_ids left right = ok true"
+      "statement": "(chain_ids left right : Slice U128) (h : is_revoked chain_ids left = ok true ∨ is_revoked chain_ids right = ok true) : is_revoked_in_merge chain_ids left right = ok true"
     },
     {
       "name": "mneme_kernel.epistemic.rank_total",
@@ -1306,7 +1306,7 @@
       "subjects": [
         "epistemic::rank"
       ],
-      "statement": "(status : EpistemicStatus) : \u2203 r, rank status = ok r"
+      "statement": "(status : EpistemicStatus) : ∃ r, rank status = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.rank_order",
@@ -1314,7 +1314,7 @@
       "subjects": [
         "epistemic::rank"
       ],
-      "statement": ": rank EpistemicStatus.Rejected = ok 0#u8 \u2227 rank EpistemicStatus.Proposed = ok 1#u8 \u2227 rank EpistemicStatus.Accepted = ok 2#u8"
+      "statement": ": rank EpistemicStatus.Rejected = ok 0#u8 ∧ rank EpistemicStatus.Proposed = ok 1#u8 ∧ rank EpistemicStatus.Accepted = ok 2#u8"
     },
     {
       "name": "mneme_kernel.epistemic.join_total",
@@ -1322,7 +1322,7 @@
       "subjects": [
         "epistemic::join"
       ],
-      "statement": "(a b : EpistemicStatus) : \u2203 r, join a b = ok r"
+      "statement": "(a b : EpistemicStatus) : ∃ r, join a b = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.join_comm",
@@ -1330,7 +1330,7 @@
       "subjects": [
         "epistemic::join"
       ],
-      "statement": "(a b : EpistemicStatus) : \u2203 r, join a b = ok r \u2227 join b a = ok r"
+      "statement": "(a b : EpistemicStatus) : ∃ r, join a b = ok r ∧ join b a = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.join_assoc",
@@ -1338,7 +1338,7 @@
       "subjects": [
         "epistemic::join"
       ],
-      "statement": "(a b c : EpistemicStatus) : \u2203 ab bc r, join a b = ok ab \u2227 join b c = ok bc \u2227 join ab c = ok r \u2227 join a bc = ok r"
+      "statement": "(a b c : EpistemicStatus) : ∃ ab bc r, join a b = ok ab ∧ join b c = ok bc ∧ join ab c = ok r ∧ join a bc = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.join_idem",
@@ -1354,7 +1354,7 @@
       "subjects": [
         "epistemic::join"
       ],
-      "statement": "(a : EpistemicStatus) : join EpistemicStatus.Accepted a = ok a \u2227 join a EpistemicStatus.Accepted = ok a"
+      "statement": "(a : EpistemicStatus) : join EpistemicStatus.Accepted a = ok a ∧ join a EpistemicStatus.Accepted = ok a"
     },
     {
       "name": "mneme_kernel.epistemic.join_annihilator_rejected",
@@ -1362,7 +1362,7 @@
       "subjects": [
         "epistemic::join"
       ],
-      "statement": "(a : EpistemicStatus) : join EpistemicStatus.Rejected a = ok EpistemicStatus.Rejected \u2227 join a EpistemicStatus.Rejected = ok EpistemicStatus.Rejected"
+      "statement": "(a : EpistemicStatus) : join EpistemicStatus.Rejected a = ok EpistemicStatus.Rejected ∧ join a EpistemicStatus.Rejected = ok EpistemicStatus.Rejected"
     },
     {
       "name": "mneme_kernel.epistemic.join_non_promoting",
@@ -1371,7 +1371,7 @@
         "epistemic::join",
         "epistemic::rank"
       ],
-      "statement": "(a b : EpistemicStatus) : \u2203 r ra rb rr, join a b = ok r \u2227 rank a = ok ra \u2227 rank b = ok rb \u2227 rank r = ok rr \u2227 rr.val \u2264 ra.val \u2227 rr.val \u2264 rb.val"
+      "statement": "(a b : EpistemicStatus) : ∃ r ra rb rr, join a b = ok r ∧ rank a = ok ra ∧ rank b = ok rb ∧ rank r = ok rr ∧ rr.val ≤ ra.val ∧ rr.val ≤ rb.val"
     },
     {
       "name": "mneme_kernel.epistemic.union_total",
@@ -1379,7 +1379,7 @@
       "subjects": [
         "epistemic::union"
       ],
-      "statement": "(a b : EpistemicStatus) : \u2203 r, union a b = ok r"
+      "statement": "(a b : EpistemicStatus) : ∃ r, union a b = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.union_comm",
@@ -1387,7 +1387,7 @@
       "subjects": [
         "epistemic::union"
       ],
-      "statement": "(a b : EpistemicStatus) : \u2203 r, union a b = ok r \u2227 union b a = ok r"
+      "statement": "(a b : EpistemicStatus) : ∃ r, union a b = ok r ∧ union b a = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.union_assoc",
@@ -1395,7 +1395,7 @@
       "subjects": [
         "epistemic::union"
       ],
-      "statement": "(a b c : EpistemicStatus) : \u2203 ab bc r, union a b = ok ab \u2227 union b c = ok bc \u2227 union ab c = ok r \u2227 union a bc = ok r"
+      "statement": "(a b c : EpistemicStatus) : ∃ ab bc r, union a b = ok ab ∧ union b c = ok bc ∧ union ab c = ok r ∧ union a bc = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.union_idem",
@@ -1411,7 +1411,7 @@
       "subjects": [
         "epistemic::union"
       ],
-      "statement": "(a : EpistemicStatus) : union EpistemicStatus.Rejected a = ok a \u2227 union a EpistemicStatus.Rejected = ok a"
+      "statement": "(a : EpistemicStatus) : union EpistemicStatus.Rejected a = ok a ∧ union a EpistemicStatus.Rejected = ok a"
     },
     {
       "name": "mneme_kernel.epistemic.union_absorbing_accepted",
@@ -1419,7 +1419,7 @@
       "subjects": [
         "epistemic::union"
       ],
-      "statement": "(a : EpistemicStatus) : union EpistemicStatus.Accepted a = ok EpistemicStatus.Accepted \u2227 union a EpistemicStatus.Accepted = ok EpistemicStatus.Accepted"
+      "statement": "(a : EpistemicStatus) : union EpistemicStatus.Accepted a = ok EpistemicStatus.Accepted ∧ union a EpistemicStatus.Accepted = ok EpistemicStatus.Accepted"
     },
     {
       "name": "mneme_kernel.epistemic.join_distributes_over_union",
@@ -1428,7 +1428,7 @@
         "epistemic::join",
         "epistemic::union"
       ],
-      "statement": "(a b c : EpistemicStatus) : \u2203 bc ab ac r, union b c = ok bc \u2227 join a bc = ok r \u2227 join a b = ok ab \u2227 join a c = ok ac \u2227 union ab ac = ok r"
+      "statement": "(a b c : EpistemicStatus) : ∃ bc ab ac r, union b c = ok bc ∧ join a bc = ok r ∧ join a b = ok ab ∧ join a c = ok ac ∧ union ab ac = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.is_active_total",
@@ -1436,7 +1436,7 @@
       "subjects": [
         "epistemic::is_active"
       ],
-      "statement": "(status : EpistemicStatus) : \u2203 active, is_active status = ok active"
+      "statement": "(status : EpistemicStatus) : ∃ active, is_active status = ok active"
     },
     {
       "name": "mneme_kernel.epistemic.is_active_rejected_false",
@@ -1452,7 +1452,7 @@
       "subjects": [
         "epistemic::is_active"
       ],
-      "statement": "(status : EpistemicStatus) : is_active status = ok true \u2194 status \u2260 EpistemicStatus.Rejected"
+      "statement": "(status : EpistemicStatus) : is_active status = ok true ↔ status ≠ EpistemicStatus.Rejected"
     },
     {
       "name": "mneme_kernel.epistemic.negation_blocks_total",
@@ -1460,7 +1460,7 @@
       "subjects": [
         "epistemic::negation_blocks"
       ],
-      "statement": "(status : EpistemicStatus) : \u2203 blocks, negation_blocks status = ok blocks"
+      "statement": "(status : EpistemicStatus) : ∃ blocks, negation_blocks status = ok blocks"
     },
     {
       "name": "mneme_kernel.epistemic.negation_blocks_rejected_false",
@@ -1476,7 +1476,7 @@
       "subjects": [
         "epistemic::negation_blocks"
       ],
-      "statement": "(status : EpistemicStatus) : negation_blocks status = ok true \u2194 status \u2260 EpistemicStatus.Rejected"
+      "statement": "(status : EpistemicStatus) : negation_blocks status = ok true ↔ status ≠ EpistemicStatus.Rejected"
     },
     {
       "name": "mneme_kernel.epistemic.negate_total",
@@ -1484,7 +1484,7 @@
       "subjects": [
         "epistemic::negate"
       ],
-      "statement": "(status : EpistemicStatus) : \u2203 r, negate status = ok r"
+      "statement": "(status : EpistemicStatus) : ∃ r, negate status = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.negate_values",
@@ -1492,7 +1492,7 @@
       "subjects": [
         "epistemic::negate"
       ],
-      "statement": ": negate EpistemicStatus.Accepted = ok EpistemicStatus.Rejected \u2227 negate EpistemicStatus.Proposed = ok EpistemicStatus.Proposed \u2227 negate EpistemicStatus.Rejected = ok EpistemicStatus.Accepted"
+      "statement": ": negate EpistemicStatus.Accepted = ok EpistemicStatus.Rejected ∧ negate EpistemicStatus.Proposed = ok EpistemicStatus.Proposed ∧ negate EpistemicStatus.Rejected = ok EpistemicStatus.Accepted"
     },
     {
       "name": "mneme_kernel.epistemic.negate_involutive",
@@ -1500,7 +1500,7 @@
       "subjects": [
         "epistemic::negate"
       ],
-      "statement": "(a : EpistemicStatus) : \u2203 na, negate a = ok na \u2227 negate na = ok a"
+      "statement": "(a : EpistemicStatus) : ∃ na, negate a = ok na ∧ negate na = ok a"
     },
     {
       "name": "mneme_kernel.epistemic.negate_antitone",
@@ -1509,7 +1509,7 @@
         "epistemic::negate",
         "epistemic::rank"
       ],
-      "statement": "(a b : EpistemicStatus) : \u2203 ra rb na nb rna rnb, rank a = ok ra \u2227 rank b = ok rb \u2227 negate a = ok na \u2227 negate b = ok nb \u2227 rank na = ok rna \u2227 rank nb = ok rnb \u2227 (ra.val \u2264 rb.val \u2192 rnb.val \u2264 rna.val)"
+      "statement": "(a b : EpistemicStatus) : ∃ ra rb na nb rna rnb, rank a = ok ra ∧ rank b = ok rb ∧ negate a = ok na ∧ negate b = ok nb ∧ rank na = ok rna ∧ rank nb = ok rnb ∧ (ra.val ≤ rb.val → rnb.val ≤ rna.val)"
     },
     {
       "name": "mneme_kernel.epistemic.negate_de_morgan_join",
@@ -1519,7 +1519,7 @@
         "epistemic::join",
         "epistemic::union"
       ],
-      "statement": "(a b : EpistemicStatus) : \u2203 ab na nb r, join a b = ok ab \u2227 negate ab = ok r \u2227 negate a = ok na \u2227 negate b = ok nb \u2227 union na nb = ok r"
+      "statement": "(a b : EpistemicStatus) : ∃ ab na nb r, join a b = ok ab ∧ negate ab = ok r ∧ negate a = ok na ∧ negate b = ok nb ∧ union na nb = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.negate_de_morgan_union",
@@ -1529,7 +1529,7 @@
         "epistemic::join",
         "epistemic::union"
       ],
-      "statement": "(a b : EpistemicStatus) : \u2203 ab na nb r, union a b = ok ab \u2227 negate ab = ok r \u2227 negate a = ok na \u2227 negate b = ok nb \u2227 join na nb = ok r"
+      "statement": "(a b : EpistemicStatus) : ∃ ab na nb r, union a b = ok ab ∧ negate ab = ok r ∧ negate a = ok na ∧ negate b = ok nb ∧ join na nb = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.strict_negate_total",
@@ -1537,7 +1537,7 @@
       "subjects": [
         "epistemic::strict_negate"
       ],
-      "statement": "(status : EpistemicStatus) : \u2203 r, strict_negate status = ok r"
+      "statement": "(status : EpistemicStatus) : ∃ r, strict_negate status = ok r"
     },
     {
       "name": "mneme_kernel.epistemic.strict_negate_values",
@@ -1545,7 +1545,7 @@
       "subjects": [
         "epistemic::strict_negate"
       ],
-      "statement": ": strict_negate EpistemicStatus.Accepted = ok EpistemicStatus.Rejected \u2227 strict_negate EpistemicStatus.Proposed = ok EpistemicStatus.Rejected \u2227 strict_negate EpistemicStatus.Rejected = ok EpistemicStatus.Accepted"
+      "statement": ": strict_negate EpistemicStatus.Accepted = ok EpistemicStatus.Rejected ∧ strict_negate EpistemicStatus.Proposed = ok EpistemicStatus.Rejected ∧ strict_negate EpistemicStatus.Rejected = ok EpistemicStatus.Accepted"
     },
     {
       "name": "mneme_kernel.epistemic.strict_negate_le_negate",
@@ -1555,7 +1555,7 @@
         "epistemic::negate",
         "epistemic::rank"
       ],
-      "statement": "(a : EpistemicStatus) : \u2203 sn kn rsn rkn, strict_negate a = ok sn \u2227 negate a = ok kn \u2227 rank sn = ok rsn \u2227 rank kn = ok rkn \u2227 rsn.val \u2264 rkn.val"
+      "statement": "(a : EpistemicStatus) : ∃ sn kn rsn rkn, strict_negate a = ok sn ∧ negate a = ok kn ∧ rank sn = ok rsn ∧ rank kn = ok rkn ∧ rsn.val ≤ rkn.val"
     },
     {
       "name": "mneme_kernel.epistemic.kleene_negation_blocks_total",
@@ -1563,7 +1563,7 @@
       "subjects": [
         "epistemic::kleene_negation_blocks"
       ],
-      "statement": "(status : EpistemicStatus) : \u2203 blocks, kleene_negation_blocks status = ok blocks"
+      "statement": "(status : EpistemicStatus) : ∃ blocks, kleene_negation_blocks status = ok blocks"
     },
     {
       "name": "mneme_kernel.epistemic.kleene_negation_blocks_iff",
@@ -1571,7 +1571,7 @@
       "subjects": [
         "epistemic::kleene_negation_blocks"
       ],
-      "statement": "(status : EpistemicStatus) : kleene_negation_blocks status = ok true \u2194 status = EpistemicStatus.Accepted"
+      "statement": "(status : EpistemicStatus) : kleene_negation_blocks status = ok true ↔ status = EpistemicStatus.Accepted"
     },
     {
       "name": "mneme_kernel.claim.proposed_allows_any_transition",
@@ -1587,7 +1587,7 @@
       "subjects": [
         "verdict::case_status"
       ],
-      "statement": "(observed : Status) (h : observed \u2260 Status.Failed) : case_status SkipDeclaration.Declared observed = ok Status.Skipped"
+      "statement": "(observed : Status) (h : observed ≠ Status.Failed) : case_status SkipDeclaration.Declared observed = ok Status.Skipped"
     },
     {
       "name": "mneme_kernel.calm.classify_op_total",
@@ -1595,7 +1595,7 @@
       "subjects": [
         "calm::classify_op"
       ],
-      "statement": "(op : DistributedOp) : \u2203 s, classify_op op = ok s"
+      "statement": "(op : DistributedOp) : ∃ s, classify_op op = ok s"
     },
     {
       "name": "mneme_kernel.calm.classify_op_monotonic",
@@ -1603,7 +1603,7 @@
       "subjects": [
         "calm::classify_op"
       ],
-      "statement": ": classify_op DistributedOp.AppendImmutableRecord = ok CalmStratum.Monotonic \u2227 classify_op DistributedOp.MergeRevocationTombstone = ok CalmStratum.Monotonic \u2227 classify_op DistributedOp.MergeSuppression = ok CalmStratum.Monotonic \u2227 classify_op DistributedOp.PositiveFederatedDatalog = ok CalmStratum.Monotonic"
+      "statement": ": classify_op DistributedOp.AppendImmutableRecord = ok CalmStratum.Monotonic ∧ classify_op DistributedOp.MergeRevocationTombstone = ok CalmStratum.Monotonic ∧ classify_op DistributedOp.MergeSuppression = ok CalmStratum.Monotonic ∧ classify_op DistributedOp.PositiveFederatedDatalog = ok CalmStratum.Monotonic"
     },
     {
       "name": "mneme_kernel.calm.classify_op_barrier",
@@ -1611,7 +1611,7 @@
       "subjects": [
         "calm::classify_op"
       ],
-      "statement": ": classify_op DistributedOp.PromoteDecision = ok CalmStratum.Barrier \u2227 classify_op DistributedOp.NegatedFederatedDatalog = ok CalmStratum.Barrier \u2227 classify_op DistributedOp.SharedBlobPhysicalGc = ok CalmStratum.Barrier"
+      "statement": ": classify_op DistributedOp.PromoteDecision = ok CalmStratum.Barrier ∧ classify_op DistributedOp.NegatedFederatedDatalog = ok CalmStratum.Barrier ∧ classify_op DistributedOp.SharedBlobPhysicalGc = ok CalmStratum.Barrier"
     },
     {
       "name": "mneme_kernel.calm.requires_barrier_total",
@@ -1620,7 +1620,7 @@
         "calm::requires_barrier",
         "calm::classify_op"
       ],
-      "statement": "(op : DistributedOp) : \u2203 b, requires_barrier op = ok b"
+      "statement": "(op : DistributedOp) : ∃ b, requires_barrier op = ok b"
     },
     {
       "name": "mneme_kernel.calm.requires_barrier_iff",
@@ -1629,7 +1629,7 @@
         "calm::requires_barrier",
         "calm::classify_op"
       ],
-      "statement": "(op : DistributedOp) : requires_barrier op = ok true \u2194 classify_op op = ok CalmStratum.Barrier"
+      "statement": "(op : DistributedOp) : requires_barrier op = ok true ↔ classify_op op = ok CalmStratum.Barrier"
     },
     {
       "name": "mneme_kernel.calm.suppression_rank_total",
@@ -1637,7 +1637,7 @@
       "subjects": [
         "calm::suppression_rank"
       ],
-      "statement": "(level : SuppressionLevel) : \u2203 r, suppression_rank level = ok r"
+      "statement": "(level : SuppressionLevel) : ∃ r, suppression_rank level = ok r"
     },
     {
       "name": "mneme_kernel.calm.suppression_rank_order",
@@ -1645,7 +1645,7 @@
       "subjects": [
         "calm::suppression_rank"
       ],
-      "statement": ": suppression_rank SuppressionLevel.None = ok 0#u8 \u2227 suppression_rank SuppressionLevel.Withdrawn = ok 1#u8 \u2227 suppression_rank SuppressionLevel.Forgotten = ok 2#u8"
+      "statement": ": suppression_rank SuppressionLevel.None = ok 0#u8 ∧ suppression_rank SuppressionLevel.Withdrawn = ok 1#u8 ∧ suppression_rank SuppressionLevel.Forgotten = ok 2#u8"
     },
     {
       "name": "mneme_kernel.calm.join_suppression_level_total",
@@ -1654,7 +1654,7 @@
         "calm::join_suppression_level",
         "calm::suppression_rank"
       ],
-      "statement": "(left right : SuppressionLevel) : \u2203 joined, join_suppression_level left right = ok joined"
+      "statement": "(left right : SuppressionLevel) : ∃ joined, join_suppression_level left right = ok joined"
     },
     {
       "name": "mneme_kernel.calm.join_suppression_level_comm",
@@ -1663,7 +1663,7 @@
         "calm::join_suppression_level",
         "calm::suppression_rank"
       ],
-      "statement": "(left right : SuppressionLevel) : \u2203 joined, join_suppression_level left right = ok joined \u2227 join_suppression_level right left = ok joined"
+      "statement": "(left right : SuppressionLevel) : ∃ joined, join_suppression_level left right = ok joined ∧ join_suppression_level right left = ok joined"
     },
     {
       "name": "mneme_kernel.calm.join_suppression_level_assoc",
@@ -1672,7 +1672,7 @@
         "calm::join_suppression_level",
         "calm::suppression_rank"
       ],
-      "statement": "(a b c : SuppressionLevel) : \u2203 ab bc r, join_suppression_level a b = ok ab \u2227 join_suppression_level b c = ok bc \u2227 join_suppression_level ab c = ok r \u2227 join_suppression_level a bc = ok r"
+      "statement": "(a b c : SuppressionLevel) : ∃ ab bc r, join_suppression_level a b = ok ab ∧ join_suppression_level b c = ok bc ∧ join_suppression_level ab c = ok r ∧ join_suppression_level a bc = ok r"
     },
     {
       "name": "mneme_kernel.calm.join_suppression_level_idem",
@@ -1690,7 +1690,7 @@
         "calm::join_suppression_level",
         "calm::suppression_rank"
       ],
-      "statement": "(left right : SuppressionLevel) : \u2203 joined rl rr rj, join_suppression_level left right = ok joined \u2227 suppression_rank left = ok rl \u2227 suppression_rank right = ok rr \u2227 suppression_rank joined = ok rj \u2227 rl.val \u2264 rj.val \u2227 rr.val \u2264 rj.val"
+      "statement": "(left right : SuppressionLevel) : ∃ joined rl rr rj, join_suppression_level left right = ok joined ∧ suppression_rank left = ok rl ∧ suppression_rank right = ok rr ∧ suppression_rank joined = ok rj ∧ rl.val ≤ rj.val ∧ rr.val ≤ rj.val"
     },
     {
       "name": "mneme_kernel.calm.join_suppression_level_absorbing_forgotten",
@@ -1699,7 +1699,7 @@
         "calm::join_suppression_level",
         "calm::suppression_rank"
       ],
-      "statement": "(a : SuppressionLevel) : join_suppression_level SuppressionLevel.Forgotten a = ok SuppressionLevel.Forgotten \u2227 join_suppression_level a SuppressionLevel.Forgotten = ok SuppressionLevel.Forgotten"
+      "statement": "(a : SuppressionLevel) : join_suppression_level SuppressionLevel.Forgotten a = ok SuppressionLevel.Forgotten ∧ join_suppression_level a SuppressionLevel.Forgotten = ok SuppressionLevel.Forgotten"
     },
     {
       "name": "mneme_kernel.calm.join_suppression_total",
@@ -1708,7 +1708,7 @@
         "calm::join_suppression",
         "calm::join_suppression_level"
       ],
-      "statement": "(left right : SuppressionState) : \u2203 joined, join_suppression left right = ok joined"
+      "statement": "(left right : SuppressionState) : ∃ joined, join_suppression left right = ok joined"
     },
     {
       "name": "mneme_kernel.calm.join_suppression_comm",
@@ -1717,7 +1717,7 @@
         "calm::join_suppression",
         "calm::join_suppression_level"
       ],
-      "statement": "(left right : SuppressionState) : \u2203 joined, join_suppression left right = ok joined \u2227 join_suppression right left = ok joined"
+      "statement": "(left right : SuppressionState) : ∃ joined, join_suppression left right = ok joined ∧ join_suppression right left = ok joined"
     },
     {
       "name": "mneme_kernel.calm.join_suppression_assoc",
@@ -1726,7 +1726,7 @@
         "calm::join_suppression",
         "calm::join_suppression_level"
       ],
-      "statement": "(a b c : SuppressionState) : \u2203 ab bc joined, join_suppression a b = ok ab \u2227 join_suppression b c = ok bc \u2227 join_suppression ab c = ok joined \u2227 join_suppression a bc = ok joined"
+      "statement": "(a b c : SuppressionState) : ∃ ab bc joined, join_suppression a b = ok ab ∧ join_suppression b c = ok bc ∧ join_suppression ab c = ok joined ∧ join_suppression a bc = ok joined"
     },
     {
       "name": "mneme_kernel.calm.join_suppression_idem",
@@ -1744,7 +1744,7 @@
         "calm::join_suppression",
         "calm::join_suppression_level"
       ],
-      "statement": "(left right : SuppressionState) : \u2203 joined rl rr rj, join_suppression left right = ok joined \u2227 suppression_rank left.level = ok rl \u2227 suppression_rank right.level = ok rr \u2227 suppression_rank joined.level = ok rj \u2227 rl.val \u2264 rj.val \u2227 rr.val \u2264 rj.val \u2227 left.generation.val \u2264 joined.generation.val \u2227 right.generation.val \u2264 joined.generation.val"
+      "statement": "(left right : SuppressionState) : ∃ joined rl rr rj, join_suppression left right = ok joined ∧ suppression_rank left.level = ok rl ∧ suppression_rank right.level = ok rr ∧ suppression_rank joined.level = ok rj ∧ rl.val ≤ rj.val ∧ rr.val ≤ rj.val ∧ left.generation.val ≤ joined.generation.val ∧ right.generation.val ≤ joined.generation.val"
     },
     {
       "name": "mneme_kernel.calm.seal_valid_total",
@@ -1752,7 +1752,7 @@
       "subjects": [
         "calm::seal_valid"
       ],
-      "statement": "(facts : CalmSealFacts) : \u2203 valid, seal_valid facts = ok valid"
+      "statement": "(facts : CalmSealFacts) : ∃ valid, seal_valid facts = ok valid"
     },
     {
       "name": "mneme_kernel.calm.seal_valid_iff",
@@ -1760,7 +1760,7 @@
       "subjects": [
         "calm::seal_valid"
       ],
-      "statement": "(facts : CalmSealFacts) : seal_valid facts = ok true \u2194 facts.sealed = true \u2227 facts.quorum_satisfied = true \u2227 facts.epoch_matches = true"
+      "statement": "(facts : CalmSealFacts) : seal_valid facts = ok true ↔ facts.sealed = true ∧ facts.quorum_satisfied = true ∧ facts.epoch_matches = true"
     },
     {
       "name": "mneme_kernel.calm.federated_absence_established_total",
@@ -1769,7 +1769,7 @@
         "calm::federated_absence_established",
         "calm::seal_valid"
       ],
-      "statement": "(facts : FederatedNegationFacts) : \u2203 established, federated_absence_established facts = ok established"
+      "statement": "(facts : FederatedNegationFacts) : ∃ established, federated_absence_established facts = ok established"
     },
     {
       "name": "mneme_kernel.calm.federated_absence_established_iff",
@@ -1778,7 +1778,7 @@
         "calm::federated_absence_established",
         "calm::seal_valid"
       ],
-      "statement": "(facts : FederatedNegationFacts) : federated_absence_established facts = ok true \u2194 facts.local_absence_established = true \u2227 (facts.is_federated = true \u2227 facts.stratum = CalmStratum.Barrier \u2192 facts.barrier_seal.sealed = true \u2227 facts.barrier_seal.quorum_satisfied = true \u2227 facts.barrier_seal.epoch_matches = true)"
+      "statement": "(facts : FederatedNegationFacts) : federated_absence_established facts = ok true ↔ facts.local_absence_established = true ∧ (facts.is_federated = true ∧ facts.stratum = CalmStratum.Barrier → facts.barrier_seal.sealed = true ∧ facts.barrier_seal.quorum_satisfied = true ∧ facts.barrier_seal.epoch_matches = true)"
     },
     {
       "name": "mneme_kernel.calm.unsealed_federated_negation_refuses_absence",
@@ -1795,7 +1795,7 @@
       "subjects": [
         "hlc::compare"
       ],
-      "statement": "(left right : HybridTimestamp) : \u2203 ord, compare left right = ok ord"
+      "statement": "(left right : HybridTimestamp) : ∃ ord, compare left right = ok ord"
     },
     {
       "name": "mneme_kernel.hlc.compare_eq_iff",
@@ -1803,7 +1803,7 @@
       "subjects": [
         "hlc::compare"
       ],
-      "statement": "(left right : HybridTimestamp) : compare left right = ok ClockOrder.Equal \u2194 left = right"
+      "statement": "(left right : HybridTimestamp) : compare left right = ok ClockOrder.Equal ↔ left = right"
     },
     {
       "name": "mneme_kernel.hlc.is_before_total",
@@ -1812,7 +1812,7 @@
         "hlc::is_before",
         "hlc::compare"
       ],
-      "statement": "(left right : HybridTimestamp) : \u2203 b, is_before left right = ok b"
+      "statement": "(left right : HybridTimestamp) : ∃ b, is_before left right = ok b"
     },
     {
       "name": "mneme_kernel.hlc.is_before_iff",
@@ -1821,7 +1821,7 @@
         "hlc::is_before",
         "hlc::compare"
       ],
-      "statement": "(left right : HybridTimestamp) : is_before left right = ok true \u2194 left.physical_ns.val < right.physical_ns.val \u2228 (left.physical_ns.val = right.physical_ns.val \u2227 left.logical.val < right.logical.val)"
+      "statement": "(left right : HybridTimestamp) : is_before left right = ok true ↔ left.physical_ns.val < right.physical_ns.val ∨ (left.physical_ns.val = right.physical_ns.val ∧ left.logical.val < right.logical.val)"
     },
     {
       "name": "mneme_kernel.hlc.is_before_irrefl",
@@ -1848,7 +1848,7 @@
         "hlc::is_at_or_before",
         "hlc::compare"
       ],
-      "statement": "(left right : HybridTimestamp) : \u2203 b, is_at_or_before left right = ok b"
+      "statement": "(left right : HybridTimestamp) : ∃ b, is_at_or_before left right = ok b"
     },
     {
       "name": "mneme_kernel.hlc.is_at_or_before_iff",
@@ -1857,7 +1857,7 @@
         "hlc::is_at_or_before",
         "hlc::compare"
       ],
-      "statement": "(left right : HybridTimestamp) : is_at_or_before left right = ok true \u2194 left.physical_ns.val < right.physical_ns.val \u2228 (left.physical_ns.val = right.physical_ns.val \u2227 left.logical.val \u2264 right.logical.val)"
+      "statement": "(left right : HybridTimestamp) : is_at_or_before left right = ok true ↔ left.physical_ns.val < right.physical_ns.val ∨ (left.physical_ns.val = right.physical_ns.val ∧ left.logical.val ≤ right.logical.val)"
     },
     {
       "name": "mneme_kernel.hlc.within_skew_total",
@@ -1865,7 +1865,7 @@
       "subjects": [
         "hlc::within_skew"
       ],
-      "statement": "(sample_ns reference_ns max_skew_ns : I64) : \u2203 ok_skew, within_skew sample_ns reference_ns max_skew_ns = ok ok_skew"
+      "statement": "(sample_ns reference_ns max_skew_ns : I64) : ∃ ok_skew, within_skew sample_ns reference_ns max_skew_ns = ok ok_skew"
     },
     {
       "name": "mneme_kernel.hlc.within_skew_iff",
@@ -1873,7 +1873,7 @@
       "subjects": [
         "hlc::within_skew"
       ],
-      "statement": "(sample_ns reference_ns max_skew_ns : I64) : within_skew sample_ns reference_ns max_skew_ns = ok true \u2194 0 \u2264 max_skew_ns.val \u2227 sample_ns.val - reference_ns.val \u2264 max_skew_ns.val \u2227 reference_ns.val - sample_ns.val \u2264 max_skew_ns.val"
+      "statement": "(sample_ns reference_ns max_skew_ns : I64) : within_skew sample_ns reference_ns max_skew_ns = ok true ↔ 0 ≤ max_skew_ns.val ∧ sample_ns.val - reference_ns.val ≤ max_skew_ns.val ∧ reference_ns.val - sample_ns.val ≤ max_skew_ns.val"
     },
     {
       "name": "mneme_kernel.hlc.within_skew_symm",
@@ -1891,7 +1891,7 @@
         "hlc::within_skew",
         "hlc::is_before"
       ],
-      "statement": "(last : HybridTimestamp) (physical_ns max_skew_ns : I64) : \u2203 res, tick_local last physical_ns max_skew_ns = ok res"
+      "statement": "(last : HybridTimestamp) (physical_ns max_skew_ns : I64) : ∃ res, tick_local last physical_ns max_skew_ns = ok res"
     },
     {
       "name": "mneme_kernel.hlc.tick_local_causal_monotonic",
@@ -1911,7 +1911,7 @@
         "hlc::within_skew",
         "hlc::is_before"
       ],
-      "statement": "(last next : HybridTimestamp) (physical_ns max_skew_ns : I64) (h : tick_local last physical_ns max_skew_ns = ok (core.result.Result.Ok next)) : physical_ns.val \u2264 next.physical_ns.val \u2227 next.physical_ns.val - physical_ns.val \u2264 max_skew_ns.val"
+      "statement": "(last next : HybridTimestamp) (physical_ns max_skew_ns : I64) (h : tick_local last physical_ns max_skew_ns = ok (core.result.Result.Ok next)) : physical_ns.val ≤ next.physical_ns.val ∧ next.physical_ns.val - physical_ns.val ≤ max_skew_ns.val"
     },
     {
       "name": "mneme_kernel.hlc.receive_total",
@@ -1921,7 +1921,7 @@
         "hlc::within_skew",
         "hlc::is_before"
       ],
-      "statement": "(last : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) : \u2203 res, receive last physical_ns remote max_skew_ns = ok res"
+      "statement": "(last : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) : ∃ res, receive last physical_ns remote max_skew_ns = ok res"
     },
     {
       "name": "mneme_kernel.hlc.receive_rejects_excessive_skew",
@@ -1931,7 +1931,7 @@
         "hlc::within_skew",
         "hlc::is_before"
       ],
-      "statement": "(last : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (hnonneg : 0 \u2264 max_skew_ns.val) (hskew : within_skew remote.physical_ns physical_ns max_skew_ns = ok false) : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Err HlcError.ClockSkewExceeded)"
+      "statement": "(last : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (hnonneg : 0 ≤ max_skew_ns.val) (hskew : within_skew remote.physical_ns physical_ns max_skew_ns = ok false) : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Err HlcError.ClockSkewExceeded)"
     },
     {
       "name": "mneme_kernel.hlc.receive_causal_monotonic",
@@ -1941,7 +1941,7 @@
         "hlc::within_skew",
         "hlc::is_before"
       ],
-      "statement": "(last next : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (h : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Ok next)) : is_before last next = ok true \u2227 is_before remote next = ok true"
+      "statement": "(last next : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (h : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Ok next)) : is_before last next = ok true ∧ is_before remote next = ok true"
     },
     {
       "name": "mneme_kernel.hlc.receive_bounded_drift",
@@ -1951,7 +1951,7 @@
         "hlc::within_skew",
         "hlc::is_before"
       ],
-      "statement": "(last next : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (h : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Ok next)) : physical_ns.val \u2264 next.physical_ns.val \u2227 next.physical_ns.val - physical_ns.val \u2264 max_skew_ns.val"
+      "statement": "(last next : HybridTimestamp) (physical_ns : I64) (remote : HybridTimestamp) (max_skew_ns : I64) (h : receive last physical_ns remote max_skew_ns = ok (core.result.Result.Ok next)) : physical_ns.val ≤ next.physical_ns.val ∧ next.physical_ns.val - physical_ns.val ≤ max_skew_ns.val"
     },
     {
       "name": "mneme_kernel.temporal.is_valid_iff",
@@ -1967,7 +1967,7 @@
       "subjects": [
         "temporal::contains"
       ],
-      "statement": "(period : Period) (instant : I128) : contains period instant = ok (decide (period.start.val \u2264 instant.val \u2227 instant.val < period.stop.val))"
+      "statement": "(period : Period) (instant : I128) : contains period instant = ok (decide (period.start.val ≤ instant.val ∧ instant.val < period.stop.val))"
     },
     {
       "name": "mneme_kernel.temporal.validity_contains_unknown",
@@ -1985,7 +1985,7 @@
         "temporal::validity_contains",
         "temporal::contains"
       ],
-      "statement": "(period : Period) (instant : I128) : validity_contains (Validity.Known period) instant = ok (decide (period.start.val \u2264 instant.val \u2227 instant.val < period.stop.val))"
+      "statement": "(period : Period) (instant : I128) : validity_contains (Validity.Known period) instant = ok (decide (period.start.val ≤ instant.val ∧ instant.val < period.stop.val))"
     },
     {
       "name": "mneme_kernel.temporal.from_legacy_bounds_total",
@@ -1993,7 +1993,7 @@
       "subjects": [
         "temporal::from_legacy_bounds"
       ],
-      "statement": "(start stop : Option I64) : \u2203 res, from_legacy_bounds start stop = ok res"
+      "statement": "(start stop : Option I64) : ∃ res, from_legacy_bounds start stop = ok res"
     },
     {
       "name": "mneme_kernel.temporal.from_legacy_bounds_instant",
@@ -2001,7 +2001,7 @@
       "subjects": [
         "temporal::from_legacy_bounds"
       ],
-      "statement": "(t : I64) : \u2203 p, from_legacy_bounds (some t) (some t) = ok (some p) \u2227 p.start.val = t.val \u2227 p.stop.val = t.val + 1"
+      "statement": "(t : I64) : ∃ p, from_legacy_bounds (some t) (some t) = ok (some p) ∧ p.start.val = t.val ∧ p.stop.val = t.val + 1"
     },
     {
       "name": "mneme_kernel.temporal.from_legacy_bounds_inverted",
@@ -2025,7 +2025,7 @@
       "subjects": [
         "temporal::expire_bounds"
       ],
-      "statement": "(validity : Validity) (effective : I64) : \u2203 d, expire_bounds validity effective = ok d"
+      "statement": "(validity : Validity) (effective : I64) : ∃ d, expire_bounds validity effective = ok d"
     },
     {
       "name": "mneme_kernel.temporal.expire_bounds_handoff_disjoint",
@@ -2034,7 +2034,7 @@
         "temporal::expire_bounds",
         "temporal::contains"
       ],
-      "statement": "(p q : Period) (effective : I64) (h : expire_bounds (Validity.Known p) effective = ok (ExpiryDecision.Allowed q)) : q.start = p.start \u2227 q.stop.val = effective.val \u2227 q.start.val < q.stop.val \u2227 (\u2200 t : I128, t.val = effective.val \u2192 contains q t = ok false) \u2227 (\u2200 t : I128, t.val < effective.val \u2192 contains q t = contains p t)"
+      "statement": "(p q : Period) (effective : I64) (h : expire_bounds (Validity.Known p) effective = ok (ExpiryDecision.Allowed q)) : q.start = p.start ∧ q.stop.val = effective.val ∧ q.start.val < q.stop.val ∧ (∀ t : I128, t.val = effective.val → contains q t = ok false) ∧ (∀ t : I128, t.val < effective.val → contains q t = contains p t)"
     },
     {
       "name": "mneme_kernel.temporal.intersect_total",
@@ -2042,7 +2042,7 @@
       "subjects": [
         "temporal::intersect"
       ],
-      "statement": "(left right : Period) : \u2203 r, intersect left right = ok r"
+      "statement": "(left right : Period) : ∃ r, intersect left right = ok r"
     },
     {
       "name": "mneme_kernel.temporal.intersect_comm",
@@ -2059,7 +2059,7 @@
         "temporal::intersect",
         "temporal::contains"
       ],
-      "statement": "(left right r : Period) (h : intersect left right = ok (some r)) (instant : I128) : contains r instant = ok true \u2194 (contains left instant = ok true \u2227 contains right instant = ok true)"
+      "statement": "(left right r : Period) (h : intersect left right = ok (some r)) (instant : I128) : contains r instant = ok true ↔ (contains left instant = ok true ∧ contains right instant = ok true)"
     },
     {
       "name": "mneme_kernel.temporal.intersect_option_none_left",
@@ -2091,7 +2091,7 @@
       "subjects": [
         "temporal::intersect_option"
       ],
-      "statement": "(a b c : Option Period) : (do let ab \u2190 intersect_option a b; intersect_option ab c) = (do let bc \u2190 intersect_option b c; intersect_option a bc)"
+      "statement": "(a b c : Option Period) : (do let ab ← intersect_option a b; intersect_option ab c) = (do let bc ← intersect_option b c; intersect_option a bc)"
     },
     {
       "name": "mneme_kernel.temporal.can_coalesce_symm",
@@ -2108,7 +2108,7 @@
         "temporal::coalesce_pair",
         "temporal::contains"
       ],
-      "statement": "(left right merged : Period) (h : coalesce_pair left right = ok (some merged)) (instant : I128) : contains merged instant = ok true \u2194 (contains left instant = ok true \u2228 contains right instant = ok true)"
+      "statement": "(left right merged : Period) (h : coalesce_pair left right = ok (some merged)) (instant : I128) : contains merged instant = ok true ↔ (contains left instant = ok true ∨ contains right instant = ok true)"
     },
     {
       "name": "mneme_kernel.temporal.interval_set_contains_iff",
@@ -2117,7 +2117,7 @@
         "temporal::interval_set_contains",
         "temporal::contains"
       ],
-      "statement": "(set : IntervalSet) (instant : I128) : \u2203 b, interval_set_contains set instant = ok b \u2227 (b = true \u2194 PrefixContains set.periods set.periods.val.length instant)"
+      "statement": "(set : IntervalSet) (instant : I128) : ∃ b, interval_set_contains set instant = ok b ∧ (b = true ↔ PrefixContains set.periods set.periods.val.length instant)"
     },
     {
       "name": "mneme_kernel.temporal.interval_set_is_coalesced_iff",
@@ -2125,7 +2125,7 @@
       "subjects": [
         "temporal::interval_set_is_coalesced"
       ],
-      "statement": "(set : IntervalSet) : \u2203 b, interval_set_is_coalesced set = ok b \u2227 (b = true \u2194 PrefixCoalesced set.periods set.periods.val.length)"
+      "statement": "(set : IntervalSet) : ∃ b, interval_set_is_coalesced set = ok b ∧ (b = true ↔ PrefixCoalesced set.periods set.periods.val.length)"
     },
     {
       "name": "mneme_kernel.temporal.coalesce_sorted_total",
@@ -2133,7 +2133,7 @@
       "subjects": [
         "temporal::coalesce_sorted"
       ],
-      "statement": "(periods : Slice Period) : \u2203 len out, coalesce_sorted periods = ok (len, out) \u2227 len.val \u2264 periods.val.length \u2227 out.val.length = periods.val.length"
+      "statement": "(periods : Slice Period) : ∃ len out, coalesce_sorted periods = ok (len, out) ∧ len.val ≤ periods.val.length ∧ out.val.length = periods.val.length"
     },
     {
       "name": "mneme_kernel.temporal.coalesce_sorted_snapshot_equiv",
@@ -2141,7 +2141,7 @@
       "subjects": [
         "temporal::coalesce_sorted"
       ],
-      "statement": "(periods : Slice Period) (hsorted : StartSorted periods) : \u2203 len out, coalesce_sorted periods = ok (len, out) \u2227 len.val \u2264 periods.val.length \u2227 out.val.length = periods.val.length \u2227 PrefixCoalesced out len.val \u2227 (\u2200 t : I128, PrefixContains periods periods.val.length t \u2194 PrefixContains out len.val t)"
+      "statement": "(periods : Slice Period) (hsorted : StartSorted periods) : ∃ len out, coalesce_sorted periods = ok (len, out) ∧ len.val ≤ periods.val.length ∧ out.val.length = periods.val.length ∧ PrefixCoalesced out len.val ∧ (∀ t : I128, PrefixContains periods periods.val.length t ↔ PrefixContains out len.val t)"
     },
     {
       "name": "mneme_kernel.temporal.coalesce_sorted_idempotent",
@@ -2157,7 +2157,7 @@
       "subjects": [
         "temporal::allen_relation"
       ],
-      "statement": "(left right : Period) : \u2203 r, allen_relation left right = ok r \u2227 (r.isSome = true \u2194 left.start.val < left.stop.val \u2227 right.start.val < right.stop.val)"
+      "statement": "(left right : Period) : ∃ r, allen_relation left right = ok r ∧ (r.isSome = true ↔ left.start.val < left.stop.val ∧ right.start.val < right.stop.val)"
     },
     {
       "name": "mneme_kernel.temporal.allen_holds_unknown_left",
@@ -2181,7 +2181,7 @@
       "subjects": [
         "temporal::window_valid"
       ],
-      "statement": "(window : MetricWindow) : window_valid window = ok (decide (0 \u2264 window.lower.val \u2227 window.lower.val \u2264 window.upper.val))"
+      "statement": "(window : MetricWindow) : window_valid window = ok (decide (0 ≤ window.lower.val ∧ window.lower.val ≤ window.upper.val))"
     },
     {
       "name": "mneme_kernel.temporal.diamond_minus_total",
@@ -2189,7 +2189,7 @@
       "subjects": [
         "temporal::diamond_minus"
       ],
-      "statement": "(validity : Validity) (window : MetricWindow) : \u2203 r, diamond_minus validity window = ok r"
+      "statement": "(validity : Validity) (window : MetricWindow) : ∃ r, diamond_minus validity window = ok r"
     },
     {
       "name": "mneme_kernel.temporal.diamond_minus_unknown",
@@ -2205,7 +2205,7 @@
       "subjects": [
         "temporal::box_minus"
       ],
-      "statement": "(validity : Validity) (window : MetricWindow) : \u2203 r, box_minus validity window = ok r"
+      "statement": "(validity : Validity) (window : MetricWindow) : ∃ r, box_minus validity window = ok r"
     },
     {
       "name": "mneme_kernel.temporal.box_minus_unknown",
@@ -2221,7 +2221,7 @@
       "subjects": [
         "temporal::since"
       ],
-      "statement": "(maintained trigger : Validity) (window : MetricWindow) : \u2203 r, since maintained trigger window = ok r"
+      "statement": "(maintained trigger : Validity) (window : MetricWindow) : ∃ r, since maintained trigger window = ok r"
     },
     {
       "name": "mneme_kernel.temporal.since_unknown_left",
@@ -2245,7 +2245,7 @@
       "subjects": [
         "contraction::origin_rank"
       ],
-      "statement": "(tier : OriginTier) : \u2203 r, origin_rank tier = ok r"
+      "statement": "(tier : OriginTier) : ∃ r, origin_rank tier = ok r"
     },
     {
       "name": "mneme_kernel.contraction.origin_rank_order",
@@ -2253,7 +2253,7 @@
       "subjects": [
         "contraction::origin_rank"
       ],
-      "statement": ": origin_rank OriginTier.ModelExtraction = ok 0#u8 \u2227 origin_rank OriginTier.Imported = ok 1#u8 \u2227 origin_rank OriginTier.Authored = ok 2#u8"
+      "statement": ": origin_rank OriginTier.ModelExtraction = ok 0#u8 ∧ origin_rank OriginTier.Imported = ok 1#u8 ∧ origin_rank OriginTier.Authored = ok 2#u8"
     },
     {
       "name": "mneme_kernel.contraction.less_entrenched_total",
@@ -2261,7 +2261,7 @@
       "subjects": [
         "contraction::less_entrenched"
       ],
-      "statement": "(a b : EntrenchmentKey) : \u2203 r, less_entrenched a b = ok r"
+      "statement": "(a b : EntrenchmentKey) : ∃ r, less_entrenched a b = ok r"
     },
     {
       "name": "mneme_kernel.contraction.less_entrenched_irrefl",
@@ -2293,7 +2293,7 @@
       "subjects": [
         "contraction::less_entrenched"
       ],
-      "statement": "(a b : EntrenchmentKey) (hne : a \u2260 b) : less_entrenched a b = ok true \u2228 less_entrenched b a = ok true"
+      "statement": "(a b : EntrenchmentKey) (hne : a ≠ b) : less_entrenched a b = ok true ∨ less_entrenched b a = ok true"
     },
     {
       "name": "mneme_kernel.contraction.select_incision_total",
@@ -2301,7 +2301,7 @@
       "subjects": [
         "contraction::select_incision"
       ],
-      "statement": "(members : Slice EntrenchmentKey) (span : RangeSpan) : \u2203 r, select_incision members span = ok r"
+      "statement": "(members : Slice EntrenchmentKey) (span : RangeSpan) : ∃ r, select_incision members span = ok r"
     },
     {
       "name": "mneme_kernel.contraction.select_incision_none_of_invalid",
@@ -2309,7 +2309,7 @@
       "subjects": [
         "contraction::select_incision"
       ],
-      "statement": "(members : Slice EntrenchmentKey) (span : RangeSpan) (hbad : span.len.val = 0 \u2228 members.length < span.start.val + span.len.val) : select_incision members span = ok none"
+      "statement": "(members : Slice EntrenchmentKey) (span : RangeSpan) (hbad : span.len.val = 0 ∨ members.length < span.start.val + span.len.val) : select_incision members span = ok none"
     },
     {
       "name": "mneme_kernel.contraction.select_incision_mem_and_min",
@@ -2317,7 +2317,7 @@
       "subjects": [
         "contraction::select_incision"
       ],
-      "statement": "(members : Slice EntrenchmentKey) (span : RangeSpan) (hpos : 0 < span.len.val) (hle : span.start.val + span.len.val \u2264 members.length) : \u2203 chosen, select_incision members span = ok (some chosen) \u2227 (\u2203 j, span.start.val \u2264 j \u2227 j < span.start.val + span.len.val \u2227 members.val[j]? = some chosen) \u2227 (\u2200 j, span.start.val \u2264 j \u2192 j < span.start.val + span.len.val \u2192 \u2200 x, members.val[j]? = some x \u2192 less_entrenched x chosen = ok false)"
+      "statement": "(members : Slice EntrenchmentKey) (span : RangeSpan) (hpos : 0 < span.len.val) (hle : span.start.val + span.len.val ≤ members.length) : ∃ chosen, select_incision members span = ok (some chosen) ∧ (∃ j, span.start.val ≤ j ∧ j < span.start.val + span.len.val ∧ members.val[j]? = some chosen) ∧ (∀ j, span.start.val ≤ j → j < span.start.val + span.len.val → ∀ x, members.val[j]? = some x → less_entrenched x chosen = ok false)"
     },
     {
       "name": "mneme_kernel.contraction.select_incision_uniform",
@@ -2325,7 +2325,7 @@
       "subjects": [
         "contraction::select_incision"
       ],
-      "statement": "(members1 members2 : Slice EntrenchmentKey) (span1 span2 : RangeSpan) (hpos1 : 0 < span1.len.val) (hle1 : span1.start.val + span1.len.val \u2264 members1.length) (hpos2 : 0 < span2.len.val) (hle2 : span2.start.val + span2.len.val \u2264 members2.length) (hsame : \u2200 x, (\u2203 j, span1.start.val \u2264 j \u2227 j < span1.start.val + span1.len.val \u2227 members1.val[j]? = some x) \u2194 (\u2203 j, span2.start.val \u2264 j \u2227 j < span2.start.val + span2.len.val \u2227 members2.val[j]? = some x)) : select_incision members1 span1 = select_incision members2 span2"
+      "statement": "(members1 members2 : Slice EntrenchmentKey) (span1 span2 : RangeSpan) (hpos1 : 0 < span1.len.val) (hle1 : span1.start.val + span1.len.val ≤ members1.length) (hpos2 : 0 < span2.len.val) (hle2 : span2.start.val + span2.len.val ≤ members2.length) (hsame : ∀ x, (∃ j, span1.start.val ≤ j ∧ j < span1.start.val + span1.len.val ∧ members1.val[j]? = some x) ↔ (∃ j, span2.start.val ≤ j ∧ j < span2.start.val + span2.len.val ∧ members2.val[j]? = some x)) : select_incision members1 span1 = select_incision members2 span2"
     },
     {
       "name": "mneme_kernel.contraction.is_incised_total",
@@ -2333,7 +2333,7 @@
       "subjects": [
         "contraction::is_incised"
       ],
-      "statement": "(record_id : U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : \u2203 r, is_incised record_id members spans = ok r"
+      "statement": "(record_id : U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : ∃ r, is_incised record_id members spans = ok r"
     },
     {
       "name": "mneme_kernel.contraction.is_incised_iff",
@@ -2341,7 +2341,7 @@
       "subjects": [
         "contraction::is_incised"
       ],
-      "statement": "(record_id : U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : is_incised record_id members spans = ok true \u2194 \u2203 s \u2208 spans.val, \u2203 chosen, select_incision members s = ok (some chosen) \u2227 chosen.record_id = record_id"
+      "statement": "(record_id : U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : is_incised record_id members spans = ok true ↔ ∃ s ∈ spans.val, ∃ chosen, select_incision members s = ok (some chosen) ∧ chosen.record_id = record_id"
     },
     {
       "name": "mneme_kernel.contraction.survives_incision_total",
@@ -2349,7 +2349,7 @@
       "subjects": [
         "contraction::survives_incision"
       ],
-      "statement": "(record_id : U128) (base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : \u2203 r, survives_incision record_id base members spans = ok r"
+      "statement": "(record_id : U128) (base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : ∃ r, survives_incision record_id base members spans = ok r"
     },
     {
       "name": "mneme_kernel.contraction.survives_incision_inclusion",
@@ -2357,7 +2357,7 @@
       "subjects": [
         "contraction::survives_incision"
       ],
-      "statement": "(record_id : U128) (base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) (h : survives_incision record_id base members spans = ok true) : record_id \u2208 base.val"
+      "statement": "(record_id : U128) (base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) (h : survives_incision record_id base members spans = ok true) : record_id ∈ base.val"
     },
     {
       "name": "mneme_kernel.contraction.survives_incision_core_retainment",
@@ -2365,7 +2365,7 @@
       "subjects": [
         "contraction::survives_incision"
       ],
-      "statement": "(record_id : U128) (base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) (hin : record_id \u2208 base.val) (hremoved : survives_incision record_id base members spans = ok false) : \u2203 s \u2208 spans.val, 0 < s.len.val \u2227 s.start.val + s.len.val \u2264 members.length \u2227 \u2203 j, s.start.val \u2264 j \u2227 j < s.start.val + s.len.val \u2227 \u2203 k, members.val[j]? = some k \u2227 k.record_id = record_id"
+      "statement": "(record_id : U128) (base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) (hin : record_id ∈ base.val) (hremoved : survives_incision record_id base members spans = ok false) : ∃ s ∈ spans.val, 0 < s.len.val ∧ s.start.val + s.len.val ≤ members.length ∧ ∃ j, s.start.val ≤ j ∧ j < s.start.val + s.len.val ∧ ∃ k, members.val[j]? = some k ∧ k.record_id = record_id"
     },
     {
       "name": "mneme_kernel.contraction.survives_incision_uniformity",
@@ -2373,7 +2373,7 @@
       "subjects": [
         "contraction::survives_incision"
       ],
-      "statement": "(record_id : U128) (base : Slice U128) (members1 members2 : Slice EntrenchmentKey) (spans1 spans2 : Slice RangeSpan) (h12 : \u2200 s1 \u2208 spans1.val, 0 < s1.len.val \u2192 s1.start.val + s1.len.val \u2264 members1.length \u2192 \u2203 s2 \u2208 spans2.val, 0 < s2.len.val \u2227 s2.start.val + s2.len.val \u2264 members2.length \u2227 \u2200 x, (\u2203 j, s1.start.val \u2264 j \u2227 j < s1.start.val + s1.len.val \u2227 members1.val[j]? = some x) \u2194 (\u2203 j, s2.start.val \u2264 j \u2227 j < s2.start.val + s2.len.val \u2227 members2.val[j]? = some x)) (h21 : \u2200 s2 \u2208 spans2.val, 0 < s2.len.val \u2192 s2.start.val + s2.len.val \u2264 members2.length \u2192 \u2203 s1 \u2208 spans1.val, 0 < s1.len.val \u2227 s1.start.val + s1.len.val \u2264 members1.length \u2227 \u2200 x, (\u2203 j, s1.start.val \u2264 j \u2227 j < s1.start.val + s1.len.val \u2227 members1.val[j]? = some x) \u2194 (\u2203 j, s2.start.val \u2264 j \u2227 j < s2.start.val + s2.len.val \u2227 members2.val[j]? = some x)) : survives_incision record_id base members1 spans1 = survives_incision record_id base members2 spans2"
+      "statement": "(record_id : U128) (base : Slice U128) (members1 members2 : Slice EntrenchmentKey) (spans1 spans2 : Slice RangeSpan) (h12 : ∀ s1 ∈ spans1.val, 0 < s1.len.val → s1.start.val + s1.len.val ≤ members1.length → ∃ s2 ∈ spans2.val, 0 < s2.len.val ∧ s2.start.val + s2.len.val ≤ members2.length ∧ ∀ x, (∃ j, s1.start.val ≤ j ∧ j < s1.start.val + s1.len.val ∧ members1.val[j]? = some x) ↔ (∃ j, s2.start.val ≤ j ∧ j < s2.start.val + s2.len.val ∧ members2.val[j]? = some x)) (h21 : ∀ s2 ∈ spans2.val, 0 < s2.len.val → s2.start.val + s2.len.val ≤ members2.length → ∃ s1 ∈ spans1.val, 0 < s1.len.val ∧ s1.start.val + s1.len.val ≤ members1.length ∧ ∀ x, (∃ j, s1.start.val ≤ j ∧ j < s1.start.val + s1.len.val ∧ members1.val[j]? = some x) ↔ (∃ j, s2.start.val ≤ j ∧ j < s2.start.val + s2.len.val ∧ members2.val[j]? = some x)) : survives_incision record_id base members1 spans1 = survives_incision record_id base members2 spans2"
     },
     {
       "name": "mneme_kernel.contraction.any_proof_survives_total",
@@ -2381,7 +2381,7 @@
       "subjects": [
         "contraction::any_proof_survives"
       ],
-      "statement": "(base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : \u2203 r, any_proof_survives base members spans = ok r"
+      "statement": "(base : Slice U128) (members : Slice EntrenchmentKey) (spans : Slice RangeSpan) : ∃ r, any_proof_survives base members spans = ok r"
     },
     {
       "name": "mneme_kernel.contraction.any_proof_survives_false",
@@ -2397,7 +2397,7 @@
       "subjects": [
         "contraction::edge_is_grounded"
       ],
-      "statement": "(edge : SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) : \u2203 r, edge_is_grounded edge premises grounded = ok r"
+      "statement": "(edge : SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) : ∃ r, edge_is_grounded edge premises grounded = ok r"
     },
     {
       "name": "mneme_kernel.contraction.edge_is_grounded_iff",
@@ -2405,7 +2405,7 @@
       "subjects": [
         "contraction::edge_is_grounded"
       ],
-      "statement": "(edge : SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) : edge_is_grounded edge premises grounded = ok true \u2194 edge.target.val < grounded.length \u2227 0 < edge.premises.len.val \u2227 edge.premises.start.val + edge.premises.len.val \u2264 premises.length \u2227 \u2200 j, edge.premises.start.val \u2264 j \u2192 j < edge.premises.start.val + edge.premises.len.val \u2192 \u2200 p, premises.val[j]? = some p \u2192 p.val < grounded.length \u2227 grounded.val[p.val]? = some true"
+      "statement": "(edge : SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) : edge_is_grounded edge premises grounded = ok true ↔ edge.target.val < grounded.length ∧ 0 < edge.premises.len.val ∧ edge.premises.start.val + edge.premises.len.val ≤ premises.length ∧ ∀ j, edge.premises.start.val ≤ j → j < edge.premises.start.val + edge.premises.len.val → ∀ p, premises.val[j]? = some p → p.val < grounded.length ∧ grounded.val[p.val]? = some true"
     },
     {
       "name": "mneme_kernel.contraction.node_next_grounded_total",
@@ -2413,7 +2413,7 @@
       "subjects": [
         "contraction::node_next_grounded"
       ],
-      "statement": "(node : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) : \u2203 r, node_next_grounded node edges premises grounded = ok r"
+      "statement": "(node : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) : ∃ r, node_next_grounded node edges premises grounded = ok r"
     },
     {
       "name": "mneme_kernel.contraction.node_next_grounded_monotone",
@@ -2429,7 +2429,7 @@
       "subjects": [
         "contraction::node_next_grounded"
       ],
-      "statement": "(U : Nat \u2192 Prop) (node : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) (hnode : U node.val) (hinit : \u2200 i, i < grounded.length \u2192 U i \u2192 grounded.val[i]? = some false) (hedges : \u2200 e \u2208 edges.val, U e.target.val \u2192 e.premises.len.val = 0 \u2228 premises.length < e.premises.start.val + e.premises.len.val \u2228 \u2203 j, e.premises.start.val \u2264 j \u2227 j < e.premises.start.val + e.premises.len.val \u2227 \u2200 p, premises.val[j]? = some p \u2192 grounded.length \u2264 p.val \u2228 U p.val) : node_next_grounded node edges premises grounded = ok false"
+      "statement": "(U : Nat → Prop) (node : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) (hnode : U node.val) (hinit : ∀ i, i < grounded.length → U i → grounded.val[i]? = some false) (hedges : ∀ e ∈ edges.val, U e.target.val → e.premises.len.val = 0 ∨ premises.length < e.premises.start.val + e.premises.len.val ∨ ∃ j, e.premises.start.val ≤ j ∧ j < e.premises.start.val + e.premises.len.val ∧ ∀ p, premises.val[j]? = some p → grounded.length ≤ p.val ∨ U p.val) : node_next_grounded node edges premises grounded = ok false"
     },
     {
       "name": "mneme_kernel.contraction.node_next_grounded_mutual_cycle_ungrounded",
@@ -2437,7 +2437,7 @@
       "subjects": [
         "contraction::node_next_grounded"
       ],
-      "statement": "(a b : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) (ha0 : a.val < grounded.length \u2192 grounded.val[a.val]? = some false) (hb0 : b.val < grounded.length \u2192 grounded.val[b.val]? = some false) (hedges : \u2200 e \u2208 edges.val, e.target.val = a.val \u2228 e.target.val = b.val \u2192 e.premises.len.val = 0 \u2228 premises.length < e.premises.start.val + e.premises.len.val \u2228 \u2203 j, e.premises.start.val \u2264 j \u2227 j < e.premises.start.val + e.premises.len.val \u2227 \u2200 p, premises.val[j]? = some p \u2192 grounded.length \u2264 p.val \u2228 p.val = a.val \u2228 p.val = b.val) : node_next_grounded a edges premises grounded = ok false \u2227 node_next_grounded b edges premises grounded = ok false"
+      "statement": "(a b : Usize) (edges : Slice SupportEdge) (premises : Slice Usize) (grounded : Slice Bool) (ha0 : a.val < grounded.length → grounded.val[a.val]? = some false) (hb0 : b.val < grounded.length → grounded.val[b.val]? = some false) (hedges : ∀ e ∈ edges.val, e.target.val = a.val ∨ e.target.val = b.val → e.premises.len.val = 0 ∨ premises.length < e.premises.start.val + e.premises.len.val ∨ ∃ j, e.premises.start.val ≤ j ∧ j < e.premises.start.val + e.premises.len.val ∧ ∀ p, premises.val[j]? = some p → grounded.length ≤ p.val ∨ p.val = a.val ∨ p.val = b.val) : node_next_grounded a edges premises grounded = ok false ∧ node_next_grounded b edges premises grounded = ok false"
     },
     {
       "name": "mneme_kernel.history_tree.verify_inclusion_proof_total_and_spec",
@@ -2445,7 +2445,7 @@
       "subjects": [
         "historytree::verify_inclusion_proof"
       ],
-      "statement": "(check : InclusionCheck) (steps : Slice InclusionStep) : \u2203 r : Bool, verify_inclusion_proof check steps = ok r \u2227 (r = true \u2194 InclusionProofValid check steps.val)"
+      "statement": "(check : InclusionCheck) (steps : Slice InclusionStep) : ∃ r : Bool, verify_inclusion_proof check steps = ok r ∧ (r = true ↔ InclusionProofValid check steps.val)"
     },
     {
       "name": "mneme_kernel.history_tree.verify_inclusion_proof_rejects_out_of_bounds",
@@ -2453,7 +2453,7 @@
       "subjects": [
         "historytree::verify_inclusion_proof"
       ],
-      "statement": "(check : InclusionCheck) (steps : Slice InclusionStep) (h : check.tree_size = 0#u64 \u2228 check.leaf_index \u2265 check.tree_size) : verify_inclusion_proof check steps = ok false"
+      "statement": "(check : InclusionCheck) (steps : Slice InclusionStep) (h : check.tree_size = 0#u64 ∨ check.leaf_index ≥ check.tree_size) : verify_inclusion_proof check steps = ok false"
     },
     {
       "name": "mneme_kernel.history_tree.verify_inclusion_proof_singleton_iff",
@@ -2461,7 +2461,7 @@
       "subjects": [
         "historytree::verify_inclusion_proof"
       ],
-      "statement": "(check : InclusionCheck) (steps : Slice InclusionStep) (hsize : check.tree_size = 1#u64) (hidx : check.leaf_index = 0#u64) (hempty : steps.val = []) : \u2203 r : Bool, verify_inclusion_proof check steps = ok r \u2227 (r = true \u2194 check.leaf_digest = check.expected_root)"
+      "statement": "(check : InclusionCheck) (steps : Slice InclusionStep) (hsize : check.tree_size = 1#u64) (hidx : check.leaf_index = 0#u64) (hempty : steps.val = []) : ∃ r : Bool, verify_inclusion_proof check steps = ok r ∧ (r = true ↔ check.leaf_digest = check.expected_root)"
     },
     {
       "name": "mneme_kernel.history_tree.verify_consistency_proof_total_and_spec",
@@ -2469,7 +2469,7 @@
       "subjects": [
         "historytree::verify_consistency_proof"
       ],
-      "statement": "(check : ConsistencyCheck) (steps : Slice ConsistencyStep) : \u2203 r : Bool, verify_consistency_proof check steps = ok r \u2227 (r = true \u2194 ConsistencyProofValid check steps.val)"
+      "statement": "(check : ConsistencyCheck) (steps : Slice ConsistencyStep) : ∃ r : Bool, verify_consistency_proof check steps = ok r ∧ (r = true ↔ ConsistencyProofValid check steps.val)"
     },
     {
       "name": "mneme_kernel.history_tree.verify_consistency_proof_rejects_invalid_sizes",
@@ -2477,7 +2477,7 @@
       "subjects": [
         "historytree::verify_consistency_proof"
       ],
-      "statement": "(check : ConsistencyCheck) (steps : Slice ConsistencyStep) (h : check.old_size = 0#u64 \u2228 check.old_size > check.new_size) : verify_consistency_proof check steps = ok false"
+      "statement": "(check : ConsistencyCheck) (steps : Slice ConsistencyStep) (h : check.old_size = 0#u64 ∨ check.old_size > check.new_size) : verify_consistency_proof check steps = ok false"
     },
     {
       "name": "mneme_kernel.history_tree.verify_consistency_proof_reflexive_iff",
@@ -2485,7 +2485,7 @@
       "subjects": [
         "historytree::verify_consistency_proof"
       ],
-      "statement": "(check : ConsistencyCheck) (steps : Slice ConsistencyStep) (hpos : check.old_size \u2260 0#u64) (heq : check.old_size = check.new_size) : \u2203 r : Bool, verify_consistency_proof check steps = ok r \u2227 (r = true \u2194 steps.val = [] \u2227 check.old_root = check.new_root)"
+      "statement": "(check : ConsistencyCheck) (steps : Slice ConsistencyStep) (hpos : check.old_size ≠ 0#u64) (heq : check.old_size = check.new_size) : ∃ r : Bool, verify_consistency_proof check steps = ok r ∧ (r = true ↔ steps.val = [] ∧ check.old_root = check.new_root)"
     },
     {
       "name": "mneme_kernel.history_tree.equivocation_detected_iff",
@@ -2493,7 +2493,7 @@
       "subjects": [
         "historytree::equivocation_detected"
       ],
-      "statement": "(facts : EquivocationFacts) : \u2203 r : Bool, equivocation_detected facts = ok r \u2227 (r = true \u2194 facts.is_both_signed_same_origin = true \u2227 facts.first_size \u2260 0#u64 \u2227 facts.second_size \u2260 0#u64 \u2227 ((facts.first_size = facts.second_size \u2227 facts.first_root \u2260 facts.second_root) \u2228 (facts.first_size \u2260 facts.second_size \u2227 facts.consistency = ConsistencyVerdict.Inconsistent)))"
+      "statement": "(facts : EquivocationFacts) : ∃ r : Bool, equivocation_detected facts = ok r ∧ (r = true ↔ facts.is_both_signed_same_origin = true ∧ facts.first_size ≠ 0#u64 ∧ facts.second_size ≠ 0#u64 ∧ ((facts.first_size = facts.second_size ∧ facts.first_root ≠ facts.second_root) ∨ (facts.first_size ≠ facts.second_size ∧ facts.consistency = ConsistencyVerdict.Inconsistent)))"
     },
     {
       "name": "mneme_kernel.argumentation.authority_rank_total",
@@ -2501,7 +2501,7 @@
       "subjects": [
         "argumentation::authority_rank"
       ],
-      "statement": "(authority : Authority) : \u2203 r, authority_rank authority = ok r"
+      "statement": "(authority : Authority) : ∃ r, authority_rank authority = ok r"
     },
     {
       "name": "mneme_kernel.argumentation.authority_rank_order",
@@ -2509,7 +2509,7 @@
       "subjects": [
         "argumentation::authority_rank"
       ],
-      "statement": ": authority_rank Authority.Proposed = ok 0#u8 \u2227 authority_rank Authority.Accepted = ok 1#u8 \u2227 authority_rank Authority.ConflictResolution = ok 2#u8"
+      "statement": ": authority_rank Authority.Proposed = ok 0#u8 ∧ authority_rank Authority.Accepted = ok 1#u8 ∧ authority_rank Authority.ConflictResolution = ok 2#u8"
     },
     {
       "name": "mneme_kernel.argumentation.preference_defeats_total",
@@ -2518,7 +2518,7 @@
         "argumentation::preference_defeats",
         "argumentation::authority_rank"
       ],
-      "statement": "(attacker target : Authority) : \u2203 b, preference_defeats attacker target = ok b"
+      "statement": "(attacker target : Authority) : ∃ b, preference_defeats attacker target = ok b"
     },
     {
       "name": "mneme_kernel.argumentation.preference_defeats_reflexive",
@@ -2536,7 +2536,7 @@
         "argumentation::preference_defeats",
         "argumentation::authority_rank"
       ],
-      "statement": "(a b : Authority) (ra rb : U8) (ha : authority_rank a = ok ra) (hb : authority_rank b = ok rb) (hlt : rb.val < ra.val) : preference_defeats a b = ok true \u2227 preference_defeats b a = ok false"
+      "statement": "(a b : Authority) (ra rb : U8) (ha : authority_rank a = ok ra) (hb : authority_rank b = ok rb) (hlt : rb.val < ra.val) : preference_defeats a b = ok true ∧ preference_defeats b a = ok false"
     },
     {
       "name": "mneme_kernel.argumentation.preference_defeats_transitive",
@@ -2553,7 +2553,7 @@
       "subjects": [
         "argumentation::best_label"
       ],
-      "statement": "(left right : Label) : \u2203 r, best_label left right = ok r"
+      "statement": "(left right : Label) : ∃ r, best_label left right = ok r"
     },
     {
       "name": "mneme_kernel.argumentation.best_label_comm",
@@ -2569,7 +2569,7 @@
       "subjects": [
         "argumentation::best_label"
       ],
-      "statement": "(a b c : Label) : \u2203 ab bc r, best_label a b = ok ab \u2227 best_label b c = ok bc \u2227 best_label ab c = ok r \u2227 best_label a bc = ok r"
+      "statement": "(a b c : Label) : ∃ ab bc r, best_label a b = ok ab ∧ best_label b c = ok bc ∧ best_label ab c = ok r ∧ best_label a bc = ok r"
     },
     {
       "name": "mneme_kernel.argumentation.best_label_idem",
@@ -2585,7 +2585,7 @@
       "subjects": [
         "argumentation::best_label"
       ],
-      "statement": "(a : Label) : best_label Label.In a = ok Label.In \u2227 best_label Label.Out a = ok a"
+      "statement": "(a : Label) : best_label Label.In a = ok Label.In ∧ best_label Label.Out a = ok a"
     },
     {
       "name": "mneme_kernel.argumentation.next_label_total",
@@ -2593,7 +2593,7 @@
       "subjects": [
         "argumentation::next_label"
       ],
-      "statement": "(node : Usize) (defeats : Slice DefeatEdge) (labels : Slice Label) : \u2203 r, next_label node defeats labels = ok r"
+      "statement": "(node : Usize) (defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, next_label node defeats labels = ok r"
     },
     {
       "name": "mneme_kernel.argumentation.next_label_spec",
@@ -2601,7 +2601,7 @@
       "subjects": [
         "argumentation::next_label"
       ],
-      "statement": "(node : Usize) (defeats : Slice DefeatEdge) (labels : Slice Label) : \u2203 r, next_label node defeats labels = ok r \u2227 (r = Label.Out \u2194 node.val < labels.length \u2227 \u2203 e \u2208 defeats.val, e.target = node \u2227 e.attacker.val < labels.length \u2227 labels.val[e.attacker.val]? = some Label.In) \u2227 (r = Label.In \u2194 node.val < labels.length \u2227 \u2200 e \u2208 defeats.val, e.target = node \u2192 e.attacker.val < labels.length \u2192 labels.val[e.attacker.val]? = some Label.Out)"
+      "statement": "(node : Usize) (defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, next_label node defeats labels = ok r ∧ (r = Label.Out ↔ node.val < labels.length ∧ ∃ e ∈ defeats.val, e.target = node ∧ e.attacker.val < labels.length ∧ labels.val[e.attacker.val]? = some Label.In) ∧ (r = Label.In ↔ node.val < labels.length ∧ ∀ e ∈ defeats.val, e.target = node → e.attacker.val < labels.length → labels.val[e.attacker.val]? = some Label.Out)"
     },
     {
       "name": "mneme_kernel.argumentation.next_label_monotone",
@@ -2609,7 +2609,7 @@
       "subjects": [
         "argumentation::next_label"
       ],
-      "statement": "(node : Usize) (defeats : Slice DefeatEdge) (labels1 labels2 : Slice Label) (hlen : labels1.length = labels2.length) (hle : \u2200 i, i < labels1.length \u2192 \u2200 a b, labels1.val[i]? = some a \u2192 labels2.val[i]? = some b \u2192 a = Label.Undec \u2228 a = b) : \u2203 r1 r2, next_label node defeats labels1 = ok r1 \u2227 next_label node defeats labels2 = ok r2 \u2227 (r1 = Label.Undec \u2228 r1 = r2)"
+      "statement": "(node : Usize) (defeats : Slice DefeatEdge) (labels1 labels2 : Slice Label) (hlen : labels1.length = labels2.length) (hle : ∀ i, i < labels1.length → ∀ a b, labels1.val[i]? = some a → labels2.val[i]? = some b → a = Label.Undec ∨ a = b) : ∃ r1 r2, next_label node defeats labels1 = ok r1 ∧ next_label node defeats labels2 = ok r2 ∧ (r1 = Label.Undec ∨ r1 = r2)"
     },
     {
       "name": "mneme_kernel.argumentation.next_label_perm_invariant",
@@ -2617,7 +2617,7 @@
       "subjects": [
         "argumentation::next_label"
       ],
-      "statement": "(node : Usize) (defeats1 defeats2 : Slice DefeatEdge) (labels : Slice Label) (heq : \u2200 e, e \u2208 defeats1.val \u2194 e \u2208 defeats2.val) : next_label node defeats1 labels = next_label node defeats2 labels"
+      "statement": "(node : Usize) (defeats1 defeats2 : Slice DefeatEdge) (labels : Slice Label) (heq : ∀ e, e ∈ defeats1.val ↔ e ∈ defeats2.val) : next_label node defeats1 labels = next_label node defeats2 labels"
     },
     {
       "name": "mneme_kernel.argumentation.is_fixpoint_total",
@@ -2626,7 +2626,7 @@
         "argumentation::is_fixpoint",
         "argumentation::next_label"
       ],
-      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : \u2203 r, is_fixpoint defeats labels = ok r"
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, is_fixpoint defeats labels = ok r"
     },
     {
       "name": "mneme_kernel.argumentation.is_fixpoint_iff",
@@ -2635,7 +2635,7 @@
         "argumentation::is_fixpoint",
         "argumentation::next_label"
       ],
-      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : is_fixpoint defeats labels = ok true \u2194 \u2200 i, i < labels.length \u2192 \u2200 u : Usize, u.val = i \u2192 \u2200 l, labels.val[i]? = some l \u2192 next_label u defeats labels = ok l"
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : is_fixpoint defeats labels = ok true ↔ ∀ i, i < labels.length → ∀ u : Usize, u.val = i → ∀ l, labels.val[i]? = some l → next_label u defeats labels = ok l"
     },
     {
       "name": "mneme_kernel.argumentation.is_conflict_free_total",
@@ -2643,7 +2643,7 @@
       "subjects": [
         "argumentation::is_conflict_free"
       ],
-      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : \u2203 r, is_conflict_free defeats labels = ok r"
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, is_conflict_free defeats labels = ok r"
     },
     {
       "name": "mneme_kernel.argumentation.is_conflict_free_iff",
@@ -2651,7 +2651,7 @@
       "subjects": [
         "argumentation::is_conflict_free"
       ],
-      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : is_conflict_free defeats labels = ok true \u2194 \u2200 e \u2208 defeats.val, e.attacker.val < labels.length \u2192 e.target.val < labels.length \u2192 \u00ac (labels.val[e.attacker.val]? = some Label.In \u2227 labels.val[e.target.val]? = some Label.In)"
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : is_conflict_free defeats labels = ok true ↔ ∀ e ∈ defeats.val, e.attacker.val < labels.length → e.target.val < labels.length → ¬ (labels.val[e.attacker.val]? = some Label.In ∧ labels.val[e.target.val]? = some Label.In)"
     },
     {
       "name": "mneme_kernel.argumentation.is_admissible_total",
@@ -2660,7 +2660,7 @@
         "argumentation::is_admissible",
         "argumentation::is_conflict_free"
       ],
-      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : \u2203 r, is_admissible defeats labels = ok r"
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : ∃ r, is_admissible defeats labels = ok r"
     },
     {
       "name": "mneme_kernel.argumentation.is_admissible_iff",
@@ -2669,7 +2669,7 @@
         "argumentation::is_admissible",
         "argumentation::is_conflict_free"
       ],
-      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : is_admissible defeats labels = ok true \u2194 is_conflict_free defeats labels = ok true \u2227 \u2200 e \u2208 defeats.val, e.attacker.val < labels.length \u2192 e.target.val < labels.length \u2192 labels.val[e.target.val]? = some Label.In \u2192 \u2203 d \u2208 defeats.val, d.target = e.attacker \u2227 d.attacker.val < labels.length \u2227 labels.val[d.attacker.val]? = some Label.In"
+      "statement": "(defeats : Slice DefeatEdge) (labels : Slice Label) : is_admissible defeats labels = ok true ↔ is_conflict_free defeats labels = ok true ∧ ∀ e ∈ defeats.val, e.attacker.val < labels.length → e.target.val < labels.length → labels.val[e.target.val]? = some Label.In → ∃ d ∈ defeats.val, d.target = e.attacker ∧ d.attacker.val < labels.length ∧ labels.val[d.attacker.val]? = some Label.In"
     },
     {
       "name": "mneme_kernel.argumentation.fixpoint_conflict_free",
@@ -2700,7 +2700,7 @@
         "argumentation::is_conflict_free",
         "argumentation::is_admissible"
       ],
-      "statement": "(defeats : Slice DefeatEdge) (n : Nat) (hn : n \u2264 Usize.max) : \u2203 g : Slice Label, g.length = n \u2227 is_fixpoint defeats g = ok true \u2227 is_conflict_free defeats g = ok true \u2227 is_admissible defeats g = ok true \u2227 \u2200 h : Slice Label, h.length = n \u2192 is_fixpoint defeats h = ok true \u2192 \u2200 i, i < n \u2192 \u2200 a b, g.val[i]? = some a \u2192 h.val[i]? = some b \u2192 a = Label.Undec \u2228 a = b"
+      "statement": "(defeats : Slice DefeatEdge) (n : Nat) (hn : n ≤ Usize.max) : ∃ g : Slice Label, g.length = n ∧ is_fixpoint defeats g = ok true ∧ is_conflict_free defeats g = ok true ∧ is_admissible defeats g = ok true ∧ ∀ h : Slice Label, h.length = n → is_fixpoint defeats h = ok true → ∀ i, i < n → ∀ a b, g.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b"
     },
     {
       "name": "mneme_kernel.argumentation.grounded_unique",
@@ -2709,7 +2709,7 @@
         "argumentation::is_fixpoint",
         "argumentation::next_label"
       ],
-      "statement": "(defeats : Slice DefeatEdge) (g1 g2 : Slice Label) (hlen : g1.length = g2.length) (hf1 : is_fixpoint defeats g1 = ok true) (hf2 : is_fixpoint defeats g2 = ok true) (hl1 : \u2200 h : Slice Label, h.length = g1.length \u2192 is_fixpoint defeats h = ok true \u2192 \u2200 i, i < g1.length \u2192 \u2200 a b, g1.val[i]? = some a \u2192 h.val[i]? = some b \u2192 a = Label.Undec \u2228 a = b) (hl2 : \u2200 h : Slice Label, h.length = g2.length \u2192 is_fixpoint defeats h = ok true \u2192 \u2200 i, i < g2.length \u2192 \u2200 a b, g2.val[i]? = some a \u2192 h.val[i]? = some b \u2192 a = Label.Undec \u2228 a = b) : g1.val = g2.val"
+      "statement": "(defeats : Slice DefeatEdge) (g1 g2 : Slice Label) (hlen : g1.length = g2.length) (hf1 : is_fixpoint defeats g1 = ok true) (hf2 : is_fixpoint defeats g2 = ok true) (hl1 : ∀ h : Slice Label, h.length = g1.length → is_fixpoint defeats h = ok true → ∀ i, i < g1.length → ∀ a b, g1.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b) (hl2 : ∀ h : Slice Label, h.length = g2.length → is_fixpoint defeats h = ok true → ∀ i, i < g2.length → ∀ a b, g2.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b) : g1.val = g2.val"
     },
     {
       "name": "mneme_kernel.argumentation.grounded_perm_invariant",
@@ -2718,7 +2718,7 @@
         "argumentation::is_fixpoint",
         "argumentation::next_label"
       ],
-      "statement": "(d1 d2 : Slice DefeatEdge) (g1 g2 : Slice Label) (n : Nat) (heq : \u2200 e, e \u2208 d1.val \u2194 e \u2208 d2.val) (h1len : g1.length = n) (h2len : g2.length = n) (hf1 : is_fixpoint d1 g1 = ok true) (hf2 : is_fixpoint d2 g2 = ok true) (hl1 : \u2200 h : Slice Label, h.length = n \u2192 is_fixpoint d1 h = ok true \u2192 \u2200 i, i < n \u2192 \u2200 a b, g1.val[i]? = some a \u2192 h.val[i]? = some b \u2192 a = Label.Undec \u2228 a = b) (hl2 : \u2200 h : Slice Label, h.length = n \u2192 is_fixpoint d2 h = ok true \u2192 \u2200 i, i < n \u2192 \u2200 a b, g2.val[i]? = some a \u2192 h.val[i]? = some b \u2192 a = Label.Undec \u2228 a = b) : g1.val = g2.val"
+      "statement": "(d1 d2 : Slice DefeatEdge) (g1 g2 : Slice Label) (n : Nat) (heq : ∀ e, e ∈ d1.val ↔ e ∈ d2.val) (h1len : g1.length = n) (h2len : g2.length = n) (hf1 : is_fixpoint d1 g1 = ok true) (hf2 : is_fixpoint d2 g2 = ok true) (hl1 : ∀ h : Slice Label, h.length = n → is_fixpoint d1 h = ok true → ∀ i, i < n → ∀ a b, g1.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b) (hl2 : ∀ h : Slice Label, h.length = n → is_fixpoint d2 h = ok true → ∀ i, i < n → ∀ a b, g2.val[i]? = some a → h.val[i]? = some b → a = Label.Undec ∨ a = b) : g1.val = g2.val"
     },
     {
       "name": "mneme_kernel.opinion.is_valid_total",
@@ -2726,7 +2726,7 @@
       "subjects": [
         "opinion::is_valid"
       ],
-      "statement": "(ev : Evidence) : \u2203 b, is_valid ev = ok b"
+      "statement": "(ev : Evidence) : ∃ b, is_valid ev = ok b"
     },
     {
       "name": "mneme_kernel.opinion.is_valid_iff",
@@ -2734,7 +2734,7 @@
       "subjects": [
         "opinion::is_valid"
       ],
-      "statement": "(ev : Evidence) : is_valid ev = ok true \u2194 0 < ev.w.val \u2227 ev.base_rate.val \u2264 BASE_RATE_SCALE.val \u2227 ev.r.val + ev.s.val + ev.w.val \u2264 U128.max"
+      "statement": "(ev : Evidence) : is_valid ev = ok true ↔ 0 < ev.w.val ∧ ev.base_rate.val ≤ BASE_RATE_SCALE.val ∧ ev.r.val + ev.s.val + ev.w.val ≤ U128.max"
     },
     {
       "name": "mneme_kernel.opinion.vacuous_total",
@@ -2742,7 +2742,7 @@
       "subjects": [
         "opinion::vacuous"
       ],
-      "statement": "(base_rate : U64) : \u2203 ev, vacuous base_rate = ok ev"
+      "statement": "(base_rate : U64) : ∃ ev, vacuous base_rate = ok ev"
     },
     {
       "name": "mneme_kernel.opinion.vacuous_valid",
@@ -2751,7 +2751,7 @@
         "opinion::vacuous",
         "opinion::is_valid"
       ],
-      "statement": "(base_rate : U64) : \u2203 ev, vacuous base_rate = ok ev \u2227 is_valid ev = ok true"
+      "statement": "(base_rate : U64) : ∃ ev, vacuous base_rate = ok ev ∧ is_valid ev = ok true"
     },
     {
       "name": "mneme_kernel.opinion.vacuous_projects_exact",
@@ -2760,7 +2760,7 @@
         "opinion::vacuous",
         "opinion::project"
       ],
-      "statement": "(base_rate : U64) : \u2203 ev p, vacuous base_rate = ok ev \u2227 project ev = ok (some p) \u2227 p.b_num.val = 0 \u2227 p.d_num.val = 0 \u2227 p.u_num.val = p.denom.val \u2227 p.denom.val = 2 \u2227 p.conflict_num.val = 0"
+      "statement": "(base_rate : U64) : ∃ ev p, vacuous base_rate = ok ev ∧ project ev = ok (some p) ∧ p.b_num.val = 0 ∧ p.d_num.val = 0 ∧ p.u_num.val = p.denom.val ∧ p.denom.val = 2 ∧ p.conflict_num.val = 0"
     },
     {
       "name": "mneme_kernel.opinion.project_total",
@@ -2768,7 +2768,7 @@
       "subjects": [
         "opinion::project"
       ],
-      "statement": "(ev : Evidence) : \u2203 p, project ev = ok p"
+      "statement": "(ev : Evidence) : ∃ p, project ev = ok p"
     },
     {
       "name": "mneme_kernel.opinion.project_simplex_preservation",
@@ -2776,7 +2776,7 @@
       "subjects": [
         "opinion::project"
       ],
-      "statement": "(ev : Evidence) (p : Projected) (hp : project ev = ok (some p)) : p.b_num.val + p.d_num.val + p.u_num.val = p.denom.val \u2227 0 < p.denom.val \u2227 p.conflict_num.val = 2 * min p.b_num.val p.d_num.val \u2227 p.conflict_num.val \u2264 p.b_num.val + p.d_num.val \u2227 p.conflict_num.val < p.denom.val \u2227 p.base_rate.val \u2264 BASE_RATE_SCALE.val"
+      "statement": "(ev : Evidence) (p : Projected) (hp : project ev = ok (some p)) : p.b_num.val + p.d_num.val + p.u_num.val = p.denom.val ∧ 0 < p.denom.val ∧ p.conflict_num.val = 2 * min p.b_num.val p.d_num.val ∧ p.conflict_num.val ≤ p.b_num.val + p.d_num.val ∧ p.conflict_num.val < p.denom.val ∧ p.base_rate.val ≤ BASE_RATE_SCALE.val"
     },
     {
       "name": "mneme_kernel.opinion.project_conflict_pos_iff",
@@ -2784,7 +2784,7 @@
       "subjects": [
         "opinion::project"
       ],
-      "statement": "(ev : Evidence) (p : Projected) (hp : project ev = ok (some p)) : 0 < p.conflict_num.val \u2194 0 < p.b_num.val \u2227 0 < p.d_num.val"
+      "statement": "(ev : Evidence) (p : Projected) (hp : project ev = ok (some p)) : 0 < p.conflict_num.val ↔ 0 < p.b_num.val ∧ 0 < p.d_num.val"
     },
     {
       "name": "mneme_kernel.opinion.averaging_cluster_total",
@@ -2792,7 +2792,7 @@
       "subjects": [
         "opinion::averaging_cluster"
       ],
-      "statement": "(supports challenges base_rate : U64) : \u2203 ev, averaging_cluster supports challenges base_rate = ok ev"
+      "statement": "(supports challenges base_rate : U64) : ∃ ev, averaging_cluster supports challenges base_rate = ok ev"
     },
     {
       "name": "mneme_kernel.opinion.averaging_cluster_echo_chamber_invariance",
@@ -2801,7 +2801,7 @@
         "opinion::averaging_cluster",
         "opinion::project"
       ],
-      "statement": "(supports challenges base_rate : U64) : \u2203 ev p, averaging_cluster supports challenges base_rate = ok ev \u2227 project ev = ok (some p) \u2227 (supports.val = 0 \u2227 challenges.val = 0 \u2192 p.b_num.val = 0 \u2227 p.d_num.val = 0 \u2227 p.u_num.val = p.denom.val) \u2227 (0 < supports.val \u2228 0 < challenges.val \u2192 3 * p.u_num.val = 2 * p.denom.val) \u2227 (0 < supports.val \u2227 challenges.val = 0 \u2192 ev.r.val = 1 \u2227 ev.s.val = 0 \u2227 ev.w.val = 2) \u2227 (supports.val = 0 \u2227 0 < challenges.val \u2192 ev.r.val = 0 \u2227 ev.s.val = 1 \u2227 ev.w.val = 2)"
+      "statement": "(supports challenges base_rate : U64) : ∃ ev p, averaging_cluster supports challenges base_rate = ok ev ∧ project ev = ok (some p) ∧ (supports.val = 0 ∧ challenges.val = 0 → p.b_num.val = 0 ∧ p.d_num.val = 0 ∧ p.u_num.val = p.denom.val) ∧ (0 < supports.val ∨ 0 < challenges.val → 3 * p.u_num.val = 2 * p.denom.val) ∧ (0 < supports.val ∧ challenges.val = 0 → ev.r.val = 1 ∧ ev.s.val = 0 ∧ ev.w.val = 2) ∧ (supports.val = 0 ∧ 0 < challenges.val → ev.r.val = 0 ∧ ev.s.val = 1 ∧ ev.w.val = 2)"
     },
     {
       "name": "mneme_kernel.opinion.cumulative_fuse_total",
@@ -2809,7 +2809,7 @@
       "subjects": [
         "opinion::cumulative_fuse"
       ],
-      "statement": "(left right : Evidence) : \u2203 o, cumulative_fuse left right = ok o"
+      "statement": "(left right : Evidence) : ∃ o, cumulative_fuse left right = ok o"
     },
     {
       "name": "mneme_kernel.opinion.cumulative_fuse_spec",
@@ -2817,7 +2817,7 @@
       "subjects": [
         "opinion::cumulative_fuse"
       ],
-      "statement": "(left right out : Evidence) (h : cumulative_fuse left right = ok (some out)) : is_valid left = ok true \u2227 is_valid right = ok true \u2227 is_valid out = ok true \u2227 out.r.val * (left.w.val * right.w.val) = (left.r.val * right.w.val + right.r.val * left.w.val) * out.w.val \u2227 out.s.val * (left.w.val * right.w.val) = (left.s.val * right.w.val + right.s.val * left.w.val) * out.w.val \u2227 out.base_rate.val = min left.base_rate.val right.base_rate.val"
+      "statement": "(left right out : Evidence) (h : cumulative_fuse left right = ok (some out)) : is_valid left = ok true ∧ is_valid right = ok true ∧ is_valid out = ok true ∧ out.r.val * (left.w.val * right.w.val) = (left.r.val * right.w.val + right.r.val * left.w.val) * out.w.val ∧ out.s.val * (left.w.val * right.w.val) = (left.s.val * right.w.val + right.s.val * left.w.val) * out.w.val ∧ out.base_rate.val = min left.base_rate.val right.base_rate.val"
     },
     {
       "name": "mneme_kernel.opinion.cumulative_fuse_comm",
@@ -2833,7 +2833,7 @@
       "subjects": [
         "opinion::cumulative_fuse"
       ],
-      "statement": "(a b c ab bc lhs rhs : Evidence) (hab : cumulative_fuse a b = ok (some ab)) (hbc : cumulative_fuse b c = ok (some bc)) (hlhs : cumulative_fuse ab c = ok (some lhs)) (hrhs : cumulative_fuse a bc = ok (some rhs)) : lhs.r.val * rhs.w.val = rhs.r.val * lhs.w.val \u2227 lhs.s.val * rhs.w.val = rhs.s.val * lhs.w.val \u2227 lhs.base_rate = rhs.base_rate"
+      "statement": "(a b c ab bc lhs rhs : Evidence) (hab : cumulative_fuse a b = ok (some ab)) (hbc : cumulative_fuse b c = ok (some bc)) (hlhs : cumulative_fuse ab c = ok (some lhs)) (hrhs : cumulative_fuse a bc = ok (some rhs)) : lhs.r.val * rhs.w.val = rhs.r.val * lhs.w.val ∧ lhs.s.val * rhs.w.val = rhs.s.val * lhs.w.val ∧ lhs.base_rate = rhs.base_rate"
     },
     {
       "name": "mneme_kernel.opinion.cumulative_fuse_vacuous_identity",
@@ -2842,7 +2842,7 @@
         "opinion::cumulative_fuse",
         "opinion::vacuous"
       ],
-      "statement": "(ev v out : Evidence) (hv : vacuous ev.base_rate = ok v) (hf : cumulative_fuse ev v = ok (some out)) : out.r.val * ev.w.val = ev.r.val * out.w.val \u2227 out.s.val * ev.w.val = ev.s.val * out.w.val \u2227 out.base_rate = ev.base_rate"
+      "statement": "(ev v out : Evidence) (hv : vacuous ev.base_rate = ok v) (hf : cumulative_fuse ev v = ok (some out)) : out.r.val * ev.w.val = ev.r.val * out.w.val ∧ out.s.val * ev.w.val = ev.s.val * out.w.val ∧ out.base_rate = ev.base_rate"
     },
     {
       "name": "mneme_kernel.opinion.averaging_fuse_total",
@@ -2850,7 +2850,7 @@
       "subjects": [
         "opinion::averaging_fuse"
       ],
-      "statement": "(left right : Evidence) : \u2203 o, averaging_fuse left right = ok o"
+      "statement": "(left right : Evidence) : ∃ o, averaging_fuse left right = ok o"
     },
     {
       "name": "mneme_kernel.opinion.averaging_fuse_comm",
@@ -2866,7 +2866,7 @@
       "subjects": [
         "opinion::averaging_fuse"
       ],
-      "statement": "(ev out : Evidence) (h : averaging_fuse ev ev = ok (some out)) : is_valid out = ok true \u2227 out.r.val * ev.w.val = ev.r.val * out.w.val \u2227 out.s.val * ev.w.val = ev.s.val * out.w.val \u2227 out.r.val * (ev.r.val + ev.s.val + ev.w.val) = ev.r.val * (out.r.val + out.s.val + out.w.val) \u2227 out.s.val * (ev.r.val + ev.s.val + ev.w.val) = ev.s.val * (out.r.val + out.s.val + out.w.val) \u2227 out.w.val * (ev.r.val + ev.s.val + ev.w.val) = ev.w.val * (out.r.val + out.s.val + out.w.val) \u2227 out.base_rate = ev.base_rate"
+      "statement": "(ev out : Evidence) (h : averaging_fuse ev ev = ok (some out)) : is_valid out = ok true ∧ out.r.val * ev.w.val = ev.r.val * out.w.val ∧ out.s.val * ev.w.val = ev.s.val * out.w.val ∧ out.r.val * (ev.r.val + ev.s.val + ev.w.val) = ev.r.val * (out.r.val + out.s.val + out.w.val) ∧ out.s.val * (ev.r.val + ev.s.val + ev.w.val) = ev.s.val * (out.r.val + out.s.val + out.w.val) ∧ out.w.val * (ev.r.val + ev.s.val + ev.w.val) = ev.w.val * (out.r.val + out.s.val + out.w.val) ∧ out.base_rate = ev.base_rate"
     },
     {
       "name": "mneme_kernel.opinion.trust_discount_total",
@@ -2874,7 +2874,7 @@
       "subjects": [
         "opinion::trust_discount"
       ],
-      "statement": "(trust target : Evidence) : \u2203 o, trust_discount trust target = ok o"
+      "statement": "(trust target : Evidence) : ∃ o, trust_discount trust target = ok o"
     },
     {
       "name": "mneme_kernel.opinion.trust_discount_non_inflation",
@@ -2890,7 +2890,192 @@
       "subjects": [
         "opinion::trust_discount"
       ],
-      "statement": "(trust target out : Evidence) (h0 : trust.r.val = 0) (h : trust_discount trust target = ok (some out)) : out.r.val = 0 \u2227 out.s.val = 0"
+      "statement": "(trust target out : Evidence) (h0 : trust.r.val = 0) (h : trust_discount trust target = ok (some out)) : out.r.val = 0 ∧ out.s.val = 0"
+    },
+    {
+      "name": "mneme_kernel.lattice.join_frontier_total",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::join_frontier"
+      ],
+      "statement": "(left right : FrontierState) : ∃ joined, join_frontier left right = ok joined"
+    },
+    {
+      "name": "mneme_kernel.lattice.join_frontier_comm",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::join_frontier"
+      ],
+      "statement": "(left right : FrontierState) : ∃ joined, join_frontier left right = ok joined ∧ join_frontier right left = ok joined"
+    },
+    {
+      "name": "mneme_kernel.lattice.join_frontier_assoc",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::join_frontier"
+      ],
+      "statement": "(a b c : FrontierState) : ∃ ab bc joined, join_frontier a b = ok ab ∧ join_frontier b c = ok bc ∧ join_frontier ab c = ok joined ∧ join_frontier a bc = ok joined"
+    },
+    {
+      "name": "mneme_kernel.lattice.join_frontier_idem",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::join_frontier"
+      ],
+      "statement": "(a : FrontierState) : join_frontier a a = ok a"
+    },
+    {
+      "name": "mneme_kernel.lattice.join_frontier_inflationary",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::join_frontier"
+      ],
+      "statement": "(left right : FrontierState) : ∃ joined rl rr rj, join_frontier left right = ok joined ∧ (left.nodes_mask &&& joined.nodes_mask) = left.nodes_mask ∧ (right.nodes_mask &&& joined.nodes_mask) = right.nodes_mask ∧ (left.cited_mask &&& joined.cited_mask) = left.cited_mask ∧ (right.cited_mask &&& joined.cited_mask) = right.cited_mask ∧ calm.suppression_rank left.suppression.level = ok rl ∧ calm.suppression_rank right.suppression.level = ok rr ∧ calm.suppression_rank joined.suppression.level = ok rj ∧ rl.val ≤ rj.val ∧ rr.val ≤ rj.val ∧ left.suppression.generation.val ≤ joined.suppression.generation.val ∧ right.suppression.generation.val ≤ joined.suppression.generation.val"
+    },
+    {
+      "name": "mneme_kernel.lattice.frontier_mask_total",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::frontier_mask"
+      ],
+      "statement": "(state : FrontierState) : ∃ mask, frontier_mask state = ok mask"
+    },
+    {
+      "name": "mneme_kernel.lattice.frontier_mask_invariants",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::frontier_mask"
+      ],
+      "statement": "(state : FrontierState) : ∃ mask, frontier_mask state = ok mask ∧ (mask &&& state.nodes_mask) = mask ∧ (mask &&& state.cited_mask) = 0#u64"
+    },
+    {
+      "name": "mneme_kernel.lattice.ingest_node_total",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::ingest_node"
+      ],
+      "statement": "(state : FrontierState) (node_bit parents_mask : U64) : ∃ next, ingest_node state node_bit parents_mask = ok next"
+    },
+    {
+      "name": "mneme_kernel.lattice.ingest_node_comm",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::ingest_node"
+      ],
+      "statement": "(state : FrontierState) (n1 p1 n2 p2 : U64) : ∃ s1 s2 final, ingest_node state n1 p1 = ok s1 ∧ ingest_node state n2 p2 = ok s2 ∧ ingest_node s1 n2 p2 = ok final ∧ ingest_node s2 n1 p1 = ok final"
+    },
+    {
+      "name": "mneme_kernel.lattice.ingest_node_idem",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::ingest_node"
+      ],
+      "statement": "(state : FrontierState) (n p : U64) : ∃ s1, ingest_node state n p = ok s1 ∧ ingest_node s1 n p = ok s1"
+    },
+    {
+      "name": "mneme_kernel.lattice.is_concurrent_mask_total",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::is_concurrent_mask"
+      ],
+      "statement": "(mask : U64) : ∃ b, is_concurrent_mask mask = ok b"
+    },
+    {
+      "name": "mneme_kernel.lattice.is_concurrent_mask_empty",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::is_concurrent_mask"
+      ],
+      "statement": ": is_concurrent_mask 0#u64 = ok false"
+    },
+    {
+      "name": "mneme_kernel.lattice.is_concurrent_frontier_total",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::is_concurrent_frontier"
+      ],
+      "statement": "(frontier_count : U32) : ∃ b, is_concurrent_frontier frontier_count = ok b"
+    },
+    {
+      "name": "mneme_kernel.lattice.is_concurrent_frontier_iff",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::is_concurrent_frontier"
+      ],
+      "statement": "(frontier_count : U32) : is_concurrent_frontier frontier_count = ok true ↔ 2 ≤ frontier_count.val"
+    },
+    {
+      "name": "mneme_kernel.lattice.project_frontier_total",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::project_frontier"
+      ],
+      "statement": "(input : FrontierProjectionInput) : ∃ view, project_frontier input = ok view"
+    },
+    {
+      "name": "mneme_kernel.lattice.project_frontier_forgotten_dominates",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::project_frontier"
+      ],
+      "statement": "(fc : U32) (hl : claim.Lifecycle) : project_frontier { frontier_count"
+    },
+    {
+      "name": "mneme_kernel.lattice.project_frontier_withdrawn_dominates",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::project_frontier"
+      ],
+      "statement": "(fc : U32) (hl : claim.Lifecycle) : project_frontier { frontier_count"
+    },
+    {
+      "name": "mneme_kernel.lattice.project_frontier_concurrent_disputed",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::project_frontier"
+      ],
+      "statement": "(fc : U32) (hl : claim.Lifecycle) (hfc : 2 ≤ fc.val) : project_frontier { frontier_count"
+    },
+    {
+      "name": "mneme_kernel.lattice.projected_lifecycle_total",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::projected_lifecycle"
+      ],
+      "statement": "(view : ProjectedView) : ∃ lc, projected_lifecycle view = ok lc"
+    },
+    {
+      "name": "mneme_kernel.lattice.concurrent_frontier_never_auto_promotes_accepted",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::project_frontier",
+        "lattice::projected_lifecycle"
+      ],
+      "statement": "(input : FrontierProjectionInput) (hfc : 2 ≤ input.frontier_count.val) : ∃ view lc, project_frontier input = ok view ∧ projected_lifecycle view = ok lc ∧ lc ≠ some claim.Lifecycle.Accepted"
+    },
+    {
+      "name": "mneme_kernel.lattice.decide_frontier_merge_total",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::decide_frontier_merge"
+      ],
+      "statement": "(facts : MergeResolutionFacts) : ∃ verdict, decide_frontier_merge facts = ok verdict"
+    },
+    {
+      "name": "mneme_kernel.lattice.decide_frontier_merge_allowed_iff",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::decide_frontier_merge"
+      ],
+      "statement": "(facts : MergeResolutionFacts) : decide_frontier_merge facts = ok MergeResolutionVerdict.Allowed ↔ facts.suppression = calm.SuppressionLevel.None ∧ 2 ≤ facts.frontier_count.val ∧ facts.cited_frontier_count = facts.frontier_count ∧ facts.has_conflict_resolution_decision = true"
+    },
+    {
+      "name": "mneme_kernel.lattice.decide_frontier_merge_suppressed_refused",
+      "file": "MnemeKernelProofs/Lattice.lean",
+      "subjects": [
+        "lattice::decide_frontier_merge"
+      ],
+      "statement": "(facts : MergeResolutionFacts) (hsup : facts.suppression ≠ calm.SuppressionLevel.None) : decide_frontier_merge facts = ok MergeResolutionVerdict.RefusedSuppressed"
     }
   ]
 }

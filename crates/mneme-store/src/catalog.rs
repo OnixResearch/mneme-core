@@ -21,7 +21,7 @@ pub struct ManifestRecord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Manifest {
     pub revision: mneme_core::WorkspaceRevisionId,
-    pub parent: Option<mneme_core::WorkspaceRevisionId>,
+    pub parents: std::collections::BTreeSet<mneme_core::WorkspaceRevisionId>,
     pub records: std::collections::BTreeSet<ManifestRecord>,
     pub blobs: std::collections::BTreeSet<mneme_core::ContentDigest>,
 }
@@ -31,23 +31,38 @@ impl Manifest {
     pub fn genesis(revision: mneme_core::WorkspaceRevisionId) -> Self {
         Manifest {
             revision,
-            parent: None,
+            parents: std::collections::BTreeSet::new(),
             records: std::collections::BTreeSet::new(),
             blobs: std::collections::BTreeSet::new(),
         }
     }
 
+    /// Canonical single parent, if at least one parent is present.
+    pub fn parent(&self) -> Option<mneme_core::WorkspaceRevisionId> {
+        self.parents.iter().next().copied()
+    }
+
     /// Encode as `<workspace-manifest …>`.
+    ///
+    /// Zero or one parent encodes identically to v1 (`none` or
+    /// `<workspace-revision-id>`); multi-parent merge manifests encode field 1
+    /// as a canonical sorted Preserves set.
     pub fn to_value(&self) -> mneme_core::Value {
-        let parent = match self.parent {
-            Some(revision) => revision.to_value(),
-            None => mneme_core::Value::symbol("none"),
+        let parents = if self.parents.is_empty() {
+            mneme_core::Value::symbol("none")
+        } else if self.parents.len() == 1 {
+            match self.parents.iter().next() {
+                Some(revision) => revision.to_value(),
+                None => mneme_core::Value::symbol("none"),
+            }
+        } else {
+            mneme_core::Value::set(self.parents.iter().map(|revision| revision.to_value()))
         };
         mneme_core::Value::record_named(
             "workspace-manifest",
             vec![
                 self.revision.to_value(),
-                parent,
+                parents,
                 mneme_core::Value::set(self.records.iter().map(record_value)),
                 mneme_core::Value::set(self.blobs.iter().map(|digest| digest.to_value())),
             ],
@@ -69,16 +84,7 @@ impl Manifest {
             &mneme_core::Path::root().field("revision"),
         )
         .map_err(|diagnostic| diagnostic.to_string())?;
-        let parent = match &record.fields()[1] {
-            mneme_core::Value::Symbol(symbol) if symbol.as_str() == "none" => None,
-            other => Some(
-                mneme_core::WorkspaceRevisionId::from_value(
-                    other,
-                    &mneme_core::Path::root().field("parent"),
-                )
-                .map_err(|diagnostic| diagnostic.to_string())?,
-            ),
-        };
+        let parents = parse_manifest_parents(&record.fields()[1])?;
         let Some(record_values) = record.fields()[2].as_set() else {
             return Err("manifest records must be a set".to_owned());
         };
@@ -101,7 +107,7 @@ impl Manifest {
         }
         Ok(Manifest {
             revision,
-            parent,
+            parents,
             records,
             blobs,
         })
@@ -120,6 +126,31 @@ impl Manifest {
     /// Content digest over the manifest value using an explicit hash algorithm.
     pub fn digest_with(&self, algorithm: mneme_core::HashAlgorithm) -> mneme_core::ContentDigest {
         mneme_core::ContentDigest::of_payload_with(&self.to_value(), algorithm)
+    }
+}
+
+fn parse_manifest_parents(
+    value: &mneme_core::Value,
+) -> Result<std::collections::BTreeSet<mneme_core::WorkspaceRevisionId>, String> {
+    let path = mneme_core::Path::root().field("parent");
+    match value {
+        mneme_core::Value::Symbol(symbol) if symbol.as_str() == "none" => {
+            Ok(std::collections::BTreeSet::new())
+        }
+        mneme_core::Value::Set(items) => {
+            let mut parents = std::collections::BTreeSet::new();
+            for item in items {
+                let rev = mneme_core::WorkspaceRevisionId::from_value(item, &path)
+                    .map_err(|diagnostic| diagnostic.to_string())?;
+                parents.insert(rev);
+            }
+            Ok(parents)
+        }
+        other => {
+            let rev = mneme_core::WorkspaceRevisionId::from_value(other, &path)
+                .map_err(|diagnostic| diagnostic.to_string())?;
+            Ok(std::collections::BTreeSet::from([rev]))
+        }
     }
 }
 
@@ -171,7 +202,7 @@ mod tests {
         let parent = mneme_core::WorkspaceRevisionId::from_bytes([2; 16]);
         let mut manifest = Manifest {
             revision,
-            parent: Some(parent),
+            parents: std::collections::BTreeSet::from([parent]),
             records: std::collections::BTreeSet::from([ManifestRecord {
                 record_id: mneme_core::RecordId::from_bytes([3; 16]),
                 revision_id: mneme_core::RevisionId::from_bytes([4; 16]),
@@ -187,8 +218,19 @@ mod tests {
             Manifest::from_value(&decoded.to_value()).expect("redecode"),
             manifest
         );
-        manifest.parent = None;
+        manifest.parents.clear();
         assert_ne!(decoded, manifest);
+
+        // Multi-parent merge manifest roundtrips cleanly.
+        let parent_b = mneme_core::WorkspaceRevisionId::from_bytes([9; 16]);
+        let multi = Manifest {
+            revision,
+            parents: std::collections::BTreeSet::from([parent, parent_b]),
+            records: decoded.records.clone(),
+            blobs: decoded.blobs.clone(),
+        };
+        let decoded_multi = Manifest::from_value(&multi.to_value()).expect("decode multi");
+        assert_eq!(decoded_multi, multi);
     }
 
     #[test]
@@ -208,13 +250,13 @@ mod tests {
         ]);
         let left = Manifest {
             revision,
-            parent: None,
+            parents: std::collections::BTreeSet::new(),
             records: records.clone(),
             blobs: std::collections::BTreeSet::new(),
         };
         let right = Manifest {
             revision,
-            parent: None,
+            parents: std::collections::BTreeSet::new(),
             records: records.into_iter().rev().collect(),
             blobs: std::collections::BTreeSet::new(),
         };

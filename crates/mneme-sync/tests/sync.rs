@@ -834,7 +834,7 @@ async fn thousand_item_vaults_reconcile_delta_five_logarithmically_and_empty_dif
 }
 
 #[tokio::test]
-async fn disjoint_thousand_item_vaults_reconcile_over_control_and_fail_closed_on_conflict() {
+async fn disjoint_thousand_item_vaults_reconcile_over_control_and_merge_via_merkle_crdt() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root_a = temp.path().join("peer-a");
     let root_b = temp.path().join("peer-b");
@@ -885,8 +885,8 @@ async fn disjoint_thousand_item_vaults_reconcile_over_control_and_fail_closed_on
     assert_eq!(reconciled.remote_only.len(), 2000);
     assert_eq!(reconciled.local_only.len(), 2000);
 
-    // Attempting pull_scope into conflicting Peer B fails closed without corrupting Peer B.
-    let err = node_b
+    // Merkle-CRDT pull_scope merges Peer A's 1000 disjoint items into Peer B without conflict deadlock.
+    let outcome = node_b
         .pull_scope(mneme_sync::PullRequest {
             peer: node_a.node_id(),
             scope: scope(),
@@ -895,13 +895,13 @@ async fn disjoint_thousand_item_vaults_reconcile_over_control_and_fail_closed_on
             workspace_config: config_factory(),
         })
         .await
-        .expect_err("conflicting disjoint vaults must fail closed");
-    assert!(matches!(err, mneme_sync::Failure::Store(_)));
+        .expect("Merkle-CRDT pull merges disjoint vaults cleanly");
+    assert!(outcome.verify_report.is_healthy());
 
     let verify_b = mneme_store::verify_workspace(&root_b, mneme_store::VerifyMode::Full)
-        .expect("verify b untouched");
+        .expect("verify b after merge");
     assert!(verify_b.is_healthy());
-    assert_eq!(verify_b.blobs_checked, 2000);
+    assert_eq!(verify_b.blobs_checked, 4000);
 
     node_a.shutdown().await.expect("shutdown a");
     node_b.shutdown().await.expect("shutdown b");

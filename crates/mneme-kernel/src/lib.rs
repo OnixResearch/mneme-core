@@ -50,6 +50,7 @@ pub mod hashing;
 pub mod history_tree;
 pub mod hlc;
 pub mod isolation;
+pub mod lattice;
 pub mod opinion;
 pub mod publish;
 pub mod purge;

@@ -169,7 +169,8 @@ impl ApiError {
             ),
             mneme_store::Failure::RetentionSuppressed { .. }
             | mneme_store::Failure::MissingRetentionState { .. }
-            | mneme_store::Failure::MissingRetentionParticipant { .. } => Self::new(
+            | mneme_store::Failure::MissingRetentionParticipant { .. }
+            | mneme_store::Failure::CryptographicallyErased { .. } => Self::new(
                 ApiErrorCode::Denied,
                 "request is blocked by current retention state",
             ),

@@ -1331,7 +1331,8 @@ impl Cluster {
             | crate::protocol::SyncControlResponse::RbsrReply(_)
             | crate::protocol::SyncControlResponse::DeltaMetadata { .. }
             | crate::protocol::SyncControlResponse::HeadAccepted { .. }
-            | crate::protocol::SyncControlResponse::Revocations { .. } => Ok(None),
+            | crate::protocol::SyncControlResponse::Revocations { .. }
+            | crate::protocol::SyncControlResponse::KeyPunctures { .. } => Ok(None),
         }
     }
 
@@ -2107,6 +2108,7 @@ fn republish_node_scope(
             generation: node.eligibility_generation,
             suppressions: Vec::new(),
             prunings: Vec::new(),
+            key_punctures: Vec::new(),
         },
         authorized_hashes,
         workspace_root: None,

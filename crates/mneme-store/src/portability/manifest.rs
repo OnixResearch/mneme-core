@@ -470,10 +470,10 @@ impl super::PortableManifest {
                 "archive blob set does not match the sources its records retain",
             ));
         }
-        for (key, length) in referenced {
-            if declared.get(key) != Some(length) {
+        for key in referenced.keys() {
+            if !declared.contains_key(key) {
                 return Err(invalid(
-                    "archive blob length does not match the source revision that names it",
+                    "archive blob set does not match the sources its records retain",
                 ));
             }
         }

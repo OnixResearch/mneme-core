@@ -483,7 +483,7 @@ fn replace_rev1_with_sha256(
     manifest_blobs.insert(blobs.full_digest);
     let rev1_manifest = mneme_store::Manifest {
         revision: rev1,
-        parent: Some(gen_rev),
+        parents: std::collections::BTreeSet::from([gen_rev]),
         records: manifest_records,
         blobs: manifest_blobs,
     };
