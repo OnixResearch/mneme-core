@@ -54,9 +54,11 @@
 //! remain uncertified.
 #![cfg_attr(test, allow(clippy::expect_used))]
 
+pub mod abduce;
 pub mod execution;
 pub mod process;
 pub mod proof;
+pub mod slg;
 pub mod snapshot;
 
 /// Prefix for an output candidate that is not ground.
@@ -299,11 +301,9 @@ impl CapabilityMetadata {
 
     /// Reject an enabled capability whose profile or limits are unusable.
     fn validate_enabled(&self) -> Result<(), CapabilityError> {
-        if self.features.contains(&Feature::GuardedNegation)
-            || self.features.contains(&Feature::Aggregation)
-        {
+        if self.features.contains(&Feature::Aggregation) {
             return Err(CapabilityError::InvalidMetadata(
-                "guarded negation and aggregation are disabled in this profile".to_owned(),
+                "aggregation is disabled in this profile".to_owned(),
             ));
         }
         if self.allowed_predicates.is_empty() {
@@ -372,12 +372,15 @@ impl CapabilityMetadata {
             Variables::Allowed,
         )?;
         self.ensure_query_variables(request)?;
-        if request.mode == QueryMode::Collect
+        if matches!(request.mode, QueryMode::Collect | QueryMode::Abduce { .. })
             && request.limits.max_solutions > self.terms.max_collection
         {
             return Err(CapabilityError::LimitExceeded(
                 "collection size exceeds the term collection limit".to_owned(),
             ));
+        }
+        if let QueryMode::Abduce { abducibles, .. } = &request.mode {
+            self.ensure_abducibles(request, abducibles)?;
         }
         let mut rule_ids = std::collections::BTreeSet::new();
         for rule in &request.rules {
@@ -386,7 +389,7 @@ impl CapabilityMetadata {
                     "rule identities must be unique within the ordered manifest".to_owned(),
                 ));
             }
-            self.ensure_rule(rule)?;
+            self.ensure_rule(rule, request)?;
         }
         for assumption in &request.assumptions {
             self.ensure_assumption(assumption)?;
@@ -438,7 +441,7 @@ impl CapabilityMetadata {
             return Err(CapabilityError::UnsupportedFeature(Feature::PositiveQuery));
         }
         for feature in &request.features {
-            if matches!(feature, Feature::GuardedNegation | Feature::Aggregation) {
+            if matches!(feature, Feature::Aggregation) {
                 return Err(CapabilityError::UnsupportedFeature(*feature));
             }
             if !self.features.contains(feature) {
@@ -464,7 +467,7 @@ impl CapabilityMetadata {
         Ok(())
     }
 
-    fn ensure_rule(&self, rule: &Rule) -> Result<(), CapabilityError> {
+    fn ensure_rule(&self, rule: &Rule, request: &Request) -> Result<(), CapabilityError> {
         if rule.id.trim().is_empty() || rule.version.trim().is_empty() {
             return Err(CapabilityError::InvalidRequest(
                 "rule identity and version are required".to_owned(),
@@ -478,10 +481,20 @@ impl CapabilityMetadata {
         )?;
         for literal in &rule.body {
             match literal {
-                Literal::Negative(_) => {
-                    return Err(CapabilityError::UnsupportedFeature(
-                        Feature::GuardedNegation,
-                    ));
+                Literal::Negative(atom) => {
+                    if !self.features.contains(&Feature::GuardedNegation)
+                        || !request.features.contains(&Feature::GuardedNegation)
+                    {
+                        return Err(CapabilityError::UnsupportedFeature(
+                            Feature::GuardedNegation,
+                        ));
+                    }
+                    check_atom(
+                        atom,
+                        self.terms,
+                        Some(&self.allowed_predicates),
+                        Variables::Allowed,
+                    )?;
                 }
                 Literal::Positive(atom) => check_atom(
                     atom,
@@ -492,6 +505,29 @@ impl CapabilityMetadata {
             }
         }
         ensure_rule_variables(rule)
+    }
+
+    fn ensure_abducibles(
+        &self,
+        request: &Request,
+        abducibles: &std::collections::BTreeSet<String>,
+    ) -> Result<(), CapabilityError> {
+        if !self.features.contains(&Feature::HypotheticalAssumptions)
+            || !request.features.contains(&Feature::HypotheticalAssumptions)
+        {
+            return Err(CapabilityError::UnsupportedFeature(
+                Feature::HypotheticalAssumptions,
+            ));
+        }
+        for predicate in abducibles {
+            if is_reserved_image_relation(predicate) {
+                return Err(CapabilityError::InvalidRequest(
+                    "an abducible predicate cannot name an image relation".to_owned(),
+                ));
+            }
+            check_allowed_name(predicate, Some(&self.allowed_predicates))?;
+        }
+        Ok(())
     }
 
     fn ensure_assumption(&self, assumption: &Assumption) -> Result<(), CapabilityError> {
@@ -508,20 +544,7 @@ impl CapabilityMetadata {
         debug_assert!(!assumption.id.trim().is_empty());
         debug_assert!(!assumption.rationale.trim().is_empty());
         // An assumption is hypothetical input, never canonical image content.
-        if matches!(
-            assumption.atom.predicate.as_str(),
-            ASSERTION_RELATION
-                | RELATION_RELATION
-                | snapshot::SelectedRow::EPISTEMIC_RELATION
-                | "entity"
-                | "denial"
-                | "hypothesis"
-                | "vault_entity"
-                | "vault_relation"
-                | "vault_assertion"
-                | "vault_denial"
-                | "vault_hypothesis"
-        ) {
+        if is_reserved_image_relation(&assumption.atom.predicate) {
             return Err(CapabilityError::InvalidRequest(
                 "an assumption cannot name an image relation".to_owned(),
             ));
@@ -533,6 +556,25 @@ impl CapabilityMetadata {
             Variables::Forbidden,
         )
     }
+}
+
+/// Whether `predicate` names an immutable image or epistemic relation that
+/// cannot be forged by caller assumptions or abducibles.
+fn is_reserved_image_relation(predicate: &str) -> bool {
+    matches!(
+        predicate,
+        ASSERTION_RELATION
+            | RELATION_RELATION
+            | snapshot::SelectedRow::EPISTEMIC_RELATION
+            | "entity"
+            | "denial"
+            | "hypothesis"
+            | "vault_entity"
+            | "vault_relation"
+            | "vault_assertion"
+            | "vault_denial"
+            | "vault_hypothesis"
+    )
 }
 
 /// Predicates and functors that must never enter the bounded positive profile.
@@ -792,7 +834,7 @@ pub enum CapabilityError {
 
 /// A finite, typed Prolog term. Recursive values are represented explicitly;
 /// cyclic/rational terms are not representable.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Term {
     Integer(i64),
     String(String),
@@ -821,7 +863,7 @@ impl Term {
 }
 
 /// A predicate application.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Atom {
     pub predicate: String,
     pub terms: Vec<Term>,
@@ -961,7 +1003,7 @@ pub struct RequestLimits {
 /// profile's input and rule order; collection returns distinct binding maps in
 /// first-seen order. Neither operation treats repeated derivations as
 /// independent evidence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryMode {
     /// Test one ground goal; an incomplete input image can only yield Unknown.
     GroundTest,
@@ -972,16 +1014,24 @@ pub enum QueryMode {
     Enumerate,
     /// Return at most `RequestLimits::max_solutions` distinct binding maps.
     Collect,
+    /// Abduce minimal consistent assumption sets `Δ` (`|Δ| <= max_assumptions`)
+    /// over `abducibles` consistent with `denial` constraints. Every abduced
+    /// output remains `Proposed` and surfaces as a reviewable `PlanProposal`.
+    Abduce {
+        abducibles: std::collections::BTreeSet<String>,
+        max_assumptions: u32,
+    },
 }
 
 impl QueryMode {
     /// Stable wire name for this query mode.
-    pub const fn name(self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         match self {
             QueryMode::GroundTest => "ground-test",
             QueryMode::FindOne => "find-one",
             QueryMode::Enumerate => "enumerate",
             QueryMode::Collect => "collect",
+            QueryMode::Abduce { .. } => "abduce",
         }
     }
 }
@@ -1260,25 +1310,7 @@ impl Outcome {
                     .to_owned(),
             ));
         }
-        let (mode_matches, result_count) = match (&self.mode, &self.result) {
-            (QueryMode::GroundTest, QueryResult::GroundTest { truth }) => {
-                let is_truth_consistent_with_stop = match truth {
-                    QueryTruth::True => self.stop == SearchStop::GroundSuccess,
-                    QueryTruth::False => self.stop == SearchStop::GroundFailure,
-                    QueryTruth::Unknown => matches!(
-                        self.stop,
-                        SearchStop::GroundFailure | SearchStop::InvalidReadback
-                    ),
-                };
-                (is_truth_consistent_with_stop, 0)
-            }
-            (QueryMode::FindOne, QueryResult::FindOne { solution }) => {
-                (true, usize::from(solution.is_some()))
-            }
-            (QueryMode::Enumerate, QueryResult::Enumerate { solutions }) => (true, solutions.len()),
-            (QueryMode::Collect, QueryResult::Collect { solutions }) => (true, solutions.len()),
-            _ => (false, 0),
-        };
+        let (mode_matches, result_count) = self.validate_mode_and_result();
         if !mode_matches {
             return Err(CapabilityError::InvalidRequest(
                 "result shape does not match the requested query mode".to_owned(),
@@ -1320,6 +1352,30 @@ impl Outcome {
             ));
         }
         Ok(())
+    }
+
+    fn validate_mode_and_result(&self) -> (bool, usize) {
+        match (&self.mode, &self.result) {
+            (QueryMode::GroundTest, QueryResult::GroundTest { truth }) => {
+                let is_truth_consistent_with_stop = match truth {
+                    QueryTruth::True => self.stop == SearchStop::GroundSuccess,
+                    QueryTruth::False => self.stop == SearchStop::GroundFailure,
+                    QueryTruth::Unknown => matches!(
+                        self.stop,
+                        SearchStop::GroundFailure | SearchStop::InvalidReadback
+                    ),
+                };
+                (is_truth_consistent_with_stop, 0)
+            }
+            (QueryMode::FindOne, QueryResult::FindOne { solution }) => {
+                (true, usize::from(solution.is_some()))
+            }
+            (QueryMode::Enumerate, QueryResult::Enumerate { solutions }) => (true, solutions.len()),
+            (QueryMode::Collect | QueryMode::Abduce { .. }, QueryResult::Collect { solutions }) => {
+                (true, solutions.len())
+            }
+            _ => (false, 0),
+        }
     }
 }
 
@@ -1403,6 +1459,25 @@ fn request_identity_value(
     rule_manifest_digest: &str,
     input_order_digest: &str,
 ) -> mneme_core::Value {
+    let mode_value = match &request.mode {
+        QueryMode::Abduce {
+            abducibles,
+            max_assumptions,
+        } => mneme_core::Value::record_named(
+            "abduce-mode",
+            vec![
+                mneme_core::Value::sequence(
+                    abducibles
+                        .iter()
+                        .cloned()
+                        .map(mneme_core::Value::string)
+                        .collect(),
+                ),
+                mneme_core::Value::string(max_assumptions.to_string()),
+            ],
+        ),
+        _ => mneme_core::Value::symbol(request.mode.name()),
+    };
     mneme_core::Value::record_named(
         "prolog-query-request-v1",
         vec![
@@ -1410,7 +1485,7 @@ fn request_identity_value(
             request.scope.to_value(),
             request.revision.to_value(),
             mneme_core::Value::string(request.eligibility_generation.to_string()),
-            mneme_core::Value::symbol(request.mode.name()),
+            mode_value,
             atom_identity_value(&request.goal),
             request_variable_identity_value(request),
             rules_value,
@@ -1776,7 +1851,17 @@ pub fn run_query(
         control,
         limits: effective,
     };
-    let worker = process::run_worker(engine, metadata, image, request, &runtime)?;
+    if matches!(request.mode, QueryMode::Abduce { .. }) {
+        return abduce::run(metadata, image, request, &identity, &runtime);
+    }
+    let is_in_process_slg = !request.features.contains(&Feature::CertifiedProofs)
+        && (!slg::recursive_predicates(&request.rules).is_empty()
+            || request.features.contains(&Feature::GuardedNegation));
+    let worker = if is_in_process_slg {
+        slg::run_worker(metadata, image, request, &runtime, slg::Config::standard())?
+    } else {
+        process::run_worker(engine, metadata, image, request, &runtime)?
+    };
     let outcome = outcome_from_worker(&worker, image, request, &identity);
     outcome.validate_for_request(request)?;
     Ok(outcome)
@@ -1812,7 +1897,7 @@ fn outcome_from_worker(
     let reason = outcome_reason(worker, status, parsed.truncated);
     Outcome {
         status,
-        mode: request.mode,
+        mode: request.mode.clone(),
         operation_completed: is_operation_completed,
         stop,
         exhaustive: is_exhaustive,
@@ -1861,14 +1946,14 @@ fn rejected_outcome(
             process::WorkerStatus::Timeout => ExecutionStatus::Timeout,
             process::WorkerStatus::Cancelled => ExecutionStatus::Cancelled,
         },
-        mode: request.mode,
+        mode: request.mode.clone(),
         operation_completed: false,
         stop: resolved_worker_stop(worker),
         exhaustive: false,
         coverage: image.coverage.clone(),
         context: image.context.clone(),
         identity: identity.clone(),
-        result: empty_result(request.mode),
+        result: empty_result(&request.mode),
         proposals: Vec::new(),
         consumed: ConsumedLimits {
             elapsed_ms: worker.elapsed_ms,
@@ -1921,7 +2006,7 @@ fn resolved_stop(worker: &process::WorkerOutcome, parsed: &ParsedOutput) -> Sear
     }
 }
 
-fn empty_result(mode: QueryMode) -> QueryResult {
+fn empty_result(mode: &QueryMode) -> QueryResult {
     match mode {
         QueryMode::GroundTest => QueryResult::GroundTest {
             truth: QueryTruth::Unknown,
@@ -1930,7 +2015,7 @@ fn empty_result(mode: QueryMode) -> QueryResult {
         QueryMode::Enumerate => QueryResult::Enumerate {
             solutions: Vec::new(),
         },
-        QueryMode::Collect => QueryResult::Collect {
+        QueryMode::Collect | QueryMode::Abduce { .. } => QueryResult::Collect {
             solutions: Vec::new(),
         },
     }
@@ -1941,7 +2026,7 @@ fn result_for_request(
     parsed: &ParsedOutput,
     coverage: &InputCoverage,
 ) -> QueryResult {
-    match request.mode {
+    match &request.mode {
         QueryMode::GroundTest => {
             let truth = match parsed.terminal {
                 Some(SearchStop::GroundSuccess) => QueryTruth::True,
@@ -1957,7 +2042,7 @@ fn result_for_request(
         QueryMode::Enumerate => QueryResult::Enumerate {
             solutions: parsed.solutions.clone(),
         },
-        QueryMode::Collect => QueryResult::Collect {
+        QueryMode::Collect | QueryMode::Abduce { .. } => QueryResult::Collect {
             solutions: parsed.solutions.clone(),
         },
     }
@@ -1987,12 +2072,12 @@ fn operation_completed(
     if status == ExecutionStatus::Complete && parsed.terminal.is_some() {
         return true;
     }
-    match (request.mode, result) {
+    match (&request.mode, result) {
         (QueryMode::FindOne, QueryResult::FindOne { solution: Some(_) }) => true,
         (QueryMode::Enumerate, QueryResult::Enumerate { .. }) => {
             parsed.rows_seen >= request.limits.max_solutions
         }
-        (QueryMode::Collect, QueryResult::Collect { solutions }) => {
+        (QueryMode::Collect | QueryMode::Abduce { .. }, QueryResult::Collect { solutions }) => {
             solutions.len() >= request.limits.max_solutions
         }
         _ => false,
@@ -2009,13 +2094,16 @@ fn search_is_exhaustive(
         return false;
     }
     matches!(
-        (request.mode, parsed.terminal),
+        (&request.mode, parsed.terminal),
         (
             QueryMode::GroundTest,
             Some(SearchStop::GroundSuccess | SearchStop::GroundFailure)
         ) | (QueryMode::FindOne, Some(SearchStop::Exhausted))
             | (QueryMode::Enumerate, Some(SearchStop::Exhausted))
-            | (QueryMode::Collect, Some(SearchStop::Exhausted))
+            | (
+                QueryMode::Collect | QueryMode::Abduce { .. },
+                Some(SearchStop::Exhausted)
+            )
     )
 }
 
@@ -2078,7 +2166,7 @@ fn classify_output(
         .filter(|byte| *byte == b'\n')
         .count();
     let mut lines = complete_output.split_terminator('\n');
-    let header = protocol_header(identity, request.mode);
+    let header = protocol_header(identity, &request.mode);
     if lines.next() != Some(header.as_str()) {
         return OutputClassification::Rejected(
             "worker response header is missing or bound to another request",
@@ -2114,13 +2202,16 @@ fn finish_output_classification(
     mut solutions: Vec<Solution>,
     terminal: Option<SearchStop>,
 ) -> OutputClassification {
-    let is_terminal_valid_for_mode = match (request.mode, terminal) {
+    let is_terminal_valid_for_mode = match (&request.mode, terminal) {
         (QueryMode::GroundTest, Some(SearchStop::GroundSuccess | SearchStop::GroundFailure)) => {
             solutions.is_empty()
         }
         (QueryMode::FindOne, Some(SearchStop::FoundOne)) => solutions.len() == 1,
         (QueryMode::FindOne, Some(SearchStop::Exhausted)) => solutions.is_empty(),
-        (QueryMode::Enumerate | QueryMode::Collect, Some(SearchStop::Exhausted)) => true,
+        (
+            QueryMode::Enumerate | QueryMode::Collect | QueryMode::Abduce { .. },
+            Some(SearchStop::Exhausted),
+        ) => true,
         (_, None) => true,
         _ => false,
     };
@@ -2130,9 +2221,9 @@ fn finish_output_classification(
         );
     }
     let rows_seen = solutions.len();
-    let is_truncated = match request.mode {
+    let is_truncated = match &request.mode {
         QueryMode::Enumerate => rows_seen > request.limits.max_solutions,
-        QueryMode::Collect => {
+        QueryMode::Collect | QueryMode::Abduce { .. } => {
             solutions = collect_distinct(solutions);
             solutions.len() > request.limits.max_solutions
         }
@@ -2257,7 +2348,7 @@ fn parse_terminal(value: &str) -> Option<SearchStop> {
     }
 }
 
-pub(crate) fn protocol_header(identity: &ProtocolIdentity, mode: QueryMode) -> String {
+pub(crate) fn protocol_header(identity: &ProtocolIdentity, mode: &QueryMode) -> String {
     format!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}",
         RESPONSE_HEADER_PREFIX,
@@ -2347,7 +2438,7 @@ impl<'a> TermParser<'a> {
                 return Err(invalid_solution());
             }
             match self.peek() {
-                Some(b',') => self.index += 1,
+                Some(b',') => self.index = self.index.saturating_add(1),
                 Some(_) => return Err(invalid_solution()),
                 None => break,
             }
@@ -2363,7 +2454,7 @@ impl<'a> TermParser<'a> {
         }
         while let Some(byte) = self.peek() {
             if byte.is_ascii_alphanumeric() || byte == b'_' {
-                self.index += 1;
+                self.index = self.index.saturating_add(1);
             } else {
                 break;
             }
@@ -2387,12 +2478,12 @@ impl<'a> TermParser<'a> {
     fn parse_integer(&mut self) -> Result<Term, CapabilityError> {
         let start = self.index;
         if self.peek() == Some(b'-') {
-            self.index += 1;
+            self.index = self.index.saturating_add(1);
         }
         let digits = self.index;
         while let Some(byte) = self.peek() {
             if byte.is_ascii_digit() {
-                self.index += 1;
+                self.index = self.index.saturating_add(1);
             } else {
                 break;
             }
@@ -2411,7 +2502,7 @@ impl<'a> TermParser<'a> {
     }
 
     fn parse_string(&mut self) -> Result<Term, CapabilityError> {
-        self.index += 1;
+        self.index = self.index.saturating_add(1);
         // Every decoded byte costs at least one input byte, so the remaining
         // input bounds the literal.
         let mut bytes = Vec::with_capacity(self.remaining());
@@ -2443,8 +2534,10 @@ impl<'a> TermParser<'a> {
 
     fn parse_hex_digit(&mut self) -> Result<u8, CapabilityError> {
         match self.bump() {
-            Some(byte) if byte.is_ascii_digit() => Ok(byte - b'0'),
-            Some(byte) if (b'a'..=b'f').contains(&byte) => Ok(byte - b'a' + 10),
+            Some(byte) if byte.is_ascii_digit() => Ok(byte.saturating_sub(b'0')),
+            Some(byte) if (b'a'..=b'f').contains(&byte) => {
+                Ok(byte.saturating_sub(b'a').saturating_add(10))
+            }
             _ => Err(invalid_solution()),
         }
     }
@@ -2461,8 +2554,8 @@ impl<'a> TermParser<'a> {
                 break;
             }
             let digit = u32::from(self.parse_hex_digit()?);
-            value = value * 16 + digit;
-            digits += 1;
+            value = value.saturating_mul(16).saturating_add(digit);
+            digits = digits.saturating_add(1);
         }
         if digits < 2 || value > u32::from(u16::MAX) {
             return Err(invalid_solution());
@@ -2471,15 +2564,15 @@ impl<'a> TermParser<'a> {
     }
 
     fn parse_list(&mut self, depth: usize) -> Result<Term, CapabilityError> {
-        self.index += 1;
+        self.index = self.index.saturating_add(1);
         // Every list item consumes at least one input byte.
         let mut items = Vec::with_capacity(self.remaining());
         if self.peek() == Some(b']') {
-            self.index += 1;
+            self.index = self.index.saturating_add(1);
             return Ok(Term::List(items));
         }
         loop {
-            items.push(self.parse_term(depth + 1)?);
+            items.push(self.parse_term(depth.saturating_add(1))?);
             match self.bump() {
                 Some(b',') => {}
                 Some(b']') => break,
@@ -2493,7 +2586,7 @@ impl<'a> TermParser<'a> {
         let start = self.index;
         while let Some(byte) = self.peek() {
             if byte.is_ascii_alphanumeric() || byte == b'_' {
-                self.index += 1;
+                self.index = self.index.saturating_add(1);
             } else {
                 break;
             }
@@ -2505,11 +2598,11 @@ impl<'a> TermParser<'a> {
         if self.peek() != Some(b'(') {
             return Ok(Term::Symbol(name));
         }
-        self.index += 1;
+        self.index = self.index.saturating_add(1);
         // Every argument consumes at least one input byte.
         let mut args = Vec::with_capacity(self.remaining());
         loop {
-            args.push(self.parse_term(depth + 1)?);
+            args.push(self.parse_term(depth.saturating_add(1))?);
             match self.bump() {
                 Some(b',') => {}
                 Some(b')') => break,
@@ -2539,7 +2632,7 @@ impl<'a> TermParser<'a> {
 
     fn bump(&mut self) -> Option<u8> {
         let byte = self.peek()?;
-        self.index += 1;
+        self.index = self.index.saturating_add(1);
         Some(byte)
     }
 
@@ -2860,11 +2953,19 @@ impl Outcome {
                 "result context differs from its request".to_owned(),
             ));
         }
-        let declared = request
+        let mut declared = request
             .assumptions
             .iter()
             .map(|assumption| assumption.id.clone())
             .collect::<std::collections::BTreeSet<_>>();
+        let is_abduce = matches!(request.mode, QueryMode::Abduce { .. });
+        if is_abduce {
+            for proposal in &self.proposals {
+                if let Proposal::Plan(plan) = proposal {
+                    declared.extend(plan.assumptions.iter().cloned());
+                }
+            }
+        }
         let output_variables = request
             .variables
             .iter()
@@ -2888,6 +2989,11 @@ impl Outcome {
             {
                 return Err(CapabilityError::InvalidRequest(
                     "solution bindings differ from the declared output variables".to_owned(),
+                ));
+            }
+            if is_abduce && solution.epistemic != mneme_datalog::EpistemicStatus::Proposed {
+                return Err(CapabilityError::InvalidRequest(
+                    "abduced solutions must remain EpistemicStatus::Proposed".to_owned(),
                 ));
             }
             solution.validate(&declared)?;
@@ -3044,7 +3150,7 @@ mod tests {
         rows: &[&str],
         terminal: Option<&str>,
     ) -> String {
-        let mut output = protocol_header(identity, mode);
+        let mut output = protocol_header(identity, &mode);
         output.push('\n');
         for row in rows {
             output.push_str(RESPONSE_ROW_PREFIX);
@@ -4108,16 +4214,30 @@ mod tests {
     }
 
     #[test]
-    fn guarded_negation_and_aggregation_are_disabled() {
+    fn aggregation_remains_disabled_and_guarded_negation_requires_opt_in() {
         let mut metadata = positive();
-        metadata.features.insert(Feature::GuardedNegation);
+        metadata.features.insert(Feature::Aggregation);
         assert!(metadata.validate().is_err());
+
+        let mut guarded_meta = positive();
+        guarded_meta.features.insert(Feature::GuardedNegation);
+        assert!(guarded_meta.validate().is_ok());
+
         let mut request = request(std::collections::BTreeSet::from([Feature::PositiveQuery]));
         request.features.insert(Feature::Aggregation);
         assert_eq!(
             positive().ensure_request(&request),
             Err(CapabilityError::UnsupportedFeature(Feature::Aggregation))
         );
+        request.features.remove(&Feature::Aggregation);
+        request.features.insert(Feature::GuardedNegation);
+        assert_eq!(
+            positive().ensure_request(&request),
+            Err(CapabilityError::UnsupportedFeature(
+                Feature::GuardedNegation
+            ))
+        );
+        assert!(guarded_meta.ensure_request(&request).is_ok());
     }
 
     #[test]

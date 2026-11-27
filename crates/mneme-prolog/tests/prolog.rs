@@ -836,41 +836,24 @@ fn escaped_values_with_separators_round_trip() {
 
 #[test]
 fn multi_binding_solution_stream_is_counted_and_limited() {
-    // An infinite stream of two-binding answers: the solution budget counts
-    // solution lines (not bindings), returns exactly the budget and stays
-    // non-exhaustive.
+    // A multi-derivation stream of two-binding answers: the solution budget
+    // counts solution lines (not bindings), returns exactly the budget and
+    // stays non-exhaustive.
     let image = input_image(
         vec![fact("path", 0x1c, mneme_core::Value::integer(-7))],
         Vec::new(),
     );
+    let derived_fact = atom(
+        "derived",
+        vec![
+            mneme_prolog::Term::String(subject(0x1c).to_hex()),
+            mneme_prolog::Term::Integer(-7),
+        ],
+    );
     let rules = vec![
-        fact_rule(
-            "pair",
-            atom(
-                "derived",
-                vec![
-                    mneme_prolog::Term::String(subject(0x1c).to_hex()),
-                    mneme_prolog::Term::Integer(-7),
-                ],
-            ),
-        ),
-        rule(
-            "pair-loop",
-            atom(
-                "derived",
-                vec![
-                    mneme_prolog::Term::Variable("S".to_owned()),
-                    mneme_prolog::Term::Variable("V".to_owned()),
-                ],
-            ),
-            vec![mneme_prolog::Literal::Positive(atom(
-                "derived",
-                vec![
-                    mneme_prolog::Term::Variable("S".to_owned()),
-                    mneme_prolog::Term::Variable("V".to_owned()),
-                ],
-            ))],
-        ),
+        fact_rule("pair-1", derived_fact.clone()),
+        fact_rule("pair-2", derived_fact.clone()),
+        fact_rule("pair-3", derived_fact),
     ];
     let mut request = request_for(
         &image,
@@ -1097,14 +1080,44 @@ fn injection_text_is_refused_as_program_text_and_neutralized_as_data() {
 
 #[test]
 fn non_terminating_goal_is_stopped_at_the_time_limit() {
-    let image = input_image(Vec::new(), Vec::new());
+    // Non-recursive combinatorial search exceeding the 200 ms wall-time cap
+    // proves Scryer worker timeouts are still enforced promptly even after
+    // cyclic rules terminate cleanly via SLG tabling.
+    let facts = (0_u8..20)
+        .map(|i| fact("path", i.wrapping_add(1), string("shared")))
+        .collect();
+    let image = input_image(facts, Vec::new());
+    let join_var = |name: &str| {
+        mneme_prolog::Literal::Positive(atom(
+            "assertion",
+            vec![
+                mneme_prolog::Term::String("path".to_owned()),
+                mneme_prolog::Term::Variable(name.to_owned()),
+                mneme_prolog::Term::Variable("V".to_owned()),
+            ],
+        ))
+    };
     let rules = vec![rule(
-        "loop",
+        "heavy-join",
         atom("loop", vec![mneme_prolog::Term::String("a".to_owned())]),
-        vec![mneme_prolog::Literal::Positive(atom(
-            "loop",
-            vec![mneme_prolog::Term::String("a".to_owned())],
-        ))],
+        vec![
+            join_var("A"),
+            join_var("B"),
+            join_var("C"),
+            join_var("D"),
+            join_var("E"),
+            join_var("F"),
+            join_var("A"),
+            join_var("B"),
+            join_var("C"),
+            join_var("D"),
+            join_var("E"),
+            join_var("F"),
+            mneme_prolog::Literal::Positive(atom(
+                "missing",
+                vec![mneme_prolog::Term::Variable("V".to_owned())],
+            )),
+        ],
     )];
     let mut request = request_for(
         &image,
@@ -1177,19 +1190,11 @@ fn output_flood_is_stopped_at_the_output_limit() {
 #[test]
 fn infinite_solution_stream_is_stopped_at_the_solution_limit() {
     let image = input_image(Vec::new(), Vec::new());
+    let path_fact = atom("path", vec![mneme_prolog::Term::String("a".to_owned())]);
     let rules = vec![
-        fact_rule(
-            "p-fact",
-            atom("path", vec![mneme_prolog::Term::String("a".to_owned())]),
-        ),
-        rule(
-            "p-loop",
-            atom("path", vec![mneme_prolog::Term::String("a".to_owned())]),
-            vec![mneme_prolog::Literal::Positive(atom(
-                "path",
-                vec![mneme_prolog::Term::String("a".to_owned())],
-            ))],
-        ),
+        fact_rule("p-fact-1", path_fact.clone()),
+        fact_rule("p-fact-2", path_fact.clone()),
+        fact_rule("p-fact-3", path_fact),
     ];
     let mut request = request_for(
         &image,
@@ -1905,4 +1910,862 @@ fn certified_proofs_verify_multi_hop_canonical_and_epistemic_derivations_and_rej
     ));
     assert!(hyp_sols[0].assumptions.contains("hyp-1"));
     assert!(hyp_sols[0].proof.is_some());
+}
+
+#[test]
+fn slg_detects_recursive_sccs_and_terminates_cyclic_and_mutual_recursion() {
+    // Direct self-loop terminates cleanly with Complete and 0 solutions (no timeout).
+    let image = input_image(Vec::new(), Vec::new());
+    let self_loop_rules = vec![rule(
+        "self-loop",
+        atom("loop", vec![mneme_prolog::Term::String("a".to_owned())]),
+        vec![mneme_prolog::Literal::Positive(atom(
+            "loop",
+            vec![mneme_prolog::Term::String("a".to_owned())],
+        ))],
+    )];
+    let detected = mneme_prolog::slg::recursive_predicates(&self_loop_rules);
+    assert_eq!(
+        detected,
+        std::collections::BTreeSet::from([("loop".to_owned(), 1_u32)])
+    );
+    let directives = mneme_prolog::slg::tabling_directives(&self_loop_rules);
+    assert_eq!(
+        directives,
+        vec![
+            ":- use_module(library(tabling)).".to_owned(),
+            ":- table loop/1.".to_owned(),
+        ]
+    );
+    let loop_req = request_for(
+        &image,
+        atom("loop", vec![mneme_prolog::Term::String("a".to_owned())]),
+        self_loop_rules,
+    );
+    let loop_out = run(&metadata(), &image, &loop_req, limits()).expect("self-loop SLG");
+    assert_eq!(loop_out.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(solutions(&loop_out).is_empty());
+
+    // Mutually recursive SCC (`ping` <-> `pong`) over a 4-node cycle terminates cleanly.
+    let mut md = metadata();
+    md.allowed_predicates.insert("ping".to_owned());
+    md.allowed_predicates.insert("pong".to_owned());
+    md.allowed_predicates.insert("edge".to_owned());
+    md.limits.max_rule_count = 16;
+    let cycle_rows = vec![
+        vec![string("a"), string("b")],
+        vec![string("b"), string("c")],
+        vec![string("c"), string("d")],
+        vec![string("d"), string("a")],
+    ];
+    let cycle_image = input_image(Vec::new(), vec![relation("edge", cycle_rows)]);
+    let mutual_rules = vec![
+        rule(
+            "edge-bridge",
+            atom(
+                "edge",
+                vec![
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                    mneme_prolog::Term::Variable("Y".to_owned()),
+                ],
+            ),
+            vec![mneme_prolog::Literal::Positive(atom(
+                "relation",
+                vec![
+                    mneme_prolog::Term::String("edge".to_owned()),
+                    mneme_prolog::Term::List(vec![
+                        mneme_prolog::Term::Variable("X".to_owned()),
+                        mneme_prolog::Term::Variable("Y".to_owned()),
+                    ]),
+                ],
+            ))],
+        ),
+        rule(
+            "ping-base",
+            atom("ping", vec![mneme_prolog::Term::Variable("X".to_owned())]),
+            vec![mneme_prolog::Literal::Positive(atom(
+                "edge",
+                vec![
+                    mneme_prolog::Term::String("a".to_owned()),
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                ],
+            ))],
+        ),
+        rule(
+            "ping-step",
+            atom("ping", vec![mneme_prolog::Term::Variable("Y".to_owned())]),
+            vec![
+                mneme_prolog::Literal::Positive(atom(
+                    "pong",
+                    vec![mneme_prolog::Term::Variable("X".to_owned())],
+                )),
+                mneme_prolog::Literal::Positive(atom(
+                    "edge",
+                    vec![
+                        mneme_prolog::Term::Variable("X".to_owned()),
+                        mneme_prolog::Term::Variable("Y".to_owned()),
+                    ],
+                )),
+            ],
+        ),
+        rule(
+            "pong-step",
+            atom("pong", vec![mneme_prolog::Term::Variable("Y".to_owned())]),
+            vec![
+                mneme_prolog::Literal::Positive(atom(
+                    "ping",
+                    vec![mneme_prolog::Term::Variable("X".to_owned())],
+                )),
+                mneme_prolog::Literal::Positive(atom(
+                    "edge",
+                    vec![
+                        mneme_prolog::Term::Variable("X".to_owned()),
+                        mneme_prolog::Term::Variable("Y".to_owned()),
+                    ],
+                )),
+            ],
+        ),
+    ];
+    let scc_preds = mneme_prolog::slg::recursive_predicates(&mutual_rules);
+    assert_eq!(
+        scc_preds,
+        std::collections::BTreeSet::from([("ping".to_owned(), 1_u32), ("pong".to_owned(), 1_u32),])
+    );
+    let mutual_req = request_for(
+        &cycle_image,
+        atom("ping", vec![mneme_prolog::Term::Variable("N".to_owned())]),
+        mutual_rules,
+    );
+    let mutual_out = run(&md, &cycle_image, &mutual_req, limits()).expect("mutual recursion");
+    assert_eq!(mutual_out.status, mneme_prolog::ExecutionStatus::Complete);
+    let got: Vec<String> = sorted_strings(
+        solutions(&mutual_out)
+            .iter()
+            .map(|sol| bound_string(sol, "N")),
+    );
+    assert_eq!(got, vec!["b".to_owned(), "d".to_owned()]);
+}
+
+#[test]
+fn cyclic_left_recursive_reach_50_nodes_matches_datalog_blast_radius_under_50ms() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut workspace = mneme_store::Workspace::create(
+        dir.path(),
+        mneme_store::WorkspaceConfig {
+            clock: Box::new(mneme_store::FixedClock::new(
+                mneme_core::Timestamp::from_nanos(1_000),
+            )),
+            faults: Box::new(mneme_store::NoFaults),
+        },
+    )
+    .expect("workspace");
+    let mut node_ids = Vec::with_capacity(50);
+    for idx in 0_u8..50 {
+        let mut raw = [0_u8; 16];
+        raw[0] = 0x50;
+        raw[15] = idx.wrapping_add(1);
+        node_ids.push(mneme_core::RecordId::from_bytes(raw));
+    }
+    let mut records = Vec::with_capacity(110);
+    for (idx, &id) in node_ids.iter().enumerate() {
+        let mut entity_rev = [0x61_u8; 16];
+        entity_rev[15] = u8::try_from(idx.wrapping_add(1)).expect("u8");
+        let payload = mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("entity-type"),
+                mneme_core::Value::symbol("symbol"),
+            ),
+            (
+                mneme_core::Symbol::from("label"),
+                mneme_core::Value::string(format!("fn_{idx:02}")),
+            ),
+            (
+                mneme_core::Symbol::from("properties"),
+                mneme_core::Value::dictionary([]),
+            ),
+        ]);
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Entity,
+            record_id: id,
+            revision_id: mneme_core::RevisionId::from_bytes(entity_rev),
+            predecessor: None,
+            scope: scope(),
+            payload,
+        });
+    }
+    // 50-node directed cycle `n0 -> n1 -> ... -> n49 -> n0` plus cyclic cross-edges.
+    let mut edge_pairs: Vec<(usize, usize)> = (0..50).map(|i| (i, (i + 1) % 50)).collect();
+    edge_pairs.push((0, 25));
+    edge_pairs.push((25, 10));
+    edge_pairs.push((12, 37));
+    for (edge_idx, &(from_idx, to_idx)) in edge_pairs.iter().enumerate() {
+        let mut rec_bytes = [0_u8; 16];
+        rec_bytes[0] = 0x70;
+        rec_bytes[15] = u8::try_from(edge_idx.wrapping_add(1)).expect("u8");
+        let mut rev_bytes = [0_u8; 16];
+        rev_bytes[0] = 0x71;
+        rev_bytes[15] = u8::try_from(edge_idx.wrapping_add(1)).expect("u8");
+        let payload = mneme_core::Payload::new([
+            (
+                mneme_core::Symbol::from("relation-type"),
+                mneme_core::Value::symbol("calls"),
+            ),
+            (
+                mneme_core::Symbol::from("from"),
+                mneme_core::Reference::local(node_ids[from_idx], mneme_core::RecordKind::Entity)
+                    .to_value(),
+            ),
+            (
+                mneme_core::Symbol::from("to"),
+                mneme_core::Reference::local(node_ids[to_idx], mneme_core::RecordKind::Entity)
+                    .to_value(),
+            ),
+            (
+                mneme_core::Symbol::from("properties"),
+                mneme_core::Value::dictionary([]),
+            ),
+        ]);
+        records.push(mneme_store::RecordDraft {
+            schema_version: 1,
+            kind: mneme_core::RecordKind::Relation,
+            record_id: mneme_core::RecordId::from_bytes(rec_bytes),
+            revision_id: mneme_core::RevisionId::from_bytes(rev_bytes),
+            predecessor: None,
+            scope: scope(),
+            payload,
+        });
+    }
+    let base = workspace.current_revision().expect("base");
+    let head = workspace
+        .commit(mneme_store::CommitCommand {
+            base,
+            actor: "parity-seed".to_owned(),
+            scope: scope(),
+            idempotency_key: "seed-50-cycle".to_owned(),
+            records,
+            source_blobs: Vec::new(),
+            publications: Vec::new(),
+            import_candidates: Vec::new(),
+            retention: None,
+        })
+        .expect("commit")
+        .revision;
+
+    // 1. Evaluate `blast_radius` via real `mneme-datalog`.
+    let bundle = mneme_datalog::RuleBundle::new(mneme_datalog::RuleBundleOptions {
+        id: "blast-radius-rules".to_owned(),
+        version: "1".to_owned(),
+        schema_version: 1,
+        base_predicates: std::collections::BTreeMap::from([("relation".to_owned(), 3)]),
+        complete_predicates: std::collections::BTreeSet::from(["relation".to_owned()]),
+        rules: vec![
+            mneme_datalog::Rule::new(
+                "r-calls",
+                mneme_datalog::Atom::new(
+                    "call_edge",
+                    vec![mneme_datalog::Term::var("X"), mneme_datalog::Term::var("Y")],
+                ),
+                vec![mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                    "relation",
+                    vec![
+                        mneme_datalog::Term::constant(mneme_core::Value::symbol("calls")),
+                        mneme_datalog::Term::var("X"),
+                        mneme_datalog::Term::var("Y"),
+                    ],
+                ))],
+            ),
+            mneme_datalog::Rule::new(
+                "r-blast-base",
+                mneme_datalog::Atom::new(
+                    "blast_radius",
+                    vec![mneme_datalog::Term::var("X"), mneme_datalog::Term::var("Y")],
+                ),
+                vec![mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                    "call_edge",
+                    vec![mneme_datalog::Term::var("X"), mneme_datalog::Term::var("Y")],
+                ))],
+            ),
+            mneme_datalog::Rule::new(
+                "r-blast-rec",
+                mneme_datalog::Atom::new(
+                    "blast_radius",
+                    vec![mneme_datalog::Term::var("X"), mneme_datalog::Term::var("Y")],
+                ),
+                vec![
+                    mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                        "blast_radius",
+                        vec![mneme_datalog::Term::var("X"), mneme_datalog::Term::var("Z")],
+                    )),
+                    mneme_datalog::Literal::Positive(mneme_datalog::Atom::new(
+                        "call_edge",
+                        vec![mneme_datalog::Term::var("Z"), mneme_datalog::Term::var("Y")],
+                    )),
+                ],
+            ),
+        ],
+    });
+    let mut datalog_limits = mneme_datalog::Limits::default();
+    datalog_limits.max_work = 500_000;
+    datalog_limits.max_recursion_depth = 128;
+    datalog_limits.max_result_rows = 5_000;
+    let build = {
+        let mut service = mneme_datalog::Service::new(&mut workspace);
+        service
+            .build(mneme_datalog::BuildRequest {
+                actor: "parity-test".to_owned(),
+                scope: scope(),
+                revision: head,
+                bundle,
+                limits: datalog_limits,
+                publish: false,
+                incomplete_extents: std::collections::BTreeSet::new(),
+                cancellation: None,
+                access: mneme_memory::Access::Operator,
+                at: None,
+            })
+            .expect("datalog build")
+    };
+    let start_val = node_ids[0].to_value();
+    let datalog_edges_result = {
+        let mut service = mneme_datalog::Service::new(&mut workspace);
+        service
+            .query_build(&build, mneme_datalog::Query::all("call_edge", 200))
+            .expect("call_edge query")
+    };
+    let datalog_blast: std::collections::BTreeSet<String> = {
+        let mut service = mneme_datalog::Service::new(&mut workspace);
+        service
+            .query_build(&build, mneme_datalog::Query::all("blast_radius", 5_000))
+            .expect("blast_radius query")
+            .rows
+            .into_iter()
+            .filter_map(|row| {
+                let from = row.values.first()?;
+                let to = row.values.get(1)?;
+                let to_id = mneme_core::RecordId::from_value(to, &mneme_core::Path::root()).ok()?;
+                (*from == start_val).then(|| to_id.to_hex())
+            })
+            .collect()
+    };
+    assert_eq!(datalog_blast.len(), 50);
+
+    // 2. Build the Prolog snapshot image carrying the exact `call_edge` rows and
+    // run left-recursive `reach(X, Y)` through SLG tabling.
+    let mut md = metadata();
+    md.allowed_predicates.insert("reach".to_owned());
+    md.allowed_predicates.insert("call_edge".to_owned());
+    md.limits.max_solutions = 100;
+    md.limits.max_rule_count = 16;
+    md.terms.max_collection = 100;
+
+    let selected_rows: Vec<Vec<mneme_core::Value>> = datalog_edges_result
+        .rows
+        .iter()
+        .map(|row| {
+            let from_id =
+                mneme_core::RecordId::from_value(&row.values[0], &mneme_core::Path::root())
+                    .expect("from record id");
+            let to_id = mneme_core::RecordId::from_value(&row.values[1], &mneme_core::Path::root())
+                .expect("to record id");
+            vec![string(&from_id.to_hex()), string(&to_id.to_hex())]
+        })
+        .collect();
+    let start_hex = node_ids[0].to_hex();
+    let image = input_image(Vec::new(), vec![relation("call_edge", selected_rows)]);
+    let reach_rules = vec![
+        rule(
+            "r-edge",
+            atom(
+                "call_edge",
+                vec![
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                    mneme_prolog::Term::Variable("Y".to_owned()),
+                ],
+            ),
+            vec![mneme_prolog::Literal::Positive(atom(
+                "relation",
+                vec![
+                    mneme_prolog::Term::String("call_edge".to_owned()),
+                    mneme_prolog::Term::List(vec![
+                        mneme_prolog::Term::Variable("X".to_owned()),
+                        mneme_prolog::Term::Variable("Y".to_owned()),
+                    ]),
+                ],
+            ))],
+        ),
+        rule(
+            "r-reach-base",
+            atom(
+                "reach",
+                vec![
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                    mneme_prolog::Term::Variable("Y".to_owned()),
+                ],
+            ),
+            vec![mneme_prolog::Literal::Positive(atom(
+                "call_edge",
+                vec![
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                    mneme_prolog::Term::Variable("Y".to_owned()),
+                ],
+            ))],
+        ),
+        rule(
+            "r-reach-left-rec",
+            atom(
+                "reach",
+                vec![
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                    mneme_prolog::Term::Variable("Y".to_owned()),
+                ],
+            ),
+            vec![
+                mneme_prolog::Literal::Positive(atom(
+                    "reach",
+                    vec![
+                        mneme_prolog::Term::Variable("X".to_owned()),
+                        mneme_prolog::Term::Variable("Z".to_owned()),
+                    ],
+                )),
+                mneme_prolog::Literal::Positive(atom(
+                    "call_edge",
+                    vec![
+                        mneme_prolog::Term::Variable("Z".to_owned()),
+                        mneme_prolog::Term::Variable("Y".to_owned()),
+                    ],
+                )),
+            ],
+        ),
+    ];
+    let mut request = request_for(
+        &image,
+        atom(
+            "reach",
+            vec![
+                mneme_prolog::Term::String(start_hex.clone()),
+                mneme_prolog::Term::Variable("Target".to_owned()),
+            ],
+        ),
+        reach_rules,
+    );
+    request.limits.max_solutions = 100;
+
+    // Verify direct SLG worker status and latency (< 50 ms).
+    let control = mneme_prolog::process::WorkerControl::new();
+    let runtime = mneme_prolog::process::WorkerRuntime {
+        control: &control,
+        limits: limits(),
+    };
+    let worker = mneme_prolog::slg::run_worker(
+        &md,
+        &image,
+        &request,
+        &runtime,
+        mneme_prolog::slg::Config::standard(),
+    )
+    .expect("slg worker");
+    assert_eq!(worker.status, mneme_prolog::process::WorkerStatus::Complete);
+    assert!(
+        worker.elapsed_ms < 50,
+        "cyclic 50-node SLG reach exceeded 50 ms budget: {} ms",
+        worker.elapsed_ms
+    );
+
+    // Verify end-to-end `run_query` parity with `mneme-datalog` `blast_radius`.
+    let outcome = run(&md, &image, &request, limits()).expect("slg run_query");
+    assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(outcome.exhaustive);
+    assert!(
+        outcome.consumed.elapsed_ms < 50,
+        "run_query cyclic 50-node reach exceeded 50 ms: {} ms",
+        outcome.consumed.elapsed_ms
+    );
+    let prolog_reach: std::collections::BTreeSet<String> = solutions(&outcome)
+        .iter()
+        .map(|sol| bound_string(sol, "Target"))
+        .collect();
+    assert_eq!(prolog_reach, datalog_blast);
+    eprintln!(
+        "SLG 50-node cyclic left-recursive reach: {} nodes, worker={}ms, run_query={}ms, datalog parity=100%",
+        prolog_reach.len(),
+        worker.elapsed_ms,
+        outcome.consumed.elapsed_ms
+    );
+}
+
+#[test]
+fn slg_step_budget_metering_halts_cleanly_on_exhaustion() {
+    let mut md = metadata();
+    md.allowed_predicates.insert("reach".to_owned());
+    md.allowed_predicates.insert("edge".to_owned());
+    md.limits.max_rule_count = 8;
+    let rows: Vec<Vec<mneme_core::Value>> = (0..20)
+        .map(|i| {
+            vec![
+                string(&format!("n{i}")),
+                string(&format!("n{}", (i + 1) % 20)),
+            ]
+        })
+        .collect();
+    let image = input_image(Vec::new(), vec![relation("edge", rows)]);
+    let rules = vec![
+        rule(
+            "r-edge",
+            atom(
+                "edge",
+                vec![
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                    mneme_prolog::Term::Variable("Y".to_owned()),
+                ],
+            ),
+            vec![mneme_prolog::Literal::Positive(atom(
+                "relation",
+                vec![
+                    mneme_prolog::Term::String("edge".to_owned()),
+                    mneme_prolog::Term::List(vec![
+                        mneme_prolog::Term::Variable("X".to_owned()),
+                        mneme_prolog::Term::Variable("Y".to_owned()),
+                    ]),
+                ],
+            ))],
+        ),
+        rule(
+            "r-reach-base",
+            atom(
+                "reach",
+                vec![
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                    mneme_prolog::Term::Variable("Y".to_owned()),
+                ],
+            ),
+            vec![mneme_prolog::Literal::Positive(atom(
+                "edge",
+                vec![
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                    mneme_prolog::Term::Variable("Y".to_owned()),
+                ],
+            ))],
+        ),
+        rule(
+            "r-reach-rec",
+            atom(
+                "reach",
+                vec![
+                    mneme_prolog::Term::Variable("X".to_owned()),
+                    mneme_prolog::Term::Variable("Y".to_owned()),
+                ],
+            ),
+            vec![
+                mneme_prolog::Literal::Positive(atom(
+                    "reach",
+                    vec![
+                        mneme_prolog::Term::Variable("X".to_owned()),
+                        mneme_prolog::Term::Variable("Z".to_owned()),
+                    ],
+                )),
+                mneme_prolog::Literal::Positive(atom(
+                    "edge",
+                    vec![
+                        mneme_prolog::Term::Variable("Z".to_owned()),
+                        mneme_prolog::Term::Variable("Y".to_owned()),
+                    ],
+                )),
+            ],
+        ),
+    ];
+    let request = request_for(
+        &image,
+        atom(
+            "reach",
+            vec![
+                mneme_prolog::Term::String("n0".to_owned()),
+                mneme_prolog::Term::Variable("Y".to_owned()),
+            ],
+        ),
+        rules,
+    );
+    let control = mneme_prolog::process::WorkerControl::new();
+    let runtime = mneme_prolog::process::WorkerRuntime {
+        control: &control,
+        limits: limits(),
+    };
+    let outcome = mneme_prolog::slg::run_query(
+        &md,
+        &image,
+        &request,
+        &runtime,
+        mneme_prolog::slg::Config { step_budget: 25 },
+    )
+    .expect("budget-exhausted SLG query");
+    assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Timeout);
+    assert!(!outcome.exhaustive);
+}
+
+#[test]
+fn abduce_returns_unique_minimal_consistent_proposed_plan_and_commits_zero_records() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = mneme_store::Workspace::create(
+        dir.path(),
+        mneme_store::WorkspaceConfig {
+            clock: Box::new(mneme_store::FixedClock::new(
+                mneme_core::Timestamp::from_nanos(1_000),
+            )),
+            faults: Box::new(mneme_store::NoFaults),
+        },
+    )
+    .expect("workspace");
+    let head_before = workspace.current_revision().expect("head before");
+
+    let mut md = metadata();
+    md.features
+        .insert(mneme_prolog::Feature::HypotheticalAssumptions);
+    md.features.insert(mneme_prolog::Feature::GuardedNegation);
+    md.features.insert(mneme_prolog::Feature::Plans);
+    for pred in [
+        "deploy_ready",
+        "schema_migrated",
+        "tests_green",
+        "frozen",
+        "force_override",
+        "extra_audit",
+        "protected_env",
+        "denial",
+    ] {
+        md.allowed_predicates.insert(pred.to_owned());
+    }
+    md.limits.max_rule_count = 16;
+
+    let image = input_image(Vec::new(), Vec::new());
+    let rules = vec![
+        // Protected environment fact.
+        fact_rule(
+            "f-protected",
+            atom(
+                "protected_env",
+                vec![mneme_prolog::Term::String("prod".to_owned())],
+            ),
+        ),
+        // Valid route missing 2 preconditions + guarded negation `not frozen(Env)`.
+        rule(
+            "r-deploy-safe",
+            atom(
+                "deploy_ready",
+                vec![mneme_prolog::Term::Variable("Env".to_owned())],
+            ),
+            vec![
+                mneme_prolog::Literal::Positive(atom(
+                    "schema_migrated",
+                    vec![mneme_prolog::Term::Variable("Env".to_owned())],
+                )),
+                mneme_prolog::Literal::Positive(atom(
+                    "tests_green",
+                    vec![mneme_prolog::Term::Variable("Env".to_owned())],
+                )),
+                mneme_prolog::Literal::Negative(atom(
+                    "frozen",
+                    vec![mneme_prolog::Term::Variable("Env".to_owned())],
+                )),
+            ],
+        ),
+        // Denial-conflicting 1-assumption shortcut (must be rejected!).
+        rule(
+            "r-deploy-override",
+            atom(
+                "deploy_ready",
+                vec![mneme_prolog::Term::Variable("Env".to_owned())],
+            ),
+            vec![mneme_prolog::Literal::Positive(atom(
+                "force_override",
+                vec![mneme_prolog::Term::Variable("Env".to_owned())],
+            ))],
+        ),
+        // Non-minimal 3-assumption superset (must be pruned by minimality!).
+        rule(
+            "r-deploy-superset",
+            atom(
+                "deploy_ready",
+                vec![mneme_prolog::Term::Variable("Env".to_owned())],
+            ),
+            vec![
+                mneme_prolog::Literal::Positive(atom(
+                    "schema_migrated",
+                    vec![mneme_prolog::Term::Variable("Env".to_owned())],
+                )),
+                mneme_prolog::Literal::Positive(atom(
+                    "tests_green",
+                    vec![mneme_prolog::Term::Variable("Env".to_owned())],
+                )),
+                mneme_prolog::Literal::Positive(atom(
+                    "extra_audit",
+                    vec![mneme_prolog::Term::Variable("Env".to_owned())],
+                )),
+            ],
+        ),
+        // Integrity constraint: overriding a protected environment is denied.
+        rule(
+            "r-denial-override",
+            atom(
+                "denial",
+                vec![mneme_prolog::Term::Variable("Env".to_owned())],
+            ),
+            vec![
+                mneme_prolog::Literal::Positive(atom(
+                    "force_override",
+                    vec![mneme_prolog::Term::Variable("Env".to_owned())],
+                )),
+                mneme_prolog::Literal::Positive(atom(
+                    "protected_env",
+                    vec![mneme_prolog::Term::Variable("Env".to_owned())],
+                )),
+            ],
+        ),
+    ];
+
+    // Verify compiled s(CASP) dual rules exist for the program.
+    let dual = mneme_prolog::abduce::compile_dual_program(&rules);
+    assert!(
+        dual.predicates
+            .contains_key(&("deploy_ready".to_owned(), 1))
+    );
+
+    let mut request = request_for(
+        &image,
+        atom(
+            "deploy_ready",
+            vec![mneme_prolog::Term::String("prod".to_owned())],
+        ),
+        rules,
+    );
+    request.mode = mneme_prolog::QueryMode::Abduce {
+        abducibles: std::collections::BTreeSet::from([
+            "schema_migrated".to_owned(),
+            "tests_green".to_owned(),
+            "force_override".to_owned(),
+            "extra_audit".to_owned(),
+        ]),
+        max_assumptions: 3,
+    };
+    request
+        .features
+        .insert(mneme_prolog::Feature::HypotheticalAssumptions);
+    request
+        .features
+        .insert(mneme_prolog::Feature::GuardedNegation);
+    request.features.insert(mneme_prolog::Feature::Plans);
+
+    let outcome = run(&md, &image, &request, limits()).expect("abduce query");
+    assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(outcome.exhaustive);
+
+    let sols = solutions(&outcome);
+    assert_eq!(sols.len(), 1);
+    assert_eq!(sols[0].epistemic, mneme_datalog::EpistemicStatus::Proposed);
+    assert_eq!(
+        sols[0].assumptions,
+        std::collections::BTreeSet::from([
+            "schema_migrated(\"prod\")".to_owned(),
+            "tests_green(\"prod\")".to_owned(),
+        ])
+    );
+    assert_eq!(outcome.proposals.len(), 1);
+    let mneme_prolog::Proposal::Plan(plan) = &outcome.proposals[0] else {
+        panic!("abduction must emit a PlanProposal");
+    };
+    assert_eq!(plan.preconditions.len(), 2);
+    assert_eq!(plan.assumptions, sols[0].assumptions);
+
+    // Plan stays unaccepted until explicitly reviewed through PlanRegistry::accept.
+    let expected_state = mneme_prolog::execution::PlanState {
+        scope: scope(),
+        base_revision: revision(),
+        preconditions: plan.assumptions.clone(),
+        sources: std::collections::BTreeMap::new(),
+        forgotten: std::collections::BTreeSet::new(),
+    };
+    let mut registry = mneme_prolog::execution::PlanRegistry::new(expected_state.clone());
+    registry
+        .register(plan.clone(), 1, expected_state.clone())
+        .expect("register abduced plan");
+    assert!(
+        registry
+            .inspect(&plan.id)
+            .expect("inspect")
+            .accepted
+            .is_none()
+    );
+    let accepted = registry.accept(mneme_prolog::execution::PlanAcceptanceCommand {
+        idempotency_key: "review-abduced-plan".to_owned(),
+        plan_id: plan.id.clone(),
+        plan_revision: 1,
+        expected: expected_state,
+        decision: subject(0x99),
+    });
+    assert!(matches!(
+        accepted,
+        mneme_prolog::execution::PlanOutcome::Accepted { .. }
+    ));
+
+    // Zero canonical records committed by abductive reasoning.
+    assert_eq!(
+        workspace.current_revision().expect("head after"),
+        head_before
+    );
+}
+
+#[test]
+fn abduce_guarded_negation_refuses_absence_under_incomplete_coverage() {
+    let mut md = metadata();
+    md.features
+        .insert(mneme_prolog::Feature::HypotheticalAssumptions);
+    md.features.insert(mneme_prolog::Feature::GuardedNegation);
+    for pred in ["deploy_ready", "schema_migrated", "frozen"] {
+        md.allowed_predicates.insert(pred.to_owned());
+    }
+    let mut image = input_image(Vec::new(), Vec::new());
+    image.coverage = mneme_prolog::InputCoverage {
+        complete: false,
+        reason: Some("partial snapshot".to_owned()),
+    };
+    image.context.image_digest = format!("sha256:{}", image.content_digest().to_hex());
+    let rules = vec![rule(
+        "r-guarded",
+        atom(
+            "deploy_ready",
+            vec![mneme_prolog::Term::Variable("Env".to_owned())],
+        ),
+        vec![
+            mneme_prolog::Literal::Positive(atom(
+                "schema_migrated",
+                vec![mneme_prolog::Term::Variable("Env".to_owned())],
+            )),
+            mneme_prolog::Literal::Negative(atom(
+                "frozen",
+                vec![mneme_prolog::Term::Variable("Env".to_owned())],
+            )),
+        ],
+    )];
+    let mut request = request_for(
+        &image,
+        atom(
+            "deploy_ready",
+            vec![mneme_prolog::Term::String("prod".to_owned())],
+        ),
+        rules,
+    );
+    request.mode = mneme_prolog::QueryMode::Abduce {
+        abducibles: std::collections::BTreeSet::from(["schema_migrated".to_owned()]),
+        max_assumptions: 2,
+    };
+    request
+        .features
+        .insert(mneme_prolog::Feature::HypotheticalAssumptions);
+    request
+        .features
+        .insert(mneme_prolog::Feature::GuardedNegation);
+    let outcome = run(&md, &image, &request, limits()).expect("incomplete coverage abduce");
+    assert_eq!(outcome.status, mneme_prolog::ExecutionStatus::Complete);
+    assert!(!outcome.exhaustive);
+    assert!(solutions(&outcome).is_empty());
+    assert!(outcome.proposals.is_empty());
 }
